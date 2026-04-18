@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod util;
 
 fn main() {
     tauri::Builder::default()
@@ -15,6 +16,7 @@ fn main() {
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
             commands::auth::refresh_tokens,
+            commands::config::get_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
