@@ -1,4 +1,4 @@
-// oauth.rs — OAuth loopback listener for HQ Sync menubar.
+// oauth.rs — OAuth loopback listener + PKCE login flow for HQ Sync menubar.
 //
 // Starts a one-shot HTTP server on 127.0.0.1:53682 (rclone-standard OAuth
 // loopback port, pre-registered in Cognito app client 4mmujmjq3srakdueg656b9m0mp)
@@ -6,11 +6,11 @@
 // with the authorization code. Responds with a friendly HTML page that tells
 // the user to return to HQ Sync, then shuts the listener down.
 //
-// The Svelte frontend is expected to:
-//   1. Call `oauth_listen_for_code` (awaits the code via Tauri async command).
-//   2. Separately call `tauri_plugin_shell::open(...)` on the authorize URL.
-//   3. Exchange the returned code + PKCE verifier for tokens via the Cognito
-//      /oauth2/token endpoint (pure HTTP, done in TS).
+// Login flow (Svelte frontend):
+//   1. Call `start_oauth_login` — returns authorize URL + state.
+//   2. Call `tauri_plugin_shell::open(authorize_url)` to open the browser.
+//   3. Call `oauth_listen_for_code(state)` to wait for the callback code.
+//   4. Call `oauth_exchange_code(code)` to exchange the code for tokens.
 //
 // Security notes:
 //   - Binds to 127.0.0.1 only — never 0.0.0.0.
@@ -18,10 +18,16 @@
 //     what comes back on the callback, defending against CSRF/code injection.
 //   - Single-use: accepts at most one request, closes listener afterwards.
 //   - 5-minute timeout so a stalled/abandoned flow doesn't leak a socket.
+//   - PKCE (S256) prevents authorization code interception.
 
-use serde::Serialize;
+use super::cognito::{self, AuthState, CognitoTokens};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 const LOOPBACK_PORT: u16 = 53682;
@@ -29,10 +35,69 @@ const LOOPBACK_HOST: &str = "127.0.0.1";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+const COGNITO_CLIENT_ID: &str = "4mmujmjq3srakdueg656b9m0mp";
+const COGNITO_AUTHORIZE_URL: &str =
+    "https://indigoai.auth.us-east-1.amazoncognito.com/oauth2/authorize";
+const COGNITO_TOKEN_URL: &str =
+    "https://indigoai.auth.us-east-1.amazoncognito.com/oauth2/token";
+const REDIRECT_URI: &str = "http://127.0.0.1:53682/callback";
+
+// ── PKCE verifier storage ──────────────────────────────────────────────
+
+static PKCE_VERIFIER: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn pkce_store() -> &'static Mutex<Option<String>> {
+    PKCE_VERIFIER.get_or_init(|| Mutex::new(None))
+}
+
+// ── Public types ───────────────────────────────────────────────────────
+
 #[derive(Serialize)]
 pub struct OAuthResult {
     pub code: String,
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthFlowInit {
+    pub authorize_url: String,
+    pub state: String,
+}
+
+// ── Cognito token exchange response ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct TokenResponse {
+    access_token: String,
+    id_token: Option<String>,
+    refresh_token: Option<String>,
+    expires_in: i64,
+}
+
+// ── PKCE helpers ───────────────────────────────────────────────────────
+
+/// Generate a PKCE code verifier (43–128 characters, URL-safe).
+/// Uses uuid::Uuid::new_v4 to avoid adding `rand` as a dependency.
+fn generate_code_verifier() -> String {
+    // 3 UUIDs = 96 hex chars after removing hyphens. We take the first 64
+    // characters, well within the 43–128 range.
+    let raw = format!(
+        "{}{}{}",
+        uuid::Uuid::new_v4().as_simple(),
+        uuid::Uuid::new_v4().as_simple(),
+        uuid::Uuid::new_v4().as_simple(),
+    );
+    // UUID simple format is hex (0-9a-f) which is URL-safe.
+    raw[..64].to_string()
+}
+
+/// Compute the S256 code challenge: BASE64URL(SHA256(verifier)).
+fn compute_code_challenge(verifier: &str) -> String {
+    let digest = Sha256::digest(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
+}
+
+// ── HTML ───────────────────────────────────────────────────────────────
 
 const SUCCESS_HTML: &str = r#"<!doctype html>
 <html lang="en">
@@ -72,6 +137,8 @@ code{{color:#f87171;font-size:12px;display:block;margin-top:24px}}</style>
         reason = reason
     )
 }
+
+// ── HTTP helpers ───────────────────────────────────────────────────────
 
 fn read_request_line(stream: &mut TcpStream) -> std::io::Result<String> {
     stream.set_read_timeout(Some(READ_TIMEOUT))?;
@@ -155,9 +222,119 @@ fn urldecode(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+// ── Tauri commands ─────────────────────────────────────────────────────
+
+/// Start the OAuth login flow: generate PKCE verifier/challenge, build the
+/// Cognito authorize URL, store the verifier for later exchange.
 #[tauri::command]
-pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult, String> {
-    let state_copy = expected_state.clone();
+pub async fn start_oauth_login() -> Result<OAuthFlowInit, String> {
+    let state = uuid::Uuid::new_v4().to_string();
+    let verifier = generate_code_verifier();
+    let challenge = compute_code_challenge(&verifier);
+
+    // Store verifier for oauth_exchange_code
+    {
+        let mut guard = pkce_store()
+            .lock()
+            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+        *guard = Some(verifier);
+    }
+
+    let authorize_url = format!(
+        "{base}?response_type=code\
+         &client_id={client_id}\
+         &redirect_uri={redirect_uri}\
+         &scope=openid+email+profile\
+         &state={state}\
+         &code_challenge={challenge}\
+         &code_challenge_method=S256",
+        base = COGNITO_AUTHORIZE_URL,
+        client_id = COGNITO_CLIENT_ID,
+        redirect_uri = REDIRECT_URI,
+        state = state,
+        challenge = challenge,
+    );
+
+    Ok(OAuthFlowInit {
+        authorize_url,
+        state,
+    })
+}
+
+/// Exchange an authorization code for tokens using the stored PKCE verifier.
+#[tauri::command]
+pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
+    // Take the verifier out of storage (one-time use)
+    let verifier = {
+        let mut guard = pkce_store()
+            .lock()
+            .map_err(|e| format!("PKCE lock poisoned: {e}"))?;
+        guard
+            .take()
+            .ok_or_else(|| "No PKCE verifier found — was start_oauth_login called?".to_string())?
+    };
+
+    let client = reqwest::Client::new();
+
+    let params = [
+        ("grant_type", "authorization_code"),
+        ("client_id", COGNITO_CLIENT_ID),
+        ("code", &code),
+        ("redirect_uri", REDIRECT_URI),
+        ("code_verifier", &verifier),
+    ];
+
+    let response = client
+        .post(COGNITO_TOKEN_URL)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Token exchange request failed: {e}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "unknown".to_string());
+        return Err(format!(
+            "Token exchange failed ({status}): {body_text}"
+        ));
+    }
+
+    let token_resp: TokenResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {e}"))?;
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    let expires_at = now_ms + (token_resp.expires_in * 1000);
+
+    let tokens = CognitoTokens {
+        access_token: token_resp.access_token,
+        id_token: token_resp.id_token,
+        refresh_token: token_resp
+            .refresh_token
+            .ok_or_else(|| "No refresh_token in response".to_string())?,
+        expires_at,
+    };
+
+    cognito::set_tokens(&tokens).await?;
+
+    Ok(AuthState {
+        authenticated: true,
+        expires_at: Some(cognito::expires_at_iso(&tokens)),
+    })
+}
+
+/// Listen for the OAuth callback on the loopback port.
+#[tauri::command]
+pub async fn oauth_listen_for_code(state: String) -> Result<OAuthResult, String> {
+    let state_copy = state.clone();
 
     tokio::task::spawn_blocking(move || -> Result<OAuthResult, String> {
         let listener =
@@ -246,6 +423,8 @@ pub async fn oauth_listen_for_code(expected_state: String) -> Result<OAuthResult
     .map_err(|e| format!("OAuth listener task panicked: {e}"))?
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +462,92 @@ mod tests {
         assert_eq!(urldecode("hello+world"), "hello world");
         assert_eq!(urldecode("a%20b"), "a b");
         assert_eq!(urldecode("plain"), "plain");
+    }
+
+    #[test]
+    fn code_verifier_length_is_valid() {
+        let verifier = generate_code_verifier();
+        assert_eq!(verifier.len(), 64);
+        // Must be in the 43–128 range per PKCE spec
+        assert!(verifier.len() >= 43 && verifier.len() <= 128);
+    }
+
+    #[test]
+    fn code_verifier_is_url_safe() {
+        let verifier = generate_code_verifier();
+        // UUID simple format is hex (0-9a-f), all URL-safe
+        assert!(verifier.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn code_verifier_is_random() {
+        let v1 = generate_code_verifier();
+        let v2 = generate_code_verifier();
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
+    fn code_challenge_is_base64url_sha256() {
+        // Known test vector: SHA256("test") = 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+        // base64url of that = n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg
+        let challenge = compute_code_challenge("test");
+        assert_eq!(challenge, "n4bQgYhMfWWaL-qgxVrQFaO_TxsrC4Is0V1sFbDwCgg");
+    }
+
+    #[test]
+    fn code_challenge_has_no_padding() {
+        let challenge = compute_code_challenge("hello");
+        assert!(!challenge.contains('='));
+    }
+
+    #[test]
+    fn authorize_url_contains_required_params() {
+        // We can't call the async command directly in a sync test, so test
+        // the URL construction logic inline.
+        let state = "test-state-123";
+        let verifier = generate_code_verifier();
+        let challenge = compute_code_challenge(&verifier);
+
+        let url = format!(
+            "{base}?response_type=code\
+             &client_id={client_id}\
+             &redirect_uri={redirect_uri}\
+             &scope=openid+email+profile\
+             &state={state}\
+             &code_challenge={challenge}\
+             &code_challenge_method=S256",
+            base = COGNITO_AUTHORIZE_URL,
+            client_id = COGNITO_CLIENT_ID,
+            redirect_uri = REDIRECT_URI,
+            state = state,
+            challenge = challenge,
+        );
+
+        assert!(url.starts_with("https://indigoai.auth.us-east-1.amazoncognito.com/oauth2/authorize?"));
+        assert!(url.contains("response_type=code"));
+        assert!(url.contains("client_id=4mmujmjq3srakdueg656b9m0mp"));
+        assert!(url.contains("redirect_uri=http://127.0.0.1:53682/callback"));
+        assert!(url.contains("scope=openid+email+profile"));
+        assert!(url.contains(&format!("state={state}")));
+        assert!(url.contains(&format!("code_challenge={challenge}")));
+        assert!(url.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn pkce_store_roundtrip() {
+        // Store a verifier, then take it out
+        {
+            let mut guard = pkce_store().lock().unwrap();
+            *guard = Some("test-verifier".to_string());
+        }
+        {
+            let mut guard = pkce_store().lock().unwrap();
+            let taken = guard.take();
+            assert_eq!(taken, Some("test-verifier".to_string()));
+        }
+        {
+            let guard = pkce_store().lock().unwrap();
+            assert!(guard.is_none());
+        }
     }
 }

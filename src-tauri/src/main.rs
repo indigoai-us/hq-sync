@@ -10,7 +10,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::process::spawn_process,
             commands::process::cancel_process,
+            commands::oauth::start_oauth_login,
             commands::oauth::oauth_listen_for_code,
+            commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
             commands::auth::refresh_tokens,
         ])

@@ -1,6 +1,69 @@
+<script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import SignInPrompt from './components/SignInPrompt.svelte';
+
+  let authenticated = $state(false);
+  let expiresAt = $state('');
+  let checking = $state(true);
+
+  $effect(() => {
+    checkAuth();
+  });
+
+  async function checkAuth() {
+    try {
+      const state = await invoke<{
+        authenticated: boolean;
+        expiresAt: string | null;
+      }>('get_auth_state');
+
+      authenticated = state.authenticated;
+      expiresAt = state.expiresAt ?? '';
+    } catch {
+      authenticated = false;
+    } finally {
+      checking = false;
+    }
+  }
+
+  function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
+    authenticated = auth.authenticated;
+    expiresAt = auth.expiresAt;
+  }
+</script>
+
 <main>
-  <h1>HQ Sync</h1>
-  <p>Menubar sync agent</p>
+  {#if checking}
+    <div class="loading">
+      <span class="dot-spinner"></span>
+    </div>
+  {:else if authenticated}
+    <div class="authenticated">
+      <svg
+        width="32"
+        height="32"
+        viewBox="0 0 48 48"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <circle cx="24" cy="24" r="20" fill="#6366f1" opacity="0.15" />
+        <circle cx="24" cy="24" r="20" stroke="#6366f1" stroke-width="2.5" fill="none" />
+        <path
+          d="M16 24l6 6 10-10"
+          stroke="#6366f1"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
+      </svg>
+      <h1>Signed in</h1>
+      {#if expiresAt}
+        <p class="expires">Session expires: {new Date(expiresAt).toLocaleString()}</p>
+      {/if}
+    </div>
+  {:else}
+    <SignInPrompt onsuccess={handleAuthSuccess} />
+  {/if}
 </main>
 
 <style>
@@ -20,17 +83,64 @@
     justify-content: center;
     height: 100vh;
     text-align: center;
-    padding: 1rem;
+    padding: 0;
   }
 
-  h1 {
-    font-size: 1.5rem;
-    margin-bottom: 0.5rem;
+  .loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+  }
+
+  .dot-spinner {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 2.5px solid rgba(99, 102, 241, 0.2);
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .authenticated {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .authenticated h1 {
+    font-size: 1.25rem;
+    font-weight: 600;
     color: #ffffff;
+    margin: 0;
   }
 
-  p {
-    font-size: 0.875rem;
+  .expires {
+    font-size: 0.75rem;
     color: #a0a0b0;
+    margin: 0;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :global(body) {
+      background-color: #f8f9fa;
+      color: #1a1a2e;
+    }
+
+    .authenticated h1 {
+      color: #1a1a2e;
+    }
+
+    .expires {
+      color: #6b7280;
+    }
   }
 </style>
