@@ -11,6 +11,8 @@ fn main() {
             commands::process::spawn_process,
             commands::process::cancel_process,
             commands::oauth::oauth_listen_for_code,
+            commands::auth::get_auth_state,
+            commands::auth::refresh_tokens,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
