@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import SignInPrompt from './components/SignInPrompt.svelte';
+  import SyncStats from './components/SyncStats.svelte';
 
   let authenticated = $state(false);
   let expiresAt = $state('');
@@ -120,6 +121,7 @@
         />
       </svg>
       <h1>Signed in</h1>
+      <SyncStats />
       {#if expiresAt}
         <p class="expires">Session expires: {new Date(expiresAt).toLocaleString()}</p>
       {/if}

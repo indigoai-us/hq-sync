@@ -19,6 +19,7 @@ fn main() {
             commands::auth::get_auth_state,
             commands::auth::refresh_tokens,
             commands::config::get_config,
+            commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
             tray::set_tray_state,
