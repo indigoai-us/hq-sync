@@ -2,49 +2,92 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import SignInPrompt from './components/SignInPrompt.svelte';
-  import SyncStats from './components/SyncStats.svelte';
+  import Popover from './components/Popover.svelte';
+  import './styles/popover.css';
+
+  interface Config {
+    configured: boolean;
+    companySlug: string;
+    hqFolderPath: string;
+    error?: string;
+  }
 
   let authenticated = $state(false);
   let expiresAt = $state('');
   let checking = $state(true);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict'>('idle');
+  let config = $state<Config | null>(null);
+  let syncProgress = $state<{ filesComplete: number; filesTotal: number } | null>(null);
 
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
 
+  async function loadConfig() {
+    try {
+      config = await invoke<Config>('get_config');
+    } catch (err) {
+      console.error('Failed to load config:', err);
+    }
+  }
+
+  async function handleSyncNow() {
+    if (syncState === 'syncing') return;
+    syncState = 'syncing';
+    syncProgress = null;
+    await invoke('set_tray_state', { state: 'syncing' });
+    try {
+      await invoke('start_sync');
+    } catch (err) {
+      console.error('start_sync failed:', err);
+      syncState = 'error';
+      await invoke('set_tray_state', { state: 'error' });
+    }
+  }
+
+  function handleSettings() {
+    console.log('Settings requested (not yet implemented — US-012)');
+  }
+
+  function handleSignOut() {
+    // Placeholder: clear auth state, return to sign-in
+    authenticated = false;
+    expiresAt = '';
+    console.log('Sign out requested — clearing local auth state');
+  }
+
   async function setupTrayListeners() {
     // Tray menu events
     unlisteners.push(
-      await listen('tray:sync-now', async () => {
-        syncState = 'syncing';
-        await invoke('set_tray_state', { state: 'syncing' });
-        try {
-          await invoke('start_sync');
-        } catch (err) {
-          console.error('start_sync failed:', err);
-          syncState = 'error';
-          await invoke('set_tray_state', { state: 'error' });
-        }
+      await listen('tray:sync-now', () => {
+        handleSyncNow();
       })
     );
 
     unlisteners.push(
       await listen('tray:open-settings', () => {
-        console.log('Settings requested (not yet implemented — US-012)');
+        handleSettings();
       })
     );
 
-    // Sync state events → update local state + tray icon (defensive double-bind)
+    // Sync state events → update local state + tray icon
     unlisteners.push(
-      await listen('sync:progress', async () => {
-        syncState = 'syncing';
-        await invoke('set_tray_state', { state: 'syncing' });
-      })
+      await listen<{ phase: string; filesComplete: number; filesTotal: number }>(
+        'sync:progress',
+        async (event) => {
+          syncState = 'syncing';
+          syncProgress = {
+            filesComplete: event.payload.filesComplete,
+            filesTotal: event.payload.filesTotal,
+          };
+          await invoke('set_tray_state', { state: 'syncing' });
+        }
+      )
     );
 
     unlisteners.push(
       await listen('sync:complete', async () => {
         syncState = 'idle';
+        syncProgress = null;
         await invoke('set_tray_state', { state: 'idle' });
       })
     );
@@ -52,6 +95,7 @@
     unlisteners.push(
       await listen('sync:error', async () => {
         syncState = 'error';
+        syncProgress = null;
         await invoke('set_tray_state', { state: 'error' });
       })
     );
@@ -59,13 +103,18 @@
     unlisteners.push(
       await listen('sync:conflict', async () => {
         syncState = 'conflict';
+        syncProgress = null;
         await invoke('set_tray_state', { state: 'conflict' });
       })
     );
   }
 
   $effect(() => {
+    // Performance: mark app init
+    performance.mark('app-init');
+
     checkAuth();
+    loadConfig();
     setupTrayListeners();
 
     return () => {
@@ -102,30 +151,14 @@
       <span class="dot-spinner"></span>
     </div>
   {:else if authenticated}
-    <div class="authenticated">
-      <svg
-        width="32"
-        height="32"
-        viewBox="0 0 48 48"
-        fill="none"
-        xmlns="http://www.w3.org/2000/svg"
-      >
-        <circle cx="24" cy="24" r="20" fill="#6366f1" opacity="0.15" />
-        <circle cx="24" cy="24" r="20" stroke="#6366f1" stroke-width="2.5" fill="none" />
-        <path
-          d="M16 24l6 6 10-10"
-          stroke="#6366f1"
-          stroke-width="2.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
-      <h1>Signed in</h1>
-      <SyncStats />
-      {#if expiresAt}
-        <p class="expires">Session expires: {new Date(expiresAt).toLocaleString()}</p>
-      {/if}
-    </div>
+    <Popover
+      {syncState}
+      {config}
+      progress={syncProgress}
+      onsync={handleSyncNow}
+      onsettings={handleSettings}
+      onsignout={handleSignOut}
+    />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />
   {/if}
@@ -137,8 +170,8 @@
     padding: 0;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
       Oxygen, Ubuntu, Cantarell, sans-serif;
-    background-color: #1a1a2e;
-    color: #e0e0e0;
+    background-color: var(--popover-bg, #1a1a2e);
+    color: var(--popover-text, #e0e0e0);
   }
 
   main {
@@ -146,8 +179,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    height: 100vh;
-    text-align: center;
+    min-height: 100vh;
     padding: 0;
   }
 
@@ -155,7 +187,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    height: 100%;
+    height: 100vh;
   }
 
   .dot-spinner {
@@ -171,41 +203,6 @@
   @keyframes spin {
     to {
       transform: rotate(360deg);
-    }
-  }
-
-  .authenticated {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.5rem;
-  }
-
-  .authenticated h1 {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #ffffff;
-    margin: 0;
-  }
-
-  .expires {
-    font-size: 0.75rem;
-    color: #a0a0b0;
-    margin: 0;
-  }
-
-  @media (prefers-color-scheme: light) {
-    :global(body) {
-      background-color: #f8f9fa;
-      color: #1a1a2e;
-    }
-
-    .authenticated h1 {
-      color: #1a1a2e;
-    }
-
-    .expires {
-      color: #6b7280;
     }
   }
 </style>
