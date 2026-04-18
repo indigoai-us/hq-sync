@@ -2,6 +2,8 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SyncStats from './SyncStats.svelte';
   import SyncButton from './SyncButton.svelte';
+  import ConflictModal from './ConflictModal.svelte';
+  import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
     configured: boolean;
@@ -14,18 +16,28 @@
     syncState: 'idle' | 'syncing' | 'error' | 'conflict';
     config: Config | null;
     progress?: { filesComplete: number; filesTotal: number } | null;
+    conflicts?: ConflictFile[];
+    showConflictModal?: boolean;
     onsync: () => void;
     onsettings: () => void;
     onsignout: () => void;
+    onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
+    onopen?: (path: string) => void;
+    ondismissconflicts?: () => void;
   }
 
   let {
     syncState,
     config,
     progress = null,
+    conflicts = [],
+    showConflictModal = false,
     onsync,
     onsettings,
     onsignout,
+    onresolve,
+    onopen,
+    ondismissconflicts,
   }: Props = $props();
 
   // Performance timing — log mount latency
@@ -78,11 +90,20 @@
 
   <!-- Body -->
   <section class="popover-body">
-    <SyncStats />
+    {#if showConflictModal && conflicts.length > 0 && onresolve && onopen && ondismissconflicts}
+      <ConflictModal
+        {conflicts}
+        onresolve={onresolve}
+        onopen={onopen}
+        ondismiss={ondismissconflicts}
+      />
+    {:else}
+      <SyncStats />
 
-    <div class="sync-button-area">
-      <SyncButton {syncState} {progress} onclick={onsync} />
-    </div>
+      <div class="sync-button-area">
+        <SyncButton {syncState} {progress} onclick={onsync} />
+      </div>
+    {/if}
   </section>
 
   <div class="popover-divider"></div>

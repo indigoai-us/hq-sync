@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
+  import { conflictStore, type ConflictFile } from './stores/conflicts';
   import './styles/popover.css';
 
   interface Config {
@@ -18,6 +19,8 @@
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict'>('idle');
   let config = $state<Config | null>(null);
   let syncProgress = $state<{ filesComplete: number; filesTotal: number } | null>(null);
+  let showConflictModal = $state(false);
+  let conflicts = $state<ConflictFile[]>([]);
 
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
@@ -55,6 +58,23 @@
     console.log('Sign out requested — clearing local auth state');
   }
 
+  async function handleResolveConflict(path: string, strategy: 'keep-local' | 'keep-remote') {
+    await conflictStore.resolveConflict(path, strategy);
+    conflicts = conflictStore.conflicts;
+    if (conflictStore.allResolved) {
+      syncState = 'idle';
+      await invoke('set_tray_state', { state: 'idle' });
+    }
+  }
+
+  async function handleOpenInEditor(path: string) {
+    await conflictStore.openInEditor(path);
+  }
+
+  function handleDismissConflicts() {
+    showConflictModal = false;
+  }
+
   async function setupTrayListeners() {
     // Tray menu events
     unlisteners.push(
@@ -88,6 +108,9 @@
       await listen('sync:complete', async () => {
         syncState = 'idle';
         syncProgress = null;
+        conflictStore.clear();
+        conflicts = [];
+        showConflictModal = false;
         await invoke('set_tray_state', { state: 'idle' });
       })
     );
@@ -101,11 +124,17 @@
     );
 
     unlisteners.push(
-      await listen('sync:conflict', async () => {
-        syncState = 'conflict';
-        syncProgress = null;
-        await invoke('set_tray_state', { state: 'conflict' });
-      })
+      await listen<{ path: string; localHash: string; remoteHash: string; canAutoResolve: boolean }>(
+        'sync:conflict',
+        async (event) => {
+          syncState = 'conflict';
+          syncProgress = null;
+          conflictStore.addConflict(event.payload);
+          conflicts = conflictStore.conflicts;
+          showConflictModal = true;
+          await invoke('set_tray_state', { state: 'conflict' });
+        }
+      )
     );
   }
 
@@ -155,9 +184,14 @@
       {syncState}
       {config}
       progress={syncProgress}
+      {conflicts}
+      {showConflictModal}
       onsync={handleSyncNow}
       onsettings={handleSettings}
       onsignout={handleSignOut}
+      onresolve={handleResolveConflict}
+      onopen={handleOpenInEditor}
+      ondismissconflicts={handleDismissConflicts}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />

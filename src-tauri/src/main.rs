@@ -22,6 +22,8 @@ fn main() {
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
+            commands::conflicts::resolve_conflict,
+            commands::conflicts::open_in_editor,
             tray::set_tray_state,
         ])
         .setup(|app| {
