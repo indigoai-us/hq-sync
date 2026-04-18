@@ -1,13 +1,76 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import SignInPrompt from './components/SignInPrompt.svelte';
 
   let authenticated = $state(false);
   let expiresAt = $state('');
   let checking = $state(true);
+  let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict'>('idle');
+
+  // Collected unlisten handles for cleanup
+  let unlisteners: UnlistenFn[] = [];
+
+  async function setupTrayListeners() {
+    // Tray menu events
+    unlisteners.push(
+      await listen('tray:sync-now', async () => {
+        syncState = 'syncing';
+        await invoke('set_tray_state', { state: 'syncing' });
+        try {
+          await invoke('start_sync');
+        } catch (err) {
+          console.error('start_sync failed:', err);
+          syncState = 'error';
+          await invoke('set_tray_state', { state: 'error' });
+        }
+      })
+    );
+
+    unlisteners.push(
+      await listen('tray:open-settings', () => {
+        console.log('Settings requested (not yet implemented — US-012)');
+      })
+    );
+
+    // Sync state events → update local state + tray icon (defensive double-bind)
+    unlisteners.push(
+      await listen('sync:progress', async () => {
+        syncState = 'syncing';
+        await invoke('set_tray_state', { state: 'syncing' });
+      })
+    );
+
+    unlisteners.push(
+      await listen('sync:complete', async () => {
+        syncState = 'idle';
+        await invoke('set_tray_state', { state: 'idle' });
+      })
+    );
+
+    unlisteners.push(
+      await listen('sync:error', async () => {
+        syncState = 'error';
+        await invoke('set_tray_state', { state: 'error' });
+      })
+    );
+
+    unlisteners.push(
+      await listen('sync:conflict', async () => {
+        syncState = 'conflict';
+        await invoke('set_tray_state', { state: 'conflict' });
+      })
+    );
+  }
 
   $effect(() => {
     checkAuth();
+    setupTrayListeners();
+
+    return () => {
+      unlisteners.forEach((unlisten) => unlisten());
+      unlisteners = [];
+    };
   });
 
   async function checkAuth() {

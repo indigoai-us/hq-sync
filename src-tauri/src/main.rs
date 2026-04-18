@@ -2,6 +2,7 @@
 
 mod commands;
 mod events;
+mod tray;
 mod util;
 
 fn main() {
@@ -20,7 +21,12 @@ fn main() {
             commands::config::get_config,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
+            tray::set_tray_state,
         ])
+        .setup(|app| {
+            tray::setup_tray(&app.handle())?;
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
