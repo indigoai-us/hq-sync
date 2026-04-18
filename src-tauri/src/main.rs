@@ -24,6 +24,11 @@ fn main() {
             commands::sync::cancel_sync,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
+            commands::settings::get_settings,
+            commands::settings::save_settings,
+            commands::folder_picker::pick_folder,
+            commands::autostart::get_autostart_enabled,
+            commands::autostart::set_autostart_enabled,
             tray::set_tray_state,
         ])
         .setup(|app| {

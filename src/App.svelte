@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
+  import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import './styles/popover.css';
 
@@ -21,6 +22,7 @@
   let syncProgress = $state<{ filesComplete: number; filesTotal: number } | null>(null);
   let showConflictModal = $state(false);
   let conflicts = $state<ConflictFile[]>([]);
+  let showSettings = $state(false);
 
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
@@ -48,7 +50,11 @@
   }
 
   function handleSettings() {
-    console.log('Settings requested (not yet implemented — US-012)');
+    showSettings = true;
+  }
+
+  function handleBackFromSettings() {
+    showSettings = false;
   }
 
   function handleSignOut() {
@@ -179,6 +185,8 @@
     <div class="loading">
       <span class="dot-spinner"></span>
     </div>
+  {:else if authenticated && showSettings}
+    <Settings onback={handleBackFromSettings} />
   {:else if authenticated}
     <Popover
       {syncState}
