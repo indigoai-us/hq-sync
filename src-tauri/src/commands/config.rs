@@ -23,6 +23,7 @@ pub struct MenubarPrefs {
     pub sync_on_launch: Option<bool>,
     pub notifications: Option<bool>,
     pub start_at_login: Option<bool>,
+    pub autostart_daemon: Option<bool>,
 }
 
 /// Response returned to the frontend from get_config.
@@ -152,13 +153,15 @@ mod tests {
             "hqPath": "/custom/HQ",
             "syncOnLaunch": true,
             "notifications": false,
-            "startAtLogin": true
+            "startAtLogin": true,
+            "autostartDaemon": false
         }"#;
         let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.hq_path, Some("/custom/HQ".to_string()));
         assert_eq!(prefs.sync_on_launch, Some(true));
         assert_eq!(prefs.notifications, Some(false));
         assert_eq!(prefs.start_at_login, Some(true));
+        assert_eq!(prefs.autostart_daemon, Some(false));
     }
 
     #[test]
@@ -167,6 +170,7 @@ mod tests {
         let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
         assert_eq!(prefs.hq_path, None);
         assert_eq!(prefs.sync_on_launch, None);
+        assert_eq!(prefs.autostart_daemon, None);
     }
 
     #[test]

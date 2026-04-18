@@ -34,6 +34,9 @@ fn main() {
             commands::folder_picker::pick_folder,
             commands::autostart::get_autostart_enabled,
             commands::autostart::set_autostart_enabled,
+            commands::daemon::start_daemon,
+            commands::daemon::stop_daemon,
+            commands::daemon::daemon_status,
             tray::set_tray_state,
             updater::check_for_updates,
             updater::install_update,
@@ -41,6 +44,16 @@ fn main() {
         .setup(|app| {
             tray::setup_tray(&app.handle())?;
             updater::setup_update_checker(&app.handle());
+
+            // Feature-flagged daemon autostart (V2 prep — default OFF)
+            if commands::daemon::is_autostart_enabled() {
+                std::thread::spawn(|| {
+                    // Small delay to let the app fully initialize
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    let _ = commands::daemon::start_daemon();
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
