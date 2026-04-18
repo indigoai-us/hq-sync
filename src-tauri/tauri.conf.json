@@ -23,6 +23,14 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "UPDATER_PUBKEY_PLACEHOLDER",
+      "endpoints": [
+        "https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
