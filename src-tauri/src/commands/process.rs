@@ -68,11 +68,26 @@ fn process_registry() -> &'static Arc<Mutex<HashMap<String, ProcessEntry>>> {
     PROCESS_REGISTRY.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-fn pre_register_handle(handle: &str) {
+pub fn pre_register_handle(handle: &str) {
     process_registry()
         .lock()
         .unwrap()
         .insert(handle.to_string(), ProcessEntry::default());
+}
+
+/// Atomically check-and-register a handle. Returns `true` if the handle was
+/// newly registered, `false` if it was already present (i.e. a process is
+/// already running under this handle).
+pub fn try_register_handle(handle: &str) -> bool {
+    use std::collections::hash_map::Entry;
+    let mut reg = process_registry().lock().unwrap();
+    match reg.entry(handle.to_string()) {
+        Entry::Occupied(_) => false,
+        Entry::Vacant(v) => {
+            v.insert(ProcessEntry::default());
+            true
+        }
+    }
 }
 
 pub fn register_process(handle: &str, pid: u32) {
@@ -102,7 +117,7 @@ pub fn lookup_pid(handle: &str) -> Option<u32> {
         .and_then(|e| e.pid)
 }
 
-fn is_registered(handle: &str) -> bool {
+pub fn is_registered(handle: &str) -> bool {
     process_registry().lock().unwrap().contains_key(handle)
 }
 
