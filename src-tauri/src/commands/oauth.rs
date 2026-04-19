@@ -1,7 +1,11 @@
 // oauth.rs — OAuth loopback listener + PKCE login flow for HQ Sync menubar.
 //
-// Starts a one-shot HTTP server on 127.0.0.1:53682 (rclone-standard OAuth
-// loopback port, pre-registered in Cognito app client 4mmujmjq3srakdueg656b9m0mp)
+// Starts a one-shot HTTP server on 127.0.0.1:53682 and advertises the
+// callback as http://localhost:53682/callback, which matches the
+// `http://localhost:*/callback` wildcard registered on Cognito app client
+// 4mmujmjq3srakdueg656b9m0mp. Binding to 127.0.0.1 (not 0.0.0.0) keeps the
+// listener off the LAN; `localhost` in the redirect URI is required because
+// Cognito matches the host segment literally — `127.0.0.1` fails.
 // and waits for the browser to redirect back to /callback?code=...&state=...
 // with the authorization code. Responds with a friendly HTML page that tells
 // the user to return to HQ Sync, then shuts the listener down.
@@ -36,11 +40,31 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 const COGNITO_CLIENT_ID: &str = "4mmujmjq3srakdueg656b9m0mp";
-const COGNITO_AUTHORIZE_URL: &str =
-    "https://indigoai.auth.us-east-1.amazoncognito.com/oauth2/authorize";
-const COGNITO_TOKEN_URL: &str =
-    "https://indigoai.auth.us-east-1.amazoncognito.com/oauth2/token";
-const REDIRECT_URI: &str = "http://127.0.0.1:53682/callback";
+const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "hq-vault-dev";
+const REDIRECT_URI: &str = "http://localhost:53682/callback";
+
+/// Cognito hosted-UI domain prefix.
+///
+/// Resolves to `$HQ_COGNITO_DOMAIN` if set, else the canonical `hq-vault-dev`
+/// prefix shared with `@indigoai-us/hq-cli` and `hq-installer`. Always in the
+/// `us-east-1.amazoncognito.com` namespace — custom domains not yet supported.
+fn cognito_domain_prefix() -> String {
+    std::env::var("HQ_COGNITO_DOMAIN").unwrap_or_else(|_| DEFAULT_COGNITO_DOMAIN_PREFIX.to_string())
+}
+
+fn cognito_authorize_url() -> String {
+    format!(
+        "https://{}.auth.us-east-1.amazoncognito.com/oauth2/authorize",
+        cognito_domain_prefix()
+    )
+}
+
+fn cognito_token_url() -> String {
+    format!(
+        "https://{}.auth.us-east-1.amazoncognito.com/oauth2/token",
+        cognito_domain_prefix()
+    )
+}
 
 // ── PKCE verifier storage ──────────────────────────────────────────────
 
@@ -240,15 +264,22 @@ pub async fn start_oauth_login() -> Result<OAuthFlowInit, String> {
         *guard = Some(verifier);
     }
 
+    // `identity_provider=Google` tells Cognito Hosted UI to skip its own
+    // username/password form and redirect straight to Google's OAuth consent
+    // screen. The browser almost always has an active Google session, so the
+    // user sees a one-click "Continue as …" at most — matching the hq-installer
+    // sign-in flow. Dropping this parameter reverts to the unbranded Cognito
+    // login page.
     let authorize_url = format!(
         "{base}?response_type=code\
          &client_id={client_id}\
          &redirect_uri={redirect_uri}\
          &scope=openid+email+profile\
+         &identity_provider=Google\
          &state={state}\
          &code_challenge={challenge}\
          &code_challenge_method=S256",
-        base = COGNITO_AUTHORIZE_URL,
+        base = cognito_authorize_url(),
         client_id = COGNITO_CLIENT_ID,
         redirect_uri = REDIRECT_URI,
         state = state,
@@ -285,7 +316,7 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
     ];
 
     let response = client
-        .post(COGNITO_TOKEN_URL)
+        .post(cognito_token_url())
         .form(&params)
         .send()
         .await
@@ -513,21 +544,25 @@ mod tests {
              &client_id={client_id}\
              &redirect_uri={redirect_uri}\
              &scope=openid+email+profile\
+             &identity_provider=Google\
              &state={state}\
              &code_challenge={challenge}\
              &code_challenge_method=S256",
-            base = COGNITO_AUTHORIZE_URL,
+            base = cognito_authorize_url(),
             client_id = COGNITO_CLIENT_ID,
             redirect_uri = REDIRECT_URI,
             state = state,
             challenge = challenge,
         );
 
-        assert!(url.starts_with("https://indigoai.auth.us-east-1.amazoncognito.com/oauth2/authorize?"));
+        assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("client_id=4mmujmjq3srakdueg656b9m0mp"));
-        assert!(url.contains("redirect_uri=http://127.0.0.1:53682/callback"));
+        assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback") || url.contains("redirect_uri=http://localhost:53682/callback"));
         assert!(url.contains("scope=openid+email+profile"));
+        // identity_provider=Google is what makes Cognito skip its Hosted UI
+        // login form and route straight to Google OAuth — matches hq-installer.
+        assert!(url.contains("identity_provider=Google"));
         assert!(url.contains(&format!("state={state}")));
         assert!(url.contains(&format!("code_challenge={challenge}")));
         assert!(url.contains("code_challenge_method=S256"));
