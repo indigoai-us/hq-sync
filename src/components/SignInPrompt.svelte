@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
 
   interface Props {
     onsuccess?: (auth: { authenticated: boolean; expiresAt: string }) => void;
@@ -39,6 +40,19 @@
 
       // Step 5: Notify parent of success
       if (result.authenticated) {
+        // Pull focus back from the browser to the menubar popover so the
+        // user sees the post-sign-in UI transition immediately. `.show()`
+        // is defensive — the popover should still be open from the tray
+        // click that started this flow, but the OAuth redirect can take a
+        // while and users occasionally dismiss the window in the meantime.
+        try {
+          const win = getCurrentWindow();
+          await win.show();
+          await win.setFocus();
+        } catch (focusErr) {
+          // Focus-stealing isn't critical; log but don't block success.
+          console.warn('[signin] failed to refocus window:', focusErr);
+        }
         onsuccess?.(result);
       } else {
         error = 'Authentication failed. Please try again.';
@@ -84,7 +98,7 @@
     </div>
 
     <h1>Sign in to HQ</h1>
-    <p class="description">Connect your HQ account to enable sync</p>
+    <p class="description">Use your Google account to sync your HQ files.</p>
 
     <button
       class="sign-in-btn"
@@ -93,11 +107,42 @@
     >
       {#if loading}
         <span class="spinner"></span>
-        Signing in...
+        Waiting for browser…
       {:else}
-        Sign in
+        <svg
+          class="google-glyph"
+          width="18"
+          height="18"
+          viewBox="0 0 18 18"
+          aria-hidden="true"
+        >
+          <path
+            d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844a4.14 4.14 0 0 1-1.796 2.716v2.259h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"
+            fill="#4285F4"
+          />
+          <path
+            d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"
+            fill="#34A853"
+          />
+          <path
+            d="M3.964 10.706A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.706V4.962H.957A8.997 8.997 0 0 0 0 9c0 1.452.348 2.827.957 4.038l3.007-2.332z"
+            fill="#FBBC05"
+          />
+          <path
+            d="M9 3.579c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.892 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.962L3.964 7.294C4.672 5.167 6.656 3.58 9 3.58z"
+            fill="#EA4335"
+          />
+        </svg>
+        Continue with Google
       {/if}
     </button>
+
+    {#if loading}
+      <p class="loading-hint">
+        A browser window opened for Google sign-in. Complete it there and
+        you'll return here automatically.
+      </p>
+    {/if}
 
     {#if error}
       <p class="error">{error}</p>
@@ -197,6 +242,17 @@
     line-height: 1.4;
   }
 
+  .loading-hint {
+    font-size: 0.6875rem;
+    color: #a0a0b0;
+    margin: 0.75rem 0 0 0;
+    line-height: 1.4;
+  }
+
+  .google-glyph {
+    flex-shrink: 0;
+  }
+
   .footer {
     font-size: 0.6875rem;
     color: #555568;
@@ -210,6 +266,10 @@
     }
 
     .description {
+      color: #6b7280;
+    }
+
+    .loading-hint {
       color: #6b7280;
     }
 

@@ -5,7 +5,7 @@
   "identifier": "ai.indigo.hq-sync-menubar",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1421",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
@@ -16,7 +16,11 @@
         "width": 320,
         "height": 400,
         "resizable": false,
-        "visible": false
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "transparent": true
       }
     ],
     "security": {
