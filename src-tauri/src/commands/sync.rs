@@ -1,7 +1,18 @@
-//! Tauri commands for spawning and cancelling `hq sync --json`.
+//! Tauri commands for spawning and cancelling `hq-sync-runner --companies`.
 //!
 //! Uses [`crate::commands::process`] for subprocess lifecycle (spawn, stream,
 //! SIGTERM→SIGKILL). Emits typed sync events to the Svelte renderer.
+//!
+//! Phase 7 (ADR-0001, 2026-04-19): switched from `hq sync --json` (never
+//! shipped) to `hq-sync-runner --companies`. The runner is the canonical
+//! machine-targeted entrypoint from `@indigoai-us/hq-cloud` ≥5.1.0 — ndjson is
+//! the default and only output mode. See:
+//!   packages/hq-cloud/src/bin/sync-runner.ts
+//!
+//! Binary resolution: `hq-sync-runner` must be on PATH. It's installed
+//! globally via `npm install -g @indigoai-us/hq-cloud` or through `hq-cli`'s
+//! transitive dep. For DMG distribution, this binary will need to be bundled
+//! (tracked as a follow-up; out of scope for Phase 7).
 
 use std::collections::HashMap;
 use std::thread;
@@ -15,7 +26,8 @@ use crate::commands::process::{
     ProcessEvent, SpawnArgs,
 };
 use crate::events::{
-    SyncEvent, EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT, EVENT_SYNC_ERROR, EVENT_SYNC_PROGRESS,
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPLETE,
+    EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::paths;
 
@@ -27,6 +39,10 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// SIGKILL delay after SIGTERM on cancel.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+
+/// Binary name. Must be on PATH — installed globally via
+/// `npm install -g @indigoai-us/hq-cloud` (or bundled with the DMG in V2).
+const RUNNER_BIN: &str = "hq-sync-runner";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config resolution (inline — avoids calling async Tauri command)
@@ -72,18 +88,28 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 // SpawnArgs builder (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build the SpawnArgs for `hq sync --json` with defensive double-binding of
-/// the HQ folder path (both as env var and CLI flag).
+/// Build the SpawnArgs for `hq-sync-runner --companies`.
+///
+/// Flags:
+/// - `--companies` — fan out to every membership the caller has
+/// - `--on-conflict abort` — V1 policy; conflicts surface as `aborted: true` on
+///   the per-company `complete` event. Interactive resolution is a follow-up
+///   (the runner protocol doesn't emit per-file conflict events).
+/// - `--hq-root <path>` — local HQ directory
+///
+/// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
+/// pre-Phase-7 pattern).
 pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
 
     SpawnArgs {
-        cmd: "hq".to_string(),
+        cmd: RUNNER_BIN.to_string(),
         args: vec![
-            "sync".to_string(),
-            "--json".to_string(),
-            "--hq-path".to_string(),
+            "--companies".to_string(),
+            "--on-conflict".to_string(),
+            "abort".to_string(),
+            "--hq-root".to_string(),
             hq_folder_path.to_string(),
         ],
         cwd: None,
@@ -98,20 +124,34 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
 /// Parse a single ndjson line and emit the corresponding Tauri event.
 /// Unknown/malformed lines are silently skipped (logged in debug builds).
 fn handle_sync_line(app: &AppHandle, line: &str) {
-    let event: SyncEvent = match serde_json::from_str(line) {
+    // The runner can emit blank lines at process teardown. Skip those cheaply
+    // rather than logging a parse error.
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let event: SyncEvent = match serde_json::from_str(trimmed) {
         Ok(e) => e,
         Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[sync] skipping unparseable line: {}", _e);
+            eprintln!("[sync] skipping unparseable line: {} | line: {}", _e, trimmed);
             return;
         }
     };
 
+    // Unit struct variants (SetupNeeded) serialize to `()` when emitted via
+    // Tauri's `emit(...)` — the frontend gets the event name and an empty
+    // payload, which is exactly what we want for a "caller has no person
+    // entity" signal.
     let result = match &event {
+        SyncEvent::SetupNeeded => app.emit(EVENT_SYNC_SETUP_NEEDED, ()),
+        SyncEvent::AuthError(payload) => app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone()),
+        SyncEvent::FanoutPlan(payload) => app.emit(EVENT_SYNC_FANOUT_PLAN, payload.clone()),
         SyncEvent::Progress(payload) => app.emit(EVENT_SYNC_PROGRESS, payload.clone()),
-        SyncEvent::Conflict(payload) => app.emit(EVENT_SYNC_CONFLICT, payload.clone()),
         SyncEvent::Error(payload) => app.emit(EVENT_SYNC_ERROR, payload.clone()),
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),
+        SyncEvent::AllComplete(payload) => app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone()),
     };
 
     if let Err(_e) = result {
@@ -124,11 +164,11 @@ fn handle_sync_line(app: &AppHandle, line: &str) {
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Spawn `hq sync --json` as a child process.
+/// Spawn `hq-sync-runner --companies` as a child process.
 ///
 /// - Only one sync can run at a time (singleton handle).
-/// - Emits `sync:progress`, `sync:conflict`, `sync:error`, `sync:complete`
-///   events to the Svelte renderer as ndjson lines arrive.
+/// - Emits typed sync events (see `events.rs`) to the Svelte renderer as
+///   ndjson lines arrive.
 /// - Hard timeout of 10 minutes; the sync is cancelled if it exceeds this.
 ///
 /// Returns the handle string on success (always `"hq-sync"`).
@@ -171,13 +211,18 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
                 eprintln!("[sync stderr] {}", _line);
             }
             ProcessEvent::Exit { code, success } => {
+                // The runner exits 0 for recoverable conditions (setup-needed,
+                // auth-error) — those surface as ndjson events before exit, so
+                // the frontend already knows. A non-zero exit means the runner
+                // bailed before emitting a useful protocol stream.
                 if !success {
                     let _ = app_bg.emit(
                         EVENT_SYNC_ERROR,
                         crate::events::SyncErrorEvent {
-                            code: "EXIT_NONZERO".to_string(),
+                            company: None,
+                            path: "(runner)".to_string(),
                             message: format!(
-                                "hq sync exited with code {}",
+                                "hq-sync-runner exited with code {}",
                                 code.map(|c| c.to_string())
                                     .unwrap_or_else(|| "unknown".to_string())
                             ),
@@ -191,7 +236,8 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
             let _ = app_bg.emit(
                 EVENT_SYNC_ERROR,
                 crate::events::SyncErrorEvent {
-                    code: "SPAWN_FAILED".to_string(),
+                    company: None,
+                    path: "(spawn)".to_string(),
                     message: e,
                 },
             );
@@ -221,17 +267,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_sync_spawn_args_cmd_and_args() {
+    fn test_build_sync_spawn_args_cmd() {
         let args = build_sync_spawn_args("/Users/test/HQ");
-        assert_eq!(args.cmd, "hq");
+        assert_eq!(args.cmd, "hq-sync-runner");
+    }
+
+    #[test]
+    fn test_build_sync_spawn_args_flags() {
+        let args = build_sync_spawn_args("/Users/test/HQ");
         assert_eq!(
             args.args,
-            vec!["sync", "--json", "--hq-path", "/Users/test/HQ"]
+            vec![
+                "--companies",
+                "--on-conflict",
+                "abort",
+                "--hq-root",
+                "/Users/test/HQ",
+            ]
         );
     }
 
     #[test]
-    fn test_build_sync_spawn_args_env() {
+    fn test_build_sync_spawn_args_env_sets_hq_root() {
         let args = build_sync_spawn_args("/Users/test/HQ");
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
@@ -246,39 +303,58 @@ mod tests {
 
     #[test]
     fn test_parse_progress_ndjson() {
-        let line = r#"{"type":"progress","phase":"uploading","filesComplete":3,"filesTotal":10}"#;
+        let line = r#"{"type":"progress","company":"indigo","path":"docs/a.md","bytes":42}"#;
         let event: SyncEvent = serde_json::from_str(line).unwrap();
         match event {
             SyncEvent::Progress(p) => {
-                assert_eq!(p.phase, "uploading");
-                assert_eq!(p.files_complete, 3);
-                assert_eq!(p.files_total, 10);
+                assert_eq!(p.company, "indigo");
+                assert_eq!(p.path, "docs/a.md");
+                assert_eq!(p.bytes, 42);
+                assert_eq!(p.message, None);
             }
             _ => panic!("Expected Progress event"),
         }
     }
 
     #[test]
-    fn test_parse_conflict_ndjson() {
-        let line = r#"{"type":"conflict","path":"file.txt","localHash":"aaa","remoteHash":"bbb","canAutoResolve":true}"#;
+    fn test_parse_setup_needed_ndjson() {
+        let line = r#"{"type":"setup-needed"}"#;
+        let event: SyncEvent = serde_json::from_str(line).unwrap();
+        assert_eq!(event, SyncEvent::SetupNeeded);
+    }
+
+    #[test]
+    fn test_parse_auth_error_ndjson() {
+        let line = r#"{"type":"auth-error","message":"Token expired"}"#;
         let event: SyncEvent = serde_json::from_str(line).unwrap();
         match event {
-            SyncEvent::Conflict(c) => {
-                assert_eq!(c.path, "file.txt");
-                assert!(c.can_auto_resolve);
+            SyncEvent::AuthError(e) => assert_eq!(e.message, "Token expired"),
+            _ => panic!("Expected AuthError event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_fanout_plan_ndjson() {
+        let line = r#"{"type":"fanout-plan","companies":[{"uid":"cmp_1","slug":"indigo"}]}"#;
+        let event: SyncEvent = serde_json::from_str(line).unwrap();
+        match event {
+            SyncEvent::FanoutPlan(p) => {
+                assert_eq!(p.companies.len(), 1);
+                assert_eq!(p.companies[0].slug, "indigo");
             }
-            _ => panic!("Expected Conflict event"),
+            _ => panic!("Expected FanoutPlan event"),
         }
     }
 
     #[test]
     fn test_parse_error_ndjson() {
-        let line = r#"{"type":"error","code":"NET_FAIL","message":"Connection reset"}"#;
+        let line = r#"{"type":"error","company":"indigo","path":"docs/x.md","message":"Access denied"}"#;
         let event: SyncEvent = serde_json::from_str(line).unwrap();
         match event {
             SyncEvent::Error(e) => {
-                assert_eq!(e.code, "NET_FAIL");
-                assert_eq!(e.message, "Connection reset");
+                assert_eq!(e.company, Some("indigo".to_string()));
+                assert_eq!(e.path, "docs/x.md");
+                assert_eq!(e.message, "Access denied");
             }
             _ => panic!("Expected Error event"),
         }
@@ -286,15 +362,29 @@ mod tests {
 
     #[test]
     fn test_parse_complete_ndjson() {
-        let line = r#"{"type":"complete","filesChanged":7,"bytesTransferred":204800,"journalPath":"/tmp/j.log"}"#;
+        let line = r#"{"type":"complete","company":"indigo","filesDownloaded":7,"bytesDownloaded":204800,"filesSkipped":1,"conflicts":0,"aborted":false}"#;
         let event: SyncEvent = serde_json::from_str(line).unwrap();
         match event {
             SyncEvent::Complete(c) => {
-                assert_eq!(c.files_changed, 7);
-                assert_eq!(c.bytes_transferred, 204800);
-                assert_eq!(c.journal_path, "/tmp/j.log");
+                assert_eq!(c.company, "indigo");
+                assert_eq!(c.files_downloaded, 7);
+                assert_eq!(c.bytes_downloaded, 204800);
+                assert!(!c.aborted);
             }
             _ => panic!("Expected Complete event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_all_complete_ndjson() {
+        let line = r#"{"type":"all-complete","companiesAttempted":2,"filesDownloaded":10,"bytesDownloaded":999,"errors":[]}"#;
+        let event: SyncEvent = serde_json::from_str(line).unwrap();
+        match event {
+            SyncEvent::AllComplete(a) => {
+                assert_eq!(a.companies_attempted, 2);
+                assert!(a.errors.is_empty());
+            }
+            _ => panic!("Expected AllComplete event"),
         }
     }
 
@@ -322,5 +412,10 @@ mod tests {
     #[test]
     fn test_sync_handle_constant() {
         assert_eq!(SYNC_HANDLE, "hq-sync");
+    }
+
+    #[test]
+    fn test_runner_bin_constant() {
+        assert_eq!(RUNNER_BIN, "hq-sync-runner");
     }
 }
