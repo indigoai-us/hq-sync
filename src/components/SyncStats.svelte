@@ -98,12 +98,20 @@
 
 <style>
   .sync-stats {
+    /* Fill the popover-body content width. Removed max-width:280px —
+       it left the card left-aligned in a 286px space with 6px of dead
+       space on the right, making "never" / "0 files" look pushed off
+       the edge relative to the centered sync button beneath it.
+       box-sizing:border-box so the 1px border + padding are counted
+       inside width:100% (prevents a 2px horizontal overflow). */
     width: 100%;
-    max-width: 280px;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    margin-top: 0.75rem;
+    /* margin-top removed — parent popover-body already has
+       gap:0.75rem between children, stacking margin-top on top of
+       that creates doubled space above the card. */
     padding: 0.6rem 0.75rem;
     border-radius: 8px;
     background: rgba(99, 102, 241, 0.06);
