@@ -29,10 +29,16 @@
   } | null>(null);
   let syncFanoutTotal = $state(0); // How many companies we're syncing
   let syncFanoutDoneCount = $state(0); // How many have hit sync:complete
+  // filesSkipped is not on sync:all-complete (backend only aggregates
+  // filesDownloaded), so we sum it client-side from per-company complete
+  // events. Lets the popover surface "Up to date" when everything was
+  // current instead of misreading as "Last sync · 0 files".
+  let syncFanoutFilesSkipped = $state(0);
   let syncLastSummary = $state<{
     companiesAttempted: number;
     filesDownloaded: number;
     bytesDownloaded: number;
+    filesSkipped: number;
   } | null>(null);
   let syncErrorMessage = $state(''); // Last auth-error or error message
   let showConflictModal = $state(false);
@@ -57,6 +63,7 @@
     syncProgress = null;
     syncFanoutTotal = 0;
     syncFanoutDoneCount = 0;
+    syncFanoutFilesSkipped = 0;
     syncLastSummary = null;
     syncErrorMessage = '';
     await invoke('set_tray_state', { state: 'syncing' });
@@ -182,6 +189,7 @@
         // Per-company event — just tick the counter. Don't go idle yet;
         // wait for sync:all-complete to know the whole fanout is done.
         syncFanoutDoneCount += 1;
+        syncFanoutFilesSkipped += event.payload.filesSkipped;
         if (event.payload.aborted) {
           // Conflict-aborted: show the conflict state so the user knows
           // something needs attention. ConflictModal wiring is follow-up
@@ -204,6 +212,7 @@
           companiesAttempted: event.payload.companiesAttempted,
           filesDownloaded: event.payload.filesDownloaded,
           bytesDownloaded: event.payload.bytesDownloaded,
+          filesSkipped: syncFanoutFilesSkipped,
         };
         syncProgress = null;
         // Only flip to idle if nothing raised conflict/error mid-stream
