@@ -1,0 +1,40 @@
+/* Popover shared styles — CSS custom properties for light/dark mode */
+
+:root {
+  /* Colors — dark mode defaults */
+  --popover-bg: #1a1a2e;
+  --popover-surface: #232340;
+  --popover-border: rgba(99, 102, 241, 0.12);
+  --popover-text: #e0e0e0;
+  --popover-text-muted: #a0a0b0;
+  --popover-text-heading: #ffffff;
+  --popover-primary: #6366f1;
+  --popover-primary-hover: #4f46e5;
+  --popover-primary-active: #4338ca;
+  --popover-danger: #ef4444;
+  --popover-warning: #f59e0b;
+  --popover-divider: rgba(255, 255, 255, 0.06);
+  --popover-action-hover: rgba(255, 255, 255, 0.05);
+  --popover-progress-track: rgba(99, 102, 241, 0.15);
+  --popover-progress-fill: #6366f1;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --popover-bg: #f8f9fa;
+    --popover-surface: #ffffff;
+    --popover-border: rgba(99, 102, 241, 0.15);
+    --popover-text: #374151;
+    --popover-text-muted: #6b7280;
+    --popover-text-heading: #1a1a2e;
+    --popover-primary: #6366f1;
+    --popover-primary-hover: #4f46e5;
+    --popover-primary-active: #4338ca;
+    --popover-danger: #dc2626;
+    --popover-warning: #d97706;
+    --popover-divider: rgba(0, 0, 0, 0.06);
+    --popover-action-hover: rgba(0, 0, 0, 0.04);
+    --popover-progress-track: rgba(99, 102, 241, 0.1);
+    --popover-progress-fill: #6366f1;
+  }
+}

@@ -5,22 +5,36 @@
   "identifier": "ai.indigo.hq-sync-menubar",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1421",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "HQ Sync",
         "width": 320,
         "height": 400,
         "resizable": false,
-        "visible": false
+        "visible": false,
+        "decorations": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": true,
+        "transparent": true,
+        "shadow": true
       }
     ],
     "security": {
       "csp": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "UPDATER_PUBKEY_PLACEHOLDER",
+      "endpoints": [
+        "https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json"
+      ]
     }
   },
   "bundle": {
