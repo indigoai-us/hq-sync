@@ -131,7 +131,7 @@ pub fn resolve_conflict(path: String, strategy: String) -> Result<(), String> {
     #[cfg(debug_assertions)]
     eprintln!("[conflicts] resolving {} with strategy {}", path, strategy);
 
-    let mut child = Command::new("hq")
+    let mut child = Command::new(paths::resolve_bin("hq"))
         .args(&args)
         .env("HQ_ROOT", &hq_folder)
         .stdout(std::process::Stdio::piped())

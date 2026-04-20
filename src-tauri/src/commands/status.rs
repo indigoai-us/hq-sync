@@ -93,7 +93,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// subcommand.
 #[allow(dead_code)]
 fn try_cli_status(hq_folder_path: &str) -> Result<SyncStatus, String> {
-    let mut child = Command::new("hq")
+    let mut child = Command::new(paths::resolve_bin("hq"))
         .args(["sync", "status", "--json", "--hq-path", hq_folder_path])
         .env("HQ_ROOT", hq_folder_path)
         .stdout(std::process::Stdio::piped())

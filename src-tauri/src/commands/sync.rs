@@ -132,7 +132,11 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
 
     SpawnArgs {
-        cmd: RUNNER_BIN.to_string(),
+        // Resolve via known install prefixes + login-shell PATH fallback.
+        // See `paths::resolve_bin` — GUI-launched Tauri apps get a minimal
+        // launchd PATH and would otherwise fail with os error 2 on any
+        // binary installed via homebrew or user-level npm.
+        cmd: paths::resolve_bin(RUNNER_BIN),
         args: vec![
             "--companies".to_string(),
             "--on-conflict".to_string(),
@@ -340,7 +344,17 @@ mod tests {
     #[test]
     fn test_build_sync_spawn_args_cmd() {
         let args = build_sync_spawn_args("/Users/test/HQ");
-        assert_eq!(args.cmd, "hq-sync-runner");
+        // `resolve_bin` may return an absolute path (e.g.
+        // `/opt/homebrew/bin/hq-sync-runner`) on a dev box with the CLI
+        // installed, or the bare name on a CI box without it. Either way,
+        // the trailing file component must be `hq-sync-runner`.
+        assert!(
+            args.cmd == RUNNER_BIN || args.cmd.ends_with(&format!("/{}", RUNNER_BIN)),
+            "expected cmd to be `{}` or `*/{}`, got `{}`",
+            RUNNER_BIN,
+            RUNNER_BIN,
+            args.cmd
+        );
     }
 
     #[test]
