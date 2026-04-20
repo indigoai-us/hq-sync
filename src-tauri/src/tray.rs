@@ -4,6 +4,7 @@
 //! Left-click toggles the popover window; right-click shows a context menu
 //! with "Sync Now", "Settings", and "Quit".
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tauri::{
@@ -58,6 +59,49 @@ static CURRENT_STATE: OnceLock<Arc<Mutex<TrayState>>> = OnceLock::new();
 
 fn current_state() -> &'static Arc<Mutex<TrayState>> {
     CURRENT_STATE.get_or_init(|| Arc::new(Mutex::new(TrayState::Idle)))
+}
+
+/// Refcount of active native-modal guards. When > 0, the hide-on-blur
+/// handler is suppressed — the modal stealing key-window status from
+/// the popover should not dismiss the popover, which would otherwise
+/// unparent and close the modal.
+///
+/// Refcount (not bool) because a new `pick_folder` may start while the
+/// previous one's `rfd` future hasn't resolved yet — `close_existing_file_panels`
+/// cancels the stuck panel mid-call, resolving the previous future
+/// (and dropping its guard). With a bool, that drop would clobber the
+/// new call's flag to false while its own panel is still opening.
+static MODAL_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether at least one native modal is currently open.
+pub fn is_modal_open() -> bool {
+    MODAL_DEPTH.load(Ordering::SeqCst) > 0
+}
+
+/// RAII guard — increments `MODAL_DEPTH` on construction and decrements
+/// on drop. Prefer this over flipping the counter manually so the
+/// decrement is always paired even if the caller panics or returns
+/// early.
+///
+/// Usage:
+/// ```ignore
+/// let _guard = tray::ModalGuard::new();
+/// let picked = rfd::AsyncFileDialog::new().pick_folder().await;
+/// // _guard drops here, MODAL_DEPTH decrements.
+/// ```
+pub struct ModalGuard;
+
+impl ModalGuard {
+    pub fn new() -> Self {
+        MODAL_DEPTH.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ModalGuard {
+    fn drop(&mut self) {
+        MODAL_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -165,11 +209,19 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // the renderer state (DOM, Svelte stores, listeners), so re-showing is
     // instant. Only wired on macOS where the menubar popover pattern
     // expects click-off-to-dismiss.
+    //
+    // Exception: when a native modal (folder picker, save dialog) is open,
+    // the modal steals key-window status from the popover, which fires a
+    // `Focused(false)` event. Hiding here would unparent the modal and
+    // dismiss it immediately. `ModalGuard` (see above) flips `MODAL_OPEN`
+    // while a picker is in flight; we check it and skip the hide.
     if let Some(window) = app.get_webview_window("main") {
         let win_clone = window.clone();
         window.on_window_event(move |event| {
             if let WindowEvent::Focused(false) = event {
-                let _ = win_clone.hide();
+                if !is_modal_open() {
+                    let _ = win_clone.hide();
+                }
             }
         });
     }
@@ -372,5 +424,52 @@ mod tests {
         match state {
             TrayState::Idle | TrayState::Syncing | TrayState::Error | TrayState::Conflict => {}
         }
+    }
+
+    #[test]
+    fn test_modal_guard_scoping() {
+        // ModalGuard is RAII — increment on construction, decrement on
+        // drop. This guard is the mechanism that keeps the popover
+        // visible while a native picker dialog is open (see
+        // folder_picker.rs); if Drop stops decrementing, the popover
+        // will never auto-hide on blur again. Treat regressions here
+        // as release blockers.
+        //
+        // No other test in this module touches MODAL_DEPTH, so parallel
+        // execution is safe as long as we assert via deltas rather than
+        // absolute values.
+        let start = MODAL_DEPTH.load(Ordering::SeqCst);
+
+        {
+            let _g = ModalGuard::new();
+            assert_eq!(
+                MODAL_DEPTH.load(Ordering::SeqCst),
+                start + 1,
+                "guard should increment MODAL_DEPTH"
+            );
+            assert!(is_modal_open(), "is_modal_open should be true with guard alive");
+
+            {
+                let _g2 = ModalGuard::new();
+                assert_eq!(
+                    MODAL_DEPTH.load(Ordering::SeqCst),
+                    start + 2,
+                    "nested guard should increment again"
+                );
+            }
+
+            assert_eq!(
+                MODAL_DEPTH.load(Ordering::SeqCst),
+                start + 1,
+                "dropping inner guard should decrement once"
+            );
+            assert!(is_modal_open(), "outer guard still alive — should still be open");
+        }
+
+        assert_eq!(
+            MODAL_DEPTH.load(Ordering::SeqCst),
+            start,
+            "dropping outer guard should decrement back to start"
+        );
     }
 }
