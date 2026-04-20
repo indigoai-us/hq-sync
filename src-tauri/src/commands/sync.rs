@@ -174,8 +174,13 @@ fn handle_sync_line(app: &AppHandle, line: &str) {
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
 pub fn start_sync(app: AppHandle) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    eprintln!("[sync] start_sync invoked");
+
     // Atomically check-and-register to prevent concurrent syncs (TOCTOU-safe)
     if !try_register_handle(SYNC_HANDLE) {
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] BAIL: already running");
         return Err("Sync is already running".to_string());
     }
 
@@ -183,11 +188,18 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
+            #[cfg(debug_assertions)]
+            eprintln!("[sync] BAIL: resolve_hq_folder_path failed: {}", e);
             deregister_process(SYNC_HANDLE);
             return Err(e);
         }
     };
     let spawn_args = build_sync_spawn_args(&hq_folder_path);
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "[sync] about to spawn: cmd={} args={:?} hq_root={}",
+        spawn_args.cmd, spawn_args.args, hq_folder_path
+    );
 
     // Timeout watchdog — cancels sync after SYNC_TIMEOUT
     thread::spawn(move || {
@@ -202,8 +214,12 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
     // Background thread: run the subprocess and stream events
     let app_bg = app.clone();
     thread::spawn(move || {
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] bg thread: entering run_process_impl");
         let result = run_process_impl(SYNC_HANDLE, &spawn_args, |event| match event {
             ProcessEvent::Stdout(line) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[sync stdout] {}", line);
                 handle_sync_line(&app_bg, &line);
             }
             ProcessEvent::Stderr(_line) => {
