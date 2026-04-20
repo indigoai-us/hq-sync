@@ -43,6 +43,8 @@ pub struct SyncFanoutPlanEvent {
 pub struct SyncCompanyRef {
     pub uid: String,
     pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub name: Option<String>,
 }
 
 /// `{type: "progress", company, path, bytes, message?}`
@@ -182,14 +184,50 @@ mod tests {
                     SyncCompanyRef {
                         uid: "cmp_1".to_string(),
                         slug: "indigo".to_string(),
+                        name: None,
                     },
                     SyncCompanyRef {
                         uid: "cmp_2".to_string(),
                         slug: "voyage".to_string(),
+                        name: None,
                     },
                 ],
             })
         );
+    }
+
+    #[test]
+    fn test_parse_fanout_plan_event_with_names() {
+        let json = r#"{"type":"fanout-plan","companies":[{"uid":"cmp_1","slug":"indigo","name":"Indigo"},{"uid":"cmp_2","slug":"voyage"}]}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            event,
+            SyncEvent::FanoutPlan(SyncFanoutPlanEvent {
+                companies: vec![
+                    SyncCompanyRef {
+                        uid: "cmp_1".to_string(),
+                        slug: "indigo".to_string(),
+                        name: Some("Indigo".to_string()),
+                    },
+                    SyncCompanyRef {
+                        uid: "cmp_2".to_string(),
+                        slug: "voyage".to_string(),
+                        name: None,
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn test_company_ref_skips_none_name() {
+        let c = SyncCompanyRef {
+            uid: "cmp_1".to_string(),
+            slug: "indigo".to_string(),
+            name: None,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("\"name\""));
     }
 
     #[test]

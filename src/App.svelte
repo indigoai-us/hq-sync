@@ -29,6 +29,11 @@
   } | null>(null);
   let syncFanoutTotal = $state(0); // How many companies we're syncing
   let syncFanoutDoneCount = $state(0); // How many have hit sync:complete
+  // Company list from the last fanout-plan event. `name` is optional —
+  // runners < v5.1.9 only emit `uid` + `slug`, so the UI falls back to the
+  // slug in that case. Rendered by Popover so the user sees *which* HQs
+  // they're connected to.
+  let syncCompanies = $state<Array<{ uid: string; slug: string; name?: string }>>([]);
   let syncLastSummary = $state<{
     companiesAttempted: number;
     filesDownloaded: number;
@@ -57,6 +62,7 @@
     syncProgress = null;
     syncFanoutTotal = 0;
     syncFanoutDoneCount = 0;
+    syncCompanies = [];
     syncLastSummary = null;
     syncErrorMessage = '';
     await invoke('set_tray_state', { state: 'syncing' });
@@ -144,12 +150,13 @@
     );
 
     unlisteners.push(
-      await listen<{ companies: Array<{ uid: string; slug: string }> }>(
+      await listen<{ companies: Array<{ uid: string; slug: string; name?: string }> }>(
         'sync:fanout-plan',
         async (event) => {
           syncState = 'syncing';
           syncFanoutTotal = event.payload.companies.length;
           syncFanoutDoneCount = 0;
+          syncCompanies = event.payload.companies;
           await invoke('set_tray_state', { state: 'syncing' });
         }
       )
@@ -279,6 +286,7 @@
       progress={syncProgress}
       fanoutTotal={syncFanoutTotal}
       fanoutDoneCount={syncFanoutDoneCount}
+      companies={syncCompanies}
       lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
       {conflicts}
