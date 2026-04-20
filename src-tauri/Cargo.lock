@@ -1670,6 +1670,7 @@ name = "hq-sync-menubar"
 version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "dirs",
  "nix",
  "objc2",

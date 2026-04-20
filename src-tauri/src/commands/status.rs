@@ -31,7 +31,7 @@ pub struct SyncStatus {
 }
 
 /// Journal file structure at {HQ_FOLDER}/.hq-sync-journal.json.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncJournal {
     pub last_sync_at: Option<String>,
@@ -186,6 +186,37 @@ pub fn default_status() -> SyncStatus {
         daemon_running: false,
         source: "none".to_string(),
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Journal writer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a `SyncJournal` representing "sync just completed".
+///
+/// V1 only populates `lastSyncAt`. Real `pendingFiles`/`conflicts` aggregation
+/// requires accumulating state across per-company `Complete` events and is
+/// tracked as a follow-up.
+pub fn journal_for_sync_complete(now_iso: &str) -> SyncJournal {
+    SyncJournal {
+        last_sync_at: Some(now_iso.to_string()),
+        pending_files: Some(0),
+        conflicts: Some(0),
+        daemon_running: Some(false),
+    }
+}
+
+/// Write the journal to `{hq_folder_path}/.hq-sync-journal.json`.
+///
+/// Overwrites any existing file. Returns `Err` if serialization fails or the
+/// path is not writable (e.g. HQ folder doesn't exist).
+pub fn write_journal(hq_folder_path: &str, journal: &SyncJournal) -> Result<(), String> {
+    let journal_path = PathBuf::from(hq_folder_path).join(".hq-sync-journal.json");
+    let contents = serde_json::to_string_pretty(journal)
+        .map_err(|e| format!("Failed to serialize journal: {}", e))?;
+    std::fs::write(&journal_path, contents)
+        .map_err(|e| format!("Failed to write journal file: {}", e))?;
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -426,5 +457,103 @@ mod tests {
     #[test]
     fn test_status_timeout_value() {
         assert_eq!(STATUS_TIMEOUT, Duration::from_secs(5));
+    }
+
+    // ── journal_for_sync_complete ────────────────────────────────────────
+
+    #[test]
+    fn test_journal_for_sync_complete_sets_last_sync_at() {
+        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z");
+        assert_eq!(
+            journal.last_sync_at,
+            Some("2026-04-20T12:25:22.400Z".to_string())
+        );
+        assert_eq!(journal.pending_files, Some(0));
+        assert_eq!(journal.conflicts, Some(0));
+        assert_eq!(journal.daemon_running, Some(false));
+    }
+
+    // ── write_journal ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_write_journal_creates_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z");
+        write_journal(hq_folder, &journal).unwrap();
+        let expected_path = tmp.path().join(".hq-sync-journal.json");
+        assert!(expected_path.exists(), "journal file should exist");
+    }
+
+    #[test]
+    fn test_write_journal_content_camel_case() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let journal = SyncJournal {
+            last_sync_at: Some("2026-04-20T12:25:22.400Z".to_string()),
+            pending_files: Some(3),
+            conflicts: Some(1),
+            daemon_running: Some(true),
+        };
+        write_journal(hq_folder, &journal).unwrap();
+        let contents =
+            std::fs::read_to_string(tmp.path().join(".hq-sync-journal.json")).unwrap();
+        assert!(contents.contains("\"lastSyncAt\""));
+        assert!(contents.contains("\"pendingFiles\""));
+        assert!(contents.contains("\"conflicts\""));
+        assert!(contents.contains("\"daemonRunning\""));
+        assert!(!contents.contains("\"last_sync_at\""));
+        assert!(!contents.contains("\"pending_files\""));
+        assert!(!contents.contains("\"daemon_running\""));
+    }
+
+    #[test]
+    fn test_write_journal_roundtrip_via_reader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let journal = SyncJournal {
+            last_sync_at: Some("2026-04-20T12:25:22.400Z".to_string()),
+            pending_files: Some(3),
+            conflicts: Some(1),
+            daemon_running: Some(true),
+        };
+        write_journal(hq_folder, &journal).unwrap();
+        let status = try_journal_status(hq_folder).unwrap();
+        assert_eq!(status.last_sync_at, journal.last_sync_at);
+        assert_eq!(status.pending_files, 3);
+        assert_eq!(status.conflicts, 1);
+        assert!(status.daemon_running);
+        assert_eq!(status.source, "journal");
+    }
+
+    #[test]
+    fn test_write_journal_overwrites_existing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let first = SyncJournal {
+            last_sync_at: Some("2026-01-01T00:00:00Z".to_string()),
+            pending_files: Some(5),
+            conflicts: Some(0),
+            daemon_running: Some(false),
+        };
+        write_journal(hq_folder, &first).unwrap();
+        let second = SyncJournal {
+            last_sync_at: Some("2026-04-20T12:25:22.400Z".to_string()),
+            pending_files: Some(0),
+            conflicts: Some(0),
+            daemon_running: Some(false),
+        };
+        write_journal(hq_folder, &second).unwrap();
+        let status = try_journal_status(hq_folder).unwrap();
+        assert_eq!(status.last_sync_at, second.last_sync_at);
+        assert_eq!(status.pending_files, 0);
+    }
+
+    #[test]
+    fn test_write_journal_errors_on_nonexistent_folder() {
+        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z");
+        let result = write_journal("/nonexistent/path/that/does/not/exist", &journal);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Failed to write"));
     }
 }

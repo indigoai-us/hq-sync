@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
 
+use chrono::SecondsFormat;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::config::{HqConfig, MenubarPrefs};
@@ -25,6 +26,7 @@ use crate::commands::process::{
     cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
     ProcessEvent, SpawnArgs,
 };
+use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPLETE,
     EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
@@ -123,7 +125,11 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
 
 /// Parse a single ndjson line and emit the corresponding Tauri event.
 /// Unknown/malformed lines are silently skipped (logged in debug builds).
-fn handle_sync_line(app: &AppHandle, line: &str) {
+///
+/// On `all-complete`, also persists a summary journal to
+/// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
+/// `lastSyncAt` instead of "never".
+fn handle_sync_line(app: &AppHandle, hq_folder: &str, line: &str) {
     // The runner can emit blank lines at process teardown. Skip those cheaply
     // rather than logging a parse error.
     let trimmed = line.trim();
@@ -151,7 +157,17 @@ fn handle_sync_line(app: &AppHandle, line: &str) {
         SyncEvent::Progress(payload) => app.emit(EVENT_SYNC_PROGRESS, payload.clone()),
         SyncEvent::Error(payload) => app.emit(EVENT_SYNC_ERROR, payload.clone()),
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),
-        SyncEvent::AllComplete(payload) => app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone()),
+        SyncEvent::AllComplete(payload) => {
+            // Persist summary journal before emitting — the frontend's
+            // SyncStats refresh reads this file on popover mount.
+            let now_iso = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let journal = journal_for_sync_complete(&now_iso);
+            if let Err(_e) = write_journal(hq_folder, &journal) {
+                #[cfg(debug_assertions)]
+                eprintln!("[sync] failed to write journal: {}", _e);
+            }
+            app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone())
+        }
     };
 
     if let Err(_e) = result {
@@ -213,6 +229,7 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
 
     // Background thread: run the subprocess and stream events
     let app_bg = app.clone();
+    let hq_folder_for_handler = hq_folder_path.clone();
     thread::spawn(move || {
         #[cfg(debug_assertions)]
         eprintln!("[sync] bg thread: entering run_process_impl");
@@ -220,7 +237,7 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
             ProcessEvent::Stdout(line) => {
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
-                handle_sync_line(&app_bg, &line);
+                handle_sync_line(&app_bg, &hq_folder_for_handler, &line);
             }
             ProcessEvent::Stderr(_line) => {
                 #[cfg(debug_assertions)]
