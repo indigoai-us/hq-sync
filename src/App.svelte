@@ -301,6 +301,12 @@
   :global(body) {
     margin: 0;
     padding: 0;
+    width: 100vw;
+    height: 100vh;
+    /* overflow:hidden prevents scrollbars from appearing on the root
+       document. The popover's own scroll container (.popover-body) is
+       the only legitimate scrollable region. */
+    overflow: hidden;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
       Oxygen, Ubuntu, Cantarell, sans-serif;
     /* Transparent so the Popover's rounded corners show the desktop
@@ -311,12 +317,13 @@
   }
 
   main {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
+    /* Fill the window exactly; popover sizes itself via 100vw/100vh.
+       No centering flex — that created a sub-viewport box that could
+       clip the popover if it ever exceeded window size. */
+    width: 100vw;
+    height: 100vh;
     padding: 0;
+    overflow: hidden;
   }
 
   .loading {

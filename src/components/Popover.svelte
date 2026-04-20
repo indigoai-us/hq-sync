@@ -230,18 +230,23 @@
   .popover {
     display: flex;
     flex-direction: column;
-    width: 320px;
-    max-height: 400px;
+    /* Fill the window exactly. box-sizing:border-box is critical — the
+       1px border must be accounted for inside the width, otherwise the
+       popover overflows the 320x400 window by 2px in both axes and
+       triggers both scrollbars + clips the footer. */
+    width: 100vw;
+    height: 100vh;
+    box-sizing: border-box;
     background: var(--popover-bg, #1a1a2e);
     color: var(--popover-text, #e0e0e0);
     overflow: hidden;
     /* Rounded corners — requires tauri window transparent:true +
        decorations:false + macOSPrivateApi:true for the OS to honor
-       transparency outside the radius. */
+       transparency outside the radius. Native window shadow comes from
+       tauri.conf.json `shadow: true`; CSS box-shadow here would be
+       clipped at the window edge and is pointless. */
     border-radius: 12px;
     border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35),
-                0 2px 6px rgba(0, 0, 0, 0.25);
   }
 
   /* Header */
@@ -301,6 +306,29 @@
     flex-direction: column;
     gap: 0.75rem;
     overflow-y: auto;
+    /* Firefox scrollbar styling */
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+    /* min-height:0 is required on flex children so overflow-y:auto
+       actually constrains height. Without it, the body expands to fit
+       content and the scrollbar never engages (content pushes past
+       window bounds instead). */
+    min-height: 0;
+  }
+
+  /* WebKit scrollbar — thin, subtle, only visible on hover/scroll */
+  .popover-body::-webkit-scrollbar {
+    width: 4px;
+  }
+  .popover-body::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .popover-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 2px;
+  }
+  .popover-body:hover::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.18);
   }
 
   .sync-button-area {
