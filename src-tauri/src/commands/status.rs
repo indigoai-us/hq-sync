@@ -194,14 +194,15 @@ pub fn default_status() -> SyncStatus {
 
 /// Build a `SyncJournal` representing "sync just completed".
 ///
-/// V1 only populates `lastSyncAt`. Real `pendingFiles`/`conflicts` aggregation
-/// requires accumulating state across per-company `Complete` events and is
-/// tracked as a follow-up.
-pub fn journal_for_sync_complete(now_iso: &str) -> SyncJournal {
+/// `conflicts` is the sum of per-company `Complete` event conflicts across
+/// the run (see `RunTotals` in `sync.rs`). `pendingFiles` mirrors `conflicts`
+/// — both represent files that need user attention before the next sync can
+/// complete.
+pub fn journal_for_sync_complete(now_iso: &str, conflicts: u32) -> SyncJournal {
     SyncJournal {
         last_sync_at: Some(now_iso.to_string()),
-        pending_files: Some(0),
-        conflicts: Some(0),
+        pending_files: Some(conflicts),
+        conflicts: Some(conflicts),
         daemon_running: Some(false),
     }
 }
@@ -463,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_journal_for_sync_complete_sets_last_sync_at() {
-        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z");
+        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z", 0);
         assert_eq!(
             journal.last_sync_at,
             Some("2026-04-20T12:25:22.400Z".to_string())
@@ -473,13 +474,20 @@ mod tests {
         assert_eq!(journal.daemon_running, Some(false));
     }
 
+    #[test]
+    fn test_journal_for_sync_complete_mirrors_conflicts_as_pending() {
+        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z", 5);
+        assert_eq!(journal.pending_files, Some(5));
+        assert_eq!(journal.conflicts, Some(5));
+    }
+
     // ── write_journal ────────────────────────────────────────────────────
 
     #[test]
     fn test_write_journal_creates_file() {
         let tmp = tempfile::tempdir().unwrap();
         let hq_folder = tmp.path().to_str().unwrap();
-        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z");
+        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z", 0);
         write_journal(hq_folder, &journal).unwrap();
         let expected_path = tmp.path().join(".hq-sync-journal.json");
         assert!(expected_path.exists(), "journal file should exist");
@@ -551,7 +559,7 @@ mod tests {
 
     #[test]
     fn test_write_journal_errors_on_nonexistent_folder() {
-        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z");
+        let journal = journal_for_sync_complete("2026-04-20T12:25:22.400Z", 0);
         let result = write_journal("/nonexistent/path/that/does/not/exist", &journal);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Failed to write"));

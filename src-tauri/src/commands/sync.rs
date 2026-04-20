@@ -15,6 +15,7 @@
 //! (tracked as a follow-up; out of scope for Phase 7).
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -32,6 +33,31 @@ use crate::events::{
     EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::paths;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-run aggregated counters
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Aggregated counters across a single sync run.
+///
+/// A fresh instance is created per `start_sync` invocation, so totals are
+/// scoped to the run — no reset needed between runs. Per-company `Complete`
+/// events contribute via `accumulate`; the `AllComplete` handler reads the
+/// final totals to build the journal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunTotals {
+    pub conflicts: u32,
+}
+
+impl RunTotals {
+    /// Update totals from a single event. Only `Complete` events contribute;
+    /// others are ignored. Saturates at `u32::MAX` to avoid panics.
+    pub fn accumulate(&mut self, event: &SyncEvent) {
+        if let SyncEvent::Complete(c) = event {
+            self.conflicts = self.conflicts.saturating_add(c.conflicts);
+        }
+    }
+}
 
 /// Singleton handle — only one sync at a time.
 const SYNC_HANDLE: &str = "hq-sync";
@@ -126,10 +152,11 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
 /// Parse a single ndjson line and emit the corresponding Tauri event.
 /// Unknown/malformed lines are silently skipped (logged in debug builds).
 ///
-/// On `all-complete`, also persists a summary journal to
+/// Per-company `Complete` events also accumulate into `totals`. On
+/// `all-complete`, the aggregated totals are persisted to
 /// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
-/// `lastSyncAt` instead of "never".
-fn handle_sync_line(app: &AppHandle, hq_folder: &str, line: &str) {
+/// `lastSyncAt` and conflict count instead of "never" / zero.
+fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>, line: &str) {
     // The runner can emit blank lines at process teardown. Skip those cheaply
     // rather than logging a parse error.
     let trimmed = line.trim();
@@ -146,6 +173,14 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, line: &str) {
         }
     };
 
+    // Accumulate per-run counters before emitting. Poisoned locks shouldn't
+    // happen in practice (no panics while the mutex is held), but we recover
+    // by using the inner value rather than crashing the sync thread.
+    {
+        let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+        t.accumulate(&event);
+    }
+
     // Unit struct variants (SetupNeeded) serialize to `()` when emitted via
     // Tauri's `emit(...)` — the frontend gets the event name and an empty
     // payload, which is exactly what we want for a "caller has no person
@@ -160,8 +195,9 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, line: &str) {
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
+            let conflicts = totals.lock().unwrap_or_else(|e| e.into_inner()).conflicts;
             let now_iso = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-            let journal = journal_for_sync_complete(&now_iso);
+            let journal = journal_for_sync_complete(&now_iso, conflicts);
             if let Err(_e) = write_journal(hq_folder, &journal) {
                 #[cfg(debug_assertions)]
                 eprintln!("[sync] failed to write journal: {}", _e);
@@ -230,6 +266,8 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
     // Background thread: run the subprocess and stream events
     let app_bg = app.clone();
     let hq_folder_for_handler = hq_folder_path.clone();
+    // Fresh totals per run — no reset needed between runs.
+    let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     thread::spawn(move || {
         #[cfg(debug_assertions)]
         eprintln!("[sync] bg thread: entering run_process_impl");
@@ -237,7 +275,7 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
             ProcessEvent::Stdout(line) => {
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
-                handle_sync_line(&app_bg, &hq_folder_for_handler, &line);
+                handle_sync_line(&app_bg, &hq_folder_for_handler, &totals, &line);
             }
             ProcessEvent::Stderr(_line) => {
                 #[cfg(debug_assertions)]
@@ -450,5 +488,82 @@ mod tests {
     #[test]
     fn test_runner_bin_constant() {
         assert_eq!(RUNNER_BIN, "hq-sync-runner");
+    }
+
+    // ── RunTotals ────────────────────────────────────────────────────────
+
+    use crate::events::{SyncAllCompleteEvent, SyncCompleteEvent, SyncProgressEvent};
+
+    fn complete(company: &str, conflicts: u32, aborted: bool) -> SyncEvent {
+        SyncEvent::Complete(SyncCompleteEvent {
+            company: company.to_string(),
+            files_downloaded: 0,
+            bytes_downloaded: 0,
+            files_skipped: 0,
+            conflicts,
+            aborted,
+        })
+    }
+
+    #[test]
+    fn test_run_totals_default_is_zero() {
+        let t = RunTotals::default();
+        assert_eq!(t.conflicts, 0);
+    }
+
+    #[test]
+    fn test_accumulate_ignores_setup_needed() {
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::SetupNeeded);
+        assert_eq!(t.conflicts, 0);
+    }
+
+    #[test]
+    fn test_accumulate_ignores_progress() {
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::Progress(SyncProgressEvent {
+            company: "x".to_string(),
+            path: "y".to_string(),
+            bytes: 0,
+            message: None,
+        }));
+        assert_eq!(t.conflicts, 0);
+    }
+
+    #[test]
+    fn test_accumulate_ignores_all_complete() {
+        let mut t = RunTotals { conflicts: 4 };
+        t.accumulate(&SyncEvent::AllComplete(SyncAllCompleteEvent {
+            companies_attempted: 1,
+            files_downloaded: 0,
+            bytes_downloaded: 0,
+            errors: vec![],
+        }));
+        // AllComplete is the signal to read, not accumulate — totals unchanged.
+        assert_eq!(t.conflicts, 4);
+    }
+
+    #[test]
+    fn test_accumulate_sums_conflicts_across_completes() {
+        let mut t = RunTotals::default();
+        t.accumulate(&complete("a", 3, false));
+        t.accumulate(&complete("b", 2, true)); // aborted companies still contribute
+        assert_eq!(t.conflicts, 5);
+    }
+
+    #[test]
+    fn test_accumulate_zero_conflicts_is_noop() {
+        let mut t = RunTotals { conflicts: 10 };
+        t.accumulate(&complete("a", 0, false));
+        assert_eq!(t.conflicts, 10);
+    }
+
+    #[test]
+    fn test_accumulate_saturates_on_overflow() {
+        let mut t = RunTotals {
+            conflicts: u32::MAX,
+        };
+        t.accumulate(&complete("a", 1, false));
+        assert_eq!(t.conflicts, u32::MAX);
     }
 }
