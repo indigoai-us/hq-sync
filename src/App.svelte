@@ -51,6 +51,15 @@
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
+  // Updater state — populated by the `update:available` event from the Rust
+  // background checker (launch+10s, then every 6h). Non-null means the user
+  // is on an older version and the banner should be shown.
+  let updateAvailable = $state<{ version: string; body?: string; date?: string } | null>(null);
+  // True while `invoke('install_update')` is in-flight — blocks duplicate
+  // clicks and lets the button show a spinner. On macOS the process usually
+  // terminates before the promise resolves, so this rarely flips back.
+  let updateInstalling = $state(false);
+
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
 
@@ -113,6 +122,35 @@
 
   function handleDismissConflicts() {
     showConflictModal = false;
+  }
+
+  async function handleInstallUpdate() {
+    if (updateInstalling) return;
+    updateInstalling = true;
+    try {
+      // Backend re-runs updater.check() inside install_update because
+      // tauri_plugin_updater::Update is not Clone — we can't stash the
+      // Update object across IPC. See src-tauri/src/updater.rs:41-60.
+      // On macOS the app process is typically replaced before this
+      // promise resolves; updateInstalling stays true by design.
+      await invoke('install_update');
+    } catch (err) {
+      console.error('install_update failed:', err);
+      updateInstalling = false;
+    }
+  }
+
+  async function handleCheckForUpdates() {
+    try {
+      const info = await invoke<{ version: string; body?: string; date?: string } | null>(
+        'check_for_updates'
+      );
+      // Backend also emits `update:available` on hit, so the listener
+      // picks it up — but set it here too in case the listener races.
+      if (info) updateAvailable = info;
+    } catch (err) {
+      console.error('check_for_updates failed:', err);
+    }
   }
 
   async function setupTrayListeners() {
@@ -243,6 +281,27 @@
         }
       )
     );
+
+    // --- Updater event listener ---
+    // Protocol (see src-tauri/src/updater.rs):
+    //   update:available — payload { version, body?, date? }
+    //     Emitted by setup_update_checker (launch+10s, every 6h) and
+    //     also by check_for_updates (on-demand). Render a banner.
+    unlisteners.push(
+      await listen<{ version: string; body?: string; date?: string }>(
+        'update:available',
+        (event) => {
+          updateAvailable = event.payload;
+        }
+      )
+    );
+
+    // Tray menu "Check for Updates" → on-demand check.
+    unlisteners.push(
+      await listen('tray:check-for-updates', () => {
+        handleCheckForUpdates();
+      })
+    );
   }
 
   $effect(() => {
@@ -300,12 +359,15 @@
       errorMessage={syncErrorMessage}
       {conflicts}
       {showConflictModal}
+      {updateAvailable}
+      {updateInstalling}
       onsync={handleSyncNow}
       onsettings={handleSettings}
       onsignout={handleSignOut}
       onresolve={handleResolveConflict}
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
+      oninstallupdate={handleInstallUpdate}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
     />
   {:else}

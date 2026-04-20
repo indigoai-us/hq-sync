@@ -30,12 +30,17 @@
     errorMessage?: string;
     conflicts?: ConflictFile[];
     showConflictModal?: boolean;
+    /** Non-null when the Tauri updater has found a newer release. */
+    updateAvailable?: { version: string; body?: string; date?: string } | null;
+    /** True while `install_update` is in flight — disables the button. */
+    updateInstalling?: boolean;
     onsync: () => void;
     onsettings: () => void;
     onsignout: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
+    oninstallupdate?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -53,12 +58,15 @@
     errorMessage = '',
     conflicts = [],
     showConflictModal = false,
+    updateAvailable = null,
+    updateInstalling = false,
     onsync,
     onsettings,
     onsignout,
     onresolve,
     onopen,
     ondismissconflicts,
+    oninstallupdate,
     bindStatsRefresh,
   }: Props = $props();
 
@@ -143,6 +151,28 @@
         ondismiss={ondismissconflicts}
       />
     {:else}
+      <!-- Update banner — rendered above sync banners since the user should
+           always see "there's a new version" regardless of sync state. The
+           button calls `install_update` via the parent; backend re-runs
+           updater.check() because the Update type isn't Clone. -->
+      {#if updateAvailable}
+        <div class="banner banner-info banner-update">
+          <div class="banner-update-text">
+            <p class="banner-title">Update available: v{updateAvailable.version}</p>
+            {#if updateAvailable.body}
+              <p class="banner-body">{updateAvailable.body}</p>
+            {/if}
+          </div>
+          <button
+            class="banner-update-button"
+            onclick={oninstallupdate}
+            disabled={updateInstalling || !oninstallupdate}
+          >
+            {updateInstalling ? 'Installing…' : 'Install'}
+          </button>
+        </div>
+      {/if}
+
       <!-- Runner state banners — setup / auth surfaces as actionable banners,
            not as silent error states. These short-circuit the usual stats view. -->
       {#if syncState === 'setup-needed'}
@@ -442,6 +472,42 @@
   .banner-body strong {
     color: var(--popover-text, #e0e0e0);
     font-weight: 600;
+  }
+
+  /* Update banner: horizontal layout — text on the left, Install on the right */
+  .banner-update {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.625rem;
+  }
+
+  .banner-update-text {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .banner-update-button {
+    font-size: 0.75rem;
+    font-family: inherit;
+    font-weight: 600;
+    padding: 0.3125rem 0.75rem;
+    background: var(--popover-primary, #6366f1);
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.1s ease, opacity 0.1s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .banner-update-button:hover:not(:disabled) {
+    background: #4f52cc;
+  }
+
+  .banner-update-button:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 
   /* Live progress — shown while actively syncing */
