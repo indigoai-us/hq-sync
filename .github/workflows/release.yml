@@ -114,6 +114,25 @@ jobs:
           chmod +x scripts/create-dmg.sh
           ./scripts/create-dmg.sh "$APP_PATH" "$DMG_PATH"
 
+      # tauri-action uploaded its own default DMG named "HQ.Sync_*.dmg" (dot
+      # in the product name). Our styled DMG uses "HQ-Sync_*.dmg" (dash).
+      # Ship only one — delete the tauri-action default before uploading
+      # the styled one. hq-installer picks "the first .dmg asset" and the
+      # release would otherwise end up with both.
+      - name: Remove tauri-action default DMG from release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          DEFAULT_DMG="HQ.Sync_${VERSION}_universal.dmg"
+          if gh release view "$TAG" --json assets -q '.assets[].name' | grep -Fxq "$DEFAULT_DMG"; then
+            echo "Deleting default DMG: $DEFAULT_DMG"
+            gh release delete-asset "$TAG" "$DEFAULT_DMG" --yes
+          else
+            echo "Default DMG not present — nothing to delete"
+          fi
+
       - name: Upload styled DMG to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
