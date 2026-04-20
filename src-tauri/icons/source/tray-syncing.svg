@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- Syncing: HQ + filled activity dot in top-right corner. -->
+  <text x="11" y="16" text-anchor="middle" fill="white"
+        font-family="Helvetica, Arial, sans-serif"
+        font-weight="700" font-size="13" letter-spacing="-0.5">HQ</text>
+  <circle cx="19" cy="4" r="2.5" fill="white" />
+</svg>

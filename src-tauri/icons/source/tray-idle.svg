@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- Template image: opaque=visible, transparent=invisible. macOS recolors
+       based on light/dark mode via `icon_as_template(true)`. All fills here
+       are "white" (value irrelevant under template; only alpha matters). -->
+  <text x="11" y="16" text-anchor="middle" fill="white"
+        font-family="Helvetica, Arial, sans-serif"
+        font-weight="700" font-size="13" letter-spacing="-0.5">HQ</text>
+</svg>

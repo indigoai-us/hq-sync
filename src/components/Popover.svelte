@@ -111,13 +111,13 @@
   <!-- Header -->
   <header class="popover-header">
     <div class="header-icon">
-      <!-- Indigo brand mark — a compass/star motif. Inlined from
-           companies/indigo/repos/hq-docs/public/favicon.svg so we don't
-           need a build asset pipeline. `fill="currentColor"` lets the
-           parent's color control tint (matches the purple primary). -->
-      <svg width="22" height="22" viewBox="0 0 128 128" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path fill-rule="evenodd" d="M81 36 64 0 47 36l-1 2-9-10a6 6 0 0 0-9 9l10 10h-2L0 64l36 17h2L28 91a6 6 0 1 0 9 9l9-10 1 2 17 36 17-36v-2l9 10a6 6 0 1 0 9-9l-9-9 2-1 36-17-36-17-2-1 9-9a6 6 0 1 0-9-9l-9 10v-2Zm-17 2-2 5c-4 8-11 15-19 19l-5 2 5 2c8 4 15 11 19 19l2 5 2-5c4-8 11-15 19-19l5-2-5-2c-8-4-15-11-19-19l-2-5Z" clip-rule="evenodd" />
-        <path d="M118 19a6 6 0 0 0-9-9l-3 3a6 6 0 1 0 9 9l3-3Zm-96 4c-2 2-6 2-9 0l-3-3a6 6 0 1 1 9-9l3 3c3 2 3 6 0 9Zm0 82c-2-2-6-2-9 0l-3 3a6 6 0 1 0 9 9l3-3c3-2 3-6 0-9Zm96 4a6 6 0 0 1-9 9l-3-3a6 6 0 1 1 9-9l3 3Z" />
+      <!-- HQ wordmark — purple rounded-square tile with "HQ" in white.
+           Matches companies/indigo/repos/hq-docs/src/assets/logo.svg. The
+           purple is literal (not currentColor) because this is the HQ
+           brand tile; consumers of the popover shouldn't restyle it. -->
+      <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect width="48" height="48" rx="8" fill="#6366f1" />
+        <text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="white" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-weight="700" font-size="20">HQ</text>
       </svg>
     </div>
     <div class="header-text">
