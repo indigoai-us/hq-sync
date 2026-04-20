@@ -25,6 +25,7 @@
       companiesAttempted: number;
       filesDownloaded: number;
       bytesDownloaded: number;
+      filesSkipped: number;
     } | null;
     errorMessage?: string;
     conflicts?: ConflictFile[];
@@ -202,13 +203,22 @@
           {/if}
         </div>
       {:else if lastSummary && syncState === 'idle'}
-        <p class="summary-line">
-          Last sync · {lastSummary.filesDownloaded} files ·
-          {formatBytes(lastSummary.bytesDownloaded)}
-          {#if lastSummary.companiesAttempted > 1}
-            across {lastSummary.companiesAttempted} companies
-          {/if}
-        </p>
+        {#if lastSummary.filesDownloaded > 0}
+          <p class="summary-line">
+            Last sync · {lastSummary.filesDownloaded} file{lastSummary.filesDownloaded !== 1 ? 's' : ''} ·
+            {formatBytes(lastSummary.bytesDownloaded)}
+            {#if lastSummary.companiesAttempted > 1}
+              across {lastSummary.companiesAttempted} companies
+            {/if}
+          </p>
+        {:else if lastSummary.filesSkipped > 0}
+          <p class="summary-line">
+            Up to date · {lastSummary.filesSkipped} file{lastSummary.filesSkipped !== 1 ? 's' : ''}
+            {#if lastSummary.companiesAttempted > 1}
+              across {lastSummary.companiesAttempted} companies
+            {/if}
+          </p>
+        {/if}
       {/if}
 
       <div class="sync-button-area">

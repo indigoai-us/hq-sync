@@ -157,8 +157,23 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    /* Fill the window exactly and paint our own backdrop. The root
+       html/body is transparent (so the Popover's rounded corners can
+       show the desktop); without this the sign-in view inherits that
+       transparency and the login screen looks like it's floating on
+       the desktop. Matches .popover in Popover.svelte. */
+    width: 100vw;
     height: 100vh;
+    box-sizing: border-box;
     padding: 1rem;
+    background: var(--popover-bg, #1a1a2e);
+    color: var(--popover-text, #e0e0e0);
+    overflow: hidden;
+    /* Rounded corners — requires tauri window transparent:true +
+       decorations:false + macOSPrivateApi:true for the OS to honor
+       transparency outside the radius. */
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   .sign-in-card {
