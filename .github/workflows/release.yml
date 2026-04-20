@@ -143,6 +143,27 @@ jobs:
             gh release upload "$TAG" "$DMG_PATH" --clobber
           fi
 
+      # Versionless DMG alias. Uploading a second copy of the styled DMG
+      # under a stable filename gives us a permanent one-click URL:
+      #   https://github.com/indigoai-us/hq-sync/releases/latest/download/HQ-Sync_universal.dmg
+      # GitHub auto-redirects /releases/latest/download/<name> to whatever
+      # is current. Consumers (hq-installer "Download manually" button, the
+      # hq-onboarding flow's future sibling alias) can hardcode this URL and
+      # never have to hit the API to discover the latest version.
+      - name: Upload versionless DMG alias
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DMG_PATH=$(find src-tauri/target -maxdepth 1 -name "HQ-Sync_*.dmg" | head -1)
+          if [ -z "$DMG_PATH" ]; then
+            echo "::warning::No styled DMG found — skipping versionless alias"
+            exit 0
+          fi
+          ALIAS_PATH="src-tauri/target/HQ-Sync_universal.dmg"
+          cp "$DMG_PATH" "$ALIAS_PATH"
+          gh release upload "$TAG" "$ALIAS_PATH" --clobber
+
       # Auto-updater manifest. tauri-action already produces the .tar.gz
       # + .tar.gz.sig; here we translate those into the latest.json shape
       # Tauri's updater plugin polls at the endpoint in tauri.conf.json.
