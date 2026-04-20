@@ -54,47 +54,22 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      - name: Import Apple Developer ID certificate
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
-
-          # Decode certificate
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERTIFICATE_PATH"
-
-          # Create temporary keychain
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          # Import certificate
-          security import "$CERTIFICATE_PATH" \
-            -P "$APPLE_CERTIFICATE_PASSWORD" \
-            -A \
-            -t cert \
-            -f pkcs12 \
-            -k "$KEYCHAIN_PATH"
-
-          # Allow codesign to access keychain without prompt
-          security set-key-partition-list -S apple-tool:,apple:,codesign: \
-            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-          # Add keychain to search list
-          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
-
-      - name: Write App Store Connect API key
-        env:
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_PATH }}
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/private_keys"
-          echo "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/private_keys/AuthKey_${APPLE_API_KEY}.p8"
-
-      - name: Build and sign universal binary
+      # Signing + notarization uses the same Apple Developer identity as the
+      # indigo-nx Electron app. Secret-name mapping:
+      #
+      #   indigo-nx (CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_ID_PASSWORD,
+      #              ASC_PROVIDER)
+      #   → hq-sync (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID,
+      #              APPLE_PASSWORD, APPLE_TEAM_ID)
+      #
+      # tauri-action reads these env vars natively:
+      #   - APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD — imports the .p12
+      #     into a temporary keychain automatically; no manual `security
+      #     import` step needed.
+      #   - APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID — notarytool submits
+      #     the signed bundle to Apple using an app-specific password
+      #     (same method electron-builder uses on indigo-nx).
+      - name: Build, sign, and notarize universal DMG
         uses: tauri-apps/tauri-action@v0
         id: tauri
         env:
@@ -102,9 +77,14 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: "Developer ID Application"
-          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_PATH: ${{ runner.temp }}/private_keys/AuthKey_${{ secrets.APPLE_API_KEY }}.p8
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Tauri updater bundle signing. The public half of this keypair
+          # lives in tauri.conf.json → plugins.updater.pubkey. Users get
+          # auto-updates only if the .tar.gz's detached signature verifies
+          # against that pubkey, so losing these secrets means shipping a
+          # new pubkey + forcing every user to manually reinstall.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -115,9 +95,11 @@ jobs:
           prerelease: false
           args: --target universal-apple-darwin
 
+      # Tauri-action produces a DMG by default; this step builds a styled
+      # one (custom background, window geometry) and uploads it, overriding
+      # the default.
       - name: Create styled DMG
         run: |
-          # Find the .app built by tauri-action
           APP_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle -name "*.app" -type d | head -1)
           if [ -z "$APP_PATH" ]; then
             echo "::error::Could not find .app bundle"
@@ -132,16 +114,19 @@ jobs:
           chmod +x scripts/create-dmg.sh
           ./scripts/create-dmg.sh "$APP_PATH" "$DMG_PATH"
 
-      - name: Upload DMG to release
+      - name: Upload styled DMG to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          DMG_PATH=$(find src-tauri/target -name "HQ-Sync_*.dmg" | head -1)
+          DMG_PATH=$(find src-tauri/target -maxdepth 1 -name "HQ-Sync_*.dmg" | head -1)
           if [ -n "$DMG_PATH" ]; then
             gh release upload "$TAG" "$DMG_PATH" --clobber
           fi
 
+      # Auto-updater manifest. tauri-action already produces the .tar.gz
+      # + .tar.gz.sig; here we translate those into the latest.json shape
+      # Tauri's updater plugin polls at the endpoint in tauri.conf.json.
       - name: Generate and upload latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,7 +135,6 @@ jobs:
           VERSION="${TAG#v}"
           DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # Find the .tar.gz updater bundle (produced by tauri-action)
           UPDATER_BUNDLE=$(find src-tauri/target/universal-apple-darwin/release/bundle -name "*.tar.gz" | head -1)
           if [ -z "$UPDATER_BUNDLE" ]; then
             echo "::warning::No updater bundle found — skipping latest.json"
@@ -164,8 +148,8 @@ jobs:
           SIGNATURE=$(cat "${UPDATER_BUNDLE}.sig")
 
           DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/$(basename "$UPDATER_BUNDLE")"
-
           NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+
           python3 -c "
           import json, sys
           data = {
@@ -174,20 +158,11 @@ jobs:
             'pub_date': sys.argv[3],
             'platforms': {
               'darwin-universal': {'signature': sys.argv[4], 'url': sys.argv[5]},
-              'darwin-aarch64': {'signature': sys.argv[4], 'url': sys.argv[5]},
-              'darwin-x86_64': {'signature': sys.argv[4], 'url': sys.argv[5]}
+              'darwin-aarch64':  {'signature': sys.argv[4], 'url': sys.argv[5]},
+              'darwin-x86_64':   {'signature': sys.argv[4], 'url': sys.argv[5]}
             }
           }
           json.dump(data, open('latest.json','w'), indent=2)
           " "$VERSION" "$NOTES_URL" "$DATE" "$SIGNATURE" "$DOWNLOAD_URL"
 
           gh release upload "$TAG" latest.json --clobber
-
-      - name: Cleanup keychain
-        if: always()
-        run: |
-          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
-          if [ -f "$KEYCHAIN_PATH" ]; then
-            security delete-keychain "$KEYCHAIN_PATH" || true
-          fi
-          rm -rf "$RUNNER_TEMP/private_keys" || true
