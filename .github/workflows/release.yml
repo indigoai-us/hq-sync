@@ -216,3 +216,25 @@ jobs:
           " "$VERSION" "$NOTES_URL" "$DATE" "$SIGNATURE" "$DOWNLOAD_URL"
 
           gh release upload "$TAG" latest.json --clobber
+
+      # tauri-action creates the release as a draft (releaseDraft: true
+      # above) so we can sanity-check assets before it's visible. Now that
+      # all required assets are uploaded (both DMGs, tar.gz, .sig,
+      # latest.json), publish it — otherwise /releases/latest keeps
+      # pointing at the previous version and the versionless aliases 404.
+      #
+      # Before this step existed, v0.1.2 had to be published by hand with
+      # `gh release edit v0.1.2 --draft=false` — don't repeat that.
+      - name: Publish draft release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
+          for REQUIRED in ".dmg" ".tar.gz" ".tar.gz.sig" "latest.json" "HQ-Sync_universal.dmg"; do
+            if ! echo "$ASSETS" | grep -q "$REQUIRED"; then
+              echo "::error::Missing required asset matching: $REQUIRED"
+              exit 1
+            fi
+          done
+          gh release edit "$TAG" --draft=false
