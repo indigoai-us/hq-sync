@@ -4,4 +4,10 @@ target/
 .DS_Store
 *.log
 .env
-.env.local
+.env.*
+.env*backup*
+*.p12
+*.pem
+*.key
+*.cer
+*.p8
