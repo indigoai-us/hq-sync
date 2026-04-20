@@ -1,28 +1,33 @@
 <script lang="ts">
+  // Phase 7 runner protocol — progress is per-file with no total known upfront,
+  // so the button no longer renders a progress bar. Per-file detail (company,
+  // path, bytes) is shown by Popover's live-progress block instead.
   interface Props {
-    syncState: 'idle' | 'syncing' | 'error' | 'conflict';
-    progress?: { filesComplete: number; filesTotal: number } | null;
+    syncState: 'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error';
+    progress?: { company: string; path: string; bytes: number } | null;
     onclick: () => void;
   }
 
-  let { syncState, progress = null, onclick }: Props = $props();
+  let { syncState, onclick }: Props = $props();
 
   let label = $derived(
     syncState === 'syncing'
       ? 'Syncing...'
       : syncState === 'error'
         ? 'Retry Sync'
-        : syncState === 'conflict'
-          ? 'Sync Now'
-          : 'Sync Now'
+        : syncState === 'auth-error'
+          ? 'Sign in again'
+          : syncState === 'setup-needed'
+            ? 'Finish setup'
+            : 'Sync Now'
   );
 
-  let disabled = $derived(syncState === 'syncing');
-
-  let progressPct = $derived(
-    progress && progress.filesTotal > 0
-      ? Math.round((progress.filesComplete / progress.filesTotal) * 100)
-      : 0
+  // Disable while syncing, or when the fix lives outside the app
+  // (setup-needed / auth-error are informational — no click action yet).
+  let disabled = $derived(
+    syncState === 'syncing' ||
+    syncState === 'setup-needed' ||
+    syncState === 'auth-error'
   );
 </script>
 
@@ -55,13 +60,6 @@
     {/if}
     {label}
   </button>
-
-  {#if syncState === 'syncing' && progress && progress.filesTotal > 0}
-    <div class="progress-bar">
-      <div class="progress-fill" style="width: {progressPct}%"></div>
-    </div>
-    <span class="progress-text">{progress.filesComplete} / {progress.filesTotal} files</span>
-  {/if}
 </div>
 
 <style>
@@ -133,24 +131,4 @@
     }
   }
 
-  .progress-bar {
-    width: 100%;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--popover-progress-track, rgba(99, 102, 241, 0.15));
-    overflow: hidden;
-  }
-
-  .progress-fill {
-    height: 100%;
-    border-radius: 2px;
-    background: var(--popover-progress-fill, #6366f1);
-    transition: width 0.3s ease;
-  }
-
-  .progress-text {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    text-align: center;
-  }
 </style>

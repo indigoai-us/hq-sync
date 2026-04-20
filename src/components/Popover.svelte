@@ -13,9 +13,17 @@
   }
 
   interface Props {
-    syncState: 'idle' | 'syncing' | 'error' | 'conflict';
+    syncState: 'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error';
     config: Config | null;
-    progress?: { filesComplete: number; filesTotal: number } | null;
+    progress?: { company: string; path: string; bytes: number } | null;
+    fanoutTotal?: number;
+    fanoutDoneCount?: number;
+    lastSummary?: {
+      companiesAttempted: number;
+      filesDownloaded: number;
+      bytesDownloaded: number;
+    } | null;
+    errorMessage?: string;
     conflicts?: ConflictFile[];
     showConflictModal?: boolean;
     onsync: () => void;
@@ -24,12 +32,20 @@
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
+    // Parent can call the returned fn to refresh SyncStats (bound to
+    // the child's exported refresh()). We pass a setter down rather
+    // than using bind:this because App.svelte holds the ref.
+    bindStatsRefresh?: (fn: () => void) => void;
   }
 
   let {
     syncState,
     config,
     progress = null,
+    fanoutTotal = 0,
+    fanoutDoneCount = 0,
+    lastSummary = null,
+    errorMessage = '',
     conflicts = [],
     showConflictModal = false,
     onsync,
@@ -38,7 +54,28 @@
     onresolve,
     onopen,
     ondismissconflicts,
+    bindStatsRefresh,
   }: Props = $props();
+
+  // Instance ref for SyncStats so parent can trigger refresh
+  let statsEl: SyncStats | undefined = $state();
+  $effect(() => {
+    if (statsEl && bindStatsRefresh) {
+      bindStatsRefresh(() => statsEl?.refresh());
+    }
+  });
+
+  // Human-readable formatters
+  function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+  function truncatePath(p: string, max = 36): string {
+    if (p.length <= max) return p;
+    return '…' + p.slice(-(max - 1));
+  }
 
   // Performance timing — log mount latency
   $effect(() => {
@@ -98,7 +135,56 @@
         ondismiss={ondismissconflicts}
       />
     {:else}
-      <SyncStats />
+      <!-- Runner state banners — setup / auth surfaces as actionable banners,
+           not as silent error states. These short-circuit the usual stats view. -->
+      {#if syncState === 'setup-needed'}
+        <div class="banner banner-warn">
+          <p class="banner-title">Finish setting up HQ</p>
+          <p class="banner-body">Visit <strong>onboarding.indigo-hq.com</strong> to complete your profile before syncing.</p>
+        </div>
+      {:else if syncState === 'auth-error'}
+        <div class="banner banner-error">
+          <p class="banner-title">Session expired</p>
+          <p class="banner-body">{errorMessage || 'Please sign in again to continue syncing.'}</p>
+        </div>
+      {:else if syncState === 'error' && errorMessage}
+        <div class="banner banner-error">
+          <p class="banner-title">Sync failed</p>
+          <p class="banner-body">{errorMessage}</p>
+        </div>
+      {/if}
+
+      <SyncStats bind:this={statsEl} />
+
+      <!-- Live progress detail — renders only while actively syncing. -->
+      {#if syncState === 'syncing'}
+        <div class="live-progress">
+          {#if fanoutTotal > 0}
+            <p class="live-line muted">
+              Syncing {fanoutDoneCount + 1} of {fanoutTotal}
+              {fanoutTotal === 1 ? 'company' : 'companies'}
+            </p>
+          {/if}
+          {#if progress}
+            <p class="live-line">
+              <span class="live-company">{progress.company}</span>
+              <span class="live-sep">·</span>
+              <span class="live-path" title={progress.path}>{truncatePath(progress.path)}</span>
+            </p>
+            <p class="live-line muted">
+              <span>↓ {formatBytes(progress.bytes)}</span>
+            </p>
+          {/if}
+        </div>
+      {:else if lastSummary && syncState === 'idle'}
+        <p class="summary-line">
+          Last sync · {lastSummary.filesDownloaded} files ·
+          {formatBytes(lastSummary.bytesDownloaded)}
+          {#if lastSummary.companiesAttempted > 1}
+            across {lastSummary.companiesAttempted} companies
+          {/if}
+        </p>
+      {/if}
 
       <div class="sync-button-area">
         <SyncButton {syncState} {progress} onclick={onsync} />
@@ -149,6 +235,13 @@
     background: var(--popover-bg, #1a1a2e);
     color: var(--popover-text, #e0e0e0);
     overflow: hidden;
+    /* Rounded corners — requires tauri window transparent:true +
+       decorations:false + macOSPrivateApi:true for the OS to honor
+       transparency outside the radius. */
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35),
+                0 2px 6px rgba(0, 0, 0, 0.25);
   }
 
   /* Header */
@@ -246,5 +339,100 @@
 
   .footer-quit:hover {
     color: var(--popover-danger, #ef4444);
+  }
+
+  /* Banners — actionable state callouts (setup / auth / error) */
+  .banner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1875rem;
+    padding: 0.625rem 0.75rem;
+    border-radius: 8px;
+    border: 1px solid transparent;
+  }
+
+  .banner-warn {
+    background: rgba(234, 179, 8, 0.08);
+    border-color: rgba(234, 179, 8, 0.25);
+  }
+
+  .banner-error {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.25);
+  }
+
+  .banner-title {
+    margin: 0;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--popover-text-heading, #ffffff);
+    line-height: 1.3;
+  }
+
+  .banner-body {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    line-height: 1.4;
+  }
+
+  .banner-body strong {
+    color: var(--popover-text, #e0e0e0);
+    font-weight: 600;
+  }
+
+  /* Live progress — shown while actively syncing */
+  .live-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.5rem 0.625rem;
+    border-radius: 6px;
+    background: rgba(99, 102, 241, 0.06);
+  }
+
+  .live-line {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.35;
+    color: var(--popover-text, #e0e0e0);
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    min-width: 0;
+  }
+
+  .live-line.muted {
+    color: var(--popover-text-muted, #a0a0b0);
+    font-size: 0.6875rem;
+  }
+
+  .live-company {
+    font-weight: 600;
+    color: var(--popover-primary, #6366f1);
+    flex-shrink: 0;
+  }
+
+  .live-sep {
+    color: var(--popover-text-muted, #a0a0b0);
+    flex-shrink: 0;
+  }
+
+  .live-path {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+  }
+
+  /* Summary line — "Last sync · X files · Y MB" */
+  .summary-line {
+    margin: 0;
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    line-height: 1.4;
   }
 </style>

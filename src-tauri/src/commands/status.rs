@@ -87,6 +87,11 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// Try to get sync status via `hq sync status --json`.
 /// Returns Ok(SyncStatus) on success, Err(reason) on failure.
 /// Times out after STATUS_TIMEOUT (5 seconds).
+///
+/// Not currently invoked (see `get_sync_status` doc comment). Retained
+/// so Phase 8+ can re-enable if the split-binary runner grows a status
+/// subcommand.
+#[allow(dead_code)]
 fn try_cli_status(hq_folder_path: &str) -> Result<SyncStatus, String> {
     let mut child = Command::new("hq")
         .args(["sync", "status", "--json", "--hq-path", hq_folder_path])
@@ -189,33 +194,26 @@ pub fn default_status() -> SyncStatus {
 
 /// Get the current sync status.
 ///
-/// Tries `hq sync status --json` first. On failure (command not found, non-zero
-/// exit, parse error), falls back to reading `{hq_folder}/.hq-sync-journal.json`.
-/// If both fail, returns a default SyncStatus with everything zeroed/null.
+/// Reads `{hq_folder}/.hq-sync-journal.json` — the canonical status source
+/// post-ADR-0001 (split-binary). The old `hq sync status --json` CLI path
+/// is retained in `try_cli_status` for potential Phase 8+ revival but is
+/// not invoked: the split removed that subcommand, so calling it only
+/// produced noisy "unknown option '--json'" errors every poll.
+///
+/// If the journal doesn't exist yet (pre-first-sync), returns a default
+/// SyncStatus with everything zeroed/null.
 #[tauri::command]
 pub async fn get_sync_status() -> Result<SyncStatus, String> {
     let hq_folder_path = resolve_hq_folder_path()?;
 
-    // Try CLI first
-    match try_cli_status(&hq_folder_path) {
-        Ok(status) => return Ok(status),
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!("[status] CLI failed, trying journal: {}", _e);
-        }
-    }
-
-    // Fallback to journal file
     match try_journal_status(&hq_folder_path) {
-        Ok(status) => return Ok(status),
+        Ok(status) => Ok(status),
         Err(_e) => {
             #[cfg(debug_assertions)]
-            eprintln!("[status] Journal failed, returning default: {}", _e);
+            eprintln!("[status] Journal not available, returning default: {}", _e);
+            Ok(default_status())
         }
     }
-
-    // Both failed — return default
-    Ok(default_status())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

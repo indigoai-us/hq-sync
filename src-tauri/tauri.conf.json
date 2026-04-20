@@ -10,6 +10,7 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "HQ Sync",
@@ -18,9 +19,10 @@
         "resizable": false,
         "visible": false,
         "decorations": false,
-        "alwaysOnTop": true,
+        "alwaysOnTop": false,
         "skipTaskbar": true,
-        "transparent": true
+        "transparent": true,
+        "shadow": true
       }
     ],
     "security": {

@@ -10,7 +10,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Listener, Manager,
+    AppHandle, Emitter, Listener, Manager, PhysicalPosition, Rect, WindowEvent,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -151,14 +151,28 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
+                    rect,
                     ..
                 } = event
                 {
-                    toggle_window(&app_handle);
+                    toggle_window(&app_handle, Some(rect));
                 }
             }
         })
         .build(app)?;
+
+    // Hide the popover when the user clicks away. `window.hide()` preserves
+    // the renderer state (DOM, Svelte stores, listeners), so re-showing is
+    // instant. Only wired on macOS where the menubar popover pattern
+    // expects click-off-to-dismiss.
+    if let Some(window) = app.get_webview_window("main") {
+        let win_clone = window.clone();
+        window.on_window_event(move |event| {
+            if let WindowEvent::Focused(false) = event {
+                let _ = win_clone.hide();
+            }
+        });
+    }
 
     // Listen for sync events to auto-update tray state
     setup_sync_listeners(app);
@@ -171,15 +185,56 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Toggle the main window visibility (popover behaviour).
-fn toggle_window(app: &AppHandle) {
+///
+/// When showing, position the popover directly under the tray icon
+/// (centered horizontally, small gap below) if we have its bounds.
+/// `window.hide()` preserves renderer state so re-show is instant.
+fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
             let _ = window.hide();
         } else {
+            if let Some(rect) = tray_rect {
+                position_below_tray(&window, rect);
+            }
             let _ = window.show();
             let _ = window.set_focus();
         }
     }
+}
+
+/// Center the window horizontally under the tray icon, just below it.
+///
+/// `Rect`'s `position` and `size` are enums (Physical | Logical); we
+/// normalize both to physical pixels using the window's scale factor
+/// so the math is unit-consistent with `window.outer_size()`, which is
+/// already physical.
+fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
+    let size = match window.outer_size() {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let scale = window.scale_factor().unwrap_or(1.0);
+
+    let (tray_x, tray_y) = match rect.position {
+        tauri::Position::Physical(p) => (p.x as f64, p.y as f64),
+        tauri::Position::Logical(p) => (p.x * scale, p.y * scale),
+    };
+    let (tray_w, tray_h) = match rect.size {
+        tauri::Size::Physical(s) => (s.width as f64, s.height as f64),
+        tauri::Size::Logical(s) => (s.width * scale, s.height * scale),
+    };
+    let win_w = size.width as f64;
+
+    // Small visual gap between the menu bar and the popover top edge.
+    // 4 physical px is ~2pt on a 2x retina display — enough to avoid
+    // the popover looking glued to the menu bar.
+    const GAP_PX: f64 = 4.0;
+
+    let pop_x = (tray_x + tray_w / 2.0 - win_w / 2.0).round() as i32;
+    let pop_y = (tray_y + tray_h + GAP_PX).round() as i32;
+
+    let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
