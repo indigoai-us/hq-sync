@@ -166,7 +166,17 @@ jobs:
           fi
           SIGNATURE=$(cat "${UPDATER_BUNDLE}.sig")
 
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/$(basename "$UPDATER_BUNDLE")"
+          # tauri-action renames the uploaded .tar.gz (e.g. local
+          # "HQ Sync.app.tar.gz" becomes "HQ.Sync_universal.app.tar.gz" on the
+          # release). basename of the local path produced a URL with a space
+          # that 404'd — v0.1.1's latest.json pointed at a nonexistent asset.
+          # Query the real asset name from the release after tauri-action.
+          UPLOADED_NAME=$(gh release view "$TAG" --json assets -q '.assets[] | select(.name | endswith(".tar.gz")) | .name' | head -1)
+          if [ -z "$UPLOADED_NAME" ]; then
+            echo "::error::Could not find uploaded .tar.gz asset on release $TAG"
+            exit 1
+          fi
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${UPLOADED_NAME}"
           NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
 
           python3 -c "
