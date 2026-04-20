@@ -15,6 +15,14 @@
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  // Updater UI state. `checking` blocks the button and shows a spinner;
+  // `result` is a transient status line ("Up to date" / "v0.1.8 ready").
+  // Backend is authoritative — if it emits `update:available`, App.svelte's
+  // listener shows the install banner regardless of what we render here.
+  let updateChecking = $state(false);
+  let updateResult = $state<string | null>(null);
+  let updateResultTimeout: ReturnType<typeof setTimeout> | null = null;
+
   let pathDisplay = $derived(
     hqPath ? hqPath.replace(/^\/Users\/[^/]+/, '~') : '~/hq'
   );
@@ -98,10 +106,33 @@
     await saveAll();
   }
 
+  async function handleCheckForUpdates() {
+    if (updateChecking) return;
+    updateChecking = true;
+    updateResult = null;
+    if (updateResultTimeout) clearTimeout(updateResultTimeout);
+    try {
+      const info = await invoke<{ version: string; body?: string; date?: string } | null>(
+        'check_for_updates'
+      );
+      updateResult = info ? `v${info.version} ready` : 'Up to date';
+    } catch (err) {
+      console.error('check_for_updates failed:', err);
+      updateResult = 'Check failed';
+    } finally {
+      updateChecking = false;
+      // Clear the result after a few seconds so it doesn't linger forever
+      updateResultTimeout = setTimeout(() => {
+        updateResult = null;
+      }, 4000);
+    }
+  }
+
   $effect(() => {
     loadSettings();
     return () => {
       if (savedTimeout) clearTimeout(savedTimeout);
+      if (updateResultTimeout) clearTimeout(updateResultTimeout);
     };
   });
 </script>
@@ -195,6 +226,25 @@
           aria-label="Start at Login"
         >
           <span class="toggle-knob"></span>
+        </button>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Check for Updates — manual trigger; background checker runs every 6h -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Check for Updates</span>
+          <span class="setting-desc">
+            {updateResult ?? 'Background checks run every 6 hours'}
+          </span>
+        </div>
+        <button
+          class="change-button"
+          onclick={handleCheckForUpdates}
+          disabled={updateChecking}
+        >
+          {updateChecking ? 'Checking…' : 'Check Now'}
         </button>
       </div>
     </div>
