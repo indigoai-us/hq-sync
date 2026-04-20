@@ -130,6 +130,10 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
+    // The runner is a Node script with `#!/usr/bin/env node`. Without this
+    // PATH, `env` can't find node on Dock-launched apps and the child exits
+    // with code 127. See `paths::child_path`.
+    env.insert("PATH".to_string(), paths::child_path());
 
     SpawnArgs {
         // Resolve via known install prefixes + login-shell PATH fallback.
@@ -377,7 +381,16 @@ mod tests {
         let args = build_sync_spawn_args("/Users/test/HQ");
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
-        assert_eq!(env.len(), 1);
+        assert_eq!(env.len(), 2);
+    }
+
+    #[test]
+    fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
+        let args = build_sync_spawn_args("/tmp");
+        let env = args.env.unwrap();
+        let path = env.get("PATH").expect("PATH must be set so shebang can find node");
+        // Must include homebrew so `#!/usr/bin/env node` resolves on Dock launches.
+        assert!(path.contains("/opt/homebrew/bin"), "PATH missing /opt/homebrew/bin: {}", path);
     }
 
     #[test]

@@ -63,6 +63,64 @@ pub fn resolve_bin(name: &str) -> String {
     name.to_string()
 }
 
+/// Build a PATH value suitable for handing to a spawned child process.
+///
+/// **Why this exists:** even after we resolve a launcher binary to an absolute
+/// path via `resolve_bin`, the *child itself* still inherits the parent's
+/// PATH. Node-backed CLIs use `#!/usr/bin/env node` shebangs — `env` does a
+/// PATH lookup for `node`. Under the minimal launchd PATH a Dock-launched
+/// Tauri app inherits, that lookup fails and the child exits with 127
+/// ("command not found"). Same applies to anything the script itself spawns.
+///
+/// We prepend likely interpreter locations (nvm versions, npm-global,
+/// homebrew) to whatever PATH we have so shebangs resolve cleanly.
+///
+/// Order: nvm node dirs → `~/.npm-global/bin` → `/opt/homebrew/bin` →
+/// `/usr/local/bin` → system defaults → whatever the parent had.
+pub fn child_path() -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(home) = dirs::home_dir() {
+        // nvm: prepend every installed node version's bin dir. Order doesn't
+        // matter for correctness (any working `node` resolves `env node`).
+        let nvm_versions = home.join(".nvm").join("versions").join("node");
+        if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
+            for entry in entries.flatten() {
+                let bin = entry.path().join("bin");
+                if bin.exists() {
+                    parts.push(bin.to_string_lossy().to_string());
+                }
+            }
+        }
+        // User-level npm prefix (no-sudo installs).
+        let npm_global = home.join(".npm-global").join("bin");
+        if npm_global.exists() {
+            parts.push(npm_global.to_string_lossy().to_string());
+        }
+    }
+
+    for p in [
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        parts.push(p.to_string());
+    }
+
+    if let Ok(existing) = std::env::var("PATH") {
+        for p in existing.split(':') {
+            if !p.is_empty() && !parts.iter().any(|x| x == p) {
+                parts.push(p.to_string());
+            }
+        }
+    }
+
+    parts.join(":")
+}
+
 /// Returns the path to ~/.hq/config.json.
 pub fn config_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("config.json"))
@@ -162,6 +220,27 @@ mod tests {
         // A name that almost certainly doesn't exist anywhere
         let result = resolve_bin("hq-sync-nonexistent-xyz-123");
         assert_eq!(result, "hq-sync-nonexistent-xyz-123");
+    }
+
+    #[test]
+    fn test_child_path_includes_homebrew() {
+        let path = child_path();
+        assert!(path.contains("/opt/homebrew/bin"));
+        assert!(path.contains("/usr/local/bin"));
+        assert!(path.contains("/usr/bin"));
+    }
+
+    #[test]
+    fn test_child_path_preserves_existing() {
+        // Whatever PATH the test runner has, child_path should include its entries.
+        if let Ok(existing) = std::env::var("PATH") {
+            if let Some(first) = existing.split(':').next() {
+                if !first.is_empty() {
+                    let path = child_path();
+                    assert!(path.contains(first), "child_path dropped existing entry {}", first);
+                }
+            }
+        }
     }
 
     #[test]

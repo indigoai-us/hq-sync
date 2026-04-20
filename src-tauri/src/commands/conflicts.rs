@@ -134,6 +134,7 @@ pub fn resolve_conflict(path: String, strategy: String) -> Result<(), String> {
     let mut child = Command::new(paths::resolve_bin("hq"))
         .args(&args)
         .env("HQ_ROOT", &hq_folder)
+        .env("PATH", paths::child_path())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
