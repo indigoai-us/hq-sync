@@ -98,6 +98,10 @@
 
   function handleBackFromSettings() {
     showSettings = false;
+    // User may have changed the HQ folder path in Settings; the header in
+    // Popover renders from `config.hqFolderPath`, which was snapshotted at
+    // mount. Re-read menubar.json so the change is visible without a quit.
+    loadConfig();
   }
 
   function handleSignOut() {

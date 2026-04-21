@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { getVersion } from '@tauri-apps/api/app';
 
   interface Props {
     onback: () => void;
@@ -22,6 +23,11 @@
   let updateChecking = $state(false);
   let updateResult = $state<string | null>(null);
   let updateResultTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // App version pulled from tauri.conf.json at runtime via the Tauri API.
+  // Sourced from a single place (the Rust bundle metadata) so it stays in
+  // sync with the binary the user is actually running.
+  let appVersion = $state<string>('');
 
   let pathDisplay = $derived(
     hqPath ? hqPath.replace(/^\/Users\/[^/]+/, '~') : '~/hq'
@@ -130,6 +136,11 @@
 
   $effect(() => {
     loadSettings();
+    getVersion()
+      .then((v) => {
+        appVersion = v;
+      })
+      .catch((err) => console.error('Failed to read app version:', err));
     return () => {
       if (savedTimeout) clearTimeout(savedTimeout);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
@@ -246,6 +257,16 @@
         >
           {updateChecking ? 'Checking…' : 'Check Now'}
         </button>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Version — read-only; sourced from tauri.conf.json via getVersion() -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Version</span>
+        </div>
+        <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
       </div>
     </div>
   {/if}
@@ -407,6 +428,16 @@
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
     color: var(--popover-text, #e0e0e0);
     border-color: var(--popover-border, rgba(99, 102, 241, 0.12));
+  }
+
+  /* Version value — monospace, subdued, aligned to the right like a
+     value column. Not a button — purely informational. */
+  .version-value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 0.75rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   /* Toggle switch */
