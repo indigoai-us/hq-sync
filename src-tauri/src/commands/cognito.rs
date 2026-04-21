@@ -3,6 +3,38 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
+mod expires_at_flexible {
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(value: &i64, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_i64(*value)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<i64, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum FlexibleExpiresAt {
+            Number(i64),
+            Text(String),
+        }
+
+        match FlexibleExpiresAt::deserialize(deserializer)? {
+            FlexibleExpiresAt::Number(n) => Ok(n),
+            FlexibleExpiresAt::Text(s) => {
+                chrono::DateTime::parse_from_rfc3339(&s)
+                    .map(|dt| dt.timestamp_millis())
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
+
 static TOKEN_CACHE: std::sync::OnceLock<Mutex<Option<CachedTokens>>> = std::sync::OnceLock::new();
 
 fn cache() -> &'static Mutex<Option<CachedTokens>> {
@@ -20,7 +52,8 @@ pub struct CognitoTokens {
     pub access_token: String,
     pub id_token: Option<String>,
     pub refresh_token: String,
-    /// Unix epoch milliseconds
+    /// Unix epoch milliseconds. Accepts both i64 and ISO 8601 string on deserialization.
+    #[serde(with = "expires_at_flexible")]
     pub expires_at: i64,
 }
 
@@ -68,7 +101,24 @@ pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
     }
     let contents = serde_json::to_string_pretty(tokens)
         .map_err(|e| format!("Failed to serialize tokens: {}", e))?;
-    std::fs::write(&path, contents).map_err(|e| format!("Failed to write token file: {}", e))?;
+
+    let tmp_path = path.with_file_name(format!(
+        ".cognito-tokens.json.tmp.{}",
+        std::process::id()
+    ));
+    std::fs::write(&tmp_path, &contents)
+        .map_err(|e| format!("Failed to write temp token file: {}", e))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(&tmp_path, perms)
+            .map_err(|e| format!("Failed to set temp file permissions: {}", e))?;
+    }
+
+    std::fs::rename(&tmp_path, &path)
+        .map_err(|e| format!("Failed to rename temp token file: {}", e))?;
     Ok(())
 }
 
@@ -368,5 +418,70 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"authenticated\":false"));
         assert!(json.contains("\"expiresAt\":null"));
+    }
+
+    #[test]
+    fn test_deserialize_expires_at_as_number() {
+        let json = r#"{"accessToken":"a","refreshToken":"r","expiresAt":1705321845123}"#;
+        let tokens: CognitoTokens = serde_json::from_str(json).unwrap();
+        assert_eq!(tokens.expires_at, 1705321845123);
+    }
+
+    #[test]
+    fn test_deserialize_expires_at_as_iso_string() {
+        let json =
+            r#"{"accessToken":"a","refreshToken":"r","expiresAt":"2024-01-15T12:30:45.123Z"}"#;
+        let tokens: CognitoTokens = serde_json::from_str(json).unwrap();
+        assert_eq!(tokens.expires_at, 1705321845123);
+    }
+
+    #[test]
+    fn test_deserialize_expires_at_invalid_string_fails() {
+        let json = r#"{"accessToken":"a","refreshToken":"r","expiresAt":"not-a-date"}"#;
+        let result: Result<CognitoTokens, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_serialize_expires_at_always_number() {
+        let tokens = CognitoTokens {
+            access_token: "a".to_string(),
+            id_token: None,
+            refresh_token: "r".to_string(),
+            expires_at: 1705321845123,
+        };
+        let json = serde_json::to_string(&tokens).unwrap();
+        assert!(json.contains("\"expiresAt\":1705321845123"));
+    }
+
+    #[test]
+    fn test_atomic_write_no_leftover_tmp() {
+        let dir = tempfile::tempdir().unwrap();
+        let hq_dir = dir.path().join(".hq");
+        std::fs::create_dir_all(&hq_dir).unwrap();
+
+        let path = hq_dir.join("cognito-tokens.json");
+        let tokens = CognitoTokens {
+            access_token: "a".to_string(),
+            id_token: Some("i".to_string()),
+            refresh_token: "r".to_string(),
+            expires_at: 999,
+        };
+        let contents = serde_json::to_string_pretty(&tokens).unwrap();
+
+        let tmp_path = path.with_file_name(format!(
+            ".cognito-tokens.json.tmp.{}",
+            std::process::id()
+        ));
+        std::fs::write(&tmp_path, &contents).unwrap();
+        std::fs::rename(&tmp_path, &path).unwrap();
+
+        assert!(path.exists());
+        assert!(!tmp_path.exists());
+
+        let read_back: CognitoTokens =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(read_back.access_token, "a");
+        assert_eq!(read_back.expires_at, 999);
     }
 }
