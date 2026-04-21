@@ -134,6 +134,7 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
 // Menu IDs
 // ─────────────────────────────────────────────────────────────────────────────
 
+const MENU_VERSION: &str = "version";
 const MENU_SYNC_NOW: &str = "sync-now";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
@@ -152,12 +153,21 @@ const TRAY_ID: &str = "hq-sync-tray";
 ///
 /// Call this from `tauri::Builder::default().setup(...)`.
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    // Build context menu
+    // Build context menu. The version row is a disabled item — it renders
+    // like a macOS "About" label (dimmed, unclickable). Sourced from the
+    // bundled `Cargo.toml` / `tauri.conf.json` via `package_info()` so it
+    // tracks the binary the user is actually running.
+    let version = app.package_info().version.to_string();
+    let version_item = MenuItemBuilder::with_id(MENU_VERSION, format!("HQ Sync v{}", version))
+        .enabled(false)
+        .build(app)?;
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit").build(app)?;
 
     let menu = MenuBuilder::new(app)
+        .item(&version_item)
+        .separator()
         .item(&sync_now)
         .separator()
         .item(&settings)
