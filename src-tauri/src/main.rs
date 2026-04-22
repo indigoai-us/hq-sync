@@ -63,6 +63,13 @@ fn main() {
             tray::setup_tray(&app.handle())?;
             updater::setup_update_checker(&app.handle());
 
+            // Fire-and-forget: warm the npx cache for
+            // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
+            // first click of "Sync Now" doesn't eat the 3–10s first-time
+            // download. No-ops if the cache is already warm. See
+            // `commands::prewarm` for the rationale.
+            commands::prewarm::spawn_prewarm();
+
             // Feature-flagged daemon autostart (V2 prep — default OFF)
             if commands::daemon::is_autostart_enabled() {
                 std::thread::spawn(|| {
