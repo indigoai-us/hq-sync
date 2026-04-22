@@ -35,17 +35,19 @@
 //!
 //! ## What we spawn
 //!
-//! `npx -y --package=@indigoai-us/hq-cloud@<ver> hq-sync-runner --version`.
-//! The `--version` invocation is the lightest runner mode that still
-//! forces npx to materialise the package (bin entry must exist to
-//! execute). Output is dropped; we only care about the side effect of
-//! filling the cache.
+//! `npx -y --package=@indigoai-us/hq-cloud@<ver> -- node -e "process.exit(0)"`.
+//! npx must materialise `--package=<pkg>` before running the command,
+//! so the cache fills regardless of what we run afterwards. We use a
+//! trivial `node` no-op rather than a runner bin so the payload is
+//! immune to future `hq-sync-runner` argv changes and always exits 0.
+//! Output is dropped; we only care about the side effect of filling
+//! the cache.
 
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Instant;
 
-use crate::commands::sync::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
+use crate::commands::sync::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION};
 use crate::util::paths;
 
 /// Spawn a detached thread that warms the npx cache for
@@ -62,16 +64,23 @@ pub fn spawn_prewarm() {
         let package_spec = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         let path = paths::child_path();
 
+        // `node -e "process.exit(0)"` is the lightest payload that still
+        // forces npx to materialise `@indigoai-us/hq-cloud` into the on-disk
+        // cache. npx must install `--package=<pkg>` before executing the
+        // command, so the side-effect we want (populated cache) happens
+        // regardless of what the command does. Using `node` here — rather
+        // than a bin from hq-cloud — keeps us immune to future runner
+        // argv changes; exits 0 so the success log is always clean.
         let result = Command::new(&npx)
             .args([
                 "-y",
                 &package_spec,
-                RUNNER_BIN,
-                "--version",
+                "--",
+                "node",
+                "-e",
+                "process.exit(0)",
             ])
             .env("PATH", &path)
-            // Swallow output — we only care about the cache side effect.
-            // Any useful diagnostic is in the exit status we log below.
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
