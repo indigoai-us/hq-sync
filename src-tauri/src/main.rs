@@ -33,6 +33,7 @@ fn main() {
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
+            commands::auth::has_stored_token,
             commands::auth::refresh_tokens,
             commands::config::get_config,
             commands::status::get_sync_status,

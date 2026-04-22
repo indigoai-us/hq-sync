@@ -38,6 +38,15 @@ pub async fn get_auth_state() -> Result<AuthState, String> {
     }
 }
 
+/// Returns true when `~/.hq/cognito-tokens.json` exists and contains a
+/// non-empty `accessToken`. Used by the onboarding UI to skip the sign-in
+/// step when a token is already on disk, without round-tripping to Cognito
+/// for an expiry/refresh check.
+#[tauri::command]
+pub async fn has_stored_token() -> Result<bool, String> {
+    cognito::has_non_empty_stored_token().await
+}
+
 #[tauri::command]
 pub async fn refresh_tokens() -> Result<AuthState, String> {
     let tokens = cognito::get_tokens().await?;

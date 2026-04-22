@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tokio::sync::Mutex;
 
@@ -81,16 +81,70 @@ fn file_mtime(path: &PathBuf) -> Result<SystemTime, String> {
         .map_err(|e| format!("Failed to read file mtime: {}", e))
 }
 
-pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
-    let path = tokens_file_path()?;
+enum TokenReadError {
+    Io(std::io::Error),
+    Parse(serde_json::Error),
+}
+
+fn read_tokens_from_path(path: &Path) -> Result<Option<CognitoTokens>, TokenReadError> {
     if !path.exists() {
         return Ok(None);
     }
-    let contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read token file: {}", e))?;
+    let contents = std::fs::read_to_string(path).map_err(TokenReadError::Io)?;
     let tokens: CognitoTokens =
-        serde_json::from_str(&contents).map_err(|e| format!("Failed to parse token file: {}", e))?;
+        serde_json::from_str(&contents).map_err(TokenReadError::Parse)?;
     Ok(Some(tokens))
+}
+
+pub fn read_tokens_from_file() -> Result<Option<CognitoTokens>, String> {
+    let path = tokens_file_path()?;
+    read_tokens_from_path(&path).map_err(|e| match e {
+        TokenReadError::Io(e) => format!("Failed to read token file: {}", e),
+        TokenReadError::Parse(e) => format!("Failed to parse token file: {}", e),
+    })
+}
+
+/// Returns true when `path` exists and its `accessToken` is non-empty.
+/// Shared reader (see `read_tokens_from_path`), so this stays in sync with
+/// `read_tokens_from_file` / `get_tokens`. Malformed JSON is logged and
+/// reported as "not signed in" so a half-written file can't trap a user on
+/// the login step; I/O errors still bubble. Freshness is intentionally not
+/// validated here — the frontend overrides `get_auth_state` on presence.
+///
+/// Production uses `has_non_empty_stored_token` (async, cache-backed);
+/// this path-parameterized variant is kept so tests can exercise the
+/// malformed-file / empty-token edges without touching `~/.hq`.
+#[allow(dead_code)]
+pub fn has_non_empty_token_at(path: &Path) -> Result<bool, String> {
+    match read_tokens_from_path(path) {
+        Ok(Some(tokens)) => Ok(!tokens.access_token.is_empty()),
+        Ok(None) => Ok(false),
+        Err(TokenReadError::Parse(e)) => {
+            eprintln!(
+                "[cognito] has_non_empty_token_at: unreadable token file, treating as absent: {}",
+                e
+            );
+            Ok(false)
+        }
+        Err(TokenReadError::Io(e)) => Err(format!("Failed to read token file: {}", e)),
+    }
+}
+
+/// Async variant backed by the shared `TOKEN_CACHE`, so repeated UI calls
+/// don't re-read the file. Any upstream failure is logged and collapsed to
+/// `Ok(false)` for the skip-login signal only.
+pub async fn has_non_empty_stored_token() -> Result<bool, String> {
+    match get_tokens().await {
+        Ok(Some(tokens)) => Ok(!tokens.access_token.is_empty()),
+        Ok(None) => Ok(false),
+        Err(e) => {
+            eprintln!(
+                "[cognito] has_non_empty_stored_token: treating unreadable token as absent: {}",
+                e
+            );
+            Ok(false)
+        }
+    }
 }
 
 pub fn write_tokens_to_file(tokens: &CognitoTokens) -> Result<(), String> {
@@ -452,6 +506,61 @@ mod tests {
         };
         let json = serde_json::to_string(&tokens).unwrap();
         assert!(json.contains("\"expiresAt\":1705321845123"));
+    }
+
+    #[test]
+    fn test_has_non_empty_token_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        assert!(!has_non_empty_token_at(&path).unwrap());
+    }
+
+    #[test]
+    fn test_has_non_empty_token_with_real_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let tokens = CognitoTokens {
+            access_token: "abc123".to_string(),
+            id_token: Some("id".to_string()),
+            refresh_token: "r".to_string(),
+            expires_at: 1,
+        };
+        std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
+        assert!(has_non_empty_token_at(&path).unwrap());
+    }
+
+    #[test]
+    fn test_has_non_empty_token_empty_access_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let json = r#"{"accessToken":"","refreshToken":"r","expiresAt":1}"#;
+        std::fs::write(&path, json).unwrap();
+        assert!(!has_non_empty_token_at(&path).unwrap());
+    }
+
+    #[test]
+    fn test_has_non_empty_token_malformed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        std::fs::write(&path, "{not valid json").unwrap();
+        // Malformed content → treat as not-logged-in rather than bubbling an error.
+        assert!(!has_non_empty_token_at(&path).unwrap());
+    }
+
+    #[test]
+    fn test_has_non_empty_token_with_expired_token_still_true() {
+        // Freshness is not validated here — an expired but non-empty token
+        // still counts as "logged in" for the onboarding skip signal.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let tokens = CognitoTokens {
+            access_token: "still-here".to_string(),
+            id_token: None,
+            refresh_token: "r".to_string(),
+            expires_at: 1, // ancient
+        };
+        std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
+        assert!(has_non_empty_token_at(&path).unwrap());
     }
 
     #[test]

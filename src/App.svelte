@@ -5,6 +5,7 @@
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
+  import { shouldSkipSignIn } from './lib/auth';
   import './styles/popover.css';
 
   interface Config {
@@ -324,12 +325,22 @@
 
   async function checkAuth() {
     try {
-      const state = await invoke<{
-        authenticated: boolean;
-        expiresAt: string | null;
-      }>('get_auth_state');
+      // Skip the sign-in step when cognito-tokens.json already holds a
+      // non-empty token. See `shouldSkipSignIn` for the ordering: we
+      // prefer `get_auth_state`'s verdict (it tries a silent refresh) and
+      // only fall back to raw token presence when it reports
+      // unauthenticated — a stored token that's actually unusable will
+      // raise `sync:auth-error` on first sync and route back through
+      // sign-in from there.
+      const [hasToken, state] = await Promise.all([
+        invoke<boolean>('has_stored_token'),
+        invoke<{
+          authenticated: boolean;
+          expiresAt: string | null;
+        }>('get_auth_state'),
+      ]);
 
-      authenticated = state.authenticated;
+      authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
     } catch {
       authenticated = false;
