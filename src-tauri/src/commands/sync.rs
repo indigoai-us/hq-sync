@@ -9,10 +9,26 @@
 //! the default and only output mode. See:
 //!   packages/hq-cloud/src/bin/sync-runner.ts
 //!
-//! Binary resolution: `hq-sync-runner` must be on PATH. It's installed
-//! globally via `npm install -g @indigoai-us/hq-cloud` or through `hq-cli`'s
-//! transitive dep. For DMG distribution, this binary will need to be bundled
-//! (tracked as a follow-up; out of scope for Phase 7).
+//! ## Binary resolution: `npx` (not a global install)
+//!
+//! We spawn `npx -y --package=@indigoai-us/hq-cloud@<ver> hq-sync-runner ...`
+//! instead of requiring `hq-sync-runner` to be on PATH. This keeps the
+//! install story simple: the HQ Sync DMG needs Node.js on the machine
+//! (already enforced by the installer's deps step) and nothing else — the
+//! runner is downloaded into npx's on-disk cache (`~/.npm/_npx/`) on first
+//! use and reused forever after.
+//!
+//! **Why not a global `npm install -g`?** Tried it twice; both times a
+//! later UX-polish pass decided "hq-cloud isn't really a prereq" and
+//! removed it from the installer's DEPS list, re-breaking every fresh
+//! install. Putting the dependency at the spawn site (this file) means
+//! there's no separate list to forget. See PRs #9 / #15 in hq-installer.
+//!
+//! **Version pinning:** `HQ_CLOUD_VERSION` below is authoritative. Bumping
+//! it ships a new runner to users on their next sync (npx sees a new
+//! cache key, downloads once, caches for steady state). See
+//! `commands::prewarm` for the on-startup background fetch that keeps the
+//! user's first-click-Sync-Now latency near zero after a version bump.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -68,9 +84,24 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(600);
 /// SIGKILL delay after SIGTERM on cancel.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 
-/// Binary name. Must be on PATH — installed globally via
-/// `npm install -g @indigoai-us/hq-cloud` (or bundled with the DMG in V2).
-const RUNNER_BIN: &str = "hq-sync-runner";
+/// Pinned version of `@indigoai-us/hq-cloud` that ships `hq-sync-runner`.
+///
+/// Bumping this cuts a new npx cache key, so every user's next sync
+/// fetches the new runner once, then reuses the cache. The
+/// `commands::prewarm` task fires this same fetch on app startup so the
+/// fetch happens in the background rather than during the user's first
+/// click of "Sync Now".
+pub const HQ_CLOUD_VERSION: &str = "5.1.9";
+
+/// Package name for the runner. Used by both the spawn site below and the
+/// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
+/// `npx --package=<pkg>@<ver>` argument.
+pub const HQ_CLOUD_PACKAGE: &str = "@indigoai-us/hq-cloud";
+
+/// Bin name shipped by `HQ_CLOUD_PACKAGE` (per its package.json `bin` entry).
+/// npx needs this separately from the package because the bin name does
+/// not match the package name.
+pub const RUNNER_BIN: &str = "hq-sync-runner";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config resolution (inline — avoids calling async Tauri command)
@@ -116,9 +147,24 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 // SpawnArgs builder (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build the SpawnArgs for `hq-sync-runner --companies`.
+/// Build the SpawnArgs for `npx … hq-sync-runner --companies`.
 ///
-/// Flags:
+/// The command line we spawn looks like:
+/// ```text
+/// npx -y --package=@indigoai-us/hq-cloud@5.1.9 hq-sync-runner \
+///   --companies --on-conflict abort --hq-root <path>
+/// ```
+///
+/// npx flags:
+/// - `-y` / `--yes` — auto-confirm the "Need to install the following
+///   packages — Ok to proceed?" prompt. Without this, npx blocks on stdin
+///   (our Tauri subprocess has no interactive stdin → hang).
+/// - `--package=<pkg>@<ver>` — tells npx which package provides the bin,
+///   since the bin name (`hq-sync-runner`) doesn't match the package
+///   name (`@indigoai-us/hq-cloud`). The `@<ver>` pin makes the cache
+///   key deterministic: same pin → same cache hit → no redownload.
+///
+/// Runner flags:
 /// - `--companies` — fan out to every membership the caller has
 /// - `--on-conflict abort` — V1 policy; conflicts surface as `aborted: true` on
 ///   the per-company `complete` event. Interactive resolution is a follow-up
@@ -130,18 +176,23 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
-    // The runner is a Node script with `#!/usr/bin/env node`. Without this
-    // PATH, `env` can't find node on Dock-launched apps and the child exits
-    // with code 127. See `paths::child_path`.
+    // The runner is a Node script with `#!/usr/bin/env node`, and npx itself
+    // is `#!/usr/bin/env node`. Without a real PATH, `env` can't find node on
+    // Dock-launched apps and either process exits with code 127. See
+    // `paths::child_path`.
     env.insert("PATH".to_string(), paths::child_path());
 
     SpawnArgs {
-        // Resolve via known install prefixes + login-shell PATH fallback.
+        // Resolve npx via known install prefixes + login-shell PATH fallback.
         // See `paths::resolve_bin` — GUI-launched Tauri apps get a minimal
-        // launchd PATH and would otherwise fail with os error 2 on any
-        // binary installed via homebrew or user-level npm.
-        cmd: paths::resolve_bin(RUNNER_BIN),
+        // launchd PATH and would otherwise fail with os error 2 on `npx`
+        // (which lives in /opt/homebrew/bin or ~/.npm-global/bin, not in
+        // /usr/bin). npx is part of npm, which is a listed installer prereq.
+        cmd: paths::resolve_bin("npx"),
         args: vec![
+            "-y".to_string(),
+            format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
+            RUNNER_BIN.to_string(),
             "--companies".to_string(),
             "--on-conflict".to_string(),
             "abort".to_string(),
@@ -349,14 +400,12 @@ mod tests {
     fn test_build_sync_spawn_args_cmd() {
         let args = build_sync_spawn_args("/Users/test/HQ");
         // `resolve_bin` may return an absolute path (e.g.
-        // `/opt/homebrew/bin/hq-sync-runner`) on a dev box with the CLI
-        // installed, or the bare name on a CI box without it. Either way,
-        // the trailing file component must be `hq-sync-runner`.
+        // `/opt/homebrew/bin/npx`) on a dev box with npm installed, or the
+        // bare name on a CI box without it. Either way, the trailing file
+        // component must be `npx`.
         assert!(
-            args.cmd == RUNNER_BIN || args.cmd.ends_with(&format!("/{}", RUNNER_BIN)),
-            "expected cmd to be `{}` or `*/{}`, got `{}`",
-            RUNNER_BIN,
-            RUNNER_BIN,
+            args.cmd == "npx" || args.cmd.ends_with("/npx"),
+            "expected cmd to be `npx` or `*/npx`, got `{}`",
             args.cmd
         );
     }
@@ -367,12 +416,43 @@ mod tests {
         assert_eq!(
             args.args,
             vec![
-                "--companies",
-                "--on-conflict",
-                "abort",
-                "--hq-root",
-                "/Users/test/HQ",
+                "-y".to_string(),
+                format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
+                RUNNER_BIN.to_string(),
+                "--companies".to_string(),
+                "--on-conflict".to_string(),
+                "abort".to_string(),
+                "--hq-root".to_string(),
+                "/Users/test/HQ".to_string(),
             ]
+        );
+    }
+
+    /// Guards against the regression that broke fresh installs twice: the
+    /// runner is ONLY available via this npx invocation. If a future refactor
+    /// decides to drop the `--package=` arg, every sync fails with "npm
+    /// package `hq-sync-runner` not found". This test makes that failure
+    /// obvious in CI, not at runtime on users' machines.
+    #[test]
+    fn test_build_sync_spawn_args_pins_hq_cloud_package() {
+        let args = build_sync_spawn_args("/tmp");
+        let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
+        assert!(
+            args.args.contains(&expected_pin),
+            "spawn args must pin the hq-cloud package (missing `{}`): {:?}",
+            expected_pin,
+            args.args,
+        );
+        assert!(
+            args.args.contains(&"-y".to_string()),
+            "spawn args must include `-y` so npx doesn't block on stdin: {:?}",
+            args.args,
+        );
+        assert!(
+            args.args.contains(&RUNNER_BIN.to_string()),
+            "spawn args must invoke `{}` after the package pin: {:?}",
+            RUNNER_BIN,
+            args.args,
         );
     }
 
@@ -515,6 +595,43 @@ mod tests {
     #[test]
     fn test_runner_bin_constant() {
         assert_eq!(RUNNER_BIN, "hq-sync-runner");
+    }
+
+    #[test]
+    fn test_hq_cloud_package_constant() {
+        assert_eq!(HQ_CLOUD_PACKAGE, "@indigoai-us/hq-cloud");
+    }
+
+    /// Belt-and-braces: fail loudly if someone pastes a non-semver string
+    /// into the version const. npx tolerates a lot, but "latest" / "*" /
+    /// empty would defeat the whole point of cache pinning and make first
+    /// sync a roulette wheel.
+    #[test]
+    fn test_hq_cloud_version_is_pinned_semver() {
+        assert!(
+            !HQ_CLOUD_VERSION.is_empty(),
+            "HQ_CLOUD_VERSION must not be empty"
+        );
+        assert_ne!(
+            HQ_CLOUD_VERSION, "latest",
+            "HQ_CLOUD_VERSION must be a pinned semver, not `latest`"
+        );
+        // Rough semver shape: three dot-separated numeric segments.
+        let parts: Vec<&str> = HQ_CLOUD_VERSION.split('.').collect();
+        assert_eq!(
+            parts.len(),
+            3,
+            "HQ_CLOUD_VERSION should look like MAJOR.MINOR.PATCH, got `{}`",
+            HQ_CLOUD_VERSION
+        );
+        for part in &parts {
+            assert!(
+                part.chars().all(|c| c.is_ascii_digit()),
+                "HQ_CLOUD_VERSION segment `{}` is not a number — got `{}`",
+                part,
+                HQ_CLOUD_VERSION
+            );
+        }
     }
 
     // ── RunTotals ────────────────────────────────────────────────────────
