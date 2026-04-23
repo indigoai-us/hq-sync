@@ -45,8 +45,9 @@ use crate::commands::process::{
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
-    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPLETE,
-    EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
+    SyncCompleteEvent, SyncErrorEvent, SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR,
+    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS,
+    EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::paths;
 
@@ -208,6 +209,51 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
 // ndjson line handler (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Returns `true` when a per-company error indicates the company has not been
+/// provisioned on S3 yet.
+///
+/// Only per-company sentinel errors (`path == "(company)"`) are eligible; file-
+/// level errors on real paths are never entity-not-found and must surface normally.
+///
+/// Match logic is deliberately narrow to avoid swallowing auth / STS errors
+/// whose HTTP bodies can also contain generic "not found" substrings:
+/// - `"no bucket provisioned"` is an exact phrase unique to the vault guard.
+/// - For HTTP-404 paths we require **both** `"entity"` and `"not found"` so
+///   that `"Token not found"`, `"Session not found"`, etc. are excluded.
+fn is_entity_not_yet_provisioned(err: &SyncErrorEvent) -> bool {
+    if err.path != "(company)" {
+        return false;
+    }
+    let msg = err.message.to_lowercase();
+    msg.contains("no bucket provisioned")
+        || (msg.contains("entity") && msg.contains("not found"))
+}
+
+/// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
+/// the error represents a company not yet provisioned on S3 (empty-sync
+/// semantics), or `None` when the error should surface normally.
+///
+/// The `None`-company case (discovery-phase errors) always returns `None` so
+/// those errors are never silently swallowed.
+///
+/// TODO: The durable fix belongs in `hq-cloud/src/context.ts` (`resolveEntityContext`)
+/// so all consumers of hq-sync-runner get the correct behaviour without
+/// pattern-matching on error strings across a process boundary.
+fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEvent> {
+    let company = payload.company.as_deref()?;
+    if !is_entity_not_yet_provisioned(payload) {
+        return None;
+    }
+    Some(SyncCompleteEvent {
+        company: company.to_string(),
+        files_downloaded: 0,
+        bytes_downloaded: 0,
+        files_skipped: 0,
+        conflicts: 0,
+        aborted: false,
+    })
+}
+
 /// Parse a single ndjson line and emit the corresponding Tauri event.
 /// Unknown/malformed lines are silently skipped (logged in debug builds).
 ///
@@ -249,7 +295,24 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         SyncEvent::AuthError(payload) => app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone()),
         SyncEvent::FanoutPlan(payload) => app.emit(EVENT_SYNC_FANOUT_PLAN, payload.clone()),
         SyncEvent::Progress(payload) => app.emit(EVENT_SYNC_PROGRESS, payload.clone()),
-        SyncEvent::Error(payload) => app.emit(EVENT_SYNC_ERROR, payload.clone()),
+        SyncEvent::Error(payload) => {
+            // `classify_error_event` is the test-covered classification boundary;
+            // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
+            // kept to these two lines so it is visually auditable without a harness.
+            if let Some(complete_event) = classify_error_event(payload) {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "[sync] company '{}' not yet on S3 — treating as empty sync: {}",
+                    complete_event.company, payload.message
+                );
+                // Synthetic completes are excluded from RunTotals by design:
+                // all fields are zero so accumulate would be a no-op today, and
+                // these companies have no real files to count.
+                app.emit(EVENT_SYNC_COMPLETE, complete_event)
+            } else {
+                app.emit(EVENT_SYNC_ERROR, payload.clone())
+            }
+        }
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
@@ -709,5 +772,141 @@ mod tests {
         };
         t.accumulate(&complete("a", 1, false));
         assert_eq!(t.conflicts, u32::MAX);
+    }
+
+    // ── is_entity_not_yet_provisioned ────────────────────────────────────────
+
+    fn make_company_error(company: Option<&str>, path: &str, message: &str) -> SyncErrorEvent {
+        SyncErrorEvent {
+            company: company.map(str::to_string),
+            path: path.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_not_provisioned_404_not_found_in_message() {
+        let err = make_company_error(
+            Some("acme"),
+            "(company)",
+            "Failed to fetch entity cmp_01ABC: 404 company/entity not found",
+        );
+        assert!(is_entity_not_yet_provisioned(&err));
+    }
+
+    #[test]
+    fn test_not_provisioned_no_bucket() {
+        let err = make_company_error(
+            Some("newco"),
+            "(company)",
+            "Entity cmp_01ABC (newco) has no bucket provisioned. Run VLT-2 bucket provisioning first.",
+        );
+        assert!(is_entity_not_yet_provisioned(&err));
+    }
+
+    #[test]
+    fn test_not_provisioned_case_insensitive() {
+        // Both "entity" and "not found" must be present; case-insensitive.
+        let err = make_company_error(Some("acme"), "(company)", "Entity cmp_XYZ NOT FOUND");
+        assert!(is_entity_not_yet_provisioned(&err));
+    }
+
+    #[test]
+    fn test_not_provisioned_generic_not_found_excluded() {
+        // "not found" without "entity" must NOT match — protects against auth
+        // errors like "Token not found" or "Session not found".
+        let err = make_company_error(Some("acme"), "(company)", "Token not found");
+        assert!(!is_entity_not_yet_provisioned(&err));
+    }
+
+    #[test]
+    fn test_not_provisioned_file_level_error_excluded() {
+        // File-level errors on real paths must not be swallowed.
+        let err = make_company_error(
+            Some("acme"),
+            "docs/secret.md",
+            "not found",
+        );
+        assert!(!is_entity_not_yet_provisioned(&err));
+    }
+
+    #[test]
+    fn test_not_provisioned_different_company_error_not_matched() {
+        // A real per-company failure (e.g. STS 500) must surface as an error.
+        let err = make_company_error(
+            Some("acme"),
+            "(company)",
+            "STS vend failed for cmp_01ABC: 500 Internal Server Error",
+        );
+        assert!(!is_entity_not_yet_provisioned(&err));
+    }
+
+    #[test]
+    fn test_not_provisioned_discovery_error_still_matches_predicate() {
+        // The predicate checks only path + message; it has no knowledge of company.
+        // A None-company error can still match the predicate — the caller
+        // (classify_error_event) is responsible for the None guard.
+        let err = make_company_error(
+            None,
+            "(company)",
+            "Failed to fetch entity cmp_01ABC: 404 company/entity not found",
+        );
+        assert!(is_entity_not_yet_provisioned(&err));
+    }
+
+    // ── classify_error_event ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_classify_error_event_not_provisioned_returns_complete() {
+        // Entity 404: must convert to a zero-files SyncCompleteEvent.
+        let err = make_company_error(
+            Some("acme"),
+            "(company)",
+            "Failed to fetch entity cmp_01ABC: 404 company/entity not found",
+        );
+        let result = classify_error_event(&err);
+        assert!(result.is_some());
+        let complete = result.unwrap();
+        assert_eq!(complete.company, "acme");
+        assert_eq!(complete.files_downloaded, 0);
+        assert_eq!(complete.bytes_downloaded, 0);
+        assert_eq!(complete.files_skipped, 0);
+        assert_eq!(complete.conflicts, 0);
+        assert!(!complete.aborted);
+    }
+
+    #[test]
+    fn test_classify_error_event_none_company_passes_through() {
+        // Discovery-phase error (no company): must NOT be converted — return None.
+        let err = make_company_error(
+            None,
+            "(company)",
+            "Failed to fetch entity cmp_01ABC: 404 company/entity not found",
+        );
+        assert!(classify_error_event(&err).is_none());
+    }
+
+    #[test]
+    fn test_classify_error_event_real_error_passes_through() {
+        // A real per-company failure (STS 500): must NOT be converted — return None.
+        let err = make_company_error(
+            Some("acme"),
+            "(company)",
+            "STS vend failed for cmp_01ABC: 500 Internal Server Error",
+        );
+        assert!(classify_error_event(&err).is_none());
+    }
+
+    #[test]
+    fn test_classify_error_event_no_bucket_returns_complete() {
+        // "no bucket provisioned" path also converts correctly.
+        let err = make_company_error(
+            Some("newco"),
+            "(company)",
+            "Entity cmp_01ABC (newco) has no bucket provisioned. Run VLT-2 bucket provisioning first.",
+        );
+        let result = classify_error_event(&err);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().company, "newco");
     }
 }
