@@ -92,7 +92,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// `commands::prewarm` task fires this same fetch on app startup so the
 /// fetch happens in the background rather than during the user's first
 /// click of "Sync Now".
-pub const HQ_CLOUD_VERSION: &str = "5.1.10";
+pub const HQ_CLOUD_VERSION: &str = "5.1.11";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -152,8 +152,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@5.1.10 hq-sync-runner \
-///   --companies --on-conflict abort --hq-root <path>
+/// npx -y --package=@indigoai-us/hq-cloud@5.1.11 hq-sync-runner \
+///   --companies --direction both --on-conflict abort --hq-root <path>
 /// ```
 ///
 /// npx flags:
@@ -167,6 +167,10 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// Runner flags:
 /// - `--companies` — fan out to every membership the caller has
+/// - `--direction both` — bidirectional sync: push local changes first,
+///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
+///   for back-compat; the menubar explicitly opts into `both` so a single
+///   "Sync Now" click broadcasts local edits AND pulls remote updates.
 /// - `--on-conflict abort` — V1 policy; conflicts surface as `aborted: true` on
 ///   the per-company `complete` event. Interactive resolution is a follow-up
 ///   (the runner protocol doesn't emit per-file conflict events).
@@ -195,6 +199,8 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
             format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
             RUNNER_BIN.to_string(),
             "--companies".to_string(),
+            "--direction".to_string(),
+            "both".to_string(),
             "--on-conflict".to_string(),
             "abort".to_string(),
             "--hq-root".to_string(),
@@ -483,11 +489,26 @@ mod tests {
                 format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
                 RUNNER_BIN.to_string(),
                 "--companies".to_string(),
+                "--direction".to_string(),
+                "both".to_string(),
                 "--on-conflict".to_string(),
                 "abort".to_string(),
                 "--hq-root".to_string(),
                 "/Users/test/HQ".to_string(),
             ]
+        );
+    }
+
+    /// Sync Now is bidirectional — the spawn must opt into `--direction both`.
+    /// Guards against a future refactor silently dropping back to pull-only.
+    #[test]
+    fn test_build_sync_spawn_args_opts_into_direction_both() {
+        let args = build_sync_spawn_args("/tmp");
+        let joined = args.args.join(" ");
+        assert!(
+            joined.contains("--direction both"),
+            "spawn args must include `--direction both`: {:?}",
+            args.args,
         );
     }
 
