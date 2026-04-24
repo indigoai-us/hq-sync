@@ -2,8 +2,10 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SyncStats from './SyncStats.svelte';
   import SyncButton from './SyncButton.svelte';
+  import CompanyRow from './CompanyRow.svelte';
   import ConflictModal from './ConflictModal.svelte';
   import type { ConflictFile } from '../stores/conflicts';
+  import { companiesState } from '../lib/stores';
 
   interface Config {
     configured: boolean;
@@ -191,6 +193,26 @@
         <div class="banner banner-error">
           <p class="banner-title">Sync failed</p>
           <p class="banner-body">{errorMessage}</p>
+        </div>
+      {/if}
+
+      <!-- Per-company rows (US-005). Seeded by App.svelte on mount via
+           `list_all_companies`; each row renders a source badge + a
+           source-aware Sync button. Placeholder for empty list so the
+           popover reads as "alive but idle" rather than broken. -->
+      {#if $companiesState.loading}
+        <div class="companies-loading">
+          <span class="dot-spinner"></span>
+        </div>
+      {:else if $companiesState.error}
+        <p class="companies-error">{$companiesState.error}</p>
+      {:else if $companiesState.companies.length === 0}
+        <p class="companies-empty">No companies yet</p>
+      {:else}
+        <div class="companies-list">
+          {#each $companiesState.companies as c (c.slug)}
+            <CompanyRow company={c} />
+          {/each}
         </div>
       {/if}
 
@@ -601,6 +623,50 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
     font-size: 0.6875rem;
     flex-shrink: 0;
+  }
+
+  /* Company rows container (US-005) — CompanyRow handles its own card
+     styling, we just give the list spacing consistent with popover-body. */
+  .companies-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .companies-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem 0;
+  }
+
+  .dot-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(99, 102, 241, 0.2);
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .companies-empty,
+  .companies-error {
+    margin: 0;
+    font-size: 0.75rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    text-align: center;
+    padding: 0.375rem 0;
+  }
+
+  .companies-error {
+    color: #ef4444;
   }
 
   /* Summary line — "Last sync · X files · Y MB" */
