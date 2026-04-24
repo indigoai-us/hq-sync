@@ -39,6 +39,8 @@ fn main() {
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
+            commands::companies::list_all_companies,
+            commands::companies::promote_company,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,

@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod autostart;
 pub mod cognito;
+pub mod companies;
 pub mod config;
 pub mod conflicts;
 pub mod daemon;

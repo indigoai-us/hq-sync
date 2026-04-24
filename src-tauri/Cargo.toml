@@ -32,3 +32,7 @@ objc2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
+# Enables `tauri::test::mock_app()` for the integration tests under
+# `src-tauri/tests/`. Gated to dev-deps so the `test` feature never leaks
+# into a release build of the app.
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png", "test"] }
