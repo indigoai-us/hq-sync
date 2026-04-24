@@ -11,3 +11,4 @@ pub mod process;
 pub mod settings;
 pub mod status;
 pub mod sync;
+pub mod vault_client;
