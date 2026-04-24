@@ -23,6 +23,12 @@ rfd = "0.15"
 sha2 = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ignore = "0.4"
+walkdir = "2"
+
+[[bin]]
+name = "emit-default-ignores"
+path = "src/bin/emit-default-ignores.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Used by commands::folder_picker to enumerate NSApp.windows and close

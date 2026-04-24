@@ -8,7 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run"
+    "parity": "bash scripts/check-default-ignores-parity.sh",
+    "test": "pnpm run parity && vitest run"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
