@@ -437,23 +437,40 @@ pub fn cancel_embeddings() -> bool {
     cancel_process_impl(EMBEDDINGS_HANDLE, SIGKILL_DELAY)
 }
 
+/// Pure status derivation from an HQ folder path. Exposed for unit tests;
+/// `get_embeddings_status` wraps this with the config-resolution layer.
+///
+/// Fallback order:
+///   1. Journal exists → return it (state=ok/error, lastRunAt populated).
+///   2. No journal but pending marker → return a `pending` state. This is
+///      the brief window between installer exit and the auto-trigger firing
+///      (or a longer window when `qmd` is missing and the marker persists
+///      across launches for retry). Surfacing pending lets the popover
+///      render the "Pending…" row even if the frontend mounted after the
+///      auto-trigger already fired (Codex P2 follow-up on US-004).
+///   3. Otherwise `source: "none"` default (no prior run, no marker).
+pub fn status_for_hq_folder(hq_folder: &str) -> EmbeddingsStatus {
+    if let Ok(journal) = read_embeddings_journal(hq_folder) {
+        return status_from_journal(journal);
+    }
+    if marker_exists(hq_folder) {
+        return EmbeddingsStatus {
+            last_run_at: None,
+            duration_sec: 0,
+            state: "pending".to_string(),
+            error_msg: None,
+            source: "marker".to_string(),
+        };
+    }
+    default_status()
+}
+
 /// Read the embeddings journal and return a status payload for the UI.
-/// When no journal exists (first launch before any run), returns a
-/// `source: "none"` default.
+/// See [`status_for_hq_folder`] for the fallback order.
 #[tauri::command]
 pub async fn get_embeddings_status() -> Result<EmbeddingsStatus, String> {
     let hq_folder_path = resolve_hq_folder_path()?;
-    match read_embeddings_journal(&hq_folder_path) {
-        Ok(journal) => Ok(status_from_journal(journal)),
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "[embeddings] journal not available, returning default: {}",
-                _e
-            );
-            Ok(default_status())
-        }
-    }
+    Ok(status_for_hq_folder(&hq_folder_path))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -890,6 +907,75 @@ mod tests {
     }
 
     // ── Singleton enforcement path ───────────────────────────────────────────
+
+    // ── status_for_hq_folder (Codex P2 follow-up) ────────────────────────────
+
+    #[test]
+    fn test_status_for_hq_folder_none_when_empty() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let s = status_for_hq_folder(hq_folder);
+        assert_eq!(s.source, "none");
+        assert_eq!(s.state, "unknown");
+        assert_eq!(s.last_run_at, None);
+    }
+
+    #[test]
+    fn test_status_for_hq_folder_pending_when_only_marker() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        std::fs::write(
+            tmp.path().join(".hq-embeddings-pending.json"),
+            r#"{"reason":"post-install"}"#,
+        )
+        .unwrap();
+        let s = status_for_hq_folder(hq_folder);
+        assert_eq!(s.source, "marker");
+        assert_eq!(s.state, "pending");
+        assert_eq!(s.last_run_at, None);
+    }
+
+    #[test]
+    fn test_status_for_hq_folder_journal_wins_over_marker() {
+        // If both a journal and a marker exist (error + retry-on-next-launch
+        // scenario), the journal is authoritative — the UI shows the last
+        // known error rather than a generic "pending" state.
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        std::fs::write(
+            tmp.path().join(".hq-embeddings-pending.json"),
+            "{}",
+        )
+        .unwrap();
+        let journal = EmbeddingsJournal {
+            last_run_at: "2026-04-24T07:00:00.000Z".to_string(),
+            duration_sec: 1,
+            state: "error".to_string(),
+            error_msg: Some("qmd: failure".to_string()),
+        };
+        write_embeddings_journal(hq_folder, &journal).unwrap();
+        let s = status_for_hq_folder(hq_folder);
+        assert_eq!(s.source, "journal");
+        assert_eq!(s.state, "error");
+        assert_eq!(s.error_msg.as_deref(), Some("qmd: failure"));
+    }
+
+    #[test]
+    fn test_status_for_hq_folder_journal_ok() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let journal = EmbeddingsJournal {
+            last_run_at: "2026-04-24T07:00:00.000Z".to_string(),
+            duration_sec: 45,
+            state: "ok".to_string(),
+            error_msg: None,
+        };
+        write_embeddings_journal(hq_folder, &journal).unwrap();
+        let s = status_for_hq_folder(hq_folder);
+        assert_eq!(s.source, "journal");
+        assert_eq!(s.state, "ok");
+        assert_eq!(s.last_run_at.as_deref(), Some("2026-04-24T07:00:00.000Z"));
+    }
 
     // ── Auto-trigger helpers (US-004) ────────────────────────────────────────
 

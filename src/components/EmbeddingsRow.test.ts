@@ -154,6 +154,24 @@ describe('EmbeddingsRow → embeddingsStore contract (US-003)', () => {
     expect(embeddingsStore.durationSec).toBe(90);
   });
 
+  it('seedFromPayload with source=marker transitions to pending', () => {
+    // Codex P2 fix: when a pending marker is on disk but the journal
+    // hasn't been written yet (brief window between installer exit and
+    // auto-trigger firing, OR persistent when qmd is missing), the
+    // Rust-side `get_embeddings_status` returns source="marker". The
+    // store must render this as `pending` so the popover shows the
+    // user that work is queued instead of "never".
+    embeddingsStore.seedFromPayload({
+      lastRunAt: null,
+      durationSec: 0,
+      state: 'pending',
+      errorMsg: null,
+      source: 'marker',
+    });
+    expect(embeddingsStore.status).toBe('pending');
+    expect(embeddingsStore.lastRunAt).toBeUndefined();
+  });
+
   it('seedFromPayload with state=error transitions to error and sets errorMsg', () => {
     embeddingsStore.seedFromPayload({
       lastRunAt: '2026-04-24T06:30:00.000Z',

@@ -45,8 +45,12 @@ pub enum TrayState {
 }
 
 impl TrayState {
-    /// Precedence tier. Higher wins when state changes race.
+    /// Precedence tier (documented at the top of this module). Higher wins
+    /// when state changes race. Kept test-only after the set_tray_state
+    /// rewrite — production logic now encodes precedence inline with clear
+    /// per-state branching that's easier to audit than a numeric tier.
     ///   error(4) > conflict(3) > syncing(2) > embedding(1) > idle(0)
+    #[cfg(test)]
     fn rank(self) -> u8 {
         match self {
             Self::Idle => 0,
@@ -350,22 +354,6 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
     }
 }
 
-/// Update the tray icon only if the new state's precedence tier is at least
-/// as high as the current one. Prevents a lower-priority event (e.g. an
-/// `embeddings:complete` arriving during an active sync) from clobbering a
-/// higher-priority state.
-///
-/// Use this from event listeners that advance state forward; fall back to
-/// `update_tray_icon` only when the caller has an authoritative reason to
-/// force a state (e.g. transitioning out of an error state after the user
-/// dismisses the banner).
-pub fn update_tray_icon_respecting_precedence(app: &AppHandle, state: TrayState) {
-    let current = current_state().lock().map(|s| *s).unwrap_or(TrayState::Idle);
-    if state.rank() >= current.rank() {
-        update_tray_icon(app, state);
-    }
-}
-
 /// Get the current tray state.
 #[allow(dead_code)]
 pub fn get_current_state() -> TrayState {
@@ -416,17 +404,35 @@ pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
             state
         )
     })?;
-    // Non-terminal, forward-only states (idle, embedding) respect precedence
-    // so a stale client signal can't downgrade an error/conflict that the
-    // user hasn't acknowledged yet. Terminal states (syncing, error,
-    // conflict) are always authoritative — they reflect a concrete event the
-    // user needs to see.
+    // Transitions:
+    // - Embedding is authoritative: the frontend only emits it after
+    //   `embeddings:start`, which is a forward-going event that explicitly
+    //   represents the user's intent (or the auto-trigger's intent). A
+    //   prior `Error` must not trap us here — if the run is starting fresh
+    //   we've moved past the failure.
+    // - Idle is allowed from Idle/Embedding/Error (self, or clearing an
+    //   embedding or a previous error), but NOT from Syncing or Conflict
+    //   (those are still in-flight and should not be silently downgraded).
+    // - Syncing / Error / Conflict are always authoritative — they reflect
+    //   a concrete event the user needs to see.
     match tray_state {
-        TrayState::Idle | TrayState::Embedding => {
-            update_tray_icon_respecting_precedence(&app, tray_state);
-        }
-        TrayState::Syncing | TrayState::Error | TrayState::Conflict => {
+        TrayState::Embedding
+        | TrayState::Syncing
+        | TrayState::Error
+        | TrayState::Conflict => {
             update_tray_icon(&app, tray_state);
+        }
+        TrayState::Idle => {
+            let current = current_state()
+                .lock()
+                .map(|s| *s)
+                .unwrap_or(TrayState::Idle);
+            if matches!(
+                current,
+                TrayState::Idle | TrayState::Embedding | TrayState::Error
+            ) {
+                update_tray_icon(&app, tray_state);
+            }
         }
     }
     Ok(())
@@ -501,6 +507,79 @@ mod tests {
         assert!(TrayState::Conflict.rank() > TrayState::Syncing.rank());
         assert!(TrayState::Syncing.rank() > TrayState::Embedding.rank());
         assert!(TrayState::Embedding.rank() > TrayState::Idle.rank());
+    }
+
+    // Codex P1 fix: verify the new set_tray_state transition table. These
+    // are table-level unit tests; the full Tauri AppHandle round-trip is
+    // tested manually (per CLAUDE.md's "Manual testing only in V1" policy).
+    //
+    // Encoded as a helper because the actual state mutation goes through
+    // `update_tray_icon(app, ...)` which needs an AppHandle — we mirror
+    // the same decision logic here so the transitions themselves are
+    // covered without spinning up a Tauri harness.
+    fn would_transition(current: TrayState, requested: TrayState) -> bool {
+        match requested {
+            TrayState::Embedding
+            | TrayState::Syncing
+            | TrayState::Error
+            | TrayState::Conflict => true,
+            TrayState::Idle => matches!(
+                current,
+                TrayState::Idle | TrayState::Embedding | TrayState::Error
+            ),
+        }
+    }
+
+    #[test]
+    fn test_embedding_start_clears_prior_error() {
+        // Codex P1: a successful Retry after a failed embeddings run must
+        // let `embeddings:start` move the tray off Error.
+        assert!(would_transition(TrayState::Error, TrayState::Embedding));
+    }
+
+    #[test]
+    fn test_embedding_complete_clears_prior_error_via_idle() {
+        // After the fixed start above, `embeddings:complete` should then
+        // take Error → Idle via its self-initiated cleanup.
+        assert!(would_transition(TrayState::Error, TrayState::Idle));
+    }
+
+    #[test]
+    fn test_idle_does_not_clobber_active_syncing() {
+        // Inverse: a stray `set_tray_state('idle')` from embeddings:complete
+        // must not downgrade an in-flight sync.
+        assert!(!would_transition(TrayState::Syncing, TrayState::Idle));
+    }
+
+    #[test]
+    fn test_idle_does_not_clobber_active_conflict() {
+        assert!(!would_transition(TrayState::Conflict, TrayState::Idle));
+    }
+
+    #[test]
+    fn test_embedding_can_arrive_over_idle() {
+        // Happy path: nothing was active, auto-trigger fires, tray moves
+        // idle → embedding.
+        assert!(would_transition(TrayState::Idle, TrayState::Embedding));
+    }
+
+    #[test]
+    fn test_error_always_wins() {
+        // An explicit error signal is always authoritative — any prior
+        // state gets overridden so the user sees the failure.
+        for prev in [
+            TrayState::Idle,
+            TrayState::Embedding,
+            TrayState::Syncing,
+            TrayState::Conflict,
+            TrayState::Error,
+        ] {
+            assert!(
+                would_transition(prev, TrayState::Error),
+                "error must always be allowed from {:?}",
+                prev
+            );
+        }
     }
 
     #[test]

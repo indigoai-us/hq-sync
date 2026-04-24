@@ -136,8 +136,16 @@ class EmbeddingsStore {
     this._lastRunAt = payload.lastRunAt ?? undefined;
     this._durationSec = payload.durationSec;
     this._errorMsg = payload.errorMsg ?? undefined;
+    // Source + state fan-out:
+    //   - source=none  → idle (no prior run, no marker)
+    //   - source=marker → pending (marker on disk, no journal yet —
+    //                     auto-trigger may not have fired, or qmd is missing)
+    //   - source=journal + state=ok → ok
+    //   - source=journal + state=error → error
     if (payload.source === 'none') {
       this._status = 'idle';
+    } else if (payload.source === 'marker' || payload.state === 'pending') {
+      this._status = 'pending';
     } else if (payload.state === 'ok') {
       this._status = 'ok';
     } else if (payload.state === 'error') {
