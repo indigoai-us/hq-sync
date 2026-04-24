@@ -261,6 +261,42 @@ pub fn stderr_tail_to_string(buf: &VecDeque<u8>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// Turn an exit code + stderr tail into the user-facing error message shown
+/// in the popover / Settings / journal. Detects common classes of failure
+/// so the user sees remediation rather than a raw C++ runtime error.
+///
+/// Mirrors the detection pattern in `hq-installer/src/screens/10-indexing.tsx`
+/// so the two surfaces stay in lockstep — a user who hit the ABI mismatch
+/// there and fixed it by reinstalling `qmd` should see the same remediation
+/// string here if it happens again post-install.
+pub fn user_message_for_exit(stderr_tail: &str, code: Option<i32>) -> String {
+    // Node ABI mismatch — most common cause of `qmd embed` failing in the
+    // wild. qmd ships a native `better-sqlite3` binding compiled against
+    // whatever Node was active at `npm i -g` time; if the Node the runtime
+    // picks up for `#!/usr/bin/env node` differs, the dynamic loader bails
+    // with ERR_DLOPEN_FAILED / NODE_MODULE_VERSION. `paths::child_path()`
+    // fixes the common root cause (wrong Node on child PATH), but users
+    // with a genuinely stale global install still need the actionable hint.
+    if stderr_tail.contains("ERR_DLOPEN_FAILED")
+        || stderr_tail.contains("NODE_MODULE_VERSION")
+    {
+        return "Node ABI mismatch: qmd was compiled for a different Node version. \
+                Fix: reinstall qmd under your current Node — `npm i -g @tobilu/qmd`"
+            .to_string();
+    }
+
+    // Generic fallbacks.
+    if stderr_tail.trim().is_empty() {
+        format!(
+            "qmd embed exited with code {}",
+            code.map(|c| c.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        )
+    } else {
+        stderr_tail.trim_end().to_string()
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
@@ -368,22 +404,16 @@ pub fn start_embeddings(app: AppHandle, reason: String) -> Result<String, String
                             EmbeddingsCompleteEvent { duration_sec },
                         );
                     } else {
-                        // Non-zero exit: persist stderr tail, keep the marker.
+                        // Non-zero exit: classify stderr tail into an
+                        // actionable user message, persist it, keep the
+                        // marker so the next launch / Retry can pick up.
                         let tail = {
                             let buf = stderr_tail_handler
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner());
                             stderr_tail_to_string(&buf)
                         };
-                        let err_msg = if tail.trim().is_empty() {
-                            format!(
-                                "qmd embed exited with code {}",
-                                code.map(|c| c.to_string())
-                                    .unwrap_or_else(|| "unknown".to_string())
-                            )
-                        } else {
-                            tail.trim_end().to_string()
-                        };
+                        let err_msg = user_message_for_exit(&tail, code);
                         let journal = EmbeddingsJournal {
                             last_run_at: now_iso,
                             duration_sec,
@@ -907,6 +937,59 @@ mod tests {
     }
 
     // ── Singleton enforcement path ───────────────────────────────────────────
+
+    // ── user_message_for_exit (ABI detector) ─────────────────────────────────
+
+    #[test]
+    fn test_user_message_detects_err_dlopen_failed() {
+        let tail = "Error: The module '.../better_sqlite3.node' ERR_DLOPEN_FAILED\n";
+        let msg = user_message_for_exit(tail, Some(1));
+        assert!(
+            msg.contains("Node ABI mismatch"),
+            "expected ABI mismatch remediation, got: {}",
+            msg
+        );
+        assert!(msg.contains("npm i -g @tobilu/qmd"));
+    }
+
+    #[test]
+    fn test_user_message_detects_node_module_version() {
+        // Matches the user's real failure log from hq-sync#14 testing:
+        // better-sqlite3 compiled for Node 23 (NODE_MODULE_VERSION 127)
+        // loaded under Node 20 (NODE_MODULE_VERSION 115).
+        let tail = "was compiled against a different Node.js version using\n\
+                    NODE_MODULE_VERSION 127. This version of Node.js requires\n\
+                    NODE_MODULE_VERSION 115.";
+        let msg = user_message_for_exit(tail, Some(1));
+        assert!(
+            msg.contains("Node ABI mismatch"),
+            "expected ABI mismatch remediation, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_user_message_passes_through_other_stderr() {
+        // Non-ABI failures should preserve the raw stderr tail so
+        // diagnostics aren't swallowed by an over-eager classifier.
+        let tail = "qmd: unable to open database file: Permission denied";
+        let msg = user_message_for_exit(tail, Some(2));
+        assert_eq!(msg, tail);
+    }
+
+    #[test]
+    fn test_user_message_falls_back_to_exit_code_when_stderr_empty() {
+        let msg = user_message_for_exit("", Some(137));
+        assert!(msg.contains("137"));
+        assert!(msg.contains("exited"));
+    }
+
+    #[test]
+    fn test_user_message_handles_unknown_exit_code() {
+        // `code = None` is possible when the process was killed by a signal.
+        let msg = user_message_for_exit("", None);
+        assert!(msg.contains("unknown"));
+    }
 
     // ── status_for_hq_folder (Codex P2 follow-up) ────────────────────────────
 
