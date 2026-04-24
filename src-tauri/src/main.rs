@@ -41,6 +41,7 @@ fn main() {
             commands::sync::cancel_sync,
             commands::companies::list_all_companies,
             commands::companies::promote_company,
+            commands::journals::list_sync_journals,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,

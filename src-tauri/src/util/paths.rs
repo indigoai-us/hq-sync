@@ -7,6 +7,24 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
     Ok(home.join(".hq"))
 }
 
+/// Returns the HQ state directory — the location of per-company journal
+/// shards (`sync-journal.{slug}.json`).
+///
+/// Resolution order:
+/// 1. `$HQ_STATE_DIR` environment variable (if set + non-empty)
+/// 2. `hq_config_dir()` (i.e. `~/.hq/`)
+///
+/// The env var mirrors the split-binary runner's own `HQ_STATE_DIR` override
+/// so both sides read/write the same place during development and tests.
+pub fn hq_state_dir() -> Result<PathBuf, String> {
+    if let Ok(override_path) = std::env::var("HQ_STATE_DIR") {
+        if !override_path.is_empty() {
+            return Ok(PathBuf::from(override_path));
+        }
+    }
+    hq_config_dir()
+}
+
 /// Resolve a node-backed CLI binary (e.g. `hq-sync-runner`, `hq`) to an
 /// absolute path.
 ///
@@ -167,6 +185,23 @@ mod tests {
     fn test_hq_config_dir() {
         let dir = hq_config_dir().unwrap();
         assert!(dir.ends_with(".hq"));
+    }
+
+    // NB: we intentionally don't mutate HQ_STATE_DIR here. Cargo runs all
+    // tests in one process with parallel threads, so cross-test env
+    // mutation is racy. The override branch is exercised end-to-end by
+    // the `list_sync_journals` tests (which seed a tempdir and point the
+    // env at it inside a `#[serial]`-style test).
+
+    #[test]
+    fn test_hq_state_dir_fallback_matches_config_dir() {
+        // Without the env override, hq_state_dir must resolve to ~/.hq.
+        // We can't safely unset in a parallel-test process, so we only
+        // assert this when the env var is absent from the current env.
+        if std::env::var("HQ_STATE_DIR").is_err() {
+            let dir = hq_state_dir().unwrap();
+            assert!(dir.ends_with(".hq"));
+        }
     }
 
     #[test]

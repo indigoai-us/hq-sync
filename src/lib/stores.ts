@@ -26,6 +26,11 @@ export interface CompaniesState {
   promoting: Set<string>;
   /** Last promote:error message per slug, cleared on retry start. */
   lastError: Map<string, string>;
+  /** ISO-8601 `lastSync` per company slug, seeded from the journal scan on
+   *  mount and then stamped per-slug by `sync:complete` events. Plain
+   *  object (not Map) so `$companiesState.lastSyncedPerSlug[slug]` reads
+   *  cleanly from Svelte templates without a `.get()` wrapper. */
+  lastSyncedPerSlug: Record<string, string>;
 }
 
 function createCompaniesStore() {
@@ -35,6 +40,7 @@ function createCompaniesStore() {
     error: undefined,
     promoting: new Set(),
     lastError: new Map(),
+    lastSyncedPerSlug: {},
   };
   const { subscribe, set, update } = writable<CompaniesState>(initial);
 
@@ -112,6 +118,23 @@ function createCompaniesStore() {
       });
     },
 
+    /** Seed from the `list_sync_journals` mount-time scan. Replaces the
+     *  whole map — stale entries (e.g. a company the user left) shouldn't
+     *  linger between mounts. */
+    setLastSyncedMap(map: Record<string, string>) {
+      update((s) => ({ ...s, lastSyncedPerSlug: { ...map } }));
+    },
+
+    /** Stamp one slug with a fresh ISO timestamp — called on per-company
+     *  `sync:complete`. Immediate UI update without waiting for the journal
+     *  round-trip. */
+    updateLastSynced(slug: string, iso: string) {
+      update((s) => ({
+        ...s,
+        lastSyncedPerSlug: { ...s.lastSyncedPerSlug, [slug]: iso },
+      }));
+    },
+
     /** Test-only reset. */
     reset() {
       set({
@@ -120,6 +143,7 @@ function createCompaniesStore() {
         error: undefined,
         promoting: new Set(),
         lastError: new Map(),
+        lastSyncedPerSlug: {},
       });
     },
   };

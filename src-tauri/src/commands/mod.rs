@@ -6,6 +6,7 @@ pub mod config;
 pub mod conflicts;
 pub mod daemon;
 pub mod folder_picker;
+pub mod journals;
 pub mod oauth;
 pub mod prewarm;
 pub mod process;

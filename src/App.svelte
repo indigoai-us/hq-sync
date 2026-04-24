@@ -85,6 +85,20 @@
     }
   }
 
+  // Seed per-company `lastSyncedAt` from the journal scan. Runs in parallel
+  // with `loadCompanies` — the row render only needs the map by the time
+  // the companies render, and a missing entry falls through to "never".
+  // Non-fatal: a scan error just means rows start at "never" and recover
+  // as soon as the next `sync:complete` stamps them.
+  async function loadJournals() {
+    try {
+      const map = await invoke<Record<string, string>>('list_sync_journals');
+      companiesState.setLastSyncedMap(map);
+    } catch (err) {
+      console.error('list_sync_journals failed:', err);
+    }
+  }
+
   async function handleSyncNow() {
     if (syncState === 'syncing') return;
     syncState = 'syncing';
@@ -253,6 +267,16 @@
         // wait for sync:all-complete to know the whole fanout is done.
         syncFanoutDoneCount += 1;
         syncFanoutFilesSkipped += event.payload.filesSkipped;
+        // Stamp the row's `lastSyncedAt` immediately so users see "just
+        // now" without waiting for a journal round-trip. The Rust side
+        // writes the canonical journal shard; we optimistically mirror
+        // that here using the event's own slug (carried as `company`).
+        if (event.payload.company) {
+          companiesState.updateLastSynced(
+            event.payload.company,
+            new Date().toISOString()
+          );
+        }
         if (event.payload.aborted) {
           // Conflict-aborted: show the conflict state so the user knows
           // something needs attention. ConflictModal wiring is follow-up
@@ -385,6 +409,7 @@
     checkAuth();
     loadConfig();
     loadCompanies();
+    loadJournals();
     setupTrayListeners();
 
     return () => {

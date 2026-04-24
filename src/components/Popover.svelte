@@ -211,7 +211,10 @@
       {:else}
         <div class="companies-list">
           {#each $companiesState.companies as c (c.slug)}
-            <CompanyRow company={c} />
+            <CompanyRow
+              company={c}
+              lastSyncedAt={$companiesState.lastSyncedPerSlug[c.slug] ?? null}
+            />
           {/each}
         </div>
       {/if}
