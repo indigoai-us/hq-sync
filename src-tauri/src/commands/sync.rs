@@ -32,20 +32,22 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 
 use chrono::SecondsFormat;
 use tauri::{AppHandle, Emitter};
 
+use crate::commands::cognito;
 use crate::commands::config::{HqConfig, MenubarPrefs};
+use crate::commands::vault_client::VaultClient;
 use crate::commands::process::{
     cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
     ProcessEvent, SpawnArgs,
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
-    SyncCompleteEvent, SyncErrorEvent, SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR,
+    SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent, SyncEvent,
+    EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
     EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
 };
@@ -142,6 +144,52 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     );
 
     Ok(hq_folder.to_string_lossy().to_string())
+}
+
+/// Read `vault_api_url` from `~/.hq/config.json` for constructing the VaultClient.
+fn resolve_vault_api_url() -> Result<String, String> {
+    let config_path = paths::config_json_path()?;
+    if !config_path.exists() {
+        return Err("~/.hq/config.json not found — please complete setup first".to_string());
+    }
+    let contents = std::fs::read_to_string(&config_path)
+        .map_err(|e| format!("read config.json: {e}"))?;
+    let config: HqConfig = serde_json::from_str(&contents)
+        .map_err(|e| format!("parse config.json: {e}"))?;
+    Ok(config.vault_api_url)
+}
+
+/// Testable core: given a pre-fetched token result and a refresh function,
+/// return a fresh access token (refreshing if expired).
+///
+/// The `tokens = refreshed;` reassignment is the critical line that routes the
+/// returned token through the refreshed struct — removing it causes the function
+/// to return the stale access_token. `test_start_sync_jwt_fetch_uses_refreshed_token`
+/// asserts this.
+async fn resolve_jwt_impl<F, Fut>(
+    tokens_result: Result<Option<cognito::CognitoTokens>, String>,
+    refresh_fn: F,
+) -> Result<String, String>
+where
+    F: FnOnce(String) -> Fut,
+    Fut: std::future::Future<Output = Result<cognito::CognitoTokens, String>>,
+{
+    let mut tokens = tokens_result?
+        .ok_or_else(|| "Not signed in — please complete setup first".to_string())?;
+    if cognito::is_expired(&tokens) {
+        let refreshed = refresh_fn(tokens.refresh_token).await?;
+        tokens = refreshed;
+    }
+    Ok(tokens.access_token)
+}
+
+/// Fetch the current JWT from the on-disk token cache, refreshing if expired.
+pub async fn resolve_jwt() -> Result<String, String> {
+    let tokens_result = cognito::get_tokens().await;
+    resolve_jwt_impl(tokens_result, |rt| async move {
+        cognito::refresh_access_token(&rt).await
+    })
+    .await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -353,7 +401,7 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
 ///
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
-pub fn start_sync(app: AppHandle) -> Result<String, String> {
+pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     #[cfg(debug_assertions)]
     eprintln!("[sync] start_sync invoked");
 
@@ -364,7 +412,7 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
         return Err("Sync is already running".to_string());
     }
 
-    // Resolve config — deregister on failure so future syncs aren't blocked
+    // Resolve HQ folder — deregister on failure so future syncs aren't blocked
     let hq_folder_path = match resolve_hq_folder_path() {
         Ok(p) => p,
         Err(e) => {
@@ -374,6 +422,54 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
             return Err(e);
         }
     };
+
+    // Resolve vault URL from ~/.hq/config.json
+    let vault_api_url = match resolve_vault_api_url() {
+        Ok(u) => u,
+        Err(e) => {
+            deregister_process(SYNC_HANDLE);
+            return Err(e);
+        }
+    };
+
+    // Fetch (and if needed refresh) the Cognito JWT
+    let jwt = match resolve_jwt().await {
+        Ok(j) => j,
+        Err(e) => {
+            deregister_process(SYNC_HANDLE);
+            return Err(e);
+        }
+    };
+
+    // Provision any cloud: true companies that haven't been provisioned yet
+    let vault = VaultClient::new(&vault_api_url, &jwt);
+    let companies = match crate::commands::provision::provision_missing_companies(
+        &std::path::PathBuf::from(&hq_folder_path),
+        &vault,
+        &vault_api_url,
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            deregister_process(SYNC_HANDLE);
+            return Err(e);
+        }
+    };
+    for company in &companies {
+        if let Err(_e) = app.emit(
+            EVENT_SYNC_COMPANY_PROVISIONED,
+            SyncCompanyProvisionedEvent {
+                company_uid: company.uid.clone(),
+                company_slug: company.slug.clone(),
+                bucket_name: company.bucket_name.clone(),
+            },
+        ) {
+            #[cfg(debug_assertions)]
+            eprintln!("[sync] failed to emit company-provisioned: {}", _e);
+        }
+    }
+
     let spawn_args = build_sync_spawn_args(&hq_folder_path);
     #[cfg(debug_assertions)]
     eprintln!(
@@ -382,8 +478,8 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
     );
 
     // Timeout watchdog — cancels sync after SYNC_TIMEOUT
-    thread::spawn(move || {
-        thread::sleep(SYNC_TIMEOUT);
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(SYNC_TIMEOUT).await;
         if is_registered(SYNC_HANDLE) {
             #[cfg(debug_assertions)]
             eprintln!("[sync] timeout reached, cancelling");
@@ -391,14 +487,17 @@ pub fn start_sync(app: AppHandle) -> Result<String, String> {
         }
     });
 
-    // Background thread: run the subprocess and stream events
+    // Background task: run the subprocess and stream events.
+    // run_process_impl is a blocking sync function (mpsc::Receiver iteration +
+    // child.wait()), so it must run on a dedicated OS thread via spawn_blocking,
+    // not on a tokio worker thread.
     let app_bg = app.clone();
     let hq_folder_for_handler = hq_folder_path.clone();
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
-    thread::spawn(move || {
+    tauri::async_runtime::spawn_blocking(move || {
         #[cfg(debug_assertions)]
-        eprintln!("[sync] bg thread: entering run_process_impl");
+        eprintln!("[sync] bg task: entering run_process_impl");
         let result = run_process_impl(SYNC_HANDLE, &spawn_args, |event| match event {
             ProcessEvent::Stdout(line) => {
                 #[cfg(debug_assertions)]
@@ -464,6 +563,62 @@ pub fn cancel_sync() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::cognito::CognitoTokens;
+
+    // ── resolve_jwt_impl ─────────────────────────────────────────────────────────
+
+    fn make_tokens(access: &str, refresh: &str, expires_at: i64) -> CognitoTokens {
+        CognitoTokens {
+            access_token: access.to_string(),
+            id_token: None,
+            refresh_token: refresh.to_string(),
+            expires_at,
+        }
+    }
+
+    /// The `tokens = refreshed;` reassignment is critical: without it the function
+    /// returns the stale access_token even after a successful refresh.
+    #[tokio::test]
+    async fn test_start_sync_jwt_fetch_uses_refreshed_token() {
+        let expired = make_tokens("EXPIRED_ACCESS", "REFRESH_TOKEN", 0); // expires_at=0 → is_expired==true
+        let fresh = make_tokens("FRESH_ACCESS", "REFRESH_TOKEN", i64::MAX);
+
+        let result = resolve_jwt_impl(Ok(Some(expired)), |_rt| async move { Ok(fresh) })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result, "FRESH_ACCESS",
+            "resolve_jwt must return the refreshed access_token, not the expired one"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_resolve_jwt_impl_no_refresh_when_not_expired() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let valid = make_tokens("VALID_ACCESS", "REFRESH_TOKEN", now_ms + 600_000);
+
+        let result = resolve_jwt_impl(Ok(Some(valid)), |_rt| async move {
+            panic!("refresh_fn must not be called when token is valid")
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result, "VALID_ACCESS");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_jwt_impl_none_tokens_returns_err() {
+        let result = resolve_jwt_impl(
+            Ok(None),
+            |_rt| async move { panic!("should not reach refresh") },
+        )
+        .await;
+        assert!(result.is_err());
+    }
 
     #[test]
     fn test_build_sync_spawn_args_cmd() {

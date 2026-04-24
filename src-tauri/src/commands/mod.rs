@@ -8,6 +8,8 @@ pub mod folder_picker;
 pub mod oauth;
 pub mod prewarm;
 pub mod process;
+pub mod provision;
 pub mod settings;
 pub mod status;
 pub mod sync;
+pub mod vault_client;

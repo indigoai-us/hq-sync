@@ -14,6 +14,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_yaml = "0.9"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["full"] }
 nix = { version = "0.29", features = ["signal"] }
@@ -26,6 +27,11 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 sentry = "^0.35"
 ignore = "0.4"
 walkdir = "2"
+aws-sdk-s3 = "1"
+aws-sdk-sts = "1"
+aws-config = "1"
+aws-smithy-types = "1"
+aws-credential-types = "1"
 
 [profile.release]
 split-debuginfo = "packed"
@@ -42,3 +48,4 @@ objc2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"
