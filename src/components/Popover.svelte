@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SyncStats from './SyncStats.svelte';
+  import EmbeddingsRow from './EmbeddingsRow.svelte';
   import SyncButton from './SyncButton.svelte';
   import ConflictModal from './ConflictModal.svelte';
   import type { ConflictFile } from '../stores/conflicts';
@@ -195,6 +196,7 @@
       {/if}
 
       <SyncStats bind:this={statsEl} />
+      <EmbeddingsRow />
 
       <!-- Connected companies — rendered whenever we have a known fanout.
            `name` falls back to `slug` for runners < v5.1.9. -->

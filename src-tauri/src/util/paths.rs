@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 /// Returns the ~/.hq/ directory path.
 pub fn hq_config_dir() -> Result<PathBuf, String> {
@@ -63,6 +64,41 @@ pub fn resolve_bin(name: &str) -> String {
     name.to_string()
 }
 
+/// Resolve the bin directory of the Node the user's login shell picks.
+///
+/// Asks `zsh -lc 'command -v node'` so the user's startup chain (`.zshrc`,
+/// nvm/volta/asdf activation, etc.) runs and PATH points at the *currently
+/// active* Node — the same one they had when they ran `npm i -g @tobilu/qmd`
+/// and linked its native modules against a specific ABI. Returns `None` when
+/// zsh isn't available or no Node resolves.
+///
+/// This replaces the old `child_path` behaviour of blindly prepending every
+/// `~/.nvm/versions/node/*/bin` in directory-listing order. With multiple
+/// installed Node versions, that order is alphabetical (non-deterministic
+/// from the user's perspective), so the child could inherit a PATH where
+/// `env node` hit a version that didn't match the one `qmd` / `hq-sync-runner`
+/// was compiled against — surfacing as
+/// `NODE_MODULE_VERSION N vs M` ABI mismatches. See the bug report on
+/// hq-sync#14 / hq-installer#34 codex review.
+pub fn active_node_bin_dir() -> Option<String> {
+    let out = Command::new("zsh")
+        .args(["-lc", "command -v node"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let node_path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if node_path.is_empty() {
+        return None;
+    }
+    let p = Path::new(&node_path);
+    if !p.exists() {
+        return None;
+    }
+    p.parent().map(|d| d.to_string_lossy().to_string())
+}
+
 /// Build a PATH value suitable for handing to a spawned child process.
 ///
 /// **Why this exists:** even after we resolve a launcher binary to an absolute
@@ -72,33 +108,50 @@ pub fn resolve_bin(name: &str) -> String {
 /// Tauri app inherits, that lookup fails and the child exits with 127
 /// ("command not found"). Same applies to anything the script itself spawns.
 ///
-/// We prepend likely interpreter locations (nvm versions, npm-global,
-/// homebrew) to whatever PATH we have so shebangs resolve cleanly.
+/// **Ordering strategy:** put the user's *active* Node (the one their login
+/// shell would resolve) first, then standard install locations, then
+/// whatever the parent process had. This ensures native-module packages
+/// (qmd → better-sqlite3, hq-sync-runner) see the exact Node they were
+/// compiled against — no ABI roulette from mixing nvm versions.
 ///
-/// Order: nvm node dirs → `~/.npm-global/bin` → `/opt/homebrew/bin` →
-/// `/usr/local/bin` → system defaults → whatever the parent had.
+/// Order: active nvm/volta/asdf node → `~/.npm-global/bin` →
+/// `/opt/homebrew/bin` → `/usr/local/bin` → system defaults → parent PATH.
+///
+/// The result is memoised in a `OnceLock` because the active Node resolution
+/// spawns a login shell (~100ms). For the app lifetime that's fine: the
+/// user's default Node doesn't change between invocations of the same
+/// running app.
 pub fn child_path() -> String {
+    static CACHE: OnceLock<String> = OnceLock::new();
+    CACHE.get_or_init(compute_child_path).clone()
+}
+
+fn compute_child_path() -> String {
     let mut parts: Vec<String> = Vec::new();
 
-    if let Some(home) = dirs::home_dir() {
-        // nvm: prepend every installed node version's bin dir. Order doesn't
-        // matter for correctness (any working `node` resolves `env node`).
-        let nvm_versions = home.join(".nvm").join("versions").join("node");
-        if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
-            for entry in entries.flatten() {
-                let bin = entry.path().join("bin");
-                if bin.exists() {
-                    parts.push(bin.to_string_lossy().to_string());
-                }
-            }
+    // Invariant: `parts` never contains duplicates. `env node` uses
+    // first-match semantics so duplicates don't change behaviour, but
+    // trimming them keeps the PATH readable in logs and tests.
+    let push_if_new = |v: String, parts: &mut Vec<String>| {
+        if !v.is_empty() && !parts.iter().any(|x| x == &v) {
+            parts.push(v);
         }
-        // User-level npm prefix (no-sudo installs).
+    };
+
+    // 1. Active Node (resolves nvm/volta/asdf through the user's shell).
+    if let Some(node_bin) = active_node_bin_dir() {
+        push_if_new(node_bin, &mut parts);
+    }
+
+    // 2. User-level npm prefix (no-sudo installs).
+    if let Some(home) = dirs::home_dir() {
         let npm_global = home.join(".npm-global").join("bin");
         if npm_global.exists() {
-            parts.push(npm_global.to_string_lossy().to_string());
+            push_if_new(npm_global.to_string_lossy().to_string(), &mut parts);
         }
     }
 
+    // 3. Standard install locations + system dirs.
     for p in [
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -107,14 +160,13 @@ pub fn child_path() -> String {
         "/usr/sbin",
         "/sbin",
     ] {
-        parts.push(p.to_string());
+        push_if_new(p.to_string(), &mut parts);
     }
 
+    // 4. Preserve anything the parent already had.
     if let Ok(existing) = std::env::var("PATH") {
         for p in existing.split(':') {
-            if !p.is_empty() && !parts.iter().any(|x| x == p) {
-                parts.push(p.to_string());
-            }
+            push_if_new(p.to_string(), &mut parts);
         }
     }
 
@@ -129,6 +181,33 @@ pub fn config_json_path() -> Result<PathBuf, String> {
 /// Returns the path to ~/.hq/menubar.json.
 pub fn menubar_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("menubar.json"))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Embeddings handoff paths (US-002)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Journal path at `{hq_folder}/.hq-embeddings-journal.json`. Kept next to
+/// the sync journal so the support snippet is the same shape:
+/// `cat ~/HQ/.hq-embeddings-journal.json`.
+pub fn embeddings_journal_path(hq_folder: &Path) -> PathBuf {
+    hq_folder.join(".hq-embeddings-journal.json")
+}
+
+/// Candidate pending-marker paths, in check order:
+///   1. `{hq_folder}/.hq-embeddings-pending.json` — preferred, written by the
+///      installer when `installPath` resolves to an absolute canonical path.
+///   2. `~/.hq/embeddings-pending.json` — fallback written by the installer
+///      when it couldn't resolve `installPath`.
+///
+/// Sync's auto-trigger needs to check both; success cleans both. Never
+/// returns the `~` path if the home directory can't be resolved.
+pub fn embeddings_pending_paths(hq_folder: &Path) -> Vec<PathBuf> {
+    let mut out = vec![hq_folder.join(".hq-embeddings-pending.json")];
+    if let Ok(hq_dir) = hq_config_dir() {
+        out.push(hq_dir.join("embeddings-pending.json"));
+    }
+    out
 }
 
 /// Resolve the HQ folder path with priority:
@@ -240,6 +319,120 @@ mod tests {
                     assert!(path.contains(first), "child_path dropped existing entry {}", first);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_child_path_puts_active_node_first_when_resolvable() {
+        // Regression test for the ABI mismatch bug: previously child_path()
+        // iterated `~/.nvm/versions/node/*/bin` in directory-listing order
+        // and prepended every version; `env node` then bound to whichever
+        // sorted first alphabetically, which was often the wrong one.
+        //
+        // The new implementation asks the user's login shell for the
+        // *single* active Node (`zsh -lc 'command -v node'`) and puts its
+        // bin dir first. We verify that invariant here: if the active Node
+        // resolves, it must be the FIRST entry in child_path() so `env
+        // node` finds it before any other Node binaries the parent PATH
+        // may happen to contain.
+        //
+        // When zsh isn't available or no node resolves, `active_node_bin_dir`
+        // returns None and this test is a no-op — the behavioural fix is
+        // still in place, it just has nothing to assert on this host.
+        let path = child_path();
+        if let Some(active) = active_node_bin_dir() {
+            let first = path.split(':').next().unwrap_or("");
+            assert_eq!(
+                first, active,
+                "active node bin dir must be first in child_path() — got:\n  first:  {}\n  active: {}\n  full:   {}",
+                first, active, path
+            );
+        }
+    }
+
+    #[test]
+    fn test_child_path_dedupes_entries() {
+        // The forward-path construction must not emit the same directory
+        // twice — this matters when the active-Node resolver returns the
+        // same dir as one of the standard system locations (e.g. Homebrew
+        // `/opt/homebrew/bin/node` on a machine without nvm). Duplicates
+        // don't change `env node` behaviour but they bloat logs and make
+        // the PATH harder to audit.
+        let path = child_path();
+        let mut seen: Vec<&str> = Vec::new();
+        for entry in path.split(':') {
+            assert!(
+                !seen.contains(&entry),
+                "child_path contains duplicate entry `{}`:\n  {}",
+                entry,
+                path
+            );
+            seen.push(entry);
+        }
+    }
+
+    #[test]
+    fn test_active_node_bin_dir_returns_existing_directory_when_some() {
+        // Whatever active_node_bin_dir() returns (including None), we don't
+        // want to hand the child process a path that doesn't exist on disk
+        // — that would turn an ABI mismatch into a silent "command not
+        // found" with the same user symptoms and worse diagnostics.
+        if let Some(dir) = active_node_bin_dir() {
+            assert!(
+                std::path::Path::new(&dir).exists(),
+                "active_node_bin_dir returned a non-existent path: {}",
+                dir
+            );
+            // The returned dir must contain a `node` executable — otherwise
+            // we just polluted PATH without actually fixing shebang lookup.
+            let node_bin = std::path::Path::new(&dir).join("node");
+            assert!(
+                node_bin.exists(),
+                "active_node_bin_dir returned {} but {}/node does not exist",
+                dir,
+                dir
+            );
+        }
+    }
+
+    // ── Embeddings handoff paths (US-002) ────────────────────────────────────
+
+    #[test]
+    fn test_embeddings_journal_path_joins_dotfile() {
+        let p = embeddings_journal_path(Path::new("/tmp/hq"));
+        assert_eq!(p, PathBuf::from("/tmp/hq/.hq-embeddings-journal.json"));
+    }
+
+    #[test]
+    fn test_embeddings_pending_paths_first_is_hq_folder_primary() {
+        let paths = embeddings_pending_paths(Path::new("/tmp/hq"));
+        assert_eq!(
+            paths.first().unwrap(),
+            &PathBuf::from("/tmp/hq/.hq-embeddings-pending.json")
+        );
+    }
+
+    #[test]
+    fn test_embeddings_pending_paths_fallback_in_home_dotdir_when_resolvable() {
+        let paths = embeddings_pending_paths(Path::new("/tmp/hq"));
+        // When home dir resolves (the standard case on macOS/Linux),
+        // the fallback path is included as the second entry and lives under
+        // `~/.hq/`. If hq_config_dir fails (unusual), only the primary is
+        // returned — still safe, just less thorough.
+        if paths.len() >= 2 {
+            assert!(
+                paths[1].ends_with("embeddings-pending.json"),
+                "fallback path should end with embeddings-pending.json: {:?}",
+                paths[1]
+            );
+            assert!(
+                paths[1]
+                    .parent()
+                    .map(|p| p.ends_with(".hq"))
+                    .unwrap_or(false),
+                "fallback parent dir should be `.hq`: {:?}",
+                paths[1]
+            );
         }
     }
 

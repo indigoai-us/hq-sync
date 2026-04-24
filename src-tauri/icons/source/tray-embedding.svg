@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22" width="22" height="22">
+  <!-- Embedding: HQ + three-dot sparkle cluster in top-right (distinct
+       from syncing's single filled dot). Template image — alpha only;
+       macOS recolors via `icon_as_template(true)`. -->
+  <text x="11" y="16" text-anchor="middle" fill="white"
+        font-family="Helvetica, Arial, sans-serif"
+        font-weight="700" font-size="13" letter-spacing="-0.5">HQ</text>
+  <circle cx="19.0" cy="3.8" r="1.1" fill="white" />
+  <circle cx="16.5" cy="6.8" r="1.1" fill="white" />
+  <circle cx="21.2" cy="6.8" r="1.1" fill="white" />
+</svg>

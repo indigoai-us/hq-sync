@@ -74,6 +74,9 @@ fn main() {
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
+            commands::embeddings::start_embeddings,
+            commands::embeddings::cancel_embeddings,
+            commands::embeddings::get_embeddings_status,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,
@@ -105,6 +108,14 @@ fn main() {
             // download. No-ops if the cache is already warm. See
             // `commands::prewarm` for the rationale.
             commands::prewarm::spawn_prewarm();
+
+            // Fire-and-forget: if the installer left a pending marker and
+            // the journal doesn't show a successful run in the last hour,
+            // run `qmd embed` in the background. See
+            // `commands::embeddings::spawn_autotrigger` for the guard logic
+            // (marker check + journal age + qmd-on-PATH preflight). Matches
+            // `prewarm.rs`'s std::thread pattern so setup stays non-async.
+            commands::embeddings::spawn_autotrigger(app.handle().clone());
 
             // Feature-flagged daemon autostart (V2 prep — default OFF)
             if commands::daemon::is_autostart_enabled() {

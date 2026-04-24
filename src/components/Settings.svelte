@@ -1,6 +1,11 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
+  import { onMount } from 'svelte';
+  import {
+    embeddingsStore,
+    type EmbeddingsStatusValue,
+  } from '../stores/embeddings';
 
   interface Props {
     onback: () => void;
@@ -28,6 +33,68 @@
   // Sourced from a single place (the Rust bundle metadata) so it stays in
   // sync with the binary the user is actually running.
   let appVersion = $state<string>('');
+
+  // Embeddings maintenance — local reactive mirror of the shared store.
+  // Same subscribe/notify bridge as EmbeddingsRow so this screen and the
+  // popover stay in lockstep when a run is kicked off from either.
+  let embeddingsStatus = $state<EmbeddingsStatusValue>(embeddingsStore.status);
+  let embeddingsLastRunAt = $state<string | undefined>(embeddingsStore.lastRunAt);
+  let embeddingsErrorMsg = $state<string | undefined>(embeddingsStore.errorMsg);
+
+  // Shared relative-time formatter — duplicated from EmbeddingsRow because
+  // Svelte component CSS scoping doesn't let us import a .svelte file's
+  // script helpers. Keeping the function inline (and 15 lines) is cheaper
+  // than introducing a util module for a single-use formatter.
+  function timeAgo(isoDate: string): string {
+    const now = Date.now();
+    const then = new Date(isoDate).getTime();
+    if (isNaN(then)) return 'unknown';
+    const seconds = Math.floor((now - then) / 1000);
+    if (seconds < 0) return 'just now';
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) {
+      const m = Math.floor(seconds / 60);
+      return `${m} minute${m > 1 ? 's' : ''} ago`;
+    }
+    if (seconds < 86400) {
+      const h = Math.floor(seconds / 3600);
+      return `${h} hour${h > 1 ? 's' : ''} ago`;
+    }
+    const d = Math.floor(seconds / 86400);
+    return `${d} day${d > 1 ? 's' : ''} ago`;
+  }
+
+  let embeddingsSubtext = $derived(
+    embeddingsStatus === 'running'
+      ? 'Running now — progress visible in the popover.'
+      : embeddingsLastRunAt
+        ? `Last run: ${timeAgo(embeddingsLastRunAt)}`
+        : 'Last run: Never'
+  );
+
+  async function handleRunEmbeddings() {
+    if (embeddingsStatus === 'running') return;
+    try {
+      await embeddingsStore.startNow('manual');
+    } catch (err) {
+      // Duplicate-invoke (e.g. "already running") surfaces here; the real
+      // recovery signal is the `embeddings:error` event that App.svelte
+      // listens for, so we only need to avoid an uncaught promise.
+      console.error('[settings] start_embeddings failed:', err);
+    }
+  }
+
+  onMount(() => {
+    const unsub = embeddingsStore.subscribe(() => {
+      embeddingsStatus = embeddingsStore.status;
+      embeddingsLastRunAt = embeddingsStore.lastRunAt;
+      embeddingsErrorMsg = embeddingsStore.errorMsg;
+    });
+    // Seed from the journal so the "Last run: …" line is accurate on first
+    // open, even if the popover was never opened this session.
+    embeddingsStore.refresh();
+    return unsub;
+  });
 
   let pathDisplay = $derived(
     hqPath ? hqPath.replace(/^\/Users\/[^/]+/, '~') : '~/hq'
@@ -261,6 +328,33 @@
 
       <div class="settings-divider"></div>
 
+      <!-- Maintenance — manual embeddings trigger (US-005). Kept as its own
+           section because it's the only destination where the user can
+           intentionally re-run indexing; the popover surface is read-only. -->
+      <div class="settings-section-label">Maintenance</div>
+
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Run embeddings now</span>
+          <span class="setting-desc" data-embeddings-subtext>{embeddingsSubtext}</span>
+          {#if embeddingsStatus === 'error' && embeddingsErrorMsg}
+            <span class="setting-error" title={embeddingsErrorMsg}>
+              {embeddingsErrorMsg}
+            </span>
+          {/if}
+        </div>
+        <button
+          class="change-button"
+          data-run-embeddings
+          onclick={handleRunEmbeddings}
+          disabled={embeddingsStatus === 'running'}
+        >
+          {embeddingsStatus === 'running' ? 'Running…' : 'Run now'}
+        </button>
+      </div>
+
+      <div class="settings-divider"></div>
+
       <!-- Version — read-only; sourced from tauri.conf.json via getVersion() -->
       <div class="setting-row">
         <div class="setting-info">
@@ -428,6 +522,37 @@
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
     color: var(--popover-text, #e0e0e0);
     border-color: var(--popover-border, rgba(99, 102, 241, 0.12));
+  }
+
+  /* Section label — uppercase micro-header for grouping ("Maintenance"
+     sits above the `Run embeddings now` row). Matches macOS Preferences'
+     section conventions. Indented to align with setting-row labels. */
+  .settings-section-label {
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--popover-text-muted, #a0a0b0);
+    padding: 0.625rem 1rem 0.125rem;
+  }
+
+  /* Inline error under a setting-row label. Amber-red, 11px, single line
+     with title= for the full message. Used by the Maintenance section to
+     surface the last `embeddings:error` message. */
+  .setting-error {
+    font-size: 0.6875rem;
+    color: #ef4444;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 0.125rem;
+  }
+
+  @media (prefers-color-scheme: light) {
+    .setting-error {
+      color: #b91c1c;
+    }
   }
 
   /* Version value — monospace, subdued, aligned to the right like a
