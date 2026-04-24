@@ -5,6 +5,7 @@
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
+  import { embeddingsStore } from './stores/embeddings';
   import { shouldSkipSignIn } from './lib/auth';
   import './styles/popover.css';
 
@@ -285,6 +286,47 @@
           await invoke('set_tray_state', { state: 'error' });
         }
       )
+    );
+
+    // --- Embeddings event listeners (US-003) ---
+    // Protocol (see src-tauri/src/commands/embeddings.rs):
+    //   embeddings:start     — { reason, startedAt }
+    //   embeddings:progress  — { line }         per stdout/stderr line
+    //   embeddings:complete  — { durationSec }
+    //   embeddings:error     — { message }
+    // All four drive the popover's EmbeddingsRow via `embeddingsStore`.
+    // Tray-state wiring lives in US-004; here we only update UI state.
+    unlisteners.push(
+      await listen<{ reason: string; startedAt: string }>(
+        'embeddings:start',
+        (event) => {
+          embeddingsStore.applyStart(event.payload);
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ line: string }>('embeddings:progress', (event) => {
+        embeddingsStore.applyProgress(event.payload);
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ durationSec: number }>(
+        'embeddings:complete',
+        async (event) => {
+          embeddingsStore.applyComplete(event.payload);
+          // Re-seed from the journal so `lastRunAt` uses the authoritative
+          // server timestamp instead of our client-side approximation.
+          await embeddingsStore.refresh();
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ message: string }>('embeddings:error', (event) => {
+        embeddingsStore.applyError(event.payload);
+      })
     );
 
     // --- Updater event listener ---
