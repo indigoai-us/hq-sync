@@ -91,6 +91,13 @@ jobs:
           # build.rs reads this via env!("SENTRY_DSN") — must be present at compile time
           # so the signed binary has a wired DSN rather than the empty-string no-op path.
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
+          # Webview (Svelte) Sentry integration. VITE_SENTRY_DSN is inlined by Vite at
+          # build time; the other three vars are consumed by @sentry/vite-plugin to
+          # upload source maps and create the release during `vite build`.
+          VITE_SENTRY_DSN: ${{ secrets.VITE_HQ_SYNC_SENTRY_DSN }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: indigo-d0
+          SENTRY_PROJECT: hq-sync-web
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "HQ Sync ${{ github.event.inputs.tag || github.ref_name }}"
