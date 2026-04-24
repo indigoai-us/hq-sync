@@ -6,6 +6,7 @@
   import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
+  import { companiesState, type CompanyInfo } from './lib/stores';
   import './styles/popover.css';
 
   interface Config {
@@ -69,6 +70,32 @@
       config = await invoke<Config>('get_config');
     } catch (err) {
       console.error('Failed to load config:', err);
+    }
+  }
+
+  // Seed the companiesState store from the US-004b Tauri command.
+  // Errors surface as `loading:false, error:<msg>` per AC5; the Popover
+  // renders the error inline above SyncStats.
+  async function loadCompanies() {
+    try {
+      const list = await invoke<CompanyInfo[]>('list_all_companies');
+      companiesState.setCompanies(list);
+    } catch (err) {
+      companiesState.setError(String(err));
+    }
+  }
+
+  // Seed per-company `lastSyncedAt` from the journal scan. Runs in parallel
+  // with `loadCompanies` — the row render only needs the map by the time
+  // the companies render, and a missing entry falls through to "never".
+  // Non-fatal: a scan error just means rows start at "never" and recover
+  // as soon as the next `sync:complete` stamps them.
+  async function loadJournals() {
+    try {
+      const map = await invoke<Record<string, string>>('list_sync_journals');
+      companiesState.setLastSyncedMap(map);
+    } catch (err) {
+      console.error('list_sync_journals failed:', err);
     }
   }
 
@@ -240,6 +267,16 @@
         // wait for sync:all-complete to know the whole fanout is done.
         syncFanoutDoneCount += 1;
         syncFanoutFilesSkipped += event.payload.filesSkipped;
+        // Stamp the row's `lastSyncedAt` immediately so users see "just
+        // now" without waiting for a journal round-trip. The Rust side
+        // writes the canonical journal shard; we optimistically mirror
+        // that here using the event's own slug (carried as `company`).
+        if (event.payload.company) {
+          companiesState.updateLastSynced(
+            event.payload.company,
+            new Date().toISOString()
+          );
+        }
         if (event.payload.aborted) {
           // Conflict-aborted: show the conflict state so the user knows
           // something needs attention. ConflictModal wiring is follow-up
@@ -287,6 +324,62 @@
       )
     );
 
+    // --- Promotion event listeners (US-005) ---
+    // Protocol (see src-tauri/src/commands/promote.rs):
+    //   promote:start     { slug, startedAt }
+    //   promote:progress  { slug, step }
+    //   promote:complete  { slug, uid, bucketName }
+    //   promote:error     { slug, message }
+    //
+    // CAUTION: `promote:start` can fire twice per promotion (synchronous
+    // Tauri-command emit + background runner stream emit). The store's
+    // `startPromote` is idempotent (first-seen wins) so duplicates are a
+    // no-op.
+    unlisteners.push(
+      await listen<{ slug: string; startedAt: string }>(
+        'promote:start',
+        (event) => {
+          companiesState.startPromote(event.payload.slug);
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ slug: string; step: string }>('promote:progress', () => {
+        // No-op for now — row shows a generic "Promoting…" label + spinner
+        // regardless of step. Future: surface step text inline.
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ slug: string; uid: string; bucketName: string }>(
+        'promote:complete',
+        async (event) => {
+          const { slug, uid } = event.payload;
+          companiesState.markPromoted(slug, uid);
+          // Auto-trigger sync per AC3 — the promotion landed the row on
+          // S3, so the user expects an immediate pull of cloud state.
+          try {
+            await handleSyncNow();
+          } catch (err) {
+            console.error('auto start_sync after promote failed:', err);
+          }
+        }
+      )
+    );
+
+    unlisteners.push(
+      await listen<{ slug: string; message: string }>(
+        'promote:error',
+        (event) => {
+          companiesState.setPromoteError(
+            event.payload.slug,
+            event.payload.message
+          );
+        }
+      )
+    );
+
     // --- Updater event listener ---
     // Protocol (see src-tauri/src/updater.rs):
     //   update:available — payload { version, body?, date? }
@@ -315,6 +408,8 @@
 
     checkAuth();
     loadConfig();
+    loadCompanies();
+    loadJournals();
     setupTrayListeners();
 
     return () => {
