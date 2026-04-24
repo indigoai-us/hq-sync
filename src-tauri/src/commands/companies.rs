@@ -377,6 +377,28 @@ pub fn promote_company_impl<R: Runtime>(
         return Err("already running".to_string());
     }
 
+    // Delegate to the already-registered path. We've reserved the handle
+    // above, so the worker must not try to register it again.
+    promote_company_impl_registered(app, slug, spawn)
+}
+
+/// Same as [`promote_company_impl`] but assumes the caller has ALREADY
+/// reserved `promote_handle(slug)` via [`try_register_handle`]. Used by the
+/// Tauri command wrapper, which must register the handle synchronously (so
+/// a concurrent caller gets `Err("already running")` without racing the
+/// background thread) and then transfer the registration into the worker
+/// without a TOCTOU gap.
+///
+/// The worker OWNS the handle for the rest of its lifecycle: on spawn
+/// failure it deregisters; on normal exit `run_process_impl` deregisters
+/// via its internal bookkeeping.
+pub fn promote_company_impl_registered<R: Runtime>(
+    app: AppHandle<R>,
+    slug: &str,
+    spawn: SpawnArgs,
+) -> Result<(), String> {
+    let handle = promote_handle(slug);
+
     let state = Arc::new(Mutex::new(PromoteState::default()));
     let state_for_handler = state.clone();
     let app_for_handler = app.clone();
@@ -462,9 +484,12 @@ pub fn promote_company_impl<R: Runtime>(
 pub fn promote_company(app: AppHandle, slug: String) -> Result<String, String> {
     let handle = promote_handle(&slug);
 
-    // Do the "already running" check up front so callers get a synchronous
-    // error, not an event-via-thread. We register the handle here, then
-    // transfer ownership of the handle's lifecycle to the background thread.
+    // Atomically reserve the handle. If a promote is already in flight for
+    // this slug, bail immediately. Critically, we KEEP the registration held
+    // across the handoff into the background worker — there is no gap where
+    // another caller could slip past the guard and spawn a second runner.
+    // The worker either succeeds (run_process_impl deregisters on exit) or
+    // fails (spawn path below deregisters on error).
     if !try_register_handle(&handle) {
         return Err("already running".to_string());
     }
@@ -493,19 +518,18 @@ pub fn promote_company(app: AppHandle, slug: String) -> Result<String, String> {
         },
     );
 
-    // Background thread: own the subprocess lifecycle. We release the handle
-    // we just claimed (so the impl's own try_register_handle succeeds) — the
-    // gap is microseconds and is protected by the fact that we already
-    // returned an explicit already-running error to any racing caller.
-    deregister_process(&handle);
-
+    // Background thread: own the subprocess lifecycle. The handle is already
+    // registered (above); the worker uses the `_registered` entry point,
+    // which does NOT call try_register_handle again. This closes the TOCTOU
+    // window where two concurrent callers could both see "not registered"
+    // between deregister + thread spawn.
     let slug_bg = slug.clone();
     let app_bg = app.clone();
     thread::spawn(move || {
         // Errors from the impl are already surfaced as promote:error events
         // (either from the runner's own ndjson or the synthetic exit-code
         // path). The Result is dropped intentionally.
-        let _ = promote_company_impl(app_bg, &slug_bg, spawn_args);
+        let _ = promote_company_impl_registered(app_bg, &slug_bg, spawn_args);
     });
 
     Ok(handle)
@@ -536,9 +560,10 @@ mod tests {
         assert!(args.args.contains(&"--list-all-companies".to_string()));
         assert!(args.args.contains(&"--hq-root".to_string()));
         assert!(args.args.contains(&"/Users/test/HQ".to_string()));
-        assert!(args
-            .args
-            .contains(&format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION)));
+        assert!(args.args.contains(&format!(
+            "--package={}@{}",
+            HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION
+        )));
         assert!(args.args.contains(&RUNNER_BIN.to_string()));
     }
 
@@ -568,7 +593,11 @@ mod tests {
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         let path = env.get("PATH").expect("PATH must be set");
-        assert!(path.contains("/opt/homebrew/bin"), "PATH missing /opt/homebrew/bin: {}", path);
+        assert!(
+            path.contains("/opt/homebrew/bin"),
+            "PATH missing /opt/homebrew/bin: {}",
+            path
+        );
     }
 
     // ── ndjson parsing ────────────────────────────────────────────────────
@@ -598,7 +627,11 @@ mod tests {
         let line = r#"{"type":"promote:complete","slug":"acme","uid":"cmp_01","bucketName":"b-1"}"#;
         let parsed: RunnerLine = serde_json::from_str(line).unwrap();
         match parsed {
-            RunnerLine::PromoteComplete { slug, uid, bucket_name } => {
+            RunnerLine::PromoteComplete {
+                slug,
+                uid,
+                bucket_name,
+            } => {
                 assert_eq!(slug, "acme");
                 assert_eq!(uid, "cmp_01");
                 assert_eq!(bucket_name, "b-1");
@@ -682,11 +715,7 @@ mod tests {
 
     // ── list_all_companies_impl via a stub POSIX script ──────────────────
 
-    fn make_exec_stub(
-        dir: &std::path::Path,
-        name: &str,
-        body: &str,
-    ) -> std::path::PathBuf {
+    fn make_exec_stub(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
         let path = dir.join(name);
         std::fs::write(&path, body).unwrap();
@@ -724,11 +753,7 @@ printf '[{"slug":"acme","name":"Acme","source":"local"},{"slug":"beta","name":"B
     #[test]
     fn test_list_all_companies_impl_empty_list() {
         let tmp = tempfile::tempdir().unwrap();
-        let script = make_exec_stub(
-            tmp.path(),
-            "stub.sh",
-            "#!/bin/sh\nprintf '[]\\n'\n",
-        );
+        let script = make_exec_stub(tmp.path(), "stub.sh", "#!/bin/sh\nprintf '[]\\n'\n");
         let spawn = SpawnArgs {
             cmd: script.to_string_lossy().to_string(),
             args: vec![],
@@ -755,17 +780,17 @@ printf '[{"slug":"acme","name":"Acme","source":"local"},{"slug":"beta","name":"B
         };
         let err = list_all_companies_impl(&spawn).unwrap_err();
         assert!(err.contains("exited"), "expected exit error, got: {}", err);
-        assert!(err.contains("boom"), "expected stderr passed through, got: {}", err);
+        assert!(
+            err.contains("boom"),
+            "expected stderr passed through, got: {}",
+            err
+        );
     }
 
     #[test]
     fn test_list_all_companies_impl_non_json_returns_err() {
         let tmp = tempfile::tempdir().unwrap();
-        let script = make_exec_stub(
-            tmp.path(),
-            "stub.sh",
-            "#!/bin/sh\nprintf 'not json\\n'\n",
-        );
+        let script = make_exec_stub(tmp.path(), "stub.sh", "#!/bin/sh\nprintf 'not json\\n'\n");
         let spawn = SpawnArgs {
             cmd: script.to_string_lossy().to_string(),
             args: vec![],
