@@ -145,6 +145,17 @@ pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
 pub const EVENT_SYNC_ALL_COMPLETE: &str = "sync:all-complete";
 /// Deprecated — kept for frontend shape-compat. Not emitted by the runner.
 pub const EVENT_SYNC_CONFLICT: &str = "sync:conflict";
+/// Emitted once per newly-provisioned company after `provision_missing_companies` succeeds.
+pub const EVENT_SYNC_COMPANY_PROVISIONED: &str = "sync:company-provisioned";
+
+/// Payload for `EVENT_SYNC_COMPANY_PROVISIONED`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncCompanyProvisionedEvent {
+    pub company_uid: String,
+    pub company_slug: String,
+    pub bucket_name: String,
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
