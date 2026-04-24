@@ -74,6 +74,14 @@ fn main() {
             // `commands::prewarm` for the rationale.
             commands::prewarm::spawn_prewarm();
 
+            // Fire-and-forget: if the installer left a pending marker and
+            // the journal doesn't show a successful run in the last hour,
+            // run `qmd embed` in the background. See
+            // `commands::embeddings::spawn_autotrigger` for the guard logic
+            // (marker check + journal age + qmd-on-PATH preflight). Matches
+            // `prewarm.rs`'s std::thread pattern so setup stays non-async.
+            commands::embeddings::spawn_autotrigger(app.handle().clone());
+
             // Feature-flagged daemon autostart (V2 prep — default OFF)
             if commands::daemon::is_autostart_enabled() {
                 std::thread::spawn(|| {

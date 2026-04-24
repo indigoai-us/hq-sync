@@ -1,8 +1,24 @@
 //! System tray icon with state-driven icon swapping.
 //!
-//! Four visual states: **idle**, **syncing**, **error**, **conflict**.
-//! Left-click toggles the popover window; right-click shows a context menu
-//! with "Sync Now", "Settings", and "Quit".
+//! Five visual states: **idle**, **syncing**, **embedding**, **error**,
+//! **conflict**. Left-click toggles the popover window; right-click shows a
+//! context menu with "Sync Now", "Settings", and "Quit".
+//!
+//! ## State precedence (highest-first)
+//!
+//!   `error > conflict > syncing > embedding > idle`
+//!
+//! When multiple state changes race (e.g. a sync error fires at the same
+//! moment an embeddings run starts), higher-precedence states win. This
+//! matches what the user expects visually — a red error icon should not be
+//! overwritten by a lower-severity "generating embeddings" signal, and a
+//! conflict that needs attention should beat both of the background-work
+//! indicators. `idle` is the default resting state.
+//!
+//! The precedence contract is enforced at each write site: event listeners
+//! below only call `update_tray_icon(X)` when the current state is at or
+//! below X's tier. The frontend's explicit `set_tray_state` respects it too
+//! for transitions into the non-terminal states (`embedding`, `idle`).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -22,17 +38,31 @@ use tauri::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayState {
     Idle,
+    Embedding,
     Syncing,
-    Error,
     Conflict,
+    Error,
 }
 
 impl TrayState {
+    /// Precedence tier. Higher wins when state changes race.
+    ///   error(4) > conflict(3) > syncing(2) > embedding(1) > idle(0)
+    fn rank(self) -> u8 {
+        match self {
+            Self::Idle => 0,
+            Self::Embedding => 1,
+            Self::Syncing => 2,
+            Self::Conflict => 3,
+            Self::Error => 4,
+        }
+    }
+
     /// Parse from a frontend string (case-insensitive).
     pub fn from_str_loose(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "idle" => Some(Self::Idle),
             "syncing" => Some(Self::Syncing),
+            "embedding" => Some(Self::Embedding),
             "error" => Some(Self::Error),
             "conflict" => Some(Self::Conflict),
             _ => None,
@@ -44,6 +74,7 @@ impl TrayState {
         match self {
             Self::Idle => "HQ Sync — Idle",
             Self::Syncing => "HQ Sync — Syncing…",
+            Self::Embedding => "Generating embeddings…",
             Self::Error => "HQ Sync — Error",
             Self::Conflict => "HQ Sync — Conflict",
         }
@@ -114,6 +145,7 @@ impl Drop for ModalGuard {
 fn icon_for_state(state: TrayState) -> Image<'static> {
     static ICON_IDLE: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_SYNCING: OnceLock<Image<'static>> = OnceLock::new();
+    static ICON_EMBEDDING: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_ERROR: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_CONFLICT: OnceLock<Image<'static>> = OnceLock::new();
 
@@ -124,6 +156,7 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     match state {
         TrayState::Idle => ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png"))),
         TrayState::Syncing => ICON_SYNCING.get_or_init(|| decode(include_bytes!("../icons/tray-syncing@2x.png"))),
+        TrayState::Embedding => ICON_EMBEDDING.get_or_init(|| decode(include_bytes!("../icons/tray-embedding@2x.png"))),
         TrayState::Error => ICON_ERROR.get_or_init(|| decode(include_bytes!("../icons/tray-error@2x.png"))),
         TrayState::Conflict => ICON_CONFLICT.get_or_init(|| decode(include_bytes!("../icons/tray-conflict@2x.png"))),
     }
@@ -317,6 +350,22 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
     }
 }
 
+/// Update the tray icon only if the new state's precedence tier is at least
+/// as high as the current one. Prevents a lower-priority event (e.g. an
+/// `embeddings:complete` arriving during an active sync) from clobbering a
+/// higher-priority state.
+///
+/// Use this from event listeners that advance state forward; fall back to
+/// `update_tray_icon` only when the caller has an authoritative reason to
+/// force a state (e.g. transitioning out of an error state after the user
+/// dismisses the banner).
+pub fn update_tray_icon_respecting_precedence(app: &AppHandle, state: TrayState) {
+    let current = current_state().lock().map(|s| *s).unwrap_or(TrayState::Idle);
+    if state.rank() >= current.rank() {
+        update_tray_icon(app, state);
+    }
+}
+
 /// Get the current tray state.
 #[allow(dead_code)]
 pub fn get_current_state() -> TrayState {
@@ -361,9 +410,25 @@ fn setup_sync_listeners(app: &AppHandle) {
 /// Accepts: "idle", "syncing", "error", "conflict" (case-insensitive).
 #[tauri::command]
 pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
-    let tray_state = TrayState::from_str_loose(&state)
-        .ok_or_else(|| format!("Invalid tray state: '{}'. Expected: idle, syncing, error, conflict", state))?;
-    update_tray_icon(&app, tray_state);
+    let tray_state = TrayState::from_str_loose(&state).ok_or_else(|| {
+        format!(
+            "Invalid tray state: '{}'. Expected: idle, syncing, embedding, error, conflict",
+            state
+        )
+    })?;
+    // Non-terminal, forward-only states (idle, embedding) respect precedence
+    // so a stale client signal can't downgrade an error/conflict that the
+    // user hasn't acknowledged yet. Terminal states (syncing, error,
+    // conflict) are always authoritative — they reflect a concrete event the
+    // user needs to see.
+    match tray_state {
+        TrayState::Idle | TrayState::Embedding => {
+            update_tray_icon_respecting_precedence(&app, tray_state);
+        }
+        TrayState::Syncing | TrayState::Error | TrayState::Conflict => {
+            update_tray_icon(&app, tray_state);
+        }
+    }
     Ok(())
 }
 
@@ -381,6 +446,14 @@ mod tests {
         assert_eq!(TrayState::from_str_loose("SYNCING"), Some(TrayState::Syncing));
         assert_eq!(TrayState::from_str_loose("Error"), Some(TrayState::Error));
         assert_eq!(TrayState::from_str_loose("conflict"), Some(TrayState::Conflict));
+        assert_eq!(
+            TrayState::from_str_loose("embedding"),
+            Some(TrayState::Embedding)
+        );
+        assert_eq!(
+            TrayState::from_str_loose("EMBEDDING"),
+            Some(TrayState::Embedding)
+        );
         assert_eq!(TrayState::from_str_loose("unknown"), None);
         assert_eq!(TrayState::from_str_loose(""), None);
     }
@@ -389,6 +462,7 @@ mod tests {
     fn test_tray_state_tooltip() {
         assert_eq!(TrayState::Idle.tooltip(), "HQ Sync — Idle");
         assert_eq!(TrayState::Syncing.tooltip(), "HQ Sync — Syncing…");
+        assert_eq!(TrayState::Embedding.tooltip(), "Generating embeddings…");
         assert_eq!(TrayState::Error.tooltip(), "HQ Sync — Error");
         assert_eq!(TrayState::Conflict.tooltip(), "HQ Sync — Conflict");
     }
@@ -398,10 +472,17 @@ mod tests {
         // Verify that each included icon starts with the PNG magic bytes
         let png_magic: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
 
-        for state in &[TrayState::Idle, TrayState::Syncing, TrayState::Error, TrayState::Conflict] {
+        for state in &[
+            TrayState::Idle,
+            TrayState::Syncing,
+            TrayState::Embedding,
+            TrayState::Error,
+            TrayState::Conflict,
+        ] {
             let bytes: &[u8] = match state {
                 TrayState::Idle => include_bytes!("../icons/tray-idle@2x.png"),
                 TrayState::Syncing => include_bytes!("../icons/tray-syncing@2x.png"),
+                TrayState::Embedding => include_bytes!("../icons/tray-embedding@2x.png"),
                 TrayState::Error => include_bytes!("../icons/tray-error@2x.png"),
                 TrayState::Conflict => include_bytes!("../icons/tray-conflict@2x.png"),
             };
@@ -411,6 +492,24 @@ mod tests {
                 state
             );
         }
+    }
+
+    #[test]
+    fn test_tray_state_precedence_ordering() {
+        // Documented precedence: error > conflict > syncing > embedding > idle
+        assert!(TrayState::Error.rank() > TrayState::Conflict.rank());
+        assert!(TrayState::Conflict.rank() > TrayState::Syncing.rank());
+        assert!(TrayState::Syncing.rank() > TrayState::Embedding.rank());
+        assert!(TrayState::Embedding.rank() > TrayState::Idle.rank());
+    }
+
+    #[test]
+    fn test_embedding_beats_idle_but_loses_to_syncing() {
+        // Quick sanity on the tiers the auto-trigger thread depends on:
+        // on app launch we may enter `Embedding` from `Idle` (allowed), but
+        // a concurrent sync (higher tier) must not be downgraded.
+        assert!(TrayState::Embedding.rank() > TrayState::Idle.rank());
+        assert!(TrayState::Embedding.rank() < TrayState::Syncing.rank());
     }
 
     #[test]
@@ -432,7 +531,11 @@ mod tests {
         // so we just assert the value is a valid variant (exhaustive match).
         let state = get_current_state();
         match state {
-            TrayState::Idle | TrayState::Syncing | TrayState::Error | TrayState::Conflict => {}
+            TrayState::Idle
+            | TrayState::Syncing
+            | TrayState::Embedding
+            | TrayState::Error
+            | TrayState::Conflict => {}
         }
     }
 

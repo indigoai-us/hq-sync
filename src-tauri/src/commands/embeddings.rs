@@ -456,6 +456,133 @@ pub async fn get_embeddings_status() -> Result<EmbeddingsStatus, String> {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-trigger (US-004)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Does any pending marker exist for this HQ folder? Checked by the
+/// auto-trigger thread in `main.rs` to decide whether the installer just
+/// handed us a fresh run to start.
+pub fn marker_exists(hq_folder: &str) -> bool {
+    paths::embeddings_pending_paths(Path::new(hq_folder))
+        .iter()
+        .any(|p| p.exists())
+}
+
+/// `true` if the journal shows a successful run in the last `hours`.
+/// Used by the auto-trigger guard to avoid re-running embeddings when the
+/// user quickly restarts the app shortly after a completed run.
+///
+/// Returns `false` when:
+/// - there is no journal (first launch)
+/// - the journal is malformed
+/// - `lastRunAt` does not parse as a timestamp
+/// - the run is older than the threshold
+/// - the journal state is `error` (errored runs do not count as "recent")
+pub fn journal_shows_recent_run(hq_folder: &str, hours: i64) -> bool {
+    let journal = match read_embeddings_journal(hq_folder) {
+        Ok(j) => j,
+        Err(_) => return false,
+    };
+    if journal.state != "ok" {
+        return false;
+    }
+    let last = match chrono::DateTime::parse_from_rfc3339(&journal.last_run_at) {
+        Ok(dt) => dt.with_timezone(&chrono::Utc),
+        Err(_) => return false,
+    };
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(hours);
+    last >= cutoff
+}
+
+/// Decide whether to auto-trigger a post-install `qmd embed` run.
+///
+/// Fires iff a pending marker exists AND the journal does NOT show a
+/// successful run in the last hour. This lets a user close and reopen the
+/// app rapidly without re-running a successful embed, while still honoring
+/// a fresh install's marker.
+///
+/// Pure function — exposed so tests can exercise the decision without the
+/// threading + Tauri glue.
+pub fn should_autotrigger(hq_folder: &str) -> bool {
+    if !marker_exists(hq_folder) {
+        return false;
+    }
+    if journal_shows_recent_run(hq_folder, 1) {
+        return false;
+    }
+    true
+}
+
+/// Spawn the post-install auto-trigger thread. Safe to call from Tauri's
+/// `setup` callback — returns immediately after `thread::spawn`.
+///
+/// Threading pattern follows `commands::prewarm`: `std::thread::spawn` with
+/// a 2s sleep to let the app fully initialize before poking at disk / PATH.
+/// Never panics: if `qmd` isn't on PATH we surface a friendly error event
+/// and exit the thread rather than crashing the app.
+pub fn spawn_autotrigger(app: AppHandle) {
+    thread::spawn(move || {
+        thread::sleep(Duration::from_millis(2000));
+
+        let hq_folder = match resolve_hq_folder_path() {
+            Ok(p) => p,
+            Err(_e) => {
+                #[cfg(debug_assertions)]
+                eprintln!("[embeddings autotrigger] resolve_hq_folder_path failed: {}", _e);
+                return;
+            }
+        };
+
+        if !should_autotrigger(&hq_folder) {
+            #[cfg(debug_assertions)]
+            eprintln!(
+                "[embeddings autotrigger] skip: marker={} recent_run={}",
+                marker_exists(&hq_folder),
+                journal_shows_recent_run(&hq_folder, 1)
+            );
+            return;
+        }
+
+        // Preflight: qmd on PATH? A missing binary would otherwise surface
+        // as a confusing spawn error deep inside run_process_impl. Emit a
+        // targeted error event with remediation text and skip the spawn.
+        let qmd = paths::resolve_bin("qmd");
+        let qmd_path = Path::new(&qmd);
+        if qmd == "qmd" && !qmd_path.is_absolute() {
+            // resolve_bin returns the bare name when it couldn't find a real
+            // absolute path — double-check by trying to stat the command via
+            // `which`-style hit. If qmd genuinely resolves (dev box), we
+            // proceed; if not, we bail with a friendly error.
+            let sys_hit = std::process::Command::new("sh")
+                .args(["-c", "command -v qmd"])
+                .env("PATH", paths::child_path())
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !sys_hit {
+                let _ = app.emit(
+                    EVENT_EMBEDDINGS_ERROR,
+                    EmbeddingsErrorEvent {
+                        message:
+                            "qmd not found — install via Homebrew or run the installer again"
+                                .to_string(),
+                    },
+                );
+                return;
+            }
+        }
+
+        // Fire and forget — `start_embeddings` owns the rest of the lifecycle.
+        // Ignore "already running" errors: a manual trigger from the UI may
+        // have raced ahead of us, and either way the user's intent is served.
+        if let Err(e) = start_embeddings(app.clone(), "post-install".to_string()) {
+            #[cfg(debug_assertions)]
+            eprintln!("[embeddings autotrigger] start_embeddings: {}", e);
+        }
+    });
+}
+
 // Test-only helper: compute the journal path without exposing paths:: to tests
 // that only need this module.
 #[cfg(test)]
@@ -763,6 +890,150 @@ mod tests {
     }
 
     // ── Singleton enforcement path ───────────────────────────────────────────
+
+    // ── Auto-trigger helpers (US-004) ────────────────────────────────────────
+
+    #[test]
+    fn test_marker_exists_false_on_empty_folder() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        assert!(!marker_exists(hq_folder));
+    }
+
+    #[test]
+    fn test_marker_exists_true_when_primary_present() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        std::fs::write(
+            tmp.path().join(".hq-embeddings-pending.json"),
+            r#"{"reason":"post-install"}"#,
+        )
+        .unwrap();
+        assert!(marker_exists(hq_folder));
+    }
+
+    #[test]
+    fn test_journal_shows_recent_run_false_without_journal() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        assert!(!journal_shows_recent_run(hq_folder, 1));
+    }
+
+    #[test]
+    fn test_journal_shows_recent_run_true_within_window() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        let now = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let journal = EmbeddingsJournal {
+            last_run_at: now,
+            duration_sec: 45,
+            state: "ok".to_string(),
+            error_msg: None,
+        };
+        write_embeddings_journal(hq_folder, &journal).unwrap();
+        assert!(journal_shows_recent_run(hq_folder, 1));
+    }
+
+    #[test]
+    fn test_journal_shows_recent_run_false_when_too_old() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        // 2 hours ago — outside a 1-hour window.
+        let old = (chrono::Utc::now() - chrono::Duration::hours(2))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let journal = EmbeddingsJournal {
+            last_run_at: old,
+            duration_sec: 45,
+            state: "ok".to_string(),
+            error_msg: None,
+        };
+        write_embeddings_journal(hq_folder, &journal).unwrap();
+        assert!(!journal_shows_recent_run(hq_folder, 1));
+    }
+
+    #[test]
+    fn test_journal_shows_recent_run_false_when_state_error() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        // An error run inside the window must NOT suppress the retry — the
+        // pending marker should drive a fresh auto-trigger.
+        let now = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let journal = EmbeddingsJournal {
+            last_run_at: now,
+            duration_sec: 1,
+            state: "error".to_string(),
+            error_msg: Some("qmd exited 1".to_string()),
+        };
+        write_embeddings_journal(hq_folder, &journal).unwrap();
+        assert!(!journal_shows_recent_run(hq_folder, 1));
+    }
+
+    #[test]
+    fn test_should_autotrigger_requires_marker() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        // No marker → no trigger.
+        assert!(!should_autotrigger(hq_folder));
+    }
+
+    #[test]
+    fn test_should_autotrigger_fires_on_marker_without_recent_run() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        std::fs::write(
+            tmp.path().join(".hq-embeddings-pending.json"),
+            "{}",
+        )
+        .unwrap();
+        assert!(should_autotrigger(hq_folder));
+    }
+
+    #[test]
+    fn test_should_autotrigger_suppressed_by_recent_success() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        // Marker AND recent success — journal guard wins, no trigger.
+        std::fs::write(
+            tmp.path().join(".hq-embeddings-pending.json"),
+            "{}",
+        )
+        .unwrap();
+        let now = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let journal = EmbeddingsJournal {
+            last_run_at: now,
+            duration_sec: 45,
+            state: "ok".to_string(),
+            error_msg: None,
+        };
+        write_embeddings_journal(hq_folder, &journal).unwrap();
+        assert!(!should_autotrigger(hq_folder));
+    }
+
+    #[test]
+    fn test_should_autotrigger_fires_when_recent_run_was_error() {
+        let tmp = tempdir().unwrap();
+        let hq_folder = tmp.path().to_str().unwrap();
+        std::fs::write(
+            tmp.path().join(".hq-embeddings-pending.json"),
+            "{}",
+        )
+        .unwrap();
+        let now = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let journal = EmbeddingsJournal {
+            last_run_at: now,
+            duration_sec: 1,
+            state: "error".to_string(),
+            error_msg: Some("qmd exited 1".to_string()),
+        };
+        write_embeddings_journal(hq_folder, &journal).unwrap();
+        // Error runs inside the window do NOT suppress auto-trigger — the
+        // whole point is to retry after a failure.
+        assert!(should_autotrigger(hq_folder));
+    }
 
     #[test]
     fn test_try_register_handle_rejects_second_caller() {
