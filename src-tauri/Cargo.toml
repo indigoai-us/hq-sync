@@ -23,6 +23,10 @@ rfd = "0.15"
 sha2 = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sentry = "^0.35"
+
+[profile.release]
+split-debuginfo = "packed"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Used by commands::folder_picker to enumerate NSApp.windows and close

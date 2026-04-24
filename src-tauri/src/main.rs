@@ -4,11 +4,46 @@ use std::sync::Mutex;
 
 mod commands;
 mod events;
+mod sentry_scrub;
 mod tray;
 mod updater;
 mod util;
 
 fn main() {
+    use sentry::ClientOptions;
+    use sentry_scrub::before_send;
+    use std::sync::Arc;
+    // `SENTRY_DSN` is set at compile time by build.rs, which reads
+    // `HQ_SYNC_SENTRY_DSN` from the CI env. On local `cargo build`
+    // / `cargo tauri dev` / PR CI (where the release-only secret is not
+    // in scope), build.rs emits `cargo:rustc-env=SENTRY_DSN=` (empty),
+    // so `env!("SENTRY_DSN")` evaluates to `""` — gate on emptiness → None
+    // so the Sentry client no-ops cleanly in dev instead of crashing at startup.
+    let dsn_str = env!("SENTRY_DSN");
+    let dsn: Option<sentry::types::Dsn> = if dsn_str.is_empty() {
+        None
+    } else {
+        Some(dsn_str.parse().expect("SENTRY_DSN invalid at build time"))
+    };
+    let _guard = sentry::init(ClientOptions {
+        dsn,
+        release: Some(format!("hq-sync@{}", env!("CARGO_PKG_VERSION")).into()),
+        environment: Some(
+            option_env!("SENTRY_ENVIRONMENT")
+                .unwrap_or("production")
+                .into(),
+        ),
+        sample_rate: std::env::var("SENTRY_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+        before_send: Some(Arc::new(before_send)),
+        ..Default::default()
+    });
+    sentry::configure_scope(|scope| {
+        scope.set_tag("repo", "hq-sync");
+    });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())

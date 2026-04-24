@@ -34,6 +34,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -87,6 +88,9 @@ jobs:
           # new pubkey + forcing every user to manually reinstall.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # build.rs reads this via env!("SENTRY_DSN") — must be present at compile time
+          # so the signed binary has a wired DSN rather than the empty-string no-op path.
+          HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
           releaseName: "HQ Sync ${{ github.event.inputs.tag || github.ref_name }}"
@@ -94,6 +98,43 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: --target universal-apple-darwin
+
+      - name: Create Sentry release and upload Rust debug symbols
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          INSTALL_DIR="$RUNNER_TEMP/bin"
+          mkdir -p "$INSTALL_DIR"
+          curl -sL "https://sentry.io/get-cli/" | INSTALL_DIR="$INSTALL_DIR" INSTALL_VERSION=2.41.1 sh
+          export PATH="$INSTALL_DIR:$PATH"
+
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          RELEASE="hq-sync@${VERSION}"
+
+          UPLOADED=0
+          for TARGET_DIR in \
+            src-tauri/target/universal-apple-darwin \
+            src-tauri/target/aarch64-apple-darwin \
+            src-tauri/target/x86_64-apple-darwin; do
+            if [ -d "$TARGET_DIR" ]; then
+              while read -r dsym; do
+                sentry-cli debug-files upload \
+                  --org indigo-d0 --project hq-sync \
+                  --include-sources --wait "$dsym"
+                UPLOADED=$((UPLOADED + 1))
+              done < <(find "$TARGET_DIR" -name "*.dSYM" -type d)
+            fi
+          done
+          if [ "$UPLOADED" -eq 0 ]; then
+            echo "::error::No .dSYM bundles found in any target tree — symbolication will be broken"
+            exit 1
+          fi
+          echo "Uploaded $UPLOADED dSYM bundle(s)"
+
+          sentry-cli releases new "$RELEASE" --org indigo-d0 --project hq-sync
+          sentry-cli releases set-commits "$RELEASE" --auto --org indigo-d0 --project hq-sync
+          sentry-cli releases finalize "$RELEASE" --org indigo-d0 --project hq-sync
 
       # Tauri-action produces a DMG by default; this step builds a styled
       # one (custom background, window geometry) and uploads it, overriding
