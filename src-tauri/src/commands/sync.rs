@@ -92,7 +92,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// `commands::prewarm` task fires this same fetch on app startup so the
 /// fetch happens in the background rather than during the user's first
 /// click of "Sync Now".
-pub const HQ_CLOUD_VERSION: &str = "5.1.9";
+pub const HQ_CLOUD_VERSION: &str = "5.1.10";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -152,7 +152,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@5.1.9 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@5.1.10 hq-sync-runner \
 ///   --companies --on-conflict abort --hq-root <path>
 /// ```
 ///
