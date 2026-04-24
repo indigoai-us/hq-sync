@@ -101,10 +101,10 @@
       aria-label={isPromoting ? 'Promoting' : 'Sync'}
     >
       {#if isPromoting}
-        <span class="row-spinner" data-testid="row-spinner"></span>
-        Promoting…
+        <span class="row-spinner" data-testid="row-spinner" aria-hidden="true"></span>
+        <span class="row-sync-label">Promoting</span>
       {:else}
-        Sync
+        <span class="row-sync-label">Sync</span>
       {/if}
     </button>
   </div>
@@ -187,7 +187,12 @@
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
+    justify-content: center;
+    gap: 0.375rem;
+    /* Fixed width so the row doesn't reflow when the label flips
+       Sync → Promoting (Promoting + spinner + gap ≈ 78px, padded to
+       90px for breathing room on Retina/sub-pixel rounding). */
+    min-width: 90px;
     padding: 0.25rem 0.625rem;
     font-size: 0.7rem;
     font-weight: 600;
@@ -204,23 +209,36 @@
     background-color: #4f46e5;
   }
 
+  /* Promoting / disabled — match SyncStats' subdued treatment so the
+     button reads "in progress, don't click" without looking broken. */
   .row-sync-button:disabled {
-    opacity: 0.65;
-    cursor: not-allowed;
+    opacity: 0.7;
+    cursor: default;
   }
 
   .row-sync-button.promoting {
     background-color: #6366f1;
+    /* No hover lift while promoting — the :hover:not(:disabled) rule
+       already handles this, but state the intent for clarity. */
   }
 
+  .row-sync-label {
+    /* Keep label vertically centered next to the spinner and avoid
+       baseline shift on flip. */
+    line-height: 1;
+  }
+
+  /* Small 14px inline spinner — matches SyncStats' `.dot-spinner` sizing
+     but inverted (white on purple) to sit on the button. */
   .row-spinner {
     display: inline-block;
-    width: 10px;
-    height: 10px;
-    border: 1.5px solid rgba(255, 255, 255, 0.35);
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(255, 255, 255, 0.35);
     border-top-color: #ffffff;
     border-radius: 50%;
-    animation: spin 0.6s linear infinite;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
   }
 
   .row-error {

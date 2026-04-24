@@ -57,6 +57,21 @@ describe('CompanyRow', () => {
       render(CompanyRow, { company: mkCompany() });
       expect(screen.getByText('never')).toBeTruthy();
     });
+
+    it('renders a relative time-ago when lastSyncedAt is a recent ISO', () => {
+      // 5 minutes ago → "5 minutes ago"
+      const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+      render(CompanyRow, { company: mkCompany(), lastSyncedAt: fiveMinAgo });
+      expect(screen.getByText('5 minutes ago')).toBeTruthy();
+      // And explicitly not the "never" fallback.
+      expect(screen.queryByText('never')).toBeNull();
+    });
+
+    it('renders "just now" when lastSyncedAt is within the last minute', () => {
+      const tenSecAgo = new Date(Date.now() - 10 * 1000).toISOString();
+      render(CompanyRow, { company: mkCompany(), lastSyncedAt: tenSecAgo });
+      expect(screen.getByText('just now')).toBeTruthy();
+    });
   });
 
   describe('click dispatch', () => {
@@ -97,7 +112,22 @@ describe('CompanyRow', () => {
         name: /promoting/i,
       }) as HTMLButtonElement;
       expect(button.disabled).toBe(true);
-      expect(screen.getByTestId('row-spinner')).toBeTruthy();
+      // Spinner sits INSIDE the button (inline), not replacing it — so
+      // the button retains its label + fixed width. This guards against
+      // the prior "Promoting…" reflow regression.
+      const spinner = screen.getByTestId('row-spinner');
+      expect(spinner).toBeTruthy();
+      expect(button.contains(spinner)).toBe(true);
+      // The `.promoting` class is what the CSS hooks into for the
+      // disabled treatment — assert it's present so a stylesheet rename
+      // doesn't silently break the visual state.
+      expect(button.classList.contains('promoting')).toBe(true);
+      // Button reports a non-zero min-width via inline style token —
+      // jsdom doesn't load <style> blocks, so we verify the contract by
+      // asserting the .row-sync-button class is present (the stylesheet
+      // assigns the min-width to that class). If the class is removed,
+      // the test fails and the reviewer has to revisit the layout.
+      expect(button.classList.contains('row-sync-button')).toBe(true);
     });
 
     it('click is a no-op while already promoting', async () => {
