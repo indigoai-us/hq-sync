@@ -131,6 +131,33 @@ pub fn menubar_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("menubar.json"))
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Embeddings handoff paths (US-002)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Journal path at `{hq_folder}/.hq-embeddings-journal.json`. Kept next to
+/// the sync journal so the support snippet is the same shape:
+/// `cat ~/HQ/.hq-embeddings-journal.json`.
+pub fn embeddings_journal_path(hq_folder: &Path) -> PathBuf {
+    hq_folder.join(".hq-embeddings-journal.json")
+}
+
+/// Candidate pending-marker paths, in check order:
+///   1. `{hq_folder}/.hq-embeddings-pending.json` — preferred, written by the
+///      installer when `installPath` resolves to an absolute canonical path.
+///   2. `~/.hq/embeddings-pending.json` — fallback written by the installer
+///      when it couldn't resolve `installPath`.
+///
+/// Sync's auto-trigger needs to check both; success cleans both. Never
+/// returns the `~` path if the home directory can't be resolved.
+pub fn embeddings_pending_paths(hq_folder: &Path) -> Vec<PathBuf> {
+    let mut out = vec![hq_folder.join(".hq-embeddings-pending.json")];
+    if let Ok(hq_dir) = hq_config_dir() {
+        out.push(hq_dir.join("embeddings-pending.json"));
+    }
+    out
+}
+
 /// Resolve the HQ folder path with priority:
 /// 1. menubar_override (from menubar.json hqPath)
 /// 2. config_path (from config.json hqFolderPath)
@@ -240,6 +267,47 @@ mod tests {
                     assert!(path.contains(first), "child_path dropped existing entry {}", first);
                 }
             }
+        }
+    }
+
+    // ── Embeddings handoff paths (US-002) ────────────────────────────────────
+
+    #[test]
+    fn test_embeddings_journal_path_joins_dotfile() {
+        let p = embeddings_journal_path(Path::new("/tmp/hq"));
+        assert_eq!(p, PathBuf::from("/tmp/hq/.hq-embeddings-journal.json"));
+    }
+
+    #[test]
+    fn test_embeddings_pending_paths_first_is_hq_folder_primary() {
+        let paths = embeddings_pending_paths(Path::new("/tmp/hq"));
+        assert_eq!(
+            paths.first().unwrap(),
+            &PathBuf::from("/tmp/hq/.hq-embeddings-pending.json")
+        );
+    }
+
+    #[test]
+    fn test_embeddings_pending_paths_fallback_in_home_dotdir_when_resolvable() {
+        let paths = embeddings_pending_paths(Path::new("/tmp/hq"));
+        // When home dir resolves (the standard case on macOS/Linux),
+        // the fallback path is included as the second entry and lives under
+        // `~/.hq/`. If hq_config_dir fails (unusual), only the primary is
+        // returned — still safe, just less thorough.
+        if paths.len() >= 2 {
+            assert!(
+                paths[1].ends_with("embeddings-pending.json"),
+                "fallback path should end with embeddings-pending.json: {:?}",
+                paths[1]
+            );
+            assert!(
+                paths[1]
+                    .parent()
+                    .map(|p| p.ends_with(".hq"))
+                    .unwrap_or(false),
+                "fallback parent dir should be `.hq`: {:?}",
+                paths[1]
+            );
         }
     }
 
