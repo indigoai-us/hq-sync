@@ -104,6 +104,20 @@ pub struct VendChildResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MembershipInfo {
+    pub uid: String,
+    pub person_uid: String,
+    pub company_uid: String,
+    /// Server-side: "active" | "pending" | (future).
+    pub status: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VendSelfInput {
     pub person_uid: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -216,6 +230,51 @@ impl VaultClient {
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         serde_json::from_value(wrapper["entity"].clone())
             .map(Some)
+            .map_err(|e| VaultClientError::Json(e.to_string()))
+    }
+
+    /// `GET /entity/{uid}` — fetch a single entity by its UID. Returns `None` on 404.
+    ///
+    /// Used by the workspaces command to resolve memberships (which carry only
+    /// `companyUid`) into full Company entities (`name`, `slug`, `bucketName`).
+    pub async fn find_entity_by_uid(
+        &self,
+        uid: &str,
+    ) -> Result<Option<EntityInfo>, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}/entity/{}", self.base_url, uid))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        if resp.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        let wrapper: serde_json::Value = self.handle_response(resp).await?;
+        serde_json::from_value(wrapper["entity"].clone())
+            .map(Some)
+            .map_err(|e| VaultClientError::Json(e.to_string()))
+    }
+
+    /// `GET /membership/person/{personUid}` — list memberships for a person.
+    ///
+    /// Returns all memberships (`active` + `pending`); the caller filters as
+    /// needed. Empty list is a valid result (signed-in user with no companies).
+    pub async fn list_memberships(
+        &self,
+        person_uid: &str,
+    ) -> Result<Vec<MembershipInfo>, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}/membership/person/{}",
+                self.base_url, person_uid
+            ))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        let wrapper: serde_json::Value = self.handle_response(resp).await?;
+        serde_json::from_value(wrapper["memberships"].clone())
             .map_err(|e| VaultClientError::Json(e.to_string()))
     }
 
@@ -525,6 +584,126 @@ mod tests {
             body.get("durationSeconds").is_none(),
             "duration_seconds must not be serialized when None"
         );
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_uid_some() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_x", "slug": "acme", "type": "company",
+                    "name": "Acme", "bucketName": "hq-vault-cmp-x",
+                    "status": "active", "createdAt": "2026-01-01T00:00:00Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri())
+            .find_entity_by_uid("cmp_x")
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert_eq!(info.uid, "cmp_x");
+        assert_eq!(info.slug, "acme");
+        assert_eq!(info.bucket_name.as_deref(), Some("hq-vault-cmp-x"));
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_uid_none_on_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_missing"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(&json!({"error": "not found"})))
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri())
+            .find_entity_by_uid("cmp_missing")
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_memberships_roundtrip() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/membership/person/prs_x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "memberships": [
+                    {
+                        "uid": "mem_1",
+                        "personUid": "prs_x",
+                        "companyUid": "cmp_a",
+                        "status": "active",
+                        "role": "owner",
+                        "createdAt": "2026-01-01T00:00:00Z"
+                    },
+                    {
+                        "uid": "mem_2",
+                        "personUid": "prs_x",
+                        "companyUid": "cmp_b",
+                        "status": "pending"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri())
+            .list_memberships("prs_x")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].uid, "mem_1");
+        assert_eq!(result[0].company_uid, "cmp_a");
+        assert_eq!(result[0].status, "active");
+        assert_eq!(result[0].role.as_deref(), Some("owner"));
+        assert_eq!(result[1].status, "pending");
+        // Optional fields tolerate omission.
+        assert!(result[1].role.is_none());
+        assert!(result[1].created_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_memberships_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/membership/person/prs_lonely"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "memberships": []
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri())
+            .list_memberships("prs_lonely")
+            .await
+            .unwrap();
+        assert!(result.is_empty(), "empty memberships are a valid signal, not an error");
+    }
+
+    #[tokio::test]
+    async fn list_memberships_propagates_http_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/membership/person/prs_x"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let err = client(&server.uri())
+            .list_memberships("prs_x")
+            .await
+            .expect_err("5xx must surface as Err");
+        match err {
+            VaultClientError::Http { status, .. } => assert_eq!(status, 500),
+            other => panic!("expected Http(500), got {other}"),
+        }
     }
 
     #[tokio::test]

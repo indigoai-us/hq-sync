@@ -74,6 +74,7 @@ fn main() {
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
+            commands::workspaces::list_syncable_workspaces,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,

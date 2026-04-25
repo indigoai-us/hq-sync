@@ -10,6 +10,12 @@
 
   let { syncState, onclick }: Props = $props();
 
+  // The legacy `setup-needed` "Finish setup" label is gone — the menubar now
+  // ALWAYS shows the Personal vault and any local company folders, so there's
+  // never a dead-end requiring an external setup loop. `setup-needed` from the
+  // runner now just means "no memberships yet" — Sync Now still does work
+  // (personal first-push) and the WorkspaceList carries the Create / Join
+  // affordances inline.
   let label = $derived(
     syncState === 'syncing'
       ? 'Syncing...'
@@ -17,16 +23,13 @@
         ? 'Retry Sync'
         : syncState === 'auth-error'
           ? 'Sign in again'
-          : syncState === 'setup-needed'
-            ? 'Finish setup'
-            : 'Sync Now'
+          : 'Sync Now'
   );
 
-  // Disable while syncing, or when the fix lives outside the app
-  // (setup-needed / auth-error are informational — no click action yet).
+  // Disable while syncing, or when the fix lives outside the app (auth-error
+  // is informational — Sign in again is the SignInPrompt CTA, not a sync click).
   let disabled = $derived(
     syncState === 'syncing' ||
-    syncState === 'setup-needed' ||
     syncState === 'auth-error'
   );
 </script>
