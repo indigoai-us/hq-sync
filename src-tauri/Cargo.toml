@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.1.15"
+version = "0.1.16"
 edition = "2021"
 # Disambiguate `cargo run` — the recent ignore-filter port added a second
 # binary (`emit-default-ignores`) alongside the menubar entry point.
@@ -50,14 +50,15 @@ bytes = "1"
 [profile.release]
 split-debuginfo = "packed"
 
-# Dev-only parity helper: prints DEFAULT_IGNORES for the parity script
-# (scripts/check-default-ignores-parity.sh). Declared as `[[example]]`
-# (not `[[bin]]`) so Tauri's bundler doesn't try to copy it into the .app
-# during `tauri build` — it's not a shipped binary. Run with:
-#   cargo run --example emit-default-ignores
-[[example]]
-name = "emit-default-ignores"
-path = "src/bin/emit-default-ignores.rs"
+# Note: emit-default-ignores lives in src-tauri/examples/ — cargo's conventional
+# location for dev-only helper code. Cargo auto-discovers it as an example
+# target (no explicit [[example]] block needed). It's invoked by
+# scripts/check-default-ignores-parity.sh via `cargo run --example
+# emit-default-ignores`. Tauri's bundler walks `kind = ["bin"]` targets only,
+# so keeping this file out of `src/bin/` (where cargo would auto-bin-detect it)
+# is what stops the bundler from trying to copy it into the shipped .app.
+# v0.1.14 + v0.1.15 release.yml runs both failed at this exact step before
+# the move.
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Used by commands::folder_picker to enumerate NSApp.windows and close
