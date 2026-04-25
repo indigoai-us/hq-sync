@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2021"
 # Disambiguate `cargo run` — the recent ignore-filter port added a second
 # binary (`emit-default-ignores`) alongside the menubar entry point.
@@ -50,7 +50,12 @@ bytes = "1"
 [profile.release]
 split-debuginfo = "packed"
 
-[[bin]]
+# Dev-only parity helper: prints DEFAULT_IGNORES for the parity script
+# (scripts/check-default-ignores-parity.sh). Declared as `[[example]]`
+# (not `[[bin]]`) so Tauri's bundler doesn't try to copy it into the .app
+# during `tauri build` — it's not a shipped binary. Run with:
+#   cargo run --example emit-default-ignores
+[[example]]
 name = "emit-default-ignores"
 path = "src/bin/emit-default-ignores.rs"
 
