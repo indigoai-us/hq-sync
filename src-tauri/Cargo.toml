@@ -2,6 +2,11 @@
 name = "hq-sync-menubar"
 version = "0.1.13"
 edition = "2021"
+# Disambiguate `cargo run` — the recent ignore-filter port added a second
+# binary (`emit-default-ignores`) alongside the menubar entry point.
+# Without `default-run`, Tauri's invocation `cargo run --no-default-features`
+# bails with "could not determine which binary to run".
+default-run = "hq-sync-menubar"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
