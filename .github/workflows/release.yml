@@ -42,6 +42,17 @@ jobs:
           node-version: 22
           cache: npm
 
+      # tauri-action auto-detects the package manager from the lockfile and
+      # invokes `pnpm tauri build` when pnpm-lock.yaml is present. The runner
+      # doesn't ship with pnpm, so without this step the build step ENOENTs
+      # within seconds (v0.1.18 first attempt). Frontend deps still come from
+      # `npm ci` against package-lock.json — tauri-action only needs pnpm on
+      # PATH to spawn its build command, not to install dependencies.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
       - name: Install frontend dependencies
         run: npm ci
 
