@@ -30,6 +30,7 @@ sha2 = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sentry = "^0.35"
+glob = "0.3"
 ignore = "0.4"
 walkdir = "2"
 # `behavior-version-latest` opts into the AWS SDK's modern defaults at compile

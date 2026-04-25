@@ -127,6 +127,23 @@ pub struct VendSelfResult {
     pub expires_at: String,
 }
 
+// ── Telemetry types ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TelemetryOptInResponse {
+    pub enabled: bool,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBatch {
+    pub machine_id: String,
+    pub installer_version: String,
+    pub events: Vec<serde_json::Value>,
+}
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 pub struct VaultClient {
@@ -228,6 +245,40 @@ impl VaultClient {
             .send()
             .await?;
         self.handle_response(resp).await
+    }
+
+    /// `GET /v1/usage/opt-in` — check whether the authenticated user has opted in to telemetry.
+    pub async fn get_telemetry_opt_in(&self) -> Result<TelemetryOptInResponse, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}{}", self.base_url, "/v1/usage/opt-in"))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.handle_response(resp).await
+    }
+
+    /// `POST /v1/usage` — upload a batch of sanitized telemetry events.
+    ///
+    /// Body: `{ machineId, installerVersion, events }` — no `personUid` (resolved server-side).
+    /// Returns `()` on 200; any non-2xx becomes `VaultClientError::Http`.
+    pub async fn post_usage(&self, batch: &UsageBatch) -> Result<(), VaultClientError> {
+        let resp = self
+            .client
+            .post(format!("{}{}", self.base_url, "/v1/usage"))
+            .bearer_auth(&self.auth_token)
+            .json(batch)
+            .send()
+            .await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(VaultClientError::Http {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        Ok(())
     }
 
     /// `POST /sts/vend-self` — vend full-access credentials for the caller's own person entity (`prs_*`).

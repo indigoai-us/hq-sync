@@ -158,7 +158,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///      itself, so the global config.json is no longer required.
 ///
 /// See hq-pro ADR-0003 for the canonical-stage rationale.
-fn resolve_vault_api_url() -> Result<String, String> {
+pub(crate) fn resolve_vault_api_url() -> Result<String, String> {
     const DEFAULT_VAULT_API_URL: &str =
         "https://ky8cgbl4yh.execute-api.us-east-1.amazonaws.com";
 
@@ -336,7 +336,7 @@ fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEvent> {
 /// `all-complete`, the aggregated totals are persisted to
 /// `{hq_folder}/.hq-sync-journal.json` so `get_sync_status` surfaces a real
 /// `lastSyncAt` and conflict count instead of "never" / zero.
-fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>, line: &str) {
+fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>, jwt: &str, line: &str) {
     // The runner can emit blank lines at process teardown. Skip those cheaply
     // rather than logging a parse error.
     let trimmed = line.trim();
@@ -399,7 +399,16 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                 #[cfg(debug_assertions)]
                 eprintln!("[sync] failed to write journal: {}", _e);
             }
-            app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone())
+            let emit_result = app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone());
+            let app_clone = app.clone();
+            let hq = hq_folder.to_string();
+            let jwt_owned = jwt.to_string();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::commands::telemetry::send_telemetry_if_opted_in(
+                    &app_clone, &hq, &jwt_owned,
+                ).await;
+            });
+            emit_result
         }
     };
 
@@ -559,6 +568,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     // not on a tokio worker thread.
     let app_bg = app.clone();
     let hq_folder_for_handler = hq_folder_path.clone();
+    let jwt_for_handler = jwt.clone();
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     tauri::async_runtime::spawn_blocking(move || {
@@ -568,7 +578,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             ProcessEvent::Stdout(line) => {
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
-                handle_sync_line(&app_bg, &hq_folder_for_handler, &totals, &line);
+                handle_sync_line(&app_bg, &hq_folder_for_handler, &totals, &jwt_for_handler, &line);
             }
             ProcessEvent::Stderr(_line) => {
                 #[cfg(debug_assertions)]

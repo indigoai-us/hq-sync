@@ -14,4 +14,5 @@ pub mod provision;
 pub mod settings;
 pub mod status;
 pub mod sync;
+pub mod telemetry;
 pub mod vault_client;

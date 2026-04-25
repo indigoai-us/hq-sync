@@ -2570,6 +2570,7 @@ dependencies = [
  "bytes",
  "chrono",
  "dirs",
+ "glob",
  "ignore",
  "nix 0.29.0",
  "objc2",
