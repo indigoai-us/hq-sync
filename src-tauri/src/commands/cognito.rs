@@ -41,7 +41,8 @@ fn cache() -> &'static Mutex<Option<CachedTokens>> {
     TOKEN_CACHE.get_or_init(|| Mutex::new(None))
 }
 
-const COGNITO_CLIENT_ID: &str = "4mmujmjq3srakdueg656b9m0mp";
+// hq-dev stack (canonical; see hq-pro ADR-0003).
+const COGNITO_CLIENT_ID: &str = "7r7an9keh0u6hlsvepl74tvqb0";
 const COGNITO_ENDPOINT: &str = "https://cognito-idp.us-east-1.amazonaws.com/";
 /// 2-minute buffer before expiry (in milliseconds)
 const EXPIRY_BUFFER_MS: i64 = 120_000;
