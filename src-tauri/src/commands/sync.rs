@@ -468,6 +468,26 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             #[cfg(debug_assertions)]
             eprintln!("[sync] failed to emit company-provisioned: {}", _e);
         }
+        // First-push: upload every local file for the newly-provisioned company.
+        if let Err(e) = crate::commands::first_push::first_push_company(
+            &app,
+            &vault,
+            &std::path::PathBuf::from(&hq_folder_path),
+            company,
+        )
+        .await
+        {
+            #[cfg(debug_assertions)]
+            eprintln!("[sync] first_push failed for {}: {}", company.slug, e);
+            let _ = app.emit(
+                crate::events::EVENT_SYNC_COMPANY_FIRST_PUSH_FAILED,
+                crate::events::SyncCompanyFirstPushFailedEvent {
+                    company_uid: company.uid.clone(),
+                    company_slug: company.slug.clone(),
+                    error: e,
+                },
+            );
+        }
     }
 
     let spawn_args = build_sync_spawn_args(&hq_folder_path);

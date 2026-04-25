@@ -157,6 +157,43 @@ pub struct SyncCompanyProvisionedEvent {
     pub bucket_name: String,
 }
 
+/// Emitted once per file during the first-push upload phase.
+pub const EVENT_SYNC_COMPANY_FIRST_PUSH_PROGRESS: &str = "sync:company-first-push-progress";
+
+/// Emitted once per company after its first-push upload completes.
+pub const EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE: &str = "sync:company-first-push-complete";
+
+/// Emitted when `first_push_company` returns an error. Release-mode callers
+/// receive no other signal on failure, so this is the only error surface.
+pub const EVENT_SYNC_COMPANY_FIRST_PUSH_FAILED: &str = "sync:company-first-push-failed";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncCompanyFirstPushProgressEvent {
+    pub company_uid: String,
+    pub company_slug: String,
+    pub files_done: usize,
+    pub files_total: usize,
+    pub current_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncCompanyFirstPushCompleteEvent {
+    pub company_uid: String,
+    pub company_slug: String,
+    pub files_uploaded: usize,
+    pub files_skipped: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncCompanyFirstPushFailedEvent {
+    pub company_uid: String,
+    pub company_slug: String,
+    pub error: String,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
