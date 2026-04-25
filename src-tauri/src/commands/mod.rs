@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod first_push;
 pub mod folder_picker;
 pub mod oauth;
+pub mod personal;
 pub mod prewarm;
 pub mod process;
 pub mod provision;

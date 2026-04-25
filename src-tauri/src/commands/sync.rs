@@ -490,6 +490,26 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         }
     }
 
+    // Personal first-push: provision + upload personal HQ files via /sts/vend-self.
+    if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
+        &app,
+        &vault,
+        &std::path::PathBuf::from(&hq_folder_path),
+    )
+    .await
+    {
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] personal first-push failed: {}", e);
+        let _ = app.emit(
+            EVENT_SYNC_ERROR,
+            SyncErrorEvent {
+                company: None,
+                path: "personal".to_string(),
+                message: format!("personal first-push failed: {e}"),
+            },
+        );
+    }
+
     let spawn_args = build_sync_spawn_args(&hq_folder_path);
     #[cfg(debug_assertions)]
     eprintln!(

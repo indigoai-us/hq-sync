@@ -194,6 +194,53 @@ pub struct SyncCompanyFirstPushFailedEvent {
     pub error: String,
 }
 
+// ── Personal first-push events ────────────────────────────────────────────────
+
+pub const EVENT_SYNC_PERSONAL_PROVISIONED: &str = "sync:personal-provisioned";
+pub const EVENT_SYNC_PERSONAL_FIRST_PUSH_PROGRESS: &str = "sync:personal-first-push-progress";
+pub const EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE: &str = "sync:personal-first-push-complete";
+pub const EVENT_SYNC_PERSONAL_SKIPPED_OWNERSHIP_MISMATCH: &str =
+    "sync:personal-skipped-ownership-mismatch";
+pub const EVENT_SYNC_PERSONAL_FIRST_PUSH_SKIPPED: &str = "sync:personal-first-push-skipped";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPersonalProvisionedEvent {
+    pub person_uid: String,
+    pub bucket_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPersonalFirstPushProgressEvent {
+    pub person_uid: String,
+    pub files_done: usize,
+    pub files_total: usize,
+    pub current_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPersonalFirstPushCompleteEvent {
+    pub person_uid: String,
+    pub files_uploaded: usize,
+    pub files_skipped: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPersonalSkippedOwnershipMismatchEvent {
+    pub person_uid: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPersonalFirstPushSkippedEvent {
+    pub person_uid: String,
+    pub path: String,
+    pub reason: String,
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
