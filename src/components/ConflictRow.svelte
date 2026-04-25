@@ -96,8 +96,8 @@
     gap: 0.375rem;
     padding: 0.5rem 0.625rem;
     border-radius: 8px;
-    background: rgba(99, 102, 241, 0.06);
-    border: 1px solid rgba(99, 102, 241, 0.12);
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
     transition: border-color 0.15s ease;
   }
 
@@ -160,8 +160,8 @@
     letter-spacing: 0.04em;
     padding: 0.1rem 0.35rem;
     border-radius: 4px;
-    background: rgba(99, 102, 241, 0.15);
-    color: var(--popover-primary, #6366f1);
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text-heading, #ffffff);
   }
 
   .hash-row {
@@ -209,8 +209,8 @@
     display: inline-block;
     width: 12px;
     height: 12px;
-    border: 1.5px solid rgba(99, 102, 241, 0.2);
-    border-top-color: var(--popover-primary, #6366f1);
+    border: 1.5px solid var(--popover-progress-track, rgba(255, 255, 255, 0.14));
+    border-top-color: var(--popover-progress-fill, #ffffff);
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
@@ -255,12 +255,12 @@
   }
 
   .local-btn {
-    color: var(--popover-primary, #6366f1);
-    background: rgba(99, 102, 241, 0.12);
+    color: var(--popover-primary-text, #111113);
+    background: var(--popover-primary, #ffffff);
   }
 
   .local-btn:hover {
-    background: rgba(99, 102, 241, 0.22);
+    background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
   .remote-btn {
@@ -285,8 +285,8 @@
 
   @media (prefers-color-scheme: light) {
     .conflict-row {
-      background: rgba(99, 102, 241, 0.05);
-      border-color: rgba(99, 102, 241, 0.15);
+      background: var(--popover-surface, rgba(255, 255, 255, 0.5));
+      border-color: var(--popover-border, rgba(0, 0, 0, 0.12));
     }
 
     .conflict-row.resolved {

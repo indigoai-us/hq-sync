@@ -1,40 +1,66 @@
-/* Popover shared styles — CSS custom properties for light/dark mode */
+/* Popover shared styles — native-glass custom properties for light/dark mode */
 
 :root {
   /* Colors — dark mode defaults */
-  --popover-bg: #1a1a2e;
-  --popover-surface: #232340;
-  --popover-border: rgba(99, 102, 241, 0.12);
-  --popover-text: #e0e0e0;
-  --popover-text-muted: #a0a0b0;
+  --popover-bg: rgba(18, 18, 20, 0.68);
+  --popover-surface: rgba(255, 255, 255, 0.08);
+  --popover-surface-strong: rgba(255, 255, 255, 0.16);
+  --popover-border: rgba(255, 255, 255, 0.18);
+  --popover-highlight: rgba(255, 255, 255, 0.34);
+  --popover-text: rgba(255, 255, 255, 0.86);
+  --popover-text-muted: rgba(255, 255, 255, 0.52);
   --popover-text-heading: #ffffff;
-  --popover-primary: #6366f1;
-  --popover-primary-hover: #4f46e5;
-  --popover-primary-active: #4338ca;
+  --popover-primary: #ffffff;
+  --popover-primary-hover: rgba(255, 255, 255, 0.9);
+  --popover-primary-active: rgba(255, 255, 255, 0.78);
+  --popover-primary-text: #111113;
   --popover-danger: #ef4444;
   --popover-warning: #f59e0b;
-  --popover-divider: rgba(255, 255, 255, 0.06);
-  --popover-action-hover: rgba(255, 255, 255, 0.05);
-  --popover-progress-track: rgba(99, 102, 241, 0.15);
-  --popover-progress-fill: #6366f1;
+  --popover-success: #22c55e;
+  --popover-divider: rgba(255, 255, 255, 0.11);
+  --popover-action-hover: rgba(255, 255, 255, 0.1);
+  --popover-progress-track: rgba(255, 255, 255, 0.14);
+  --popover-progress-fill: #ffffff;
+  --popover-blur: blur(28px) saturate(1.45);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --popover-bg: #f8f9fa;
-    --popover-surface: #ffffff;
-    --popover-border: rgba(99, 102, 241, 0.15);
-    --popover-text: #374151;
-    --popover-text-muted: #6b7280;
-    --popover-text-heading: #1a1a2e;
-    --popover-primary: #6366f1;
-    --popover-primary-hover: #4f46e5;
-    --popover-primary-active: #4338ca;
+    --popover-bg: rgba(246, 246, 248, 0.72);
+    --popover-surface: rgba(255, 255, 255, 0.5);
+    --popover-surface-strong: rgba(255, 255, 255, 0.72);
+    --popover-border: rgba(0, 0, 0, 0.12);
+    --popover-highlight: rgba(255, 255, 255, 0.86);
+    --popover-text: rgba(0, 0, 0, 0.78);
+    --popover-text-muted: rgba(0, 0, 0, 0.48);
+    --popover-text-heading: #111113;
+    --popover-primary: #111113;
+    --popover-primary-hover: rgba(17, 17, 19, 0.9);
+    --popover-primary-active: rgba(17, 17, 19, 0.78);
+    --popover-primary-text: #ffffff;
     --popover-danger: #dc2626;
     --popover-warning: #d97706;
-    --popover-divider: rgba(0, 0, 0, 0.06);
-    --popover-action-hover: rgba(0, 0, 0, 0.04);
-    --popover-progress-track: rgba(99, 102, 241, 0.1);
-    --popover-progress-fill: #6366f1;
+    --popover-success: #16a34a;
+    --popover-divider: rgba(0, 0, 0, 0.09);
+    --popover-action-hover: rgba(0, 0, 0, 0.06);
+    --popover-progress-track: rgba(0, 0, 0, 0.1);
+    --popover-progress-fill: #111113;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --popover-bg: #18181a;
+    --popover-surface: rgba(255, 255, 255, 0.07);
+    --popover-surface-strong: rgba(255, 255, 255, 0.12);
+    --popover-blur: none;
+  }
+}
+
+@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
+  :root {
+    --popover-bg: #f7f7f8;
+    --popover-surface: rgba(0, 0, 0, 0.04);
+    --popover-surface-strong: rgba(0, 0, 0, 0.07);
   }
 }
