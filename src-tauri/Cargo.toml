@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2021"
 # Disambiguate `cargo run` — the recent ignore-filter port added a second
 # binary (`emit-default-ignores`) alongside the menubar entry point.
@@ -32,8 +32,15 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 sentry = "^0.35"
 ignore = "0.4"
 walkdir = "2"
-aws-sdk-s3 = "1"
-aws-sdk-sts = "1"
+# `behavior-version-latest` opts into the AWS SDK's modern defaults at compile
+# time. Without it, constructing an S3 client panics with
+#   "A behavior major version must be set when sending a request or
+#    constructing a client"
+# because aws-sdk-s3 1.x requires you to pin a BehaviorVersion either in code
+# (per call site) or at the dep level via this feature. We pin at the dep
+# level so first_push.rs / personal.rs don't each need to remember it.
+aws-sdk-s3 = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-sts = { version = "1", features = ["behavior-version-latest"] }
 aws-config = "1"
 aws-smithy-types = "1"
 aws-credential-types = "1"
