@@ -3,6 +3,8 @@
   import SyncStats from './SyncStats.svelte';
   import SyncButton from './SyncButton.svelte';
   import ConflictModal from './ConflictModal.svelte';
+  import WorkspaceList from './WorkspaceList.svelte';
+  import type { Workspace } from '../lib/workspaces';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
@@ -18,9 +20,22 @@
     progress?: { company: string; path: string; bytes: number } | null;
     fanoutTotal?: number;
     fanoutDoneCount?: number;
-    /** Companies in the current/last fanout — rendered as a list. `name`
-     *  is optional; runners < v5.1.9 only emit `uid` + `slug`. */
+    /** Companies in the current/last fanout — rendered live during sync.
+     *  `name` is optional; runners < v5.1.9 only emit `uid` + `slug`. The
+     *  steady-state list is rendered by `workspaces` below; this prop only
+     *  drives the in-flight progress display. */
     companies?: Array<{ uid: string; slug: string; name?: string }>;
+    /** Union of cloud entities + local company folders, produced by the Rust
+     *  `list_syncable_workspaces` command. The menubar's source of truth for
+     *  the steady-state view (replaces the legacy "No companies yet"
+     *  dead-end). When `null`, the command hasn't completed yet — render
+     *  nothing (App.svelte fires it on mount + after every sync). */
+    workspaces?: Workspace[] | null;
+    /** Whether `list_syncable_workspaces` could reach the vault. False means
+     *  we still rendered local-only data; the UI shows a soft notice. */
+    cloudReachable?: boolean;
+    /** Error string surfaced when `cloudReachable` is false. */
+    cloudError?: string | null;
     lastSummary?: {
       companiesAttempted: number;
       filesDownloaded: number;
@@ -54,6 +69,9 @@
     fanoutTotal = 0,
     fanoutDoneCount = 0,
     companies = [],
+    workspaces = null,
+    cloudReachable = true,
+    cloudError = null,
     lastSummary = null,
     errorMessage = '',
     conflicts = [],
@@ -173,16 +191,13 @@
         </div>
       {/if}
 
-      <!-- Runner state banners — setup / auth surfaces as actionable banners,
-           not as silent error states. These short-circuit the usual stats view. -->
-      {#if syncState === 'setup-needed'}
-        <!-- User is signed in but has no memberships. Not an error —
-             just an invitation to create their first company. -->
-        <div class="banner banner-info">
-          <p class="banner-title">No companies yet</p>
-          <p class="banner-body">Create your first one at <strong>onboarding.indigo-hq.com</strong>, or ask a teammate to invite you.</p>
-        </div>
-      {:else if syncState === 'auth-error'}
+      <!-- Runner state banners — auth and runtime errors only. The previous
+           `setup-needed` "No companies yet" dead-end is gone: the WorkspaceList
+           below ALWAYS renders the Personal row, so the menubar is never empty
+           even for a fresh sign-in. The legacy onboarding.indigo-hq.com link
+           lived here too — replaced by the live "Create a company" / "Join
+           via invite" affordances inside WorkspaceList. -->
+      {#if syncState === 'auth-error'}
         <div class="banner banner-error">
           <p class="banner-title">Session expired</p>
           <p class="banner-body">{errorMessage || 'Please sign in again to continue syncing.'}</p>
@@ -196,20 +211,15 @@
 
       <SyncStats bind:this={statsEl} />
 
-      <!-- Connected companies — rendered whenever we have a known fanout.
-           `name` falls back to `slug` for runners < v5.1.9. -->
-      {#if companies.length > 0}
-        <ul class="company-list">
-          {#each companies as c (c.uid)}
-            <li class="company-row">
-              <span class="company-dot" aria-hidden="true"></span>
-              <span class="company-name">{c.name ?? c.slug}</span>
-              {#if c.name && c.slug !== c.name}
-                <span class="company-slug">{c.slug}</span>
-              {/if}
-            </li>
-          {/each}
-        </ul>
+      <!-- Workspaces (Personal + companies) — the steady-state list.
+           Renders as soon as `list_syncable_workspaces` returns; null while
+           the first invocation is in flight. -->
+      {#if workspaces && workspaces.length > 0}
+        <WorkspaceList
+          {workspaces}
+          {cloudReachable}
+          {cloudError}
+        />
       {/if}
 
       <!-- Live progress detail — renders only while actively syncing. -->
@@ -469,11 +479,6 @@
     line-height: 1.4;
   }
 
-  .banner-body strong {
-    color: var(--popover-text, #e0e0e0);
-    font-weight: 600;
-  }
-
   /* Update banner: horizontal layout — text on the left, Install on the right */
   .banner-update {
     flex-direction: row;
@@ -555,52 +560,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     min-width: 0;
-  }
-
-  /* Connected companies list */
-  .company-list {
-    list-style: none;
-    margin: 0;
-    padding: 0.375rem 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-  }
-
-  .company-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.1875rem 0.125rem;
-    font-size: 0.75rem;
-    line-height: 1.3;
-  }
-
-  .company-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--popover-primary, #6366f1);
-    flex-shrink: 0;
-  }
-
-  .company-name {
-    color: var(--popover-text, #e0e0e0);
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-    flex: 1;
-  }
-
-  .company-slug {
-    color: var(--popover-text-muted, #a0a0b0);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-    font-size: 0.6875rem;
-    flex-shrink: 0;
   }
 
   /* Summary line — "Last sync · X files · Y MB" */

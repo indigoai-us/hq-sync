@@ -6,6 +6,7 @@
   import Settings from './components/Settings.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
+  import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import './styles/popover.css';
 
   interface Config {
@@ -52,6 +53,14 @@
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
+  // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
+  // legacy "No companies yet" dead-end with a union over Person + memberships
+  // + local company folders. `null` = first invocation in flight; non-null
+  // (even empty) = command completed at least once.
+  let workspaces = $state<Workspace[] | null>(null);
+  let workspacesCloudReachable = $state(true);
+  let workspacesError = $state<string | null>(null);
+
   // Updater state — populated by the `update:available` event from the Rust
   // background checker (launch+10s, then every 6h). Non-null means the user
   // is on an older version and the banner should be shown.
@@ -69,6 +78,29 @@
       config = await invoke<Config>('get_config');
     } catch (err) {
       console.error('Failed to load config:', err);
+    }
+  }
+
+  /**
+   * Fetch the workspaces union (Personal + memberships + local folders).
+   * Called on mount, after sync completes, and after settings change. Errors
+   * surface via the `cloudReachable` flag in the result — the Rust command
+   * never throws for cloud-side problems, only for environment failures
+   * (e.g. cannot resolve hq folder path).
+   */
+  async function loadWorkspaces() {
+    try {
+      const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
+      workspaces = result.workspaces;
+      workspacesCloudReachable = result.cloudReachable;
+      workspacesError = result.error;
+    } catch (err) {
+      // Hard failure (e.g. couldn't resolve hq_root). Keep prior workspaces
+      // visible if we had any, but flag the error so the UI can soften.
+      console.error('list_syncable_workspaces failed:', err);
+      workspacesCloudReachable = false;
+      workspacesError = String(err);
+      // Don't null out `workspaces` — last-good is better than empty.
     }
   }
 
@@ -102,7 +134,10 @@
     // User may have changed the HQ folder path in Settings; the header in
     // Popover renders from `config.hqFolderPath`, which was snapshotted at
     // mount. Re-read menubar.json so the change is visible without a quit.
+    // Workspaces depend on hq_root too — local folder enumeration would point
+    // at the wrong tree otherwise.
     loadConfig();
+    loadWorkspaces();
   }
 
   function handleSignOut() {
@@ -272,6 +307,9 @@
         }
         // Refresh SyncStats so "last synced" updates immediately
         syncStatsRefresh?.();
+        // Refresh workspaces — sync may have created new local folders
+        // (for newly-provisioned companies) or updated last-synced timestamps.
+        loadWorkspaces();
       })
     );
 
@@ -315,6 +353,7 @@
 
     checkAuth();
     loadConfig();
+    loadWorkspaces();
     setupTrayListeners();
 
     return () => {
@@ -370,6 +409,9 @@
       fanoutTotal={syncFanoutTotal}
       fanoutDoneCount={syncFanoutDoneCount}
       companies={syncCompanies}
+      {workspaces}
+      cloudReachable={workspacesCloudReachable}
+      cloudError={workspacesError}
       lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
       {conflicts}
