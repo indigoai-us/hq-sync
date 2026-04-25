@@ -146,17 +146,38 @@ fn resolve_hq_folder_path() -> Result<String, String> {
     Ok(hq_folder.to_string_lossy().to_string())
 }
 
-/// Read `vault_api_url` from `~/.hq/config.json` for constructing the VaultClient.
+/// Resolve the vault API URL. Precedence (highest to lowest):
+///   1. `HQ_VAULT_API_URL` env var — dev/test override.
+///   2. `~/.hq/config.json` `vault_api_url` field — legacy installer-provisioned
+///      setups continue to work without migration. Read errors fall through
+///      to the default rather than aborting (the file may be partial/stale).
+///   3. Hardcoded canonical hq-dev URL — lets create-hq users (and anyone
+///      with `companies/{slug}/company.yaml: { cloud: true }` but no global
+///      config) run hq-sync directly. `provision_missing_companies` then
+///      walks the YAMLs and writes per-company `.hq/config.json` files
+///      itself, so the global config.json is no longer required.
+///
+/// See hq-pro ADR-0003 for the canonical-stage rationale.
 fn resolve_vault_api_url() -> Result<String, String> {
-    let config_path = paths::config_json_path()?;
-    if !config_path.exists() {
-        return Err("~/.hq/config.json not found — please complete setup first".to_string());
+    const DEFAULT_VAULT_API_URL: &str =
+        "https://ky8cgbl4yh.execute-api.us-east-1.amazonaws.com";
+
+    if let Ok(url) = std::env::var("HQ_VAULT_API_URL") {
+        if !url.is_empty() {
+            return Ok(url);
+        }
     }
-    let contents = std::fs::read_to_string(&config_path)
-        .map_err(|e| format!("read config.json: {e}"))?;
-    let config: HqConfig = serde_json::from_str(&contents)
-        .map_err(|e| format!("parse config.json: {e}"))?;
-    Ok(config.vault_api_url)
+
+    let config_path = paths::config_json_path()?;
+    if config_path.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&config_path) {
+            if let Ok(config) = serde_json::from_str::<HqConfig>(&contents) {
+                return Ok(config.vault_api_url);
+            }
+        }
+    }
+
+    Ok(DEFAULT_VAULT_API_URL.to_string())
 }
 
 /// Testable core: given a pre-fetched token result and a refresh function,
