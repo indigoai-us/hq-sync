@@ -216,6 +216,143 @@ pkill -f "HQ Sync" || true
 
 ---
 
+### UJ-006: Auto-Provisioning + Personal HQ
+
+**Goal:** Verify that unprovisioned companies are auto-created server-side and that personal (non-company) content is mirrored to the user's personal S3 bucket.
+
+**Stories involved:** Steps 5, 6, 7, 8 (provision_missing_companies, first_push, personal provision + first-push)
+
+**Prerequisites:**
+
+- Fresh `~/.hq/` state: no `companies/*/` directories yet created locally; vault has exactly 1 personal `prs_*` entity
+- `~/.hq/config.json` exists (written by hq-installer)
+- At least one `companies/<slug>/company.yaml` with `cloud: true` exists under `${HQ_FOLDER}/companies/<slug>/` that has no matching `cmp_*` entity yet
+- Personal content (non-`companies/*` files) exists under `${HQ_FOLDER}/` (e.g., `notes/intro.md`)
+- Staging-binding block (plan.md) exported: `$STAGE`, `$API_HOST`, `$PERSON_UID`
+
+**Steps:**
+
+- [ ] 1. Confirm pre-state: `ls "${HQ_FOLDER}/companies/"` shows at least one slug without a `.hq/config.json` inside
+- [ ] 2. Click "Sync Now" in the HQ Sync menubar popover
+- [ ] 3. Wait for sync completion (popover shows "Sync complete")
+
+**Expected outcome (a) — Company auto-provisioning:**
+
+- The company folder `${HQ_FOLDER}/companies/<slug>/` gets a `.hq/config.json` written with `companyUid`, `companySlug`, `bucketName`, and `vaultApiUrl` keys
+- A new `cmp_*` entity appears in the vault for that slug (find_by_slug → create path)
+- An S3 bucket `hq-vault-cmp-<new-slug>` is reachable
+
+**Expected outcome (b) — Personal first-push via /sts/vend-self:**
+
+- Personal content (anything NOT under `companies/*`) is uploaded to `s3://hq-vault-prs-<personal-uid>/`
+- `~/.hq/sync-journal.personal.json` exists with `version == "1"` and `files` keys > 0
+- The personal-mode sync runner authenticates by calling **`POST /sts/vend-self`** with `body.personUid` matching the caller's resolved person entity (NOT `/sts/vend-child`). Verify via:
+  ```bash
+  START_TIME_MS=$(($(date +%s) * 1000 - 300000))
+  aws logs filter-log-events \
+    --log-group-name "/aws/lambda/$VEND_SELF_LAMBDA_NAME" \
+    --filter-pattern '"vend-self"' \
+    --start-time "$START_TIME_MS" \
+    | jq '.events | length'
+  # => ≥1 (vend-self was called)
+  aws logs filter-log-events \
+    --log-group-name "/aws/lambda/$VEND_CHILD_LAMBDA_NAME" \
+    --filter-pattern '"vend-child"' \
+    --start-time "$START_TIME_MS" \
+    | jq '.events | length'
+  # => 0 (vend-child was NOT used for personal sync)
+  ```
+
+**Verification:**
+
+```bash
+# Resolve UIDs from staging-binding block
+source <(cat plan.md | grep -A50 'staging-binding block')  # or set manually
+
+# Company bucket reachable with at least top-level listing
+aws s3 ls "s3://hq-vault-cmp-<new-slug>/"
+
+# Personal bucket contains non-companies/* content
+aws s3 ls "s3://hq-vault-prs-${PERSON_UID}/"
+
+# Journal written
+jq -r 'keys | length' ~/.hq/sync-journal.personal.json
+# => returns integer > 0
+
+# company.yaml MUST be byte-for-byte unchanged
+sha256sum "${HQ_FOLDER}/companies/<slug>/company.yaml"
+# compare against pre-test hash recorded in step 1
+```
+
+---
+
+### UJ-007: Telemetry Opt-In Round-Trip
+
+**Goal:** Verify the full telemetry pipeline — opt-in flag propagation, JSONL scanning, strip-list enforcement, DynamoDB storage, and cursor advancement.
+
+**Stories involved:** Steps 1, 3, 11, 12 (usage routes, installer opt-in, machineId, telemetry collector)
+
+**Prerequisites:**
+
+- Dev Cognito user opted-in via the installer wizard (Step 3); `~/.hq/menubar.json` must contain `"telemetryEnabled": true`
+- At least one `~/.claude/projects/**/*.jsonl` file exists with ≥1 JSON line containing sensitive fields (`content`, `thinking`, or `text`)
+- Staging-binding block exported: `$STAGE`, `$API_HOST`, `$PERSON_UID`, `$JWT_SUB`
+
+**Steps:**
+
+- [ ] 1. Confirm opt-in: `jq -r '.telemetryEnabled' ~/.hq/menubar.json` → `true`
+- [ ] 2. Confirm at least one JSONL exists: `ls ~/.claude/projects/**/*.jsonl | head -3`
+- [ ] 3. Click "Sync Now" in the HQ Sync menubar popover
+- [ ] 4. Wait for sync completion (popover shows "Sync complete")
+
+**Expected outcome:**
+
+On sync completion, `send_telemetry_if_opted_in` fires via `tauri::async_runtime::spawn`. It:
+
+1. Calls `GET /v1/usage/opt-in` (returns `{ "enabled": true }`)
+2. Scans `~/.claude/projects/**/*.jsonl` starting from stored cursor offsets in `~/.hq/telemetry-cursor.json`
+3. Applies the KEEP/REMOVE allowlist (unknown fields dropped by default; `content`, `thinking`, `text` never survive)
+4. Batches rows up to ~1 MB
+5. POSTs to `/v1/usage` (no top-level `personUid` — server resolves from JWT)
+6. Advances the cursor **only** on HTTP 200
+
+**Verification:**
+
+```bash
+# Strip-list enforcement: no prompt body field survives
+aws dynamodb scan \
+  --table-name "hq-vault-usage-events-${STAGE}" \
+  --limit 5 \
+  | jq '.Items[] | keys | map(select(. == "content" or . == "thinking" or . == "text"))'
+# => must return [] for every row
+
+# Spoof rejection guard
+curl -s -o /dev/null -w "%{http_code}" \
+  -X POST "${API_HOST}/v1/usage" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"events":[{"eventKey":"spoof-test"}],"personUid":"prs_forged"}'
+# => must return 400
+
+# Confirm forged UID wrote nothing
+aws dynamodb query \
+  --table-name "hq-vault-usage-events-${STAGE}" \
+  --key-condition-expression "personUid = :p" \
+  --expression-attribute-values '{":p":{"S":"prs_forged"}}' \
+  | jq '.Count'
+# => must return 0
+
+# Cursor file written and non-empty
+jq -r 'keys | length' ~/.hq/telemetry-cursor.json
+# => returns integer > 0 after first sync
+
+# Cursor stores non-negative byte offset per file
+jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
+# => returns a non-negative integer
+```
+
+---
+
 ## Per-Story Acceptance Tests
 
 ### US-001: Repo Scaffold + Tauri Dev
