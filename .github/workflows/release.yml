@@ -106,7 +106,16 @@ jobs:
           prerelease: false
           args: --target universal-apple-darwin
 
+      # Sentry symbol upload is best-effort — must never gate a release. The
+      # universal-apple-darwin build doesn't reliably emit .dSYM bundles in
+      # the per-arch target dirs the script searches (tauri-action's lipo
+      # cleans intermediates), so the prior exit-1-on-zero-uploaded behavior
+      # wedged v0.1.17 with the .app, .tar.gz, .sig, and latest.json all
+      # uploaded but the publish-draft step skipped. Allowing the step to
+      # fail loudly lets the rest of the pipeline (styled DMG, versionless
+      # alias, publish) proceed. Same fix landed on hq-installer earlier.
       - name: Create Sentry release and upload Rust debug symbols
+        continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
         run: |
