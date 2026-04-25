@@ -3,7 +3,7 @@
 // Starts a one-shot HTTP server on 127.0.0.1:53682 and advertises the
 // callback as http://localhost:53682/callback, which matches the
 // `http://localhost:*/callback` wildcard registered on Cognito app client
-// 7r7an9keh0u6hlsvepl74tvqb0 (hq-dev stack; see hq-pro ADR-0003).
+// 7acei2c8v870enheptb1j5foln (hq-prod stack, canonical post-2026-04-25 cutover).
 // Binding to 127.0.0.1 (not 0.0.0.0) keeps the
 // listener off the LAN; `localhost` in the redirect URI is required because
 // Cognito matches the host segment literally — `127.0.0.1` fails.
@@ -40,15 +40,16 @@ const LOOPBACK_HOST: &str = "127.0.0.1";
 const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-// hq-dev stack (canonical; see hq-pro ADR-0003).
-const COGNITO_CLIENT_ID: &str = "7r7an9keh0u6hlsvepl74tvqb0";
-const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "vault-indigo-hq-dev";
+// hq-prod stack (canonical post-2026-04-25 cutover; hq-dev kept as staging
+// fallback via HQ_COGNITO_DOMAIN/HQ_COGNITO_CLIENT_ID env overrides).
+const COGNITO_CLIENT_ID: &str = "7acei2c8v870enheptb1j5foln";
+const DEFAULT_COGNITO_DOMAIN_PREFIX: &str = "vault-indigo-hq-prod";
 const REDIRECT_URI: &str = "http://localhost:53682/callback";
 
 /// Cognito hosted-UI domain prefix.
 ///
 /// Resolves to `$HQ_COGNITO_DOMAIN` if set, else the canonical
-/// `vault-indigo-hq-dev` prefix shared with `@indigoai-us/hq-cli` and
+/// `vault-indigo-hq-prod` prefix shared with `@indigoai-us/hq-cli` and
 /// `hq-installer`. Always in the
 /// `us-east-1.amazoncognito.com` namespace — custom domains not yet supported.
 fn cognito_domain_prefix() -> String {
@@ -560,7 +561,7 @@ mod tests {
 
         assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
         assert!(url.contains("response_type=code"));
-        assert!(url.contains("client_id=7r7an9keh0u6hlsvepl74tvqb0"));
+        assert!(url.contains("client_id=7acei2c8v870enheptb1j5foln"));
         assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback") || url.contains("redirect_uri=http://localhost:53682/callback"));
         assert!(url.contains("scope=openid+email+profile"));
         // identity_provider=Google is what makes Cognito skip its Hosted UI
