@@ -95,7 +95,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// `commands::prewarm` task fires this same fetch on app startup so the
 /// fetch happens in the background rather than during the user's first
 /// click of "Sync Now".
-pub const HQ_CLOUD_VERSION: &str = "5.2.0";
+pub const HQ_CLOUD_VERSION: &str = "5.2.1";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
