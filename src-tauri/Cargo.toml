@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2021"
 # Disambiguate `cargo run` — the recent ignore-filter port added a second
 # binary (`emit-default-ignores`) alongside the menubar entry point.
@@ -69,9 +69,16 @@ objc2 = "0.6"
 [features]
 journal-cli = []
 
-[[bin]]
+# Lives in examples/ (auto-discovered) rather than src/bin/. Cargo's auto-bin
+# detection registers any src/bin/*.rs as kind= ["bin"] regardless of
+# required-features; Tauri's bundler then walks all bins and tries to copy
+# each, which broke v0.1.16 (file never built because of the feature gate, but
+# bundler still tried). Examples are auto-discovered from examples/, never
+# walked by Tauri's bundler. Run with:
+#   cargo run --example emit-sample-journal --features journal-cli
+[[example]]
 name = "emit-sample-journal"
-path = "src/bin/emit-sample-journal.rs"
+path = "examples/emit-sample-journal.rs"
 required-features = ["journal-cli"]
 
 [dev-dependencies]
