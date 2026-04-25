@@ -37,6 +37,8 @@ aws-sdk-sts = "1"
 aws-config = "1"
 aws-smithy-types = "1"
 aws-credential-types = "1"
+ulid = "1"
+bytes = "1"
 
 [profile.release]
 split-debuginfo = "packed"
@@ -51,6 +53,15 @@ path = "src/bin/emit-default-ignores.rs"
 # doesn't expose the panel handle, so we reach into AppKit directly.
 objc2 = "0.6"
 
+[features]
+journal-cli = []
+
+[[bin]]
+name = "emit-sample-journal"
+path = "src/bin/emit-sample-journal.rs"
+required-features = ["journal-cli"]
+
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+tauri = { version = "2", features = ["test"] }
