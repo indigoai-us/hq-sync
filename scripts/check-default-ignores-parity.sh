@@ -41,8 +41,10 @@ node --input-type=module -e "
   }
   process.stdout.write(mod.DEFAULT_IGNORES.join('\n') + '\n');
 " > /tmp/ts-default-ignores.txt
-# 2) Emit Rust DEFAULT_IGNORES via the tiny bin target.
-(cd "$HQ_SYNC_DIR/src-tauri" && cargo run --quiet --bin emit-default-ignores) \
+# 2) Emit Rust DEFAULT_IGNORES via the tiny example target.
+#    Declared as `[[example]]` in Cargo.toml so Tauri's bundler ignores it
+#    during `tauri build` (it's a parity-test helper, not a shipped bin).
+(cd "$HQ_SYNC_DIR/src-tauri" && cargo run --quiet --example emit-default-ignores) \
   > /tmp/rust-default-ignores.txt
 # 3) Exact diff.
 diff -u /tmp/ts-default-ignores.txt /tmp/rust-default-ignores.txt
