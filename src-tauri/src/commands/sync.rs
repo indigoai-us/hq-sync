@@ -51,6 +51,7 @@ use crate::events::{
     EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
 };
+use crate::util::logfile::log;
 use crate::util::paths;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -396,9 +397,11 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             let now_iso = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
             let journal = journal_for_sync_complete(&now_iso, conflicts);
             if let Err(_e) = write_journal(hq_folder, &journal) {
+                log("sync", &format!("failed to write journal: {_e}"));
                 #[cfg(debug_assertions)]
                 eprintln!("[sync] failed to write journal: {}", _e);
             }
+            log("sync", &format!("all-complete (conflicts={conflicts})"));
             let emit_result = app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone());
             let app_clone = app.clone();
             let hq = hq_folder.to_string();
@@ -432,11 +435,13 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
 pub async fn start_sync(app: AppHandle) -> Result<String, String> {
+    log("sync", "start_sync invoked");
     #[cfg(debug_assertions)]
     eprintln!("[sync] start_sync invoked");
 
     // Atomically check-and-register to prevent concurrent syncs (TOCTOU-safe)
     if !try_register_handle(SYNC_HANDLE) {
+        log("sync", "BAIL: already running");
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: already running");
         return Err("Sync is already running".to_string());
@@ -444,13 +449,18 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
 
     // Best-effort machineId bootstrap — log on failure but do not abort sync.
     if let Err(e) = ensure_machine_id() {
+        log("sync", &format!("ensure_machine_id failed: {e}"));
         eprintln!("ensure_machine_id failed: {e}");
     }
 
     // Resolve HQ folder — deregister on failure so future syncs aren't blocked
     let hq_folder_path = match resolve_hq_folder_path() {
-        Ok(p) => p,
+        Ok(p) => {
+            log("sync", &format!("hq_folder resolved: {p}"));
+            p
+        }
         Err(e) => {
+            log("sync", &format!("BAIL: resolve_hq_folder_path failed: {e}"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] BAIL: resolve_hq_folder_path failed: {}", e);
             deregister_process(SYNC_HANDLE);
@@ -460,8 +470,12 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
 
     // Resolve vault URL from ~/.hq/config.json
     let vault_api_url = match resolve_vault_api_url() {
-        Ok(u) => u,
+        Ok(u) => {
+            log("sync", &format!("vault_api_url resolved: {u}"));
+            u
+        }
         Err(e) => {
+            log("sync", &format!("BAIL: resolve_vault_api_url failed: {e}"));
             deregister_process(SYNC_HANDLE);
             return Err(e);
         }
@@ -469,14 +483,19 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
 
     // Fetch (and if needed refresh) the Cognito JWT
     let jwt = match resolve_jwt().await {
-        Ok(j) => j,
+        Ok(j) => {
+            log("sync", "jwt resolved");
+            j
+        }
         Err(e) => {
+            log("sync", &format!("BAIL: resolve_jwt failed: {e}"));
             deregister_process(SYNC_HANDLE);
             return Err(e);
         }
     };
 
     // Provision any cloud: true companies that haven't been provisioned yet
+    log("sync", "phase: provision_missing_companies");
     let vault = VaultClient::new(&vault_api_url, &jwt);
     let companies = match crate::commands::provision::provision_missing_companies(
         &std::path::PathBuf::from(&hq_folder_path),
@@ -485,8 +504,19 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     )
     .await
     {
-        Ok(c) => c,
+        Ok(c) => {
+            log(
+                "sync",
+                &format!(
+                    "provisioned {} new companies: {:?}",
+                    c.len(),
+                    c.iter().map(|x| &x.slug).collect::<Vec<_>>()
+                ),
+            );
+            c
+        }
         Err(e) => {
+            log("sync", &format!("BAIL: provision_missing_companies failed: {e}"));
             deregister_process(SYNC_HANDLE);
             return Err(e);
         }
@@ -500,10 +530,12 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 bucket_name: company.bucket_name.clone(),
             },
         ) {
+            log("sync", &format!("failed to emit company-provisioned: {_e}"));
             #[cfg(debug_assertions)]
             eprintln!("[sync] failed to emit company-provisioned: {}", _e);
         }
         // First-push: upload every local file for the newly-provisioned company.
+        log("sync", &format!("phase: first_push {}", company.slug));
         if let Err(e) = crate::commands::first_push::first_push_company(
             &app,
             &vault,
@@ -512,6 +544,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         )
         .await
         {
+            log("sync", &format!("first_push failed for {}: {e}", company.slug));
             #[cfg(debug_assertions)]
             eprintln!("[sync] first_push failed for {}: {}", company.slug, e);
             let _ = app.emit(
@@ -526,6 +559,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     }
 
     // Personal first-push: provision + upload personal HQ files via /sts/vend-self.
+    log("sync", "phase: personal first-push");
     if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
         &app,
         &vault,
@@ -533,6 +567,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     )
     .await
     {
+        log("sync", &format!("personal first-push failed: {e}"));
         #[cfg(debug_assertions)]
         eprintln!("[sync] personal first-push failed: {}", e);
         let _ = app.emit(
@@ -546,6 +581,13 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     }
 
     let spawn_args = build_sync_spawn_args(&hq_folder_path);
+    log(
+        "sync",
+        &format!(
+            "about to spawn: cmd={} args={:?} hq_root={}",
+            spawn_args.cmd, spawn_args.args, hq_folder_path
+        ),
+    );
     #[cfg(debug_assertions)]
     eprintln!(
         "[sync] about to spawn: cmd={} args={:?} hq_root={}",
@@ -556,6 +598,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(SYNC_TIMEOUT).await;
         if is_registered(SYNC_HANDLE) {
+            log("sync", "timeout reached, cancelling");
             #[cfg(debug_assertions)]
             eprintln!("[sync] timeout reached, cancelling");
             cancel_process_impl(SYNC_HANDLE, SIGKILL_DELAY);
@@ -572,19 +615,36 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     // Fresh totals per run — no reset needed between runs.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     tauri::async_runtime::spawn_blocking(move || {
+        log("sync", "bg task: entering run_process_impl");
         #[cfg(debug_assertions)]
         eprintln!("[sync] bg task: entering run_process_impl");
         let result = run_process_impl(SYNC_HANDLE, &spawn_args, |event| match event {
             ProcessEvent::Stdout(line) => {
+                // Always mirror runner stdout to the log file — this is the
+                // ndjson protocol stream and the only durable record of what
+                // the runner did. The eprintln! is dev-only / verbose.
+                log("runner.stdout", &line);
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stdout] {}", line);
                 handle_sync_line(&app_bg, &hq_folder_for_handler, &totals, &jwt_for_handler, &line);
             }
-            ProcessEvent::Stderr(_line) => {
+            ProcessEvent::Stderr(line) => {
+                // Always log runner stderr — when sync gets stuck this is the
+                // most likely place the cause shows up (npx download retry,
+                // node uncaught exception, runner panic, etc.).
+                log("runner.stderr", &line);
                 #[cfg(debug_assertions)]
-                eprintln!("[sync stderr] {}", _line);
+                eprintln!("[sync stderr] {}", line);
             }
             ProcessEvent::Exit { code, success } => {
+                log(
+                    "sync",
+                    &format!(
+                        "runner exited: success={} code={}",
+                        success,
+                        code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into()),
+                    ),
+                );
                 // The runner exits 0 for recoverable conditions (setup-needed,
                 // auth-error) — those surface as ndjson events before exit, so
                 // the frontend already knows. A non-zero exit means the runner
@@ -607,6 +667,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         });
 
         if let Err(e) = result {
+            log("sync", &format!("run_process_impl error: {e}"));
             let _ = app_bg.emit(
                 EVENT_SYNC_ERROR,
                 crate::events::SyncErrorEvent {
