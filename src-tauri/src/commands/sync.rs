@@ -38,7 +38,7 @@ use chrono::SecondsFormat;
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::cognito;
-use crate::commands::config::{HqConfig, MenubarPrefs};
+use crate::commands::config::{ensure_machine_id, HqConfig, MenubarPrefs};
 use crate::commands::vault_client::VaultClient;
 use crate::commands::process::{
     cancel_process_impl, deregister_process, is_registered, run_process_impl, try_register_handle,
@@ -431,6 +431,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: already running");
         return Err("Sync is already running".to_string());
+    }
+
+    // Best-effort machineId bootstrap — log on failure but do not abort sync.
+    if let Err(e) = ensure_machine_id() {
+        eprintln!("ensure_machine_id failed: {e}");
     }
 
     // Resolve HQ folder — deregister on failure so future syncs aren't blocked

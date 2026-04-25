@@ -1,4 +1,9 @@
+use std::fs;
+use std::io::Write;
+
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use uuid::Uuid;
 
 use crate::util::paths;
 
@@ -24,6 +29,54 @@ pub struct MenubarPrefs {
     pub notifications: Option<bool>,
     pub start_at_login: Option<bool>,
     pub autostart_daemon: Option<bool>,
+}
+
+/// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
+/// "machineId" if absent or empty, and atomic-rename the file back. All other
+/// top-level keys (including unknown future keys) pass through unchanged.
+///
+/// MenubarPrefs is NOT used here — a typed round-trip would silently drop
+/// unknown keys. This mirrors the hq-installer write_menubar_telemetry_pref
+/// algorithm so both sides share one canonical merge shape.
+pub fn ensure_machine_id() -> Result<String, String> {
+    let path: std::path::PathBuf = dirs::home_dir()
+        .ok_or("home dir unavailable")?
+        .join(".hq/menubar.json");
+
+    // 1. Read existing JSON as untyped Map.
+    let mut obj: Map<String, Value> = if path.exists() {
+        fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default()
+    } else {
+        Map::new()
+    };
+
+    // 2. Return existing machineId unchanged if already populated.
+    if let Some(Value::String(id)) = obj.get("machineId") {
+        if !id.is_empty() {
+            return Ok(id.clone());
+        }
+    }
+
+    // 3. Insert a new v4 UUID; do not touch other keys.
+    let id = Uuid::new_v4().to_string();
+    obj.insert("machineId".into(), Value::String(id.clone()));
+
+    // 4. Atomic write.
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let body = serde_json::to_string_pretty(&Value::Object(obj))
+        .map_err(|e| e.to_string())?;
+    let mut f = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+    f.write_all(body.as_bytes()).map_err(|e| e.to_string())?;
+    f.sync_all().ok();
+    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 /// Response returned to the frontend from get_config.
@@ -209,5 +262,117 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         assert!(json.contains("\"configured\":false"));
         assert!(json.contains("\"error\":\"Not configured\""));
+    }
+}
+
+#[cfg(test)]
+mod ensure_machine_id_tests {
+    use super::*;
+    use crate::util::test_support::ENV_MUTEX;
+    use serde_json::{json, Value};
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn fixture() -> TempDir {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        tmp
+    }
+
+    fn read_menubar_value(home: &std::path::Path) -> Value {
+        let body = fs::read_to_string(home.join(".hq/menubar.json")).unwrap();
+        serde_json::from_str(&body).unwrap()
+    }
+
+    // (a) Missing file — created with valid v4 UUID.
+    #[test]
+    fn ensure_machine_id_creates_file_when_missing() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        let id = ensure_machine_id().unwrap();
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        let v = read_menubar_value(tmp.path());
+        assert_eq!(v["machineId"], Value::String(id));
+    }
+
+    // (b) File without `machineId` — field added, UUID is valid v4.
+    #[test]
+    fn ensure_machine_id_adds_field_when_missing() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = fixture();
+        std::env::set_var("HOME", tmp.path());
+        fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            r#"{"hqPath":"/foo"}"#,
+        )
+        .unwrap();
+        let id = ensure_machine_id().unwrap();
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        let v = read_menubar_value(tmp.path());
+        assert_eq!(v["machineId"], Value::String(id));
+        assert_eq!(v["hqPath"], Value::String("/foo".into()));
+    }
+
+    // (c) Existing `machineId` — unchanged.
+    #[test]
+    fn ensure_machine_id_returns_existing() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = fixture();
+        std::env::set_var("HOME", tmp.path());
+        let pre = "00000000-0000-4000-8000-000000000000";
+        fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            format!(r#"{{"machineId":"{pre}","hqPath":"/foo"}}"#),
+        )
+        .unwrap();
+        let id = ensure_machine_id().unwrap();
+        assert_eq!(id, pre);
+        let v = read_menubar_value(tmp.path());
+        assert_eq!(v["machineId"], Value::String(pre.into()));
+    }
+
+    // (d) Atomic write — verify temp-file-rename pattern.
+    #[test]
+    fn ensure_machine_id_writes_atomically() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = fixture();
+        std::env::set_var("HOME", tmp.path());
+        ensure_machine_id().unwrap();
+        assert!(!tmp.path().join(".hq/menubar.json.tmp").exists());
+        assert!(tmp.path().join(".hq/menubar.json").exists());
+    }
+
+    // (e) All-keys-preserved via untyped merge.
+    #[test]
+    fn ensure_machine_id_preserves_all_pre_existing_keys() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = fixture();
+        std::env::set_var("HOME", tmp.path());
+        let seed = json!({
+            "hqPath": "/custom",
+            "syncOnLaunch": true,
+            "notifications": false,
+            "startAtLogin": true,
+            "autostartDaemon": null,
+            "telemetryEnabled": true,
+            "some_unknown_future_key": "x",
+        });
+        fs::write(
+            tmp.path().join(".hq/menubar.json"),
+            serde_json::to_string(&seed).unwrap(),
+        )
+        .unwrap();
+        ensure_machine_id().unwrap();
+        let v = read_menubar_value(tmp.path());
+        assert_eq!(v["hqPath"], Value::String("/custom".into()));
+        assert_eq!(v["syncOnLaunch"], Value::Bool(true));
+        assert_eq!(v["notifications"], Value::Bool(false));
+        assert_eq!(v["startAtLogin"], Value::Bool(true));
+        assert_eq!(v["autostartDaemon"], Value::Null);
+        assert_eq!(v["telemetryEnabled"], Value::Bool(true));
+        assert_eq!(v["some_unknown_future_key"], Value::String("x".into()));
+        assert!(v["machineId"].is_string());
+        assert!(uuid::Uuid::parse_str(v["machineId"].as_str().unwrap()).is_ok());
     }
 }
