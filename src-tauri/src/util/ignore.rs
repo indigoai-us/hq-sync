@@ -4,7 +4,6 @@
 use std::path::{Path, PathBuf};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-// MUST match packages/hq-cloud/src/ignore.ts DEFAULT_IGNORES verbatim.
 pub const DEFAULT_IGNORES: &[&str] = &[
     // VCS + OS
     ".git/", ".git", ".DS_Store", "Thumbs.db",

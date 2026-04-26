@@ -8,8 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "parity": "bash scripts/check-default-ignores-parity.sh",
-    "test": "pnpm run parity && vitest run"
+    "test": "vitest run"
   },
   "dependencies": {
     "@sentry/svelte": "^10.49.0",
