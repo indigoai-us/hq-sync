@@ -412,6 +412,7 @@
       {workspaces}
       cloudReachable={workspacesCloudReachable}
       cloudError={workspacesError}
+      onworkspacesrefresh={loadWorkspaces}
       lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
       {conflicts}

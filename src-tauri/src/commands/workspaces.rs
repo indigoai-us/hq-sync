@@ -1,28 +1,36 @@
-//! `list_syncable_workspaces` Tauri command — the source of truth for the
-//! menubar's main view.
+//! `list_syncable_workspaces` + `connect_workspace_to_cloud` Tauri commands —
+//! the source of truth for the menubar's main view.
 //!
 //! Returns the UNION of:
 //!   1. Person entity (always shown — guaranteed by Cognito PreTokenGeneration)
-//!   2. Companies the caller is a member of (from `GET /membership/person/{uid}`)
-//!   3. Local company folders under `$HQ/companies/*` (whether cloud-bound or not)
+//!   2. Companies the caller is a member of (`GET /membership/person/{uid}`)
+//!   3. Local companies declared in `$HQ/companies/manifest.yaml` (canonical
+//!      when present), falling back to enumerating `$HQ/companies/*`
+//!      directories for HQs that predate the manifest.
 //!
-//! Each workspace row carries a `state`:
+//! Each row carries a `state`:
 //!   - `personal`   — the user's personal vault (always cloud-backed, local optional)
 //!   - `synced`     — cloud entity + local folder both present
-//!   - `cloud-only` — entity exists, no local folder yet ("Sync now" creates one)
-//!   - `local-only` — folder exists, no matching cloud entity ("Connect to cloud")
+//!   - `cloud-only` — entity exists, no local folder yet
+//!   - `local-only` — folder exists, no matching cloud entity (Connect button)
 //!
 //! Cloud failures degrade gracefully: local-only workspaces are still returned,
 //! `cloudReachable: false` is set, and the UI surfaces a softly-worded notice.
+//!
+//! `connect_workspace_to_cloud(slug)` provisions a cloud bucket + writes the
+//! per-company `.hq/config.json` so the next sync includes it. Idempotent:
+//! reuses an existing entity if `find_by_slug` matches, only creating when
+//! genuinely new.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
-use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
 use crate::commands::config::{HqConfig, MenubarPrefs};
+use crate::commands::provision::CompanyConfig;
+use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
+use crate::commands::vault_client::{CreateEntityInput, EntityInfo, MembershipInfo, VaultClient};
 use crate::util::journal::read_journal;
 use crate::util::paths;
 
@@ -38,13 +46,9 @@ pub enum WorkspaceKind {
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum WorkspaceState {
-    /// The user's personal vault. Always shown; local folder optional.
     Personal,
-    /// Cloud entity + local folder are both present.
     Synced,
-    /// Cloud entity exists; no local folder yet.
     CloudOnly,
-    /// Local folder exists; no matching cloud entity yet.
     LocalOnly,
 }
 
@@ -72,10 +76,38 @@ pub struct WorkspacesResult {
     pub hq_folder_path: String,
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
+// ── Internal: local company discovery ─────────────────────────────────────────
 
-/// Resolve hq_root from menubar.json + config.json (mirrors sync::resolve_hq_folder_path
-/// without the async surface so we can call it before any vault traffic).
+/// One entry from `companies/manifest.yaml`, resolved to absolute paths.
+/// Constructed by `discover_local_companies`; consumed by `assemble_workspaces`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalCompanyEntry {
+    pub slug: String,
+    pub display_name: Option<String>,
+    pub path: PathBuf,
+    pub dir_exists: bool,
+}
+
+/// Top-level shape of `companies/manifest.yaml`. We only consume `companies`;
+/// any other top-level fields (e.g. version, description) are tolerated and
+/// ignored — the file is shared with HQ scripts that may grow new keys.
+#[derive(Debug, Deserialize)]
+struct CompaniesManifest {
+    #[serde(default)]
+    companies: BTreeMap<String, CompanyManifestEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CompanyManifestEntry {
+    #[serde(default)]
+    name: Option<String>,
+    /// Path relative to `hq_root`. Defaults to `companies/{slug}` when absent.
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// Resolve hq_root from menubar.json + config.json (mirrors sync.rs without
+/// the async surface so we can call it before any vault traffic).
 fn resolve_hq_folder_path() -> Result<PathBuf, String> {
     let config_path = paths::config_json_path()?;
     let menubar_path = paths::menubar_json_path()?;
@@ -102,9 +134,56 @@ fn resolve_hq_folder_path() -> Result<PathBuf, String> {
     ))
 }
 
-/// Walk `$hq_root/companies/*` and return the (slug, abs-path) of every
-/// directory that exists. Folders without a `company.yaml` are still returned —
-/// the user may have created the folder manually (local-only state).
+/// Discover local companies. `companies/manifest.yaml` is canonical when it
+/// exists; otherwise we fall back to enumerating `companies/*` directories.
+///
+/// Scaffolding entries (`_template/` and similar `_`-prefixed names) are
+/// dropped from the enumeration fallback — they're an HQ convention for
+/// boilerplate, not real companies. Manifest mode trusts the manifest fully:
+/// if the user listed a `_thing`, they meant it.
+pub(crate) fn discover_local_companies(hq_root: &Path) -> Vec<LocalCompanyEntry> {
+    let manifest_path = hq_root.join("companies").join("manifest.yaml");
+    if let Ok(bytes) = std::fs::read(&manifest_path) {
+        if let Ok(parsed) = serde_yaml::from_slice::<CompaniesManifest>(&bytes) {
+            return parsed
+                .companies
+                .into_iter()
+                .map(|(slug, entry)| {
+                    let path = entry
+                        .path
+                        .as_deref()
+                        .map(|p| hq_root.join(p))
+                        .unwrap_or_else(|| hq_root.join("companies").join(&slug));
+                    LocalCompanyEntry {
+                        dir_exists: path.is_dir(),
+                        display_name: entry.name,
+                        slug,
+                        path,
+                    }
+                })
+                .collect();
+        }
+    }
+
+    // Fallback for HQs without a manifest. Skip dotfiles and underscore-prefix
+    // scaffolding (`_template`, `_archive`, etc).
+    list_local_company_folders(hq_root)
+        .into_iter()
+        .filter(|(slug, _)| !slug.starts_with('_'))
+        .map(|(slug, path)| {
+            let display_name = read_local_company_name(hq_root, &slug);
+            LocalCompanyEntry {
+                slug,
+                display_name,
+                dir_exists: true,
+                path,
+            }
+        })
+        .collect()
+}
+
+/// Walk `$hq_root/companies/*` and return (slug, abs-path) for every directory.
+/// Used as the manifest-less fallback inside `discover_local_companies`.
 fn list_local_company_folders(hq_root: &Path) -> Vec<(String, PathBuf)> {
     let companies_dir = hq_root.join("companies");
     let entries = match std::fs::read_dir(&companies_dir) {
@@ -118,7 +197,6 @@ fn list_local_company_folders(hq_root: &Path) -> Vec<(String, PathBuf)> {
         if !path.is_dir() {
             continue;
         }
-        // Skip dotfiles (e.g. `.DS_Store` shouldn't appear, but be defensive).
         let name = match entry.file_name().into_string() {
             Ok(n) => n,
             Err(_) => continue,
@@ -132,9 +210,8 @@ fn list_local_company_folders(hq_root: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Try to read `$hq_root/companies/{slug}/company.yaml` and pull a friendly
-/// `name` out. Returns `None` if the file is missing or unparseable — callers
-/// fall back to the slug.
+/// Try `$hq_root/companies/{slug}/company.yaml` for a friendly `name`.
+/// Returns `None` when missing/unparseable; callers fall back to the slug.
 fn read_local_company_name(hq_root: &Path, slug: &str) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct YamlSlice {
@@ -146,9 +223,6 @@ fn read_local_company_name(hq_root: &Path, slug: &str) -> Option<String> {
     parsed.name
 }
 
-/// `last_sync` from the journal, normalized to `Option<String>` (empty journal
-/// → `None`). Errors reading the journal also collapse to `None` — last-synced
-/// is decorative metadata, never blocking.
 fn last_synced_at(slug: &str) -> Option<String> {
     let j = read_journal(slug).ok()?;
     if j.last_sync.is_empty() {
@@ -158,9 +232,6 @@ fn last_synced_at(slug: &str) -> Option<String> {
     }
 }
 
-/// Title-case the slug for the display fallback. We do NOT attempt
-/// dictionary-style capitalization — just the first character per
-/// hyphen-delimited word, so `synesis-strategy` → `Synesis Strategy`.
 fn humanize_slug(slug: &str) -> String {
     slug.split('-')
         .map(|w| {
@@ -176,40 +247,44 @@ fn humanize_slug(slug: &str) -> String {
 
 // ── Workspace assembly (testable, synchronous core) ───────────────────────────
 
-/// Pure function: given resolved cloud data + local folder list, produce the
-/// workspaces vec. No I/O, no async — easy to unit-test.
-///
-/// `last_synced_lookup` is injected so tests can assert without touching the
-/// real journal directory.
+/// Pure function: given resolved cloud data + local company entries, produce
+/// the workspaces vec. No I/O, no async. The injected `last_synced_lookup`
+/// keeps tests independent of the real journal directory.
 pub(crate) fn assemble_workspaces<F>(
     hq_root: &Path,
     person: Option<&EntityInfo>,
     memberships: &[MembershipInfo],
-    company_entities: &BTreeMap<String, EntityInfo>, // keyed by company UID
-    local_folders: &[(String, PathBuf)],
+    company_entities: &BTreeMap<String, EntityInfo>,
+    local_companies: &[LocalCompanyEntry],
     last_synced_lookup: F,
 ) -> Vec<Workspace>
 where
     F: Fn(&str) -> Option<String>,
 {
+    // Index local entries by slug so the cloud-membership pass can pick up
+    // the manifest's display_name + path field even when the entity has
+    // no `name` / no local folder of its own.
+    let local_by_slug: BTreeMap<&str, &LocalCompanyEntry> = local_companies
+        .iter()
+        .map(|e| (e.slug.as_str(), e))
+        .collect();
+
     let mut by_slug: BTreeMap<String, Workspace> = BTreeMap::new();
 
     // 1. Cloud companies (from memberships).
-    //    `find_entity_by_uid` may have returned None for stale memberships —
-    //    we silently skip those (a membership pointing at a deleted entity is
-    //    not a workspace the user can interact with).
     for mem in memberships {
         let entity = match company_entities.get(&mem.company_uid) {
             Some(e) => e,
             None => continue,
         };
         let slug = entity.slug.clone();
+        let local_entry = local_by_slug.get(slug.as_str()).copied();
+        let has_local = local_entry.map_or(false, |e| e.dir_exists);
         let display_name = entity
             .name
             .clone()
+            .or_else(|| local_entry.and_then(|e| e.display_name.clone()))
             .unwrap_or_else(|| humanize_slug(&slug));
-        let local_path = hq_root.join("companies").join(&slug);
-        let has_local = local_path.exists() && local_path.is_dir();
         by_slug.insert(
             slug.clone(),
             Workspace {
@@ -224,43 +299,50 @@ where
                 cloud_uid: Some(entity.uid.clone()),
                 bucket_name: entity.bucket_name.clone(),
                 has_local_folder: has_local,
-                local_path: has_local.then(|| local_path.to_string_lossy().to_string()),
+                local_path: if has_local {
+                    local_entry.map(|e| e.path.to_string_lossy().to_string())
+                } else {
+                    None
+                },
                 membership_status: Some(mem.status.clone()),
                 last_synced_at: last_synced_lookup(&slug),
             },
         );
     }
 
-    // 2. Local-only company folders (no matching cloud entry).
-    for (slug, abs) in local_folders {
-        if by_slug.contains_key(slug) {
-            continue; // already represented as Synced from the cloud pass
+    // 2. Local-only companies (no matching cloud membership).
+    //    Phantom manifest entries (declared but no folder on disk) are dropped
+    //    — there's nothing the user can act on (Connect button needs a folder).
+    for entry in local_companies {
+        if by_slug.contains_key(&entry.slug) {
+            continue;
         }
-        let display_name = read_local_company_name(hq_root, slug)
-            .unwrap_or_else(|| humanize_slug(slug));
+        if !entry.dir_exists {
+            continue;
+        }
+        let display_name = entry
+            .display_name
+            .clone()
+            .unwrap_or_else(|| humanize_slug(&entry.slug));
         by_slug.insert(
-            slug.clone(),
+            entry.slug.clone(),
             Workspace {
-                slug: slug.clone(),
+                slug: entry.slug.clone(),
                 display_name,
                 kind: WorkspaceKind::Company,
                 state: WorkspaceState::LocalOnly,
                 cloud_uid: None,
                 bucket_name: None,
                 has_local_folder: true,
-                local_path: Some(abs.to_string_lossy().to_string()),
+                local_path: Some(entry.path.to_string_lossy().to_string()),
                 membership_status: None,
-                last_synced_at: last_synced_lookup(slug),
+                last_synced_at: last_synced_lookup(&entry.slug),
             },
         );
     }
 
-    // 3. Personal — always first in the list (insertion order: prepend).
-    //    BTreeMap orders alphabetically, so we'd need "_personal" or a
-    //    separate prepend. Use a Vec with explicit ordering instead of relying
-    //    on map iteration order.
+    // 3. Personal — always first (insertion order via Vec, not BTreeMap).
     let mut ordered: Vec<Workspace> = Vec::with_capacity(by_slug.len() + 1);
-
     let personal_local = hq_root.exists() && hq_root.is_dir();
     let (personal_uid, personal_bucket) = match person {
         Some(p) => (Some(p.uid.clone()), p.bucket_name.clone()),
@@ -282,40 +364,31 @@ where
         last_synced_at: last_synced_lookup("personal"),
     });
 
-    // Then companies, sorted alphabetically by slug for stable rendering.
+    // Companies sorted alphabetically by slug for stable rendering.
     ordered.extend(by_slug.into_values());
 
     ordered
 }
 
-// ── Tauri command ─────────────────────────────────────────────────────────────
+// ── Tauri command: list_syncable_workspaces ───────────────────────────────────
 
-/// Produce the workspaces union for the menubar.
-///
-/// Resolution order:
-///   1. Resolve hq_root locally (always succeeds if the env is sane).
-///   2. Walk local company folders.
-///   3. Try to resolve JWT + vault URL → fetch person + memberships + entities.
-///      Any failure here returns `cloudReachable: false` with the locally
-///      known data still populated.
-///
-/// The Personal row is ALWAYS included in the result, even if cloud fetches
-/// fail — the row carries `cloudUid: None` in that degraded case, and the UI
-/// shows it with a "cloud unreachable" hint instead of an empty list.
 #[tauri::command]
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
     let hq_folder_path = hq_root.to_string_lossy().to_string();
-    let local_folders = list_local_company_folders(&hq_root);
+    let local_companies = discover_local_companies(&hq_root);
 
-    // Try the cloud branch. We don't propagate errors out — instead we capture
-    // them so the UI can show local-only data when the cloud is unreachable.
-    let cloud_outcome: Result<(Option<EntityInfo>, Vec<MembershipInfo>, BTreeMap<String, EntityInfo>), String> = async {
+    // Cloud branch — failures captured into `cloud_reachable: false` rather
+    // than propagated, so local-only data still renders when offline.
+    let cloud_outcome: Result<
+        (Option<EntityInfo>, Vec<MembershipInfo>, BTreeMap<String, EntityInfo>),
+        String,
+    > = async {
         let vault_url = resolve_vault_api_url()?;
         let jwt = resolve_jwt().await?;
         let vault = VaultClient::new(&vault_url, &jwt);
 
-        // Person entity — pick the canonical (oldest createdAt, then uid).
+        // Person — pick the canonical (oldest createdAt, then uid).
         let mut persons = vault
             .list_entities_by_type("person")
             .await
@@ -326,7 +399,6 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         });
         let person = persons.into_iter().next();
 
-        // Memberships — only meaningful if we have a person.
         let memberships = match &person {
             Some(p) => vault
                 .list_memberships(&p.uid)
@@ -336,10 +408,9 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         };
 
         // Resolve each membership's company entity sequentially. Sequential
-        // (not parallel) keeps the request count predictable for users with
-        // ~5–20 memberships and avoids blowing past the vault Lambda's
-        // concurrency budget. A 404 on a stale membership is silently
-        // dropped (entity gone, but the membership row persists server-side).
+        // (not parallel) keeps the request count predictable and avoids
+        // blowing past the vault Lambda's concurrency budget. A 404 on a
+        // stale membership is silently dropped.
         let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
         for mem in &memberships {
             if entities.contains_key(&mem.company_uid) {
@@ -349,9 +420,7 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                 Ok(Some(e)) => {
                     entities.insert(mem.company_uid.clone(), e);
                 }
-                Ok(None) => {
-                    // Stale membership; drop it from the union view.
-                }
+                Ok(None) => {}
                 Err(e) => {
                     return Err(format!(
                         "fetch entity {} for membership {}: {e}",
@@ -375,7 +444,7 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         person.as_ref(),
         &memberships,
         &entities,
-        &local_folders,
+        &local_companies,
         last_synced_at,
     );
 
@@ -385,6 +454,88 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
         error,
         hq_folder_path,
     })
+}
+
+// ── Tauri command: connect_workspace_to_cloud ─────────────────────────────────
+
+/// Provision a cloud bucket for the given local company `slug` and write the
+/// per-company `.hq/config.json` so subsequent syncs include it.
+///
+/// Idempotent: if an entity with this slug already exists, we reuse its UID
+/// rather than creating a duplicate. `provision_bucket` is itself idempotent
+/// at the vault layer.
+///
+/// Refused for `slug == "personal"` — the Personal vault is auto-provisioned
+/// via the Cognito PreTokenGeneration trigger and uses `vend-self`, not the
+/// company create + provision path.
+#[tauri::command]
+pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
+    if slug.is_empty() {
+        return Err("slug is required".to_string());
+    }
+    if slug == "personal" {
+        return Err(
+            "the Personal vault is auto-provisioned — no manual connect needed"
+                .to_string(),
+        );
+    }
+
+    let hq_root = resolve_hq_folder_path()?;
+    let folder = hq_root.join("companies").join(&slug);
+    if !folder.is_dir() {
+        return Err(format!(
+            "no local folder at companies/{slug} — cannot connect a missing directory"
+        ));
+    }
+
+    let vault_url = resolve_vault_api_url()?;
+    let jwt = resolve_jwt().await?;
+    let vault = VaultClient::new(&vault_url, &jwt);
+
+    let display_name = read_local_company_name(&hq_root, &slug)
+        .unwrap_or_else(|| humanize_slug(&slug));
+
+    let uid = match vault
+        .find_entity_by_slug("company", &slug)
+        .await
+        .map_err(|e| format!("find_by_slug '{slug}': {e}"))?
+    {
+        Some(info) => info.uid,
+        None => vault
+            .create_entity(&CreateEntityInput {
+                entity_type: "company".to_string(),
+                slug: slug.clone(),
+                name: display_name,
+                email: None,
+                owner_uid: None,
+            })
+            .await
+            .map_err(|e| format!("create entity '{slug}': {e}"))?
+            .uid,
+    };
+
+    let bucket = vault
+        .provision_bucket(&uid)
+        .await
+        .map_err(|e| format!("provision_bucket for {uid}: {e}"))?;
+
+    let config = CompanyConfig {
+        company_uid: uid,
+        company_slug: slug.clone(),
+        bucket_name: bucket.bucket_name,
+        vault_api_url: vault_url,
+    };
+    let config_path = folder.join(".hq").join("config.json");
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+    }
+    let body = serde_json::to_string_pretty(&config)
+        .map_err(|e| format!("serialize config: {e}"))?;
+    std::fs::write(&config_path, body)
+        .map_err(|e| format!("write {}: {e}", config_path.display()))?;
+
+    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -429,11 +580,26 @@ mod tests {
         }
     }
 
-    fn make_dir(root: &Path, rel: &str) -> PathBuf {
-        let p = root.join(rel);
-        std::fs::create_dir_all(&p).unwrap();
-        p
+    fn local(slug: &str, hq_root: &Path, exists: bool, name: Option<&str>) -> LocalCompanyEntry {
+        let path = hq_root.join("companies").join(slug);
+        if exists {
+            std::fs::create_dir_all(&path).unwrap();
+        }
+        LocalCompanyEntry {
+            slug: slug.into(),
+            display_name: name.map(str::to_string),
+            path,
+            dir_exists: exists,
+        }
     }
+
+    fn write_manifest(hq_root: &Path, contents: &str) {
+        let dir = hq_root.join("companies");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("manifest.yaml"), contents).unwrap();
+    }
+
+    // ── humanize_slug ─────────────────────────────────────────────────────
 
     #[test]
     fn humanize_slug_basic() {
@@ -442,8 +608,8 @@ mod tests {
         assert_eq!(humanize_slug(""), "");
     }
 
-    /// Personal is always first in the result, even when there are no
-    /// memberships and no local folders.
+    // ── assemble_workspaces ───────────────────────────────────────────────
+
     #[test]
     fn personal_always_first_zero_companies() {
         let tmp = TempDir::new().unwrap();
@@ -462,17 +628,15 @@ mod tests {
         assert_eq!(result[0].state, WorkspaceState::Personal);
         assert_eq!(result[0].cloud_uid.as_deref(), Some("prs_x"));
         assert_eq!(result[0].bucket_name.as_deref(), Some("hq-vault-prs-x"));
-        assert!(result[0].has_local_folder, "tmp dir exists");
+        assert!(result[0].has_local_folder);
     }
 
-    /// Personal row appears even when the person entity could not be fetched
-    /// (cloud unreachable). cloud_uid is None in that case.
     #[test]
     fn personal_present_without_person_entity() {
         let tmp = TempDir::new().unwrap();
         let result = assemble_workspaces(
             tmp.path(),
-            None, // cloud unreachable
+            None,
             &[],
             &BTreeMap::new(),
             &[],
@@ -484,27 +648,26 @@ mod tests {
         assert_eq!(result[0].display_name, "Personal");
     }
 
-    /// A membership pointing at a company we successfully resolved becomes a
-    /// Synced row (because the local folder exists).
     #[test]
     fn membership_with_local_folder_is_synced() {
         let tmp = TempDir::new().unwrap();
-        make_dir(tmp.path(), "companies/acme");
         let p = person("prs_x", None);
         let mem = membership("mem_1", "prs_x", "cmp_a", "active");
         let mut entities = BTreeMap::new();
-        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "acme", Some("Acme Corp")));
+        entities.insert(
+            "cmp_a".to_string(),
+            company_entity("cmp_a", "acme", Some("Acme Corp")),
+        );
+        let entries = vec![local("acme", tmp.path(), true, None)];
 
         let result = assemble_workspaces(
             tmp.path(),
             Some(&p),
             &[mem],
             &entities,
-            &[("acme".into(), tmp.path().join("companies/acme"))],
+            &entries,
             |_| None,
         );
-
-        // [Personal, acme]
         assert_eq!(result.len(), 2);
         assert_eq!(result[1].slug, "acme");
         assert_eq!(result[1].state, WorkspaceState::Synced);
@@ -514,14 +677,16 @@ mod tests {
         assert!(result[1].cloud_uid.is_some());
     }
 
-    /// A membership with no local folder yet is `cloud-only`.
     #[test]
     fn membership_without_local_folder_is_cloud_only() {
         let tmp = TempDir::new().unwrap();
         let p = person("prs_x", None);
         let mem = membership("mem_2", "prs_x", "cmp_b", "pending");
         let mut entities = BTreeMap::new();
-        entities.insert("cmp_b".to_string(), company_entity("cmp_b", "newco", None));
+        entities.insert(
+            "cmp_b".to_string(),
+            company_entity("cmp_b", "newco", None),
+        );
 
         let result = assemble_workspaces(
             tmp.path(),
@@ -531,27 +696,24 @@ mod tests {
             &[],
             |_| None,
         );
-
         assert_eq!(result[1].slug, "newco");
         assert_eq!(result[1].state, WorkspaceState::CloudOnly);
         assert!(!result[1].has_local_folder);
         assert_eq!(result[1].membership_status.as_deref(), Some("pending"));
-        // Display name falls back to humanized slug when entity has no name.
         assert_eq!(result[1].display_name, "Newco");
     }
 
-    /// A local folder with no matching cloud membership is `local-only`.
     #[test]
     fn local_folder_without_cloud_is_local_only() {
         let tmp = TempDir::new().unwrap();
-        make_dir(tmp.path(), "companies/test-company");
         let p = person("prs_x", None);
+        let entries = vec![local("test-company", tmp.path(), true, None)];
         let result = assemble_workspaces(
             tmp.path(),
             Some(&p),
             &[],
             &BTreeMap::new(),
-            &[("test-company".into(), tmp.path().join("companies/test-company"))],
+            &entries,
             |_| None,
         );
         assert_eq!(result.len(), 2);
@@ -562,14 +724,30 @@ mod tests {
         assert_eq!(result[1].display_name, "Test Company");
     }
 
-    /// Stale memberships (entity not in the resolved-entities map) are silently
-    /// dropped — they would otherwise produce a row the user can't act on.
+    /// Manifest entries with no folder on disk are dropped — phantom rows
+    /// confuse users (no Connect button can target nothing).
+    #[test]
+    fn manifest_entry_without_folder_is_dropped() {
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let entries = vec![local("phantom", tmp.path(), false, Some("Phantom Co"))];
+        let result = assemble_workspaces(
+            tmp.path(),
+            Some(&p),
+            &[],
+            &BTreeMap::new(),
+            &entries,
+            |_| None,
+        );
+        assert_eq!(result.len(), 1, "only Personal remains");
+        assert_eq!(result[0].slug, "personal");
+    }
+
     #[test]
     fn stale_membership_with_missing_entity_is_dropped() {
         let tmp = TempDir::new().unwrap();
         let p = person("prs_x", None);
         let mem = membership("mem_stale", "prs_x", "cmp_gone", "active");
-        // entities map intentionally empty (find_entity_by_uid returned None)
         let result = assemble_workspaces(
             tmp.path(),
             Some(&p),
@@ -578,22 +756,21 @@ mod tests {
             &[],
             |_| None,
         );
-        assert_eq!(result.len(), 1, "only Personal remains; stale membership dropped");
+        assert_eq!(result.len(), 1);
         assert_eq!(result[0].slug, "personal");
     }
 
-    /// The `last_synced_at` lookup is invoked for every workspace.
     #[test]
     fn last_synced_lookup_invoked_per_workspace() {
         let tmp = TempDir::new().unwrap();
-        make_dir(tmp.path(), "companies/foo");
         let p = person("prs_x", None);
+        let entries = vec![local("foo", tmp.path(), true, None)];
         let result = assemble_workspaces(
             tmp.path(),
             Some(&p),
             &[],
             &BTreeMap::new(),
-            &[("foo".into(), tmp.path().join("companies/foo"))],
+            &entries,
             |slug| match slug {
                 "personal" => Some("2026-04-25T00:00:00Z".into()),
                 "foo" => Some("2026-04-24T12:00:00Z".into()),
@@ -604,7 +781,6 @@ mod tests {
         assert_eq!(result[1].last_synced_at.as_deref(), Some("2026-04-24T12:00:00Z"));
     }
 
-    /// Companies are sorted alphabetically by slug for stable rendering.
     #[test]
     fn companies_sorted_alphabetically() {
         let tmp = TempDir::new().unwrap();
@@ -618,7 +794,6 @@ mod tests {
         entities.insert("cmp_z".into(), company_entity("cmp_z", "zoo", None));
         entities.insert("cmp_a".into(), company_entity("cmp_a", "alpha", None));
         entities.insert("cmp_m".into(), company_entity("cmp_m", "mango", None));
-
         let result = assemble_workspaces(
             tmp.path(),
             Some(&p),
@@ -631,70 +806,195 @@ mod tests {
         assert_eq!(slugs, vec!["personal", "alpha", "mango", "zoo"]);
     }
 
-    /// Local folder + matching membership = single Synced row, never duplicated.
     #[test]
     fn membership_and_local_folder_no_duplicate() {
         let tmp = TempDir::new().unwrap();
-        make_dir(tmp.path(), "companies/acme");
         let p = person("prs_x", None);
         let mem = membership("mem_1", "prs_x", "cmp_a", "active");
         let mut entities = BTreeMap::new();
         entities.insert("cmp_a".into(), company_entity("cmp_a", "acme", Some("Acme")));
-
+        let entries = vec![local("acme", tmp.path(), true, None)];
         let result = assemble_workspaces(
             tmp.path(),
             Some(&p),
             &[mem],
             &entities,
-            &[("acme".into(), tmp.path().join("companies/acme"))],
+            &entries,
             |_| None,
         );
-        // [Personal, acme] — only ONE acme row even though it appears in both
-        // memberships and local_folders.
         assert_eq!(result.len(), 2);
         assert_eq!(result[1].slug, "acme");
         assert_eq!(result[1].state, WorkspaceState::Synced);
     }
 
-    /// `read_local_company_name` falls back to humanized slug when YAML missing.
+    /// Display-name fallback chain: entity.name → manifest.name → humanized slug.
     #[test]
-    fn read_local_company_name_missing_yaml_returns_none() {
+    fn display_name_fallback_chain() {
         let tmp = TempDir::new().unwrap();
-        make_dir(tmp.path(), "companies/foo");
-        // No company.yaml written.
-        let name = read_local_company_name(tmp.path(), "foo");
-        assert!(name.is_none());
+        let p = person("prs_x", None);
+        let mem = membership("m1", "prs_x", "cmp_a", "active");
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_a".into(), company_entity("cmp_a", "acme", None));
+        let entries = vec![local("acme", tmp.path(), true, Some("Acme From Manifest"))];
+        let result = assemble_workspaces(
+            tmp.path(),
+            Some(&p),
+            &[mem],
+            &entities,
+            &entries,
+            |_| None,
+        );
+        assert_eq!(result[1].display_name, "Acme From Manifest");
     }
 
-    /// `read_local_company_name` returns the YAML's `name` field when present.
+    // ── discover_local_companies ─────────────────────────────────────────
+
     #[test]
-    fn read_local_company_name_with_yaml() {
+    fn discover_uses_manifest_when_present() {
         let tmp = TempDir::new().unwrap();
-        let dir = make_dir(tmp.path(), "companies/foo");
-        std::fs::write(dir.join("company.yaml"), "name: Foo Industries\n").unwrap();
-        let name = read_local_company_name(tmp.path(), "foo");
-        assert_eq!(name.as_deref(), Some("Foo Industries"));
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  alpha:
+    name: "Alpha Co"
+    path: "companies/alpha"
+  beta:
+    name: "Beta"
+    path: "companies/beta"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/alpha")).unwrap();
+        // beta folder intentionally missing → dir_exists must be false
+
+        let result = discover_local_companies(tmp.path());
+        assert_eq!(result.len(), 2);
+        let alpha = result.iter().find(|e| e.slug == "alpha").unwrap();
+        assert_eq!(alpha.display_name.as_deref(), Some("Alpha Co"));
+        assert!(alpha.dir_exists);
+        let beta = result.iter().find(|e| e.slug == "beta").unwrap();
+        assert!(
+            !beta.dir_exists,
+            "manifest entry without folder must report dir_exists: false"
+        );
     }
 
-    /// `list_local_company_folders` skips dotfiles + non-directories.
+    /// Default path = `companies/{slug}` when manifest's `path` field is omitted.
+    #[test]
+    fn discover_defaults_path_when_manifest_omits_it() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  acme:
+    name: "Acme"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/acme")).unwrap();
+        let result = discover_local_companies(tmp.path());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, tmp.path().join("companies/acme"));
+        assert!(result[0].dir_exists);
+    }
+
+    /// Unknown top-level fields in the manifest are tolerated (forward compat).
+    #[test]
+    fn discover_tolerates_unknown_manifest_fields() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+version: 2
+description: "extras tolerated"
+companies:
+  foo:
+    name: "Foo"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/foo")).unwrap();
+        let result = discover_local_companies(tmp.path());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].slug, "foo");
+    }
+
+    /// Fallback (no manifest): enumerate folders, skip `_template` scaffolding.
+    #[test]
+    fn discover_fallback_skips_underscore_scaffolding() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/_template")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/_archive")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/real-co")).unwrap();
+        // No manifest.yaml — fallback path.
+        let result = discover_local_companies(tmp.path());
+        let slugs: Vec<&str> = result.iter().map(|e| e.slug.as_str()).collect();
+        assert_eq!(
+            slugs,
+            vec!["real-co"],
+            "underscore-prefixed dirs must not be listed in fallback mode"
+        );
+    }
+
+    /// Fallback: no manifest, no companies/ dir → empty.
+    #[test]
+    fn discover_no_companies_dir_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        let result = discover_local_companies(tmp.path());
+        assert!(result.is_empty());
+    }
+
+    /// Fallback reads `company.yaml` for friendly names.
+    #[test]
+    fn discover_fallback_reads_company_yaml_for_name() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("companies/acme");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("company.yaml"), "name: Acme Industries\n").unwrap();
+        let result = discover_local_companies(tmp.path());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].display_name.as_deref(), Some("Acme Industries"));
+    }
+
+    /// Manifest with no `companies:` key at all → empty list (don't crash).
+    #[test]
+    fn discover_manifest_without_companies_key_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "version: 1\n");
+        let result = discover_local_companies(tmp.path());
+        assert!(result.is_empty());
+    }
+
+    /// Manifest mode does NOT filter underscore-prefix entries — if the user
+    /// listed `_archive` in their manifest, they meant it.
+    #[test]
+    fn discover_manifest_mode_keeps_underscore_entries() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  _archive:
+    name: "Archive"
+    path: "companies/_archive"
+"#,
+        );
+        std::fs::create_dir_all(tmp.path().join("companies/_archive")).unwrap();
+        let result = discover_local_companies(tmp.path());
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].slug, "_archive");
+    }
+
+    // ── list_local_company_folders (helper, manifest-less path) ──────────
+
     #[test]
     fn list_local_company_folders_skips_dotfiles_and_files() {
         let tmp = TempDir::new().unwrap();
-        make_dir(tmp.path(), "companies/foo");
-        make_dir(tmp.path(), "companies/.hidden");
+        std::fs::create_dir_all(tmp.path().join("companies/foo")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("companies/.hidden")).unwrap();
         std::fs::write(tmp.path().join("companies/loose-file.txt"), "x").unwrap();
 
         let folders = list_local_company_folders(tmp.path());
         let names: Vec<&str> = folders.iter().map(|(s, _)| s.as_str()).collect();
         assert_eq!(names, vec!["foo"]);
-    }
-
-    /// `list_local_company_folders` returns empty (not error) when companies dir absent.
-    #[test]
-    fn list_local_company_folders_no_companies_dir_is_empty() {
-        let tmp = TempDir::new().unwrap();
-        // No companies/ subdirectory created.
-        let folders = list_local_company_folders(tmp.path());
-        assert!(folders.is_empty());
     }
 }
