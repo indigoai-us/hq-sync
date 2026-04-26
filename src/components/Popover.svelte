@@ -36,6 +36,10 @@
     cloudReachable?: boolean;
     /** Error string surfaced when `cloudReachable` is false. */
     cloudError?: string | null;
+    /** Top-level manifest parse error from list_syncable_workspaces. Non-null
+     *  = soft warning rendered above the workspace list (workspaces fell back
+     *  to folder-enumerated discovery). */
+    manifestError?: string | null;
     /** Re-fetch workspaces — called by WorkspaceList after a successful
      *  Connect, and from any other code path that mutates workspace state. */
     onworkspacesrefresh?: () => void;
@@ -75,6 +79,7 @@
     workspaces = null,
     cloudReachable = true,
     cloudError = null,
+    manifestError = null,
     onworkspacesrefresh,
     lastSummary = null,
     errorMessage = '',
@@ -223,6 +228,7 @@
           {workspaces}
           {cloudReachable}
           {cloudError}
+          {manifestError}
           onrefresh={onworkspacesrefresh}
         />
       {/if}
