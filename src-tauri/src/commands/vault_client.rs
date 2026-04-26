@@ -105,6 +105,12 @@ pub struct VendChildResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MembershipInfo {
+    /// Synthetic identifier — the vault API does NOT return a top-level
+    /// `uid` for memberships (the canonical identifier is `membership_key`,
+    /// the composite `personUid#companyUid`). Kept here as `#[serde(default)]`
+    /// so legacy callers/tests that still mock a uid field continue to work.
+    /// For logging / display, prefer `display_id()`.
+    #[serde(default)]
     pub uid: String,
     pub person_uid: String,
     pub company_uid: String,
@@ -114,6 +120,25 @@ pub struct MembershipInfo {
     pub role: Option<String>,
     #[serde(default)]
     pub created_at: Option<String>,
+    /// Composite key from the API (`{personUid}#{companyUid}`). Always
+    /// returned by the live vault; absent in some test fixtures.
+    #[serde(default)]
+    pub membership_key: Option<String>,
+}
+
+impl MembershipInfo {
+    /// Best identifier for log lines and error messages. Falls back through
+    /// `uid` → `membership_key` → synthesized composite, so we always have
+    /// SOMETHING meaningful to show.
+    pub fn display_id(&self) -> String {
+        if !self.uid.is_empty() {
+            self.uid.clone()
+        } else if let Some(k) = &self.membership_key {
+            k.clone()
+        } else {
+            format!("{}#{}", self.person_uid, self.company_uid)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -667,6 +692,51 @@ mod tests {
         // Optional fields tolerate omission.
         assert!(result[1].role.is_none());
         assert!(result[1].created_at.is_none());
+    }
+
+    /// Real vault response shape: no top-level `uid`, but includes
+    /// `membershipKey`. The struct must deserialize cleanly without uid.
+    /// This was the v0.1.24 cloud-unreachable bug — `serde(default)` on uid
+    /// would NOT have flagged the missing field, but the OLD struct without
+    /// the default would error out, propagating as "Cloud unreachable" in
+    /// the menubar. Locks in the live API contract.
+    #[tokio::test]
+    async fn list_memberships_real_vault_shape_no_uid() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/membership/person/prs_x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "memberships": [
+                    {
+                        // Note: no top-level `uid` field — matches the
+                        // production vault response.
+                        "personUid": "prs_x",
+                        "companyUid": "cmp_a",
+                        "membershipKey": "prs_x#cmp_a",
+                        "status": "active",
+                        "role": "owner",
+                        "createdAt": "2026-04-25T16:53:12.508Z",
+                        "invitedAt": "2026-04-25T16:53:12.508Z",
+                        "invitedBy": "prs_x",
+                        "acceptedAt": "2026-04-25T16:53:13.088Z",
+                        "updatedAt": "2026-04-25T16:53:13.088Z",
+                        "schemaVersion": 1
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let result = client(&server.uri())
+            .list_memberships("prs_x")
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(result[0].uid.is_empty(), "missing uid in API → empty string per serde(default)");
+        assert_eq!(result[0].membership_key.as_deref(), Some("prs_x#cmp_a"));
+        assert_eq!(result[0].company_uid, "cmp_a");
+        // display_id() falls back to membership_key when uid is empty.
+        assert_eq!(result[0].display_id(), "prs_x#cmp_a");
     }
 
     #[tokio::test]

@@ -411,6 +411,34 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                     &app_clone, &hq, &jwt_owned,
                 ).await;
             });
+            // Reconcile manifest with on-disk reality. The runner downloads
+            // cloud-only companies into `companies/{slug}/` as a side effect of
+            // file writes — the manifest needs to learn about those folders so
+            // they don't render as "Cloud Only" forever after. Best-effort and
+            // fire-and-forget; failures are logged but don't surface to the UI.
+            let hq_for_reconcile = hq_folder.to_string();
+            let jwt_for_reconcile = jwt.to_string();
+            tauri::async_runtime::spawn(async move {
+                let vault_url = match crate::commands::sync::resolve_vault_api_url() {
+                    Ok(u) => u,
+                    Err(e) => {
+                        log("sync", &format!("reconcile skipped: vault url: {e}"));
+                        return;
+                    }
+                };
+                let vault = crate::commands::vault_client::VaultClient::new(
+                    &vault_url,
+                    &jwt_for_reconcile,
+                );
+                match crate::commands::workspaces::reconcile_manifest_after_sync(
+                    std::path::Path::new(&hq_for_reconcile),
+                    &vault,
+                ).await {
+                    Ok(0) => {} // nothing new — common case, stay quiet
+                    Ok(n) => log("sync", &format!("reconcile: added {n} new manifest entries")),
+                    Err(e) => log("sync", &format!("reconcile failed (non-fatal): {e}")),
+                }
+            });
             emit_result
         }
     };
@@ -493,6 +521,26 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             return Err(e);
         }
     };
+
+    // Pre-walk every syncable target so the UI can show a real per-file
+    // progress bar instead of fake workspace thirds. Best-effort — a 0
+    // count just falls back to the workspace-level bar in the UI. Sums
+    // personal allowlist + every locally-discovered company folder.
+    // Emitted before personal first-push so the totals are available
+    // before any progress events tick the cumulative counter.
+    {
+        let pre_walk_root = std::path::PathBuf::from(&hq_folder_path);
+        let (local_companies, _) =
+            crate::commands::workspaces::discover_local_companies(&pre_walk_root);
+        let slugs: Vec<String> = local_companies.iter().map(|e| e.slug.clone()).collect();
+        let pre_walk_total =
+            crate::commands::personal::count_files_to_sync(&pre_walk_root, &slugs);
+        log("sync", &format!("pre-walk: {pre_walk_total} files expected"));
+        let _ = app.emit(
+            crate::events::EVENT_SYNC_TOTALS,
+            serde_json::json!({ "totalFiles": pre_walk_total }),
+        );
+    }
 
     // Provision any cloud: true companies that haven't been provisioned yet
     log("sync", "phase: provision_missing_companies");
