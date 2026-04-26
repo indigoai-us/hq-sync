@@ -348,17 +348,31 @@
              label stays correct even when a workspace skips silently. -->
         <div class="live-progress">
           <p class="live-line live-workspace">
-            {currentLabel === '…' ? 'Starting sync…' : `Syncing ${currentLabel}`}
+            {currentLabel === '…' ? 'Preparing sync…' : `Syncing ${currentLabel}`}
           </p>
           <div class="live-bar">
             <div class="live-bar-fill" style="width: {barPct}%"></div>
           </div>
-          {#if syncTotalFiles > 0}
-            <!-- Real per-file caption: "234 of 13,016 files" updates per
-                 progress event, denominator known up front. -->
+          {#if syncTotalFiles > 0 && syncFilesProgressed <= syncTotalFiles}
+            <!-- Real per-file caption: pre-walk computed the exact number
+                 of transfers (uploads + downloads) the runner will do, so
+                 the bar fills with each progress event. Skips don't fire
+                 events and don't count toward either side. -->
             <p class="live-line muted">
               {syncFilesProgressed.toLocaleString()} of
-              {syncTotalFiles.toLocaleString()} files
+              {syncTotalFiles.toLocaleString()} transferred
+            </p>
+          {:else if syncTotalFiles === 0 && fanoutTotal > 0}
+            <!-- Pre-walk computed 0 transfers and the runner has started
+                 (fanout-plan landed). Everything matches the journal —
+                 sync will finalize in a moment with no actual work. -->
+            <p class="live-line muted">Up to date — finalizing…</p>
+          {:else if syncFilesProgressed > 0}
+            <!-- Bar overshot the estimate (pre-walk under-counted because
+                 we don't yet count pull-side downloads). Show the honest
+                 running count rather than a fake "X of Y". -->
+            <p class="live-line muted">
+              {syncFilesProgressed.toLocaleString()} transferred
             </p>
           {:else if fanoutTotal > 0}
             <!-- Fallback: pre-walk hasn't landed yet (or returned 0).
