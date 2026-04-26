@@ -45,6 +45,92 @@ pub(crate) enum UploadOutcome {
     Permanent(String),
 }
 
+// ── Personal-vault path allowlist ─────────────────────────────────────────────
+
+/// The only top-level directories under `hq_root/` that the personal vault
+/// syncs. Everything else (root files, `modules/`, `packages/`, `repos/`,
+/// `scripts/`, `settings/`, `social-content/`, etc.) is skipped to keep the
+/// vault scoped to the user's actual knowledge work + tooling.
+///
+/// The conventional `companies/` tree is implicitly excluded because it isn't
+/// in this list — companies sync via the runner's per-membership pass instead.
+///
+/// **TODO** (v0.1.26+): the spawned `hq-sync-runner` (Node, in
+/// `@indigoai-us/hq-cloud`) does its own walk and currently uploads
+/// everything under `hq_root` that isn't gitignored. Until the runner accepts
+/// the same allowlist (via a new `--include-paths` CLI arg or a manifest
+/// hint), the runner will still upload root files this list excludes. Mirror
+/// this constant on the Node side when the runner gains the arg.
+pub(crate) const PERSONAL_VAULT_PATHS: &[&str] = &[
+    ".claude",   // skills + commands + settings
+    "knowledge",
+    "policies",
+    "projects",
+];
+
+/// True when a relative path (relative to hq_root, forward-slash separators)
+/// falls under one of the allowlisted personal-vault top-level dirs.
+/// Empty / single-component paths (root files like `README.md`) return false.
+/// Pre-walk every syncable target (personal allowlist + each company folder)
+/// to count how many files we expect the runner to process. Fed into the UI
+/// so the progress bar uses a real denominator instead of fake workspace
+/// thirds. Best-effort: I/O errors on individual files are skipped silently
+/// so a single broken inode doesn't tank the count.
+pub(crate) fn count_files_to_sync(hq_root: &Path, company_slugs: &[String]) -> u64 {
+    let filter = match crate::util::ignore::IgnoreFilter::for_hq_root(hq_root) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+
+    let mut total: u64 = 0;
+
+    // Personal allowlist (.claude, knowledge, policies, projects at hq_root).
+    for entry in WalkDir::new(hq_root).into_iter().filter_map(|e| e.ok()) {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if !filter.should_sync(entry.path()) {
+            continue;
+        }
+        let rel = match entry.path().strip_prefix(hq_root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        if !is_personal_vault_path(&rel) {
+            continue;
+        }
+        total += 1;
+    }
+
+    // Each company folder. The same .hqignore filter applies — companies
+    // outside the slugs vec are skipped entirely (no walk).
+    for slug in company_slugs {
+        let dir = hq_root.join("companies").join(slug);
+        if !dir.is_dir() {
+            continue;
+        }
+        for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            if !filter.should_sync(entry.path()) {
+                continue;
+            }
+            total += 1;
+        }
+    }
+
+    total
+}
+
+pub(crate) fn is_personal_vault_path(rel: &str) -> bool {
+    let top = rel.split('/').next().unwrap_or("");
+    if top.is_empty() {
+        return false;
+    }
+    PERSONAL_VAULT_PATHS.contains(&top)
+}
+
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,7 +257,7 @@ where
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
-        if rel.starts_with("companies/") {
+        if !is_personal_vault_path(&rel) {
             continue;
         }
         file_paths.push(abs);
@@ -621,19 +707,28 @@ mod tests {
         assert_eq!(upload_counter.load(Ordering::SeqCst), 0, "no uploads from empty hq_root");
     }
 
-    // (c) companies/ prefix is excluded from personal push.
+    // (c) Personal vault scope is restricted to PERSONAL_VAULT_PATHS.
+    //     docs/, modules/, packages/, root files, companies/ → all excluded.
+    //     .claude/, knowledge/, policies/, projects/ → all included.
     #[tokio::test]
-    async fn test_excludes_companies_path() {
+    async fn test_personal_vault_path_allowlist() {
         let tmp_state = TempDir::new().unwrap();
         let tmp_hq = TempDir::new().unwrap();
         let root = tmp_hq.path();
 
-        write_file(&root.join("docs/README.md"), b"docs content");
-        write_file(&root.join("knowledge/notes.md"), b"knowledge content");
-        write_file(&root.join("companies/cmp_a/file.md"), b"company content");
+        // Allowlisted (must be uploaded)
+        write_file(&root.join("knowledge/notes.md"), b"knowledge");
+        write_file(&root.join("policies/auto-deploy.md"), b"policy");
+        write_file(&root.join("projects/foo/prd.json"), b"prd");
+        write_file(&root.join(".claude/skills/foo/SKILL.md"), b"skill");
+        // NOT allowlisted (must be skipped)
+        write_file(&root.join("README.md"), b"root readme");
+        write_file(&root.join("docs/README.md"), b"docs");
+        write_file(&root.join("modules/modules.yaml"), b"modules");
+        write_file(&root.join("packages/foo/README.md"), b"packages");
+        write_file(&root.join("companies/acme/file.md"), b"company");
 
         let calls = Arc::new(Mutex::new(vec![]));
-
         {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
@@ -642,23 +737,55 @@ mod tests {
         }
 
         let captured = calls.lock().unwrap();
-        assert!(
-            !captured.iter().any(|k| k.starts_with("companies/")),
-            "no key must start with companies/; got: {:?}",
-            *captured
-        );
-        assert!(captured.iter().any(|k| k.starts_with("docs/")), "docs/ must be uploaded");
-        assert!(captured.iter().any(|k| k.starts_with("knowledge/")), "knowledge/ must be uploaded");
+
+        // Allowlisted prefixes must appear.
+        for prefix in [".claude/", "knowledge/", "policies/", "projects/"] {
+            assert!(
+                captured.iter().any(|k| k.starts_with(prefix)),
+                "{prefix} must be uploaded; got: {captured:?}",
+            );
+        }
+        // Non-allowlisted entries must NOT appear.
+        for forbidden in ["README.md", "docs/", "modules/", "packages/", "companies/"] {
+            assert!(
+                !captured.iter().any(|k| k.starts_with(forbidden)),
+                "{forbidden} must be skipped; got: {captured:?}",
+            );
+        }
+    }
+
+    // ── is_personal_vault_path (pure helper) ─────────────────────────────
+
+    #[test]
+    fn test_is_personal_vault_path_allowlist() {
+        // Allowlisted
+        assert!(is_personal_vault_path("knowledge/foo.md"));
+        assert!(is_personal_vault_path("policies/auto-deploy.md"));
+        assert!(is_personal_vault_path("projects/foo/prd.json"));
+        assert!(is_personal_vault_path(".claude/skills/foo/SKILL.md"));
+        assert!(is_personal_vault_path(".claude/commands/x.md"));
+        // Not allowlisted
+        assert!(!is_personal_vault_path("README.md"), "root files excluded");
+        assert!(!is_personal_vault_path("companies/acme/x.md"), "companies excluded");
+        assert!(!is_personal_vault_path("modules/modules.yaml"));
+        assert!(!is_personal_vault_path("packages/foo/README.md"));
+        assert!(!is_personal_vault_path("scripts/run.sh"));
+        assert!(!is_personal_vault_path(""));
+        // Edge: a top-level entry NAMED knowledge.md (file, not dir) gets the
+        // first segment "knowledge.md" — not "knowledge" — so excluded.
+        assert!(!is_personal_vault_path("knowledge.md"), "string match must be exact segment");
     }
 
     // (d) Re-run with journal populated → zero PutObject calls.
+    //     Uses an allowlisted path (knowledge/) — pre-allowlist this test
+    //     used a root-level notes.md which is now excluded by design.
     #[tokio::test]
     async fn test_rerun_no_op_via_journal() {
         let tmp_state = TempDir::new().unwrap();
         let tmp_hq = TempDir::new().unwrap();
         let root = tmp_hq.path();
 
-        write_file(&root.join("notes.md"), b"stable content");
+        write_file(&root.join("knowledge/notes.md"), b"stable content");
 
         {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());

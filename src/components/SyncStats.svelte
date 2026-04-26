@@ -71,17 +71,6 @@
       </span>
     </div>
 
-    <div class="stat-row">
-      <svg class="stat-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M9 1.5H3.5a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1V6L9 1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M9 1.5V6h4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-      <span class="stat-label">Pending</span>
-      <span class="stat-value">
-        {status.pendingFiles} file{status.pendingFiles !== 1 ? 's' : ''}
-      </span>
-    </div>
-
     {#if status.conflicts > 0}
       <div class="stat-row conflict">
         <svg class="stat-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">

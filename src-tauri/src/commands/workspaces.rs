@@ -253,14 +253,41 @@ pub(crate) fn read_manifest(hq_root: &Path) -> ManifestLoad {
 pub(crate) fn discover_local_companies(
     hq_root: &Path,
 ) -> (Vec<LocalCompanyEntry>, Option<String>) {
-    match read_manifest(hq_root) {
-        ManifestLoad::Present(entries) => (entries, None),
+    let raw = match read_manifest(hq_root) {
+        ManifestLoad::Present(entries) => {
+            // Manifest is canonical for the entries it lists, but the user can
+            // also have on-disk company folders that pre-date the manifest or
+            // were added by tools that don't update it. Union those in as
+            // unconnected entries so they're still visible (and connectable)
+            // in the UI — otherwise a folder-only company shows as Cloud Only
+            // (via memberships pass) when it actually exists locally.
+            let mut union = entries;
+            let known: std::collections::HashSet<String> =
+                union.iter().map(|e| e.slug.clone()).collect();
+            for extra in folder_enumeration_fallback(hq_root) {
+                if !known.contains(&extra.slug) {
+                    union.push(extra);
+                }
+            }
+            (union, None)
+        }
         ManifestLoad::Absent => (folder_enumeration_fallback(hq_root), None),
         ManifestLoad::Failed(err) => {
             log("workspaces", &format!("manifest unreadable, using folder fallback: {err}"));
             (folder_enumeration_fallback(hq_root), Some(err))
         }
-    }
+    };
+
+    // Drop slug="personal" from the company list. The personal vault row
+    // (assembled separately with kind=Personal, state=Personal) is the
+    // canonical surface for the user's personal HQ — a manifest-declared
+    // `personal` company would render as a duplicate Local Only row, and
+    // its Connect button can't succeed (the Rust guard rejects slug=="personal"
+    // because the personal vault auto-provisions via the person entity, not
+    // the company-creation flow). Filter here so the duplicate never appears.
+    let (mut entries, manifest_err) = raw;
+    entries.retain(|e| e.slug != "personal");
+    (entries, manifest_err)
 }
 
 fn folder_enumeration_fallback(hq_root: &Path) -> Vec<LocalCompanyEntry> {
@@ -398,6 +425,152 @@ pub(crate) fn patch_manifest_with_cloud_info(
         .map_err(|e| format!("rename manifest: {e}"))?;
 
     Ok(())
+}
+
+/// Append a brand-new entry to `companies` for `slug` and stamp it with cloud
+/// info. Used when sync downloads a cloud-only company and creates the local
+/// folder as a side effect — the manifest needs to learn about the new folder
+/// so subsequent loads don't miss it.
+///
+/// Idempotent: if `slug` already exists in the manifest, this is a no-op
+/// (caller should use `patch_manifest_with_cloud_info` to update an existing
+/// entry instead).
+pub(crate) fn add_manifest_entry_for_synced_company(
+    manifest_path: &Path,
+    slug: &str,
+    display_name: &str,
+    cloud_uid: &str,
+    bucket_name: &str,
+) -> Result<(), String> {
+    let bytes = std::fs::read(manifest_path)
+        .map_err(|e| format!("read manifest: {e}"))?;
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes)
+        .map_err(|e| format!("parse manifest: {e}"))?;
+
+    let companies_key = serde_yaml::Value::String("companies".to_string());
+    let mapping = value
+        .as_mapping_mut()
+        .ok_or_else(|| "manifest root is not a mapping".to_string())?;
+    if !mapping.contains_key(&companies_key) {
+        mapping.insert(
+            companies_key.clone(),
+            serde_yaml::Value::Mapping(serde_yaml::Mapping::new()),
+        );
+    }
+    let companies = mapping
+        .get_mut(&companies_key)
+        .and_then(|v| v.as_mapping_mut())
+        .ok_or_else(|| "manifest `companies` key is not a mapping".to_string())?;
+
+    let slug_key = serde_yaml::Value::String(slug.to_string());
+    if companies.contains_key(&slug_key) {
+        // Caller bug — they should patch instead of add. Soft-no-op so we
+        // don't regress the existing entry's other fields.
+        return Ok(());
+    }
+
+    let mut entry = serde_yaml::Mapping::new();
+    let s = |v: &str| serde_yaml::Value::String(v.to_string());
+    entry.insert(s("name"), s(display_name));
+    entry.insert(s("path"), s(&format!("companies/{slug}")));
+    entry.insert(s("knowledge"), s(&format!("companies/{slug}/knowledge/")));
+    entry.insert(s("cloud_uid"), s(cloud_uid));
+    entry.insert(s("bucket_name"), s(bucket_name));
+    companies.insert(slug_key, serde_yaml::Value::Mapping(entry));
+
+    let serialized = serde_yaml::to_string(&value)
+        .map_err(|e| format!("serialize manifest: {e}"))?;
+
+    let tmp = manifest_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
+    std::fs::rename(&tmp, manifest_path)
+        .map_err(|e| format!("rename manifest: {e}"))?;
+
+    Ok(())
+}
+
+/// Reconcile the manifest with the local `companies/*/` folder reality after a
+/// sync run. For each on-disk folder NOT in the manifest, look up the cloud
+/// entity by slug and either:
+///   - Add a manifest entry stamped with cloud_uid + bucket_name (if cloud has
+///     a matching entity)
+///   - Skip the folder (no cloud match — leave for the user to Connect manually
+///     or for a future repair pass)
+///
+/// Best-effort: each per-folder failure is logged but doesn't abort the rest.
+/// Returns the number of entries newly added to the manifest.
+pub(crate) async fn reconcile_manifest_after_sync(
+    hq_root: &Path,
+    vault: &VaultClient,
+) -> Result<usize, String> {
+    let manifest_path = hq_root.join("companies").join("manifest.yaml");
+    if !manifest_path.exists() {
+        // No manifest at all — out of scope here. /newcompany or first-run
+        // setup is responsible for creating it.
+        return Ok(0);
+    }
+
+    let known_slugs: std::collections::HashSet<String> = match read_manifest(hq_root) {
+        ManifestLoad::Present(entries) => entries.into_iter().map(|e| e.slug).collect(),
+        // Manifest unparseable — bail; we'd risk overwriting whatever the user
+        // has in there. The folder-union in discover_local_companies still
+        // gives the UI a workable view in the meantime.
+        ManifestLoad::Failed(err) => {
+            return Err(format!("manifest unreadable, refusing to patch: {err}"));
+        }
+        ManifestLoad::Absent => return Ok(0),
+    };
+
+    let mut added = 0usize;
+    for (slug, _path) in list_local_company_folders(hq_root) {
+        if slug.starts_with('_') {
+            continue; // scaffolding folders (e.g. _template)
+        }
+        if known_slugs.contains(&slug) {
+            continue; // already in manifest
+        }
+        // Look up the cloud entity by slug. If not found, skip — we don't
+        // want to add a `cloud_uid`-less entry from here (Connect handles
+        // that flow with full UI feedback).
+        let entity = match vault.find_entity_by_slug("company", &slug).await {
+            Ok(Some(e)) => e,
+            Ok(None) => {
+                log("workspaces", &format!("reconcile: no cloud entity for slug '{slug}', skipping"));
+                continue;
+            }
+            Err(e) => {
+                log("workspaces", &format!("reconcile: find_by_slug '{slug}' failed: {e}"));
+                continue;
+            }
+        };
+        let bucket = match entity.bucket_name.as_deref() {
+            Some(b) => b.to_string(),
+            None => {
+                log(
+                    "workspaces",
+                    &format!("reconcile: cloud entity '{slug}' has no bucket — skipping (Connect to provision)"),
+                );
+                continue;
+            }
+        };
+        let display_name = entity
+            .name
+            .clone()
+            .unwrap_or_else(|| humanize_slug(&slug));
+        if let Err(e) = add_manifest_entry_for_synced_company(
+            &manifest_path,
+            &slug,
+            &display_name,
+            &entity.uid,
+            &bucket,
+        ) {
+            log("workspaces", &format!("reconcile: add manifest entry for '{slug}' failed: {e}"));
+            continue;
+        }
+        log("workspaces", &format!("reconcile: added manifest entry for '{slug}' (uid={})", entity.uid));
+        added += 1;
+    }
+    Ok(added)
 }
 
 // ── Workspace assembly (testable, synchronous core) ───────────────────────────
@@ -633,7 +806,8 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                 Err(e) => {
                     return Err(format!(
                         "fetch entity {} for membership {}: {e}",
-                        mem.company_uid, mem.uid
+                        mem.company_uid,
+                        mem.display_id()
                     ));
                 }
             }
@@ -645,7 +819,16 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
 
     let (cloud_reachable, error, person, memberships, entities) = match cloud_outcome {
         Ok((p, m, e)) => (true, None, p, m, e),
-        Err(e) => (false, Some(e), None, Vec::new(), BTreeMap::new()),
+        Err(e) => {
+            // Surface cloud errors to the persistent log alongside the UI
+            // tooltip — the menubar's "Cloud unreachable" notice gives the
+            // user a hover-tooltip with the message, but the log is the
+            // canonical place to grep when reproducing or debugging without
+            // a popover open. Pre-v0.1.25 schema mismatches (missing
+            // membership uid) propagated as silent failures here.
+            log("workspaces", &format!("cloud branch failed: {e}"));
+            (false, Some(e), None, Vec::new(), BTreeMap::new())
+        }
     };
 
     let workspaces = assemble_workspaces(
@@ -679,6 +862,7 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
 /// and overwrites both records with the current truth.
 #[tauri::command]
 pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
+    log("workspaces", &format!("connect: slug='{slug}' start"));
     if slug.is_empty() {
         return Err("slug is required".to_string());
     }
@@ -689,7 +873,11 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
         );
     }
 
-    let hq_root = resolve_hq_folder_path()?;
+    let hq_root = resolve_hq_folder_path().map_err(|e| {
+        log("workspaces", &format!("connect '{slug}': hq_root resolve failed: {e}"));
+        e
+    })?;
+    log("workspaces", &format!("connect '{slug}': hq_root={}", hq_root.display()));
 
     // Resolve the folder path. Prefer the manifest's `path` field when set
     // (custom layouts); fall back to `companies/{slug}` for default HQs.
@@ -701,44 +889,73 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
             .unwrap_or_else(|| hq_root.join("companies").join(&slug)),
         _ => hq_root.join("companies").join(&slug),
     };
+    log("workspaces", &format!("connect '{slug}': folder={}", folder.display()));
 
     if !folder.is_dir() {
-        return Err(format!(
+        let err = format!(
             "no local folder at {} — cannot connect a missing directory",
             folder.display()
-        ));
+        );
+        log("workspaces", &format!("connect '{slug}': {err}"));
+        return Err(err);
     }
 
-    let vault_url = resolve_vault_api_url()?;
-    let jwt = resolve_jwt().await?;
+    let vault_url = resolve_vault_api_url().map_err(|e| {
+        log("workspaces", &format!("connect '{slug}': vault_url resolve failed: {e}"));
+        e
+    })?;
+    let jwt = resolve_jwt().await.map_err(|e| {
+        log("workspaces", &format!("connect '{slug}': jwt resolve failed: {e}"));
+        e
+    })?;
     let vault = VaultClient::new(&vault_url, &jwt);
 
     let display_name = read_local_company_name(&hq_root, &slug)
         .unwrap_or_else(|| humanize_slug(&slug));
 
+    log("workspaces", &format!("connect '{slug}': find_entity_by_slug start"));
     let uid = match vault
         .find_entity_by_slug("company", &slug)
         .await
-        .map_err(|e| format!("find_by_slug '{slug}': {e}"))?
-    {
-        Some(info) => info.uid,
-        None => vault
-            .create_entity(&CreateEntityInput {
-                entity_type: "company".to_string(),
-                slug: slug.clone(),
-                name: display_name,
-                email: None,
-                owner_uid: None,
-            })
-            .await
-            .map_err(|e| format!("create entity '{slug}': {e}"))?
-            .uid,
+        .map_err(|e| {
+            let err = format!("find_by_slug '{slug}': {e}");
+            log("workspaces", &format!("connect '{slug}': {err}"));
+            err
+        })? {
+        Some(info) => {
+            log("workspaces", &format!("connect '{slug}': found existing uid={}", info.uid));
+            info.uid
+        }
+        None => {
+            log("workspaces", &format!("connect '{slug}': creating new entity"));
+            vault
+                .create_entity(&CreateEntityInput {
+                    entity_type: "company".to_string(),
+                    slug: slug.clone(),
+                    name: display_name,
+                    email: None,
+                    owner_uid: None,
+                })
+                .await
+                .map_err(|e| {
+                    let err = format!("create entity '{slug}': {e}");
+                    log("workspaces", &format!("connect '{slug}': {err}"));
+                    err
+                })?
+                .uid
+        }
     };
 
+    log("workspaces", &format!("connect '{slug}': provision_bucket uid={uid}"));
     let bucket = vault
         .provision_bucket(&uid)
         .await
-        .map_err(|e| format!("provision_bucket for {uid}: {e}"))?;
+        .map_err(|e| {
+            let err = format!("provision_bucket for {uid}: {e}");
+            log("workspaces", &format!("connect '{slug}': {err}"));
+            err
+        })?;
+    log("workspaces", &format!("connect '{slug}': bucket={}", bucket.bucket_name));
 
     // Write 1: per-folder .hq/config.json (authoritative for runtime).
     let config = CompanyConfig {
@@ -749,13 +966,20 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
     };
     let config_path = folder.join(".hq").join("config.json");
     if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create_dir_all {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            let err = format!("create_dir_all {}: {e}", parent.display());
+            log("workspaces", &format!("connect '{slug}': {err}"));
+            err
+        })?;
     }
     let body = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("serialize config: {e}"))?;
-    std::fs::write(&config_path, body)
-        .map_err(|e| format!("write {}: {e}", config_path.display()))?;
+    std::fs::write(&config_path, body).map_err(|e| {
+        let err = format!("write {}: {e}", config_path.display());
+        log("workspaces", &format!("connect '{slug}': {err}"));
+        err
+    })?;
+    log("workspaces", &format!("connect '{slug}': wrote config to {}", config_path.display()));
 
     // Write 2: patch manifest (best-effort). A failure here doesn't roll back
     // the per-folder config — runtime is correct, only audit/UI is degraded
@@ -769,9 +993,12 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
             &bucket.bucket_name,
         ) {
             log("workspaces", &format!("manifest patch for '{slug}' failed (non-fatal): {e}"));
+        } else {
+            log("workspaces", &format!("connect '{slug}': manifest patched"));
         }
     }
 
+    log("workspaces", &format!("connect '{slug}': complete"));
     Ok(())
 }
 
@@ -814,6 +1041,10 @@ mod tests {
             status: status.into(),
             role: Some("member".into()),
             created_at: Some("2026-03-01T00:00:00Z".into()),
+            // Tests historically mocked a top-level uid; the live API
+            // returns membership_key instead. Synthesize one here so the
+            // struct literal is complete.
+            membership_key: Some(format!("{person_uid}#{company_uid}")),
         }
     }
 

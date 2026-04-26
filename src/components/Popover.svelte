@@ -1,7 +1,6 @@
 <script lang="ts">
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SyncStats from './SyncStats.svelte';
-  import SyncButton from './SyncButton.svelte';
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
   import type { Workspace } from '../lib/workspaces';
@@ -20,6 +19,27 @@
     progress?: { company: string; path: string; bytes: number } | null;
     fanoutTotal?: number;
     fanoutDoneCount?: number;
+    /** Cumulative count of files touched in the current run (incremented per
+     *  sync:progress event). Surfaces as "234 files synced" when no upfront
+     *  total is known (runner phase). */
+    syncFilesProgressed?: number;
+    /** Personal first-push knows files_total upfront — when populated, the
+     *  count line shows "234 of 1,247 files" instead of just "234 files
+     *  synced". Null/0 outside the personal phase. */
+    personalFilesDone?: number;
+    personalFilesTotal?: number | null;
+    /** Latched true once the in-process Rust personal first-push completes,
+     *  reset on the next Sync click. The unified bar uses this to keep
+     *  the personal slot at 100% during the gap between Rust complete and
+     *  the runner emitting its first event — without it, the bar would
+     *  drop back to 0 in that window. */
+    personalFirstPushDone?: boolean;
+    /** Real expected file count for the entire sync — emitted by the Rust
+     *  pre-walk before any uploads. When > 0, the bar uses it as the
+     *  denominator for true per-file progress. When 0 (pre-walk hasn't
+     *  fired yet, or hit an error), the bar falls back to workspace-level
+     *  progress. */
+    syncTotalFiles?: number;
     /** Companies in the current/last fanout — rendered live during sync.
      *  `name` is optional; runners < v5.1.9 only emit `uid` + `slug`. The
      *  steady-state list is rendered by `workspaces` below; this prop only
@@ -57,6 +77,10 @@
     /** True while `install_update` is in flight — disables the button. */
     updateInstalling?: boolean;
     onsync: () => void;
+    /** Cancel the in-flight sync (kills the runner subprocess). The same
+     *  header button doubles as Sync/Stop — only meaningful when
+     *  syncState === 'syncing'. */
+    oncancel?: () => void;
     onsettings: () => void;
     onsignout: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
@@ -75,6 +99,11 @@
     progress = null,
     fanoutTotal = 0,
     fanoutDoneCount = 0,
+    syncFilesProgressed = 0,
+    personalFilesDone = 0,
+    personalFilesTotal = null,
+    personalFirstPushDone = false,
+    syncTotalFiles = 0,
     companies = [],
     workspaces = null,
     cloudReachable = true,
@@ -88,6 +117,7 @@
     updateAvailable = null,
     updateInstalling = false,
     onsync,
+    oncancel,
     onsettings,
     onsignout,
     onresolve,
@@ -112,10 +142,48 @@
     if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
     return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
   }
-  function truncatePath(p: string, max = 36): string {
-    if (p.length <= max) return p;
-    return '…' + p.slice(-(max - 1));
-  }
+
+  // Unified progress bar. Two modes:
+  //
+  //   1. Real per-file progress (preferred). Rust pre-walks every syncable
+  //      target before any uploads and emits the total file count via
+  //      `sync:totals`. Once `syncTotalFiles > 0`, the bar is just
+  //      `syncFilesProgressed / syncTotalFiles` — a true denominator.
+  //
+  //   2. Phase-weighted fallback. If the pre-walk hasn't fired yet (or
+  //      returned 0), split the bar 50/50 between personal first-push
+  //      (file-level via personalFilesDone/Total) and the runner fanout
+  //      (workspace-level via fanoutDoneCount/Total). Better than a
+  //      stuck bar, worse than real per-file progress.
+  const barPct = $derived.by(() => {
+    if (syncTotalFiles > 0) {
+      return Math.min(100, Math.max(0, (syncFilesProgressed / syncTotalFiles) * 100));
+    }
+    let p = 0;
+    if (personalFirstPushDone) {
+      p += 0.5;
+    } else if (personalFilesTotal != null && personalFilesTotal > 0) {
+      p += (personalFilesDone / personalFilesTotal) * 0.5;
+    }
+    if (fanoutTotal > 0) {
+      p += (fanoutDoneCount / fanoutTotal) * 0.5;
+    }
+    return Math.min(100, Math.max(0, p * 100));
+  });
+
+  // Current workspace label — prefer the fanout slot we're currently
+  // working on (companies[fanoutDoneCount]) over progress.company,
+  // because progress.company is stale when the runner skips a
+  // workspace silently (no per-file progress events fire). During
+  // the Rust phase (no fanout yet), fall back to "personal".
+  const currentLabel = $derived.by(() => {
+    if (fanoutTotal > 0 && fanoutDoneCount < fanoutTotal) {
+      const w = companies[fanoutDoneCount];
+      if (w) return w.name ?? w.slug;
+    }
+    if (personalFilesTotal != null || personalFirstPushDone) return 'personal';
+    return progress?.company ?? '…';
+  });
 
   // Performance timing — log mount latency
   $effect(() => {
@@ -160,6 +228,60 @@
       <h1>{companyDisplay}</h1>
       <p class="header-path">{folderDisplay}</p>
     </div>
+
+    <!-- Sync button — right-aligned in the header so it's always visible
+         regardless of how long the workspaces list grows. Same visual
+         weight + icon as the original body button; just labelled "Sync"
+         instead of "Sync Now" and not full-width. -->
+    <button
+      class="header-sync"
+      class:syncing={syncState === 'syncing'}
+      class:error={syncState === 'error'}
+      disabled={syncState === 'auth-error'}
+      onclick={syncState === 'syncing' ? oncancel : onsync}
+      title={
+        syncState === 'syncing'
+          ? 'Click to stop the sync'
+          : syncState === 'error'
+            ? 'Last sync failed — click to retry'
+            : syncState === 'auth-error'
+              ? 'Sign in again to sync'
+              : 'Sync'
+      }
+    >
+      {#if syncState === 'syncing'}
+        <!-- Stop / square icon — replaces the spinner so the button reads
+             clearly as a Stop affordance, not a busy indicator. -->
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity="0.85" />
+        </svg>
+      {:else if syncState === 'error'}
+        <!-- Retry / alert-circle icon -->
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      {:else}
+        <!-- Refresh / sync icon — same as the legacy body SyncButton. -->
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      {/if}
+      {#if syncState === 'syncing'}
+        Stop
+      {:else if syncState === 'error'}
+        Retry
+      {:else if syncState === 'auth-error'}
+        Sign in
+      {:else}
+        Sync
+      {/if}
+    </button>
   </header>
 
   <div class="popover-divider"></div>
@@ -214,7 +336,48 @@
         </div>
       {/if}
 
-      <SyncStats bind:this={statsEl} />
+      <!-- Top stats slot: while syncing, the SyncStats card is replaced
+           by a same-shaped live-progress card. When idle, SyncStats shows
+           "Last synced X ago" as before. -->
+      {#if syncState === 'syncing'}
+        <!-- Live progress card — single unified bar that fills 0→100%
+             monotonically across the entire sync. The bar value comes
+             from `barPct` (50% personal phase + 50% runner phase). The
+             label comes from `currentLabel` which reads ahead in the
+             fanout plan rather than trailing per-file events, so the
+             label stays correct even when a workspace skips silently. -->
+        <div class="live-progress">
+          <p class="live-line live-workspace">
+            {currentLabel === '…' ? 'Starting sync…' : `Syncing ${currentLabel}`}
+          </p>
+          <div class="live-bar">
+            <div class="live-bar-fill" style="width: {barPct}%"></div>
+          </div>
+          {#if syncTotalFiles > 0}
+            <!-- Real per-file caption: "234 of 13,016 files" updates per
+                 progress event, denominator known up front. -->
+            <p class="live-line muted">
+              {syncFilesProgressed.toLocaleString()} of
+              {syncTotalFiles.toLocaleString()} files
+            </p>
+          {:else if fanoutTotal > 0}
+            <!-- Fallback: pre-walk hasn't landed yet (or returned 0).
+                 Show workspace progress + rolling file count. -->
+            <p class="live-line muted">
+              Workspace {Math.min(fanoutDoneCount + 1, fanoutTotal)} of {fanoutTotal}
+              {#if syncFilesProgressed > 0}
+                · {syncFilesProgressed.toLocaleString()} file{syncFilesProgressed === 1 ? '' : 's'}
+              {/if}
+            </p>
+          {:else if personalFilesTotal != null && personalFilesTotal > 0}
+            <p class="live-line muted">
+              {personalFilesDone} of {personalFilesTotal} files
+            </p>
+          {/if}
+        </div>
+      {:else}
+        <SyncStats bind:this={statsEl} />
+      {/if}
 
       <!-- Workspaces (Personal + companies) — the steady-state list.
            Renders as soon as `list_syncable_workspaces` returns; null while
@@ -229,48 +392,10 @@
         />
       {/if}
 
-      <!-- Live progress detail — renders only while actively syncing. -->
-      {#if syncState === 'syncing'}
-        <div class="live-progress">
-          {#if fanoutTotal > 0}
-            <p class="live-line muted">
-              Syncing {fanoutDoneCount + 1} of {fanoutTotal}
-              {fanoutTotal === 1 ? 'company' : 'companies'}
-            </p>
-          {/if}
-          {#if progress}
-            <p class="live-line">
-              <span class="live-company">{progress.company}</span>
-              <span class="live-sep">·</span>
-              <span class="live-path" title={progress.path}>{truncatePath(progress.path)}</span>
-            </p>
-            <p class="live-line muted">
-              <span>↓ {formatBytes(progress.bytes)}</span>
-            </p>
-          {/if}
-        </div>
-      {:else if lastSummary && syncState === 'idle'}
-        {#if lastSummary.filesDownloaded > 0}
-          <p class="summary-line">
-            Last sync · {lastSummary.filesDownloaded} file{lastSummary.filesDownloaded !== 1 ? 's' : ''} ·
-            {formatBytes(lastSummary.bytesDownloaded)}
-            {#if lastSummary.companiesAttempted > 1}
-              across {lastSummary.companiesAttempted} companies
-            {/if}
-          </p>
-        {:else if lastSummary.filesSkipped > 0}
-          <p class="summary-line">
-            Up to date · {lastSummary.filesSkipped} file{lastSummary.filesSkipped !== 1 ? 's' : ''}
-            {#if lastSummary.companiesAttempted > 1}
-              across {lastSummary.companiesAttempted} companies
-            {/if}
-          </p>
-        {/if}
-      {/if}
-
-      <div class="sync-button-area">
-        <SyncButton {syncState} {progress} onclick={onsync} />
-      </div>
+      <!-- Sync button moved to the header (right-aligned). The body no
+           longer hosts a full-width sync action — keeps the workspace list
+           visible even when it grows long, instead of pushing the button
+           out of the popover. -->
     {/if}
   </section>
 
@@ -363,6 +488,9 @@
 
   .header-text {
     min-width: 0;
+    /* flex: 1 lets the title/path block soak up the spare horizontal space
+       so the Sync button sits flush against the right edge of the header. */
+    flex: 1;
   }
 
   .header-text h1 {
@@ -381,6 +509,70 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  /* Header Sync button — same visual weight as the legacy body SyncButton
+     (icon + pill, popover-primary background) but inline + right-aligned
+     instead of full-width. The data-tauri-drag-region on .popover-header
+     means clicks-and-holds drag the window; -webkit-app-region: no-drag
+     restores click handling for this button. */
+  .header-sync {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.875rem;
+    font-family: inherit;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--popover-primary-text, #111113);
+    background: var(--popover-primary, #ffffff);
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, opacity 0.15s ease, color 0.15s ease;
+    -webkit-app-region: no-drag;
+  }
+
+  .header-sync:hover:not(:disabled) {
+    background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
+  }
+
+  .header-sync:active:not(:disabled) {
+    background: var(--popover-primary-active, rgba(255, 255, 255, 0.78));
+  }
+
+  .header-sync:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+  }
+
+  .header-sync.syncing {
+    opacity: 0.85;
+    cursor: progress;
+  }
+
+  .header-sync.error {
+    background: var(--popover-danger, #ef4444);
+    color: #ffffff;
+    border-color: rgba(239, 68, 68, 0.6);
+  }
+
+  .header-sync-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(17, 17, 19, 0.25);
+    border-top-color: var(--popover-primary-text, #111113);
+    border-radius: 50%;
+    animation: header-sync-spin 0.6s linear infinite;
+  }
+
+  @keyframes header-sync-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   /* Divider */
@@ -423,10 +615,6 @@
     background: rgba(255, 255, 255, 0.18);
   }
 
-  .sync-button-area {
-    margin-top: auto;
-    padding-top: 0.25rem;
-  }
 
   /* Footer */
   .popover-footer {
@@ -532,15 +720,22 @@
     cursor: default;
   }
 
-  /* Live progress — shown while actively syncing */
+  /* Live progress — replaces the SyncStats card while actively syncing.
+     Padding/radius/background/border + inset highlight match .sync-stats
+     exactly so the swap-in feels like a content change, not a layout
+     change. width: 100% + box-sizing keep the right edge flush like
+     SyncStats does. */
   .live-progress {
+    width: 100%;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 0.25rem;
-    padding: 0.5rem 0.625rem;
-    border-radius: 6px;
+    gap: 0.4rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 12px;
     background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
   .live-line {
@@ -559,25 +754,34 @@
     font-size: 0.6875rem;
   }
 
-  .live-company {
+  /* Workspace label — line 1 of the standardized 3-line live-progress
+     card. Prominent so the user can see at a glance which workspace is
+     currently syncing. Same visual weight as SyncStats' stat-value. */
+  .live-workspace {
+    font-size: 0.8125rem;
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
-    flex-shrink: 0;
   }
 
-  .live-sep {
-    color: var(--popover-text-muted, #a0a0b0);
-    flex-shrink: 0;
-  }
-
-  .live-path {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    white-space: nowrap;
+  /* Determinate progress bar — fill width set inline from the markup
+     (barPct %). The 0.25s ease-out transition smooths the per-file
+     ticks during the personal phase and the discrete workspace jumps
+     during the runner phase. overflow:hidden on the track guards
+     against rounding errors that could push the fill past 100% by a
+     sub-pixel. */
+  .live-bar {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--popover-progress-track, rgba(255, 255, 255, 0.14));
     overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
+  }
+
+  .live-bar-fill {
+    height: 100%;
+    background: var(--popover-progress-fill, #ffffff);
+    border-radius: 3px;
+    transition: width 0.25s ease-out;
   }
 
   /* Summary line — "Last sync · X files · Y MB" */

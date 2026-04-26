@@ -203,6 +203,13 @@ pub const EVENT_SYNC_PERSONAL_SKIPPED_OWNERSHIP_MISMATCH: &str =
     "sync:personal-skipped-ownership-mismatch";
 pub const EVENT_SYNC_PERSONAL_FIRST_PUSH_SKIPPED: &str = "sync:personal-first-push-skipped";
 
+/// Pre-walk total — emitted once after the Rust pre-walk and before the
+/// runner spawns. Carries the count of files we expect to process across
+/// the entire sync (personal allowlist + every company folder, after
+/// applying the .hqignore + DEFAULT_IGNORES filter). The UI uses this as
+/// the denominator for a real per-file progress bar.
+pub const EVENT_SYNC_TOTALS: &str = "sync:totals";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPersonalProvisionedEvent {

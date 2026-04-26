@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
@@ -36,6 +37,30 @@
   // slug in that case. Rendered by Popover so the user sees *which* HQs
   // they're connected to.
   let syncCompanies = $state<Array<{ uid: string; slug: string; name?: string }>>([]);
+  // Per-run cumulative file counter — incremented per sync:progress event so
+  // the popover can show "234 files" alongside the current file. Reset on
+  // each Sync Now click; not reset by sync:all-complete (the final summary
+  // line takes over from there).
+  let syncFilesProgressed = $state(0);
+  // Personal first-push knows files_total upfront; we capture it so the
+  // live-progress card can show "234 of 1,247 files" instead of just a
+  // running count. Runner sync:progress events don't carry a total, so
+  // these stay null during the runner phase and the UI falls back to
+  // "234 files synced".
+  let personalFilesDone = $state(0);
+  let personalFilesTotal = $state<number | null>(null);
+  // Latched flag for the unified progress bar — once the in-process Rust
+  // personal first-push completes, this stays true until the next Sync
+  // click. Lets the bar treat the personal phase as "fully filled (50%
+  // slot)" even after personalFilesTotal has been reset, so there's no
+  // visible drop between the Rust phase and the runner taking over.
+  let personalFirstPushDone = $state(false);
+  // Real total file count for the entire sync — emitted by the Rust pre-walk
+  // BEFORE any uploads begin (sums personal allowlist + every local company
+  // folder, after applying .hqignore + DEFAULT_IGNORES). Drives the unified
+  // per-file progress bar. 0 means pre-walk hasn't fired yet (or hit an
+  // error); the UI falls back to workspace-level progress in that case.
+  let syncTotalFiles = $state(0);
   // filesSkipped is not on sync:all-complete (backend only aggregates
   // filesDownloaded), so we sum it client-side from per-company complete
   // events. Lets the popover surface "Up to date" when everything was
@@ -118,6 +143,11 @@
     syncFanoutDoneCount = 0;
     syncCompanies = [];
     syncFanoutFilesSkipped = 0;
+    syncFilesProgressed = 0;
+    personalFilesDone = 0;
+    personalFilesTotal = null;
+    personalFirstPushDone = false;
+    syncTotalFiles = 0;
     syncLastSummary = null;
     syncErrorMessage = '';
     await invoke('set_tray_state', { state: 'syncing' });
@@ -128,6 +158,19 @@
       syncState = 'error';
       syncErrorMessage = String(err);
       await invoke('set_tray_state', { state: 'error' });
+    }
+  }
+
+  async function handleCancel() {
+    if (syncState !== 'syncing') return;
+    try {
+      await invoke('cancel_sync');
+      // Don't flip syncState here — the runner's exit triggers the
+      // existing "runner exited" path which emits sync:all-complete (or
+      // sync:error) and resets state. Avoids a race where cancel returns
+      // before the kill propagates.
+    } catch (err) {
+      console.error('cancel_sync failed:', err);
     }
   }
 
@@ -200,6 +243,21 @@
   }
 
   async function setupTrayListeners() {
+    // Refresh workspaces every time the menubar popover gains focus. Cheap
+    // (single Tauri command + small vault round-trip) and catches external
+    // mutations: a new company added via /newcompany, a manifest patch from
+    // a CLI tool, or any folder created outside the app between popover
+    // openings. Without this, the list only refreshes on mount and after a
+    // sync — a brand-new company added between syncs would stay invisible
+    // until the next sync click.
+    unlisteners.push(
+      await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (focused) {
+          loadWorkspaces();
+        }
+      })
+    );
+
     // Tray menu events
     unlisteners.push(
       await listen('tray:sync-now', () => {
@@ -240,6 +298,15 @@
       })
     );
 
+    // Pre-walk total — fired once after JWT resolution, before any uploads.
+    // Carries the real file count for this entire sync so the UI bar can
+    // show actual per-file progress instead of fake workspace thirds.
+    unlisteners.push(
+      await listen<{ totalFiles: number }>('sync:totals', async (event) => {
+        syncTotalFiles = event.payload.totalFiles;
+      })
+    );
+
     unlisteners.push(
       await listen<{ companies: Array<{ uid: string; slug: string; name?: string }> }>(
         'sync:fanout-plan',
@@ -263,7 +330,54 @@
             path: event.payload.path,
             bytes: event.payload.bytes,
           };
+          // Cumulative file counter — every per-file event from the runner
+          // (or personal first-push) bumps this. The popover surfaces it as
+          // "234 files" alongside the current path so the user always has
+          // something moving even when individual paths scroll by.
+          syncFilesProgressed += 1;
           await invoke('set_tray_state', { state: 'syncing' });
+        }
+      )
+    );
+
+    // ── Personal-first-push events ────────────────────────────────────────
+    // The in-process Rust personal first-push fires its own progress events
+    // (not routed through the runner's sync:progress channel) and carries
+    // an upfront filesTotal — we feed both into the live-progress card so
+    // the personal phase shows "234 of 1,247 files" while the (unknown-
+    // total) runner phase shows just "234 files synced".
+    unlisteners.push(
+      await listen<{
+        personUid: string;
+        filesDone: number;
+        filesTotal: number;
+        currentFile: string | null;
+      }>('sync:personal-first-push-progress', async (event) => {
+        syncState = 'syncing';
+        personalFilesDone = event.payload.filesDone;
+        personalFilesTotal = event.payload.filesTotal;
+        if (event.payload.currentFile) {
+          syncProgress = {
+            company: 'personal',
+            path: event.payload.currentFile,
+            bytes: 0, // personal-first-push doesn't carry per-file bytes
+          };
+          syncFilesProgressed += 1;
+        }
+        await invoke('set_tray_state', { state: 'syncing' });
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ personUid: string; filesUploaded: number; filesSkipped: number }>(
+        'sync:personal-first-push-complete',
+        async () => {
+          // Latch the done flag so the unified bar treats the personal
+          // slot as 100% filled while the runner spins up. Don't clear
+          // personalFilesTotal/Done — leaving them in place keeps the
+          // file-level caption visible until the runner takes over with
+          // its own caption.
+          personalFirstPushDone = true;
         }
       )
     );
@@ -281,6 +395,12 @@
         // wait for sync:all-complete to know the whole fanout is done.
         syncFanoutDoneCount += 1;
         syncFanoutFilesSkipped += event.payload.filesSkipped;
+        // Roll skipped files into the progress counter so the bar reflects
+        // "files processed" (skipped + uploaded + downloaded), not just
+        // "files transferred". A run where the journal matches everything
+        // (no actual uploads) should still hit 100% — otherwise the bar
+        // looks stuck at 0 while the sync is actually a happy no-op.
+        syncFilesProgressed += event.payload.filesSkipped;
         if (event.payload.aborted) {
           // Conflict-aborted: show the conflict state so the user knows
           // something needs attention. ConflictModal wiring is follow-up
@@ -414,6 +534,11 @@
       progress={syncProgress}
       fanoutTotal={syncFanoutTotal}
       fanoutDoneCount={syncFanoutDoneCount}
+      {syncFilesProgressed}
+      {personalFilesDone}
+      {personalFilesTotal}
+      {personalFirstPushDone}
+      {syncTotalFiles}
       companies={syncCompanies}
       {workspaces}
       cloudReachable={workspacesCloudReachable}
@@ -427,6 +552,7 @@
       {updateAvailable}
       {updateInstalling}
       onsync={handleSyncNow}
+      oncancel={handleCancel}
       onsettings={handleSettings}
       onsignout={handleSignOut}
       onresolve={handleResolveConflict}
