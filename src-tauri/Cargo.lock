@@ -2592,6 +2592,7 @@ dependencies = [
  "ulid",
  "uuid",
  "walkdir",
+ "window-vibrancy",
  "wiremock",
 ]
 

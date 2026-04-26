@@ -481,8 +481,8 @@
     display: inline-block;
     width: 20px;
     height: 20px;
-    border: 2.5px solid rgba(99, 102, 241, 0.2);
-    border-top-color: #6366f1;
+    border: 2.5px solid var(--popover-progress-track, rgba(255, 255, 255, 0.14));
+    border-top-color: var(--popover-progress-fill, #ffffff);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
