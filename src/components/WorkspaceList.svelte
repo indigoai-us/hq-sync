@@ -110,7 +110,13 @@
   {/if}
 
   <ul class="workspace-list">
-    {#each workspaces as w (w.slug)}
+    <!-- Composite key (kind:slug) is required because the Personal vault row
+         AND a manifest-declared `personal` company entry can both legitimately
+         carry slug="personal" — they're conceptually distinct (vault vs.
+         company) and target different cloud buckets. Keying by slug alone
+         caused Svelte 5 to silently drop the duplicate, hiding the manifest's
+         personal company entry from the UI (v0.1.23 regression). -->
+    {#each workspaces as w (`${w.kind}:${w.slug}`)}
       <li
         class="workspace-row"
         class:local-only={w.state === 'local-only'}
