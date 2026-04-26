@@ -77,19 +77,19 @@
       >
         <path
           d="M24 4L8 12v12c0 11.1 6.8 21.4 16 24 9.2-2.6 16-12.9 16-24V12L24 4z"
-          fill="#6366f1"
+          fill="currentColor"
           opacity="0.15"
         />
         <path
           d="M24 4L8 12v12c0 11.1 6.8 21.4 16 24 9.2-2.6 16-12.9 16-24V12L24 4z"
-          stroke="#6366f1"
+          stroke="currentColor"
           stroke-width="2.5"
           stroke-linejoin="round"
           fill="none"
         />
         <path
           d="M18 24l4 4 8-8"
-          stroke="#6366f1"
+          stroke="currentColor"
           stroke-width="2.5"
           stroke-linecap="round"
           stroke-linejoin="round"
@@ -166,14 +166,17 @@
     height: 100vh;
     box-sizing: border-box;
     padding: 1rem;
-    background: var(--popover-bg, #1a1a2e);
+    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     color: var(--popover-text, #e0e0e0);
     overflow: hidden;
     /* Rounded corners — requires tauri window transparent:true +
        decorations:false + macOSPrivateApi:true for the OS to honor
        transparency outside the radius. */
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
   .sign-in-card {
@@ -213,8 +216,8 @@
     font-size: 0.875rem;
     font-weight: 500;
     font-family: inherit;
-    color: #ffffff;
-    background-color: #6366f1;
+    color: var(--popover-primary-text, #111113);
+    background-color: var(--popover-primary, #ffffff);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -222,11 +225,11 @@
   }
 
   .sign-in-btn:hover:not(:disabled) {
-    background-color: #4f46e5;
+    background-color: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
   .sign-in-btn:active:not(:disabled) {
-    background-color: #4338ca;
+    background-color: var(--popover-primary-active, rgba(255, 255, 255, 0.78));
   }
 
   .sign-in-btn:disabled {
@@ -238,8 +241,8 @@
     display: inline-block;
     width: 14px;
     height: 14px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #ffffff;
+    border: 2px solid rgba(0, 0, 0, 0.22);
+    border-top-color: var(--popover-primary-text, #111113);
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
@@ -277,7 +280,7 @@
 
   @media (prefers-color-scheme: light) {
     h1 {
-      color: #1a1a2e;
+      color: #111113;
     }
 
     .description {

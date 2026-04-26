@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "macos")]
+use tauri::Manager;
 use std::sync::Mutex;
 
 mod commands;
@@ -8,6 +10,18 @@ mod sentry_scrub;
 mod tray;
 mod updater;
 mod util;
+
+#[cfg(target_os = "macos")]
+fn apply_liquid_glass(window: &tauri::WebviewWindow) {
+    use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+
+    let _ = apply_vibrancy(
+        window,
+        NSVisualEffectMaterial::Popover,
+        Some(NSVisualEffectState::Active),
+        Some(18.0),
+    );
+}
 
 fn main() {
     use sentry::ClientOptions;
@@ -97,6 +111,11 @@ fn main() {
             // appears in the Dock whenever the window is shown.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                apply_liquid_glass(&window);
+            }
 
             tray::setup_tray(&app.handle())?;
             updater::setup_update_checker(&app.handle());

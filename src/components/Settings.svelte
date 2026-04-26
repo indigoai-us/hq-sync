@@ -278,9 +278,14 @@
     flex-direction: column;
     width: 320px;
     max-height: 400px;
-    background: var(--popover-bg, #1a1a2e);
+    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     color: var(--popover-text, #e0e0e0);
     overflow-y: auto;
+    border-radius: 18px;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    box-sizing: border-box;
   }
 
   /* Header */
@@ -309,7 +314,7 @@
     padding: 0;
     background: none;
     border: none;
-    border-radius: 6px;
+    border-radius: 9px;
     color: var(--popover-text-muted, #a0a0b0);
     cursor: pointer;
     transition: background-color 0.1s ease, color 0.1s ease;
@@ -323,7 +328,7 @@
 
   .saved-indicator {
     font-size: 0.6875rem;
-    color: var(--popover-primary, #6366f1);
+    color: var(--popover-text-heading, #ffffff);
     opacity: 0;
     transition: opacity 0.2s ease;
     flex-shrink: 0;
@@ -358,8 +363,8 @@
     display: inline-block;
     width: 20px;
     height: 20px;
-    border: 2.5px solid rgba(99, 102, 241, 0.2);
-    border-top-color: #6366f1;
+    border: 2.5px solid var(--popover-progress-track, rgba(255, 255, 255, 0.14));
+    border-top-color: var(--popover-progress-fill, #ffffff);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
@@ -414,10 +419,10 @@
     font-size: 0.75rem;
     font-family: inherit;
     padding: 0.25rem 0.625rem;
-    background: var(--popover-surface, #232340);
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     color: var(--popover-text-muted, #a0a0b0);
     border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-radius: 6px;
+    border-radius: 9px;
     cursor: pointer;
     transition: background-color 0.1s ease, color 0.1s ease, border-color 0.1s ease;
     white-space: nowrap;
@@ -427,7 +432,7 @@
   .change-button:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
     color: var(--popover-text, #e0e0e0);
-    border-color: var(--popover-border, rgba(99, 102, 241, 0.12));
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
   /* Version value — monospace, subdued, aligned to the right like a
@@ -446,7 +451,7 @@
     width: 36px;
     height: 20px;
     padding: 0;
-    background: var(--popover-surface, #232340);
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     border-radius: 10px;
     cursor: pointer;
@@ -455,8 +460,8 @@
   }
 
   .toggle.active {
-    background: var(--popover-primary, #6366f1);
-    border-color: var(--popover-primary, #6366f1);
+    background: var(--popover-primary, #ffffff);
+    border-color: var(--popover-primary, #ffffff);
   }
 
   .toggle-knob {

@@ -6,11 +6,20 @@
     workspaces: Workspace[];
     cloudReachable: boolean;
     cloudError?: string | null;
+    /** Top-level manifest parse error. Non-null = soft warning notice
+     *  rendered above the list; workspaces fell back to folder enumeration. */
+    manifestError?: string | null;
     /** Called after a successful Connect so the parent re-fetches workspaces. */
     onrefresh?: () => void;
   }
 
-  let { workspaces, cloudReachable, cloudError = null, onrefresh }: Props = $props();
+  let {
+    workspaces,
+    cloudReachable,
+    cloudError = null,
+    manifestError = null,
+    onrefresh,
+  }: Props = $props();
 
   // Per-row connect state. Keys are slugs; absent = idle, true = in flight,
   // string = error message from the last attempt. Reset on next click.
@@ -22,6 +31,7 @@
       case 'synced':     return 'Synced';
       case 'cloud-only': return 'Cloud only';
       case 'local-only': return 'Local only';
+      case 'broken':     return 'Broken';
     }
   }
 
@@ -37,6 +47,10 @@
         return 'In your cloud vault but not on this machine yet — Sync Now will download it';
       case 'local-only':
         return 'Local folder exists but no matching cloud vault — click the cloud icon to connect';
+      case 'broken':
+        return w.brokenReason
+          ? `Manifest is out of sync with cloud — click Connect to reconcile.\n${w.brokenReason}`
+          : 'Manifest is out of sync with cloud — click Connect to reconcile';
     }
   }
 
@@ -74,6 +88,18 @@
 </script>
 
 <div class="workspace-list-wrapper">
+  {#if manifestError}
+    <!-- Manifest unreadable — workspaces fell back to dir enumeration. Surface
+         the parser error so the user can fix or report it. Distinct from the
+         cloud-warning below (which is about reachability). -->
+    <div class="cloud-warning manifest-warning" title={manifestError}>
+      <span class="cloud-warning-dot manifest-warning-dot" aria-hidden="true"></span>
+      <span class="cloud-warning-text">
+        companies/manifest.yaml couldn't be read — showing folder list instead
+      </span>
+    </div>
+  {/if}
+
   {#if !cloudReachable}
     <!-- Soft notice: cloud unreachable. We still rendered local data, so this
          is a heads-up rather than a blocker. -->
@@ -85,7 +111,11 @@
 
   <ul class="workspace-list">
     {#each workspaces as w (w.slug)}
-      <li class="workspace-row" class:local-only={w.state === 'local-only'}>
+      <li
+        class="workspace-row"
+        class:local-only={w.state === 'local-only'}
+        class:broken={w.state === 'broken'}
+      >
         <div class="row-main">
           <div class="row-name-line">
             <span class="row-name" title={w.displayName}>{w.displayName}</span>
@@ -93,7 +123,18 @@
               <span class="row-slug">{w.slug}</span>
             {/if}
           </div>
-          {#if w.lastSyncedAt}
+          {#if w.state === 'broken'}
+            <span
+              class="row-meta row-meta-error"
+              title={w.brokenReason ?? 'Manifest cloud_uid does not match cloud reality'}
+            >
+              {#if typeof connectState[w.slug] === 'string'}
+                Reconnect failed — click to retry
+              {:else}
+                Manifest out of sync — click to reconnect
+              {/if}
+            </span>
+          {:else if w.lastSyncedAt}
             <span class="row-meta">Last sync · {formatLastSynced(w.lastSyncedAt)}</span>
           {:else if w.state === 'cloud-only'}
             <span class="row-meta">Not yet on this machine</span>
@@ -110,19 +151,25 @@
           {/if}
         </div>
 
-        <!-- Connect icon button — only for local-only rows. Single click
-             provisions a cloud bucket for this slug and writes the per-company
-             config. After success, parent re-fetches workspaces and the row
-             flips to Synced. Disabled while in flight; error state surfaces
-             via row-meta-error above. -->
-        {#if w.state === 'local-only'}
+        <!-- Connect icon button — for local-only AND broken rows. The same
+             command (connect_workspace_to_cloud) handles both: for local-only
+             it provisions fresh; for broken it re-finds by slug and overwrites
+             the manifest cloud_uid with the current truth. -->
+        {#if w.state === 'local-only' || w.state === 'broken'}
           <button
             class="row-action"
             class:connecting={connectState[w.slug] === true}
+            class:row-action-broken={w.state === 'broken'}
             disabled={connectState[w.slug] === true || !cloudReachable}
             onclick={() => handleConnect(w.slug)}
-            title={cloudReachable ? 'Connect this folder to a cloud vault' : 'Cloud unreachable — try again later'}
-            aria-label="Connect {w.displayName} to cloud"
+            title={
+              !cloudReachable
+                ? 'Cloud unreachable — try again later'
+                : w.state === 'broken'
+                  ? 'Reconnect to reconcile the manifest with the cloud'
+                  : 'Connect this folder to a cloud vault'
+            }
+            aria-label={(w.state === 'broken' ? 'Reconnect ' : 'Connect ') + w.displayName + ' to cloud'}
           >
             {#if connectState[w.slug] === true}
               <span class="row-action-spinner" aria-hidden="true"></span>
@@ -142,6 +189,7 @@
           class:badge-synced={w.state === 'synced'}
           class:badge-cloud={w.state === 'cloud-only'}
           class:badge-local={w.state === 'local-only'}
+          class:badge-broken={w.state === 'broken'}
           title={badgeTooltip(w)}
         >
           {badgeLabel(w.state)}
@@ -168,12 +216,23 @@
     border: 1px solid rgba(245, 158, 11, 0.22);
   }
 
+  /* Manifest-error variant — red instead of amber to distinguish "broken
+     local file" from "transient connectivity". */
+  .manifest-warning {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: rgba(239, 68, 68, 0.22);
+  }
+
   .cloud-warning-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
     background: #f59e0b;
     flex-shrink: 0;
+  }
+
+  .manifest-warning-dot {
+    background: #ef4444;
   }
 
   .cloud-warning-text {
@@ -207,6 +266,15 @@
   .workspace-row.local-only {
     /* Local-only rows are slightly muted — they need attention but aren't broken. */
     opacity: 0.92;
+  }
+
+  .workspace-row.broken {
+    /* Broken rows: faint red wash so the eye lands on them in the list. */
+    background: rgba(239, 68, 68, 0.04);
+  }
+
+  .workspace-row.broken:hover {
+    background: rgba(239, 68, 68, 0.08);
   }
 
   .row-main {
@@ -272,6 +340,18 @@
     color: #bae6fd;
   }
 
+  /* Broken-state Connect button: red palette to match the row warning. */
+  .row-action-broken {
+    background: rgba(239, 68, 68, 0.10);
+    color: #fca5a5;
+    border-color: rgba(239, 68, 68, 0.32);
+  }
+
+  .row-action-broken:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.18);
+    color: #fecaca;
+  }
+
   .row-action:disabled {
     opacity: 0.5;
     cursor: not-allowed;
@@ -333,5 +413,11 @@
     background: rgba(245, 158, 11, 0.10);
     color: #fbbf24;
     border-color: rgba(245, 158, 11, 0.28);
+  }
+
+  .badge-broken {
+    background: rgba(239, 68, 68, 0.12);
+    color: #fca5a5;
+    border-color: rgba(239, 68, 68, 0.36);
   }
 </style>

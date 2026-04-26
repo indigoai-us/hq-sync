@@ -60,6 +60,11 @@
   let workspaces = $state<Workspace[] | null>(null);
   let workspacesCloudReachable = $state(true);
   let workspacesError = $state<string | null>(null);
+  // Top-level manifest parse/IO error from list_syncable_workspaces. Distinct
+  // from workspacesError (which surfaces cloud-side failure). Both can fire
+  // independently — a broken manifest doesn't prevent us from talking to the
+  // cloud, and an unreachable cloud doesn't make the manifest unreadable.
+  let workspacesManifestError = $state<string | null>(null);
 
   // Updater state — populated by the `update:available` event from the Rust
   // background checker (launch+10s, then every 6h). Non-null means the user
@@ -94,6 +99,7 @@
       workspaces = result.workspaces;
       workspacesCloudReachable = result.cloudReachable;
       workspacesError = result.error;
+      workspacesManifestError = result.manifestError;
     } catch (err) {
       // Hard failure (e.g. couldn't resolve hq_root). Keep prior workspaces
       // visible if we had any, but flag the error so the UI can soften.
@@ -412,6 +418,7 @@
       {workspaces}
       cloudReachable={workspacesCloudReachable}
       cloudError={workspacesError}
+      manifestError={workspacesManifestError}
       onworkspacesrefresh={loadWorkspaces}
       lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
@@ -474,8 +481,8 @@
     display: inline-block;
     width: 20px;
     height: 20px;
-    border: 2.5px solid rgba(99, 102, 241, 0.2);
-    border-top-color: #6366f1;
+    border: 2.5px solid var(--popover-progress-track, rgba(255, 255, 255, 0.14));
+    border-top-color: var(--popover-progress-fill, #ffffff);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }

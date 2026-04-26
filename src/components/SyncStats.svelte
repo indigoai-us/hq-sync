@@ -113,9 +113,10 @@
        gap:0.75rem between children, stacking margin-top on top of
        that creates doubled space above the card. */
     padding: 0.6rem 0.75rem;
-    border-radius: 8px;
-    background: rgba(99, 102, 241, 0.06);
-    border: 1px solid rgba(99, 102, 241, 0.12);
+    border-radius: 12px;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
   .stats-loading {
@@ -129,8 +130,8 @@
     display: inline-block;
     width: 14px;
     height: 14px;
-    border: 2px solid rgba(99, 102, 241, 0.2);
-    border-top-color: #6366f1;
+    border: 2px solid var(--popover-progress-track, rgba(255, 255, 255, 0.14));
+    border-top-color: var(--popover-progress-fill, #ffffff);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
@@ -182,8 +183,8 @@
 
   @media (prefers-color-scheme: light) {
     .sync-stats {
-      background: rgba(99, 102, 241, 0.05);
-      border-color: rgba(99, 102, 241, 0.15);
+      background: var(--popover-surface, rgba(255, 255, 255, 0.5));
+      border-color: var(--popover-border, rgba(0, 0, 0, 0.12));
     }
 
     .stat-icon {
@@ -195,7 +196,7 @@
     }
 
     .stat-value {
-      color: #1a1a2e;
+      color: #111113;
     }
 
     .stats-error {

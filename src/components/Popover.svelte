@@ -36,6 +36,10 @@
     cloudReachable?: boolean;
     /** Error string surfaced when `cloudReachable` is false. */
     cloudError?: string | null;
+    /** Top-level manifest parse error from list_syncable_workspaces. Non-null
+     *  = soft warning rendered above the workspace list (workspaces fell back
+     *  to folder-enumerated discovery). */
+    manifestError?: string | null;
     /** Re-fetch workspaces — called by WorkspaceList after a successful
      *  Connect, and from any other code path that mutates workspace state. */
     onworkspacesrefresh?: () => void;
@@ -75,6 +79,7 @@
     workspaces = null,
     cloudReachable = true,
     cloudError = null,
+    manifestError = null,
     onworkspacesrefresh,
     lastSummary = null,
     errorMessage = '',
@@ -144,15 +149,11 @@
 
 <div class="popover">
   <!-- Header -->
-  <header class="popover-header">
+  <header class="popover-header" data-tauri-drag-region>
     <div class="header-icon">
-      <!-- HQ wordmark — purple rounded-square tile with "HQ" in white.
-           Matches companies/indigo/repos/hq-docs/src/assets/logo.svg. The
-           purple is literal (not currentColor) because this is the HQ
-           brand tile; consumers of the popover shouldn't restyle it. -->
       <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <rect width="48" height="48" rx="8" fill="#6366f1" />
-        <text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="white" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-weight="700" font-size="20">HQ</text>
+        <rect width="48" height="48" rx="12" fill="currentColor" opacity="0.92" />
+        <text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="var(--popover-primary-text, #111113)" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-weight="700" font-size="20">HQ</text>
       </svg>
     </div>
     <div class="header-text">
@@ -223,6 +224,7 @@
           {workspaces}
           {cloudReachable}
           {cloudError}
+          {manifestError}
           onrefresh={onworkspacesrefresh}
         />
       {/if}
@@ -317,7 +319,9 @@
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--popover-bg, #1a1a2e);
+    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     color: var(--popover-text, #e0e0e0);
     overflow: hidden;
     /* Rounded corners — requires tauri window transparent:true +
@@ -325,8 +329,15 @@
        transparency outside the radius. Native window shadow comes from
        tauri.conf.json `shadow: true`; CSS box-shadow here would be
        clipped at the window edge and is pointless. */
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  :global([data-tauri-drag-region] button),
+  :global([data-tauri-drag-region] a),
+  :global([data-tauri-drag-region] input) {
+    -webkit-app-region: no-drag;
   }
 
   /* Header */
@@ -343,10 +354,11 @@
     justify-content: center;
     width: 32px;
     height: 32px;
-    border-radius: 8px;
-    background: rgba(99, 102, 241, 0.12);
-    color: var(--popover-primary, #6366f1);
+    border-radius: 10px;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    color: var(--popover-primary, #ffffff);
     flex-shrink: 0;
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
   .header-text {
@@ -434,7 +446,7 @@
     color: var(--popover-text-muted, #a0a0b0);
     background: none;
     border: none;
-    border-radius: 6px;
+    border-radius: 9px;
     cursor: pointer;
     transition: background-color 0.1s ease, color 0.1s ease;
     text-align: left;
@@ -455,13 +467,13 @@
     flex-direction: column;
     gap: 0.1875rem;
     padding: 0.625rem 0.75rem;
-    border-radius: 8px;
+    border-radius: 10px;
     border: 1px solid transparent;
   }
 
   .banner-info {
-    background: rgba(99, 102, 241, 0.08);
-    border-color: rgba(99, 102, 241, 0.25);
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
   .banner-error {
@@ -501,8 +513,8 @@
     font-family: inherit;
     font-weight: 600;
     padding: 0.3125rem 0.75rem;
-    background: var(--popover-primary, #6366f1);
-    color: #ffffff;
+    background: var(--popover-primary, #ffffff);
+    color: var(--popover-primary-text, #111113);
     border: none;
     border-radius: 6px;
     cursor: pointer;
@@ -512,7 +524,7 @@
   }
 
   .banner-update-button:hover:not(:disabled) {
-    background: #4f52cc;
+    background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
   .banner-update-button:disabled {
@@ -527,7 +539,8 @@
     gap: 0.25rem;
     padding: 0.5rem 0.625rem;
     border-radius: 6px;
-    background: rgba(99, 102, 241, 0.06);
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
   .live-line {
@@ -548,7 +561,7 @@
 
   .live-company {
     font-weight: 600;
-    color: var(--popover-primary, #6366f1);
+    color: var(--popover-text-heading, #ffffff);
     flex-shrink: 0;
   }
 
