@@ -283,9 +283,15 @@
 
     unlisteners.push(
       await listen('sync:setup-needed', async () => {
-        syncState = 'setup-needed';
+        // Runner emits this when the caller has no memberships AND no
+        // pending invites. As of the Rust auto-create patch, the personal
+        // first-push provisions the person entity itself before the runner
+        // even starts — so by the time we see setup-needed here, the only
+        // remaining gap is "no companies yet", which is a perfectly normal
+        // state for a brand-new account, not an error. Don't flip the tray
+        // to red; just stay in syncing until all-complete fires.
+        syncState = 'syncing';
         syncProgress = null;
-        await invoke('set_tray_state', { state: 'error' });
       })
     );
 

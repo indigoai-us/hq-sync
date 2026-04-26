@@ -19,7 +19,8 @@ use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region};
 use aws_sdk_s3::primitives::ByteStream;
 
-use crate::commands::vault_client::{VaultClient, VaultClientError, VendSelfInput};
+use crate::commands::vault_client::{EntityInfo, VaultClient, VaultClientError, VendSelfInput};
+use crate::util::logfile::log;
 use crate::events::{
     SyncPersonalFirstPushCompleteEvent, SyncPersonalFirstPushProgressEvent,
     SyncPersonalFirstPushSkippedEvent, SyncPersonalProvisionedEvent,
@@ -395,6 +396,65 @@ async fn validate_cache_via_list(vault: &VaultClient, cache: &PersonEntityCache)
     Ok(entities.iter().any(|e| e.uid == cache.person_uid))
 }
 
+/// Provision the caller's person entity by reading Cognito idToken claims
+/// (sub, name/email) and POST'ing to /entity. Used when `list_entities_by_type`
+/// returns empty — i.e. a brand-new account that has never synced before.
+/// Mirrors `vault-client.ts::ensureMyPersonEntity` so the auto-create path is
+/// identical in shape to the runner's claim-dance path.
+pub(crate) async fn create_person_entity_from_cognito(
+    vault: &VaultClient,
+) -> Result<EntityInfo, String> {
+    let tokens = crate::commands::cognito::read_tokens_from_file()?
+        .ok_or_else(|| "no cached cognito tokens — sign in first".to_string())?;
+    let id_token = tokens
+        .id_token
+        .as_deref()
+        .ok_or_else(|| "cognito tokens missing id_token field".to_string())?;
+    let claims = crate::commands::cognito::decode_id_token_claims(id_token)?;
+    let owner_sub = claims
+        .sub
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "id_token has no `sub` claim".to_string())?;
+    let display_name = claims.display_name();
+    if display_name.is_empty() {
+        return Err("id_token has no name/given_name/family_name/email — can't derive a display name".into());
+    }
+    // Slugify: lower, [^a-z0-9]→'-', trim leading/trailing '-', cap at 63 chars.
+    // Fallback if slug is empty: "user-<last 8 of sub, lowercased>".
+    let mut slug: String = display_name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    while slug.contains("--") {
+        slug = slug.replace("--", "-");
+    }
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() {
+        let last8: String = owner_sub.chars().rev().take(8).collect::<String>()
+            .chars().rev().collect::<String>().to_lowercase();
+        format!("user-{last8}")
+    } else {
+        let mut s = slug.to_string();
+        s.truncate(63);
+        s
+    };
+
+    log("personal", &format!("auto-create person entity: slug={slug} name={display_name}"));
+    let result = vault
+        .create_entity(&crate::commands::vault_client::CreateEntityInput {
+            entity_type: "person".into(),
+            slug,
+            name: display_name,
+            email: claims.email.clone(),
+            owner_uid: Some(owner_sub),
+        })
+        .await
+        .map_err(|e| format!("create person entity: {e}"))?;
+    Ok(result)
+}
+
 // ── Person resolution: cache → list+provision (no recursion) ─────────────────
 
 /// Resolves (person_uid, bucket_name) using the local cache when valid, falling
@@ -436,7 +496,19 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
             ord => ord,
         }
     });
-    let mut pick = sorted.into_iter().next().ok_or("no person entity for caller")?;
+    let mut pick = match sorted.into_iter().next() {
+        Some(p) => p,
+        None => {
+            // First sync for a brand-new account: no person entity exists yet.
+            // Auto-create one from the cached Cognito idToken claims (sub for
+            // owner, name/given+family/email for displayName). This replaces
+            // the old bail ("no person entity for caller") that used to leave
+            // the user stuck — they had to do the setup dance externally.
+            // After creation the rest of provisioning continues as for any
+            // existing entity (provision_bucket, cache, return).
+            crate::commands::personal::create_person_entity_from_cognito(vault).await?
+        }
+    };
 
     if pick.bucket_name.is_none() {
         let bucket_info = vault

@@ -46,8 +46,8 @@ use crate::commands::process::{
 };
 use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
-    SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent, SyncEvent,
-    EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
+    SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent,
+    SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
     EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS,
     EVENT_SYNC_SETUP_NEEDED,
 };
@@ -67,14 +67,26 @@ use crate::util::paths;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunTotals {
     pub conflicts: u32,
+    /// Set true when the runner emits AllComplete. Used by the Exit handler
+    /// to detect "runner exited without ever finishing the protocol" — e.g.
+    /// when it bails on `setup-needed` before reaching the fanout — so we
+    /// can emit a synthetic AllComplete and unblock the UI from a stuck
+    /// "syncing" state.
+    pub all_complete_seen: bool,
 }
 
 impl RunTotals {
-    /// Update totals from a single event. Only `Complete` events contribute;
-    /// others are ignored. Saturates at `u32::MAX` to avoid panics.
+    /// Update totals from a single event. `Complete` events contribute to
+    /// counters; `AllComplete` flips the seen-flag. Saturates on overflow.
     pub fn accumulate(&mut self, event: &SyncEvent) {
-        if let SyncEvent::Complete(c) = event {
-            self.conflicts = self.conflicts.saturating_add(c.conflicts);
+        match event {
+            SyncEvent::Complete(c) => {
+                self.conflicts = self.conflicts.saturating_add(c.conflicts);
+            }
+            SyncEvent::AllComplete(_) => {
+                self.all_complete_seen = true;
+            }
+            _ => {}
         }
     }
 }
@@ -716,6 +728,37 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                             ),
                         },
                     );
+                } else {
+                    // Successful exit but no AllComplete observed (e.g.
+                    // runner bailed on setup-needed for a brand-new account
+                    // with no companies yet). Emit a synthetic AllComplete
+                    // so the UI returns to idle and the local sync-state.json
+                    // gets stamped with "just now" — otherwise the popover
+                    // sits in "syncing" forever and the top SyncStats card
+                    // shows "never" while the personal first-push (which DID
+                    // run) updated everything else.
+                    let saw = totals
+                        .lock()
+                        .map(|t| t.all_complete_seen)
+                        .unwrap_or(false);
+                    if !saw {
+                        log("sync", "runner exited without AllComplete — synthesizing");
+                        let synthetic = SyncEvent::AllComplete(SyncAllCompleteEvent {
+                            companies_attempted: 0,
+                            files_downloaded: 0,
+                            bytes_downloaded: 0,
+                            errors: Vec::new(),
+                        });
+                        let line = serde_json::to_string(&synthetic)
+                            .unwrap_or_else(|_| "{}".to_string());
+                        handle_sync_line(
+                            &app_bg,
+                            &hq_folder_for_handler,
+                            &totals,
+                            &jwt_for_handler,
+                            &line,
+                        );
+                    }
                 }
             }
         });
