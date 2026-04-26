@@ -36,6 +36,9 @@
     cloudReachable?: boolean;
     /** Error string surfaced when `cloudReachable` is false. */
     cloudError?: string | null;
+    /** Re-fetch workspaces — called by WorkspaceList after a successful
+     *  Connect, and from any other code path that mutates workspace state. */
+    onworkspacesrefresh?: () => void;
     lastSummary?: {
       companiesAttempted: number;
       filesDownloaded: number;
@@ -72,6 +75,7 @@
     workspaces = null,
     cloudReachable = true,
     cloudError = null,
+    onworkspacesrefresh,
     lastSummary = null,
     errorMessage = '',
     conflicts = [],
@@ -219,6 +223,7 @@
           {workspaces}
           {cloudReachable}
           {cloudError}
+          onrefresh={onworkspacesrefresh}
         />
       {/if}
 

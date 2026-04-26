@@ -1,17 +1,20 @@
 <script lang="ts">
-  import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import { invoke } from '@tauri-apps/api/core';
   import type { Workspace } from '../lib/workspaces';
 
   interface Props {
     workspaces: Workspace[];
     cloudReachable: boolean;
     cloudError?: string | null;
+    /** Called after a successful Connect so the parent re-fetches workspaces. */
+    onrefresh?: () => void;
   }
 
-  let { workspaces, cloudReachable, cloudError = null }: Props = $props();
+  let { workspaces, cloudReachable, cloudError = null, onrefresh }: Props = $props();
 
-  // Onboarding URL — canonical domain. Do NOT use indigo-hq.com (retired).
-  const ONBOARDING_URL = 'https://onboarding.getindigo.ai';
+  // Per-row connect state. Keys are slugs; absent = idle, true = in flight,
+  // string = error message from the last attempt. Reset on next click.
+  let connectState = $state<Record<string, true | string>>({});
 
   function badgeLabel(state: Workspace['state']): string {
     switch (state) {
@@ -33,15 +36,7 @@
       case 'cloud-only':
         return 'In your cloud vault but not on this machine yet — Sync Now will download it';
       case 'local-only':
-        return 'Local folder exists but no matching cloud vault — Connect to create one';
-    }
-  }
-
-  async function openOnboarding(path = '') {
-    try {
-      await openExternal(ONBOARDING_URL + path);
-    } catch (err) {
-      console.error('Failed to open onboarding:', err);
+        return 'Local folder exists but no matching cloud vault — click the cloud icon to connect';
     }
   }
 
@@ -58,6 +53,23 @@
     const diffDay = Math.floor(diffHr / 24);
     if (diffDay < 30) return `${diffDay}d ago`;
     return d.toLocaleDateString();
+  }
+
+  async function handleConnect(slug: string) {
+    // Block double-clicks while in flight.
+    if (connectState[slug] === true) return;
+    connectState = { ...connectState, [slug]: true };
+    try {
+      await invoke('connect_workspace_to_cloud', { slug });
+      // Drop the in-flight marker before refresh so the badge transition is clean.
+      const { [slug]: _done, ...rest } = connectState;
+      connectState = rest;
+      onrefresh?.();
+    } catch (err) {
+      const msg = String(err);
+      console.error('connect_workspace_to_cloud failed:', msg);
+      connectState = { ...connectState, [slug]: msg };
+    }
   }
 </script>
 
@@ -86,11 +98,44 @@
           {:else if w.state === 'cloud-only'}
             <span class="row-meta">Not yet on this machine</span>
           {:else if w.state === 'local-only'}
-            <span class="row-meta">Not connected to cloud</span>
+            {#if typeof connectState[w.slug] === 'string'}
+              <span class="row-meta row-meta-error" title={connectState[w.slug] as string}>
+                Connect failed — click to retry
+              </span>
+            {:else}
+              <span class="row-meta">Not connected to cloud</span>
+            {/if}
           {:else if w.state === 'personal' && !w.cloudUid}
             <span class="row-meta">Cloud unreachable</span>
           {/if}
         </div>
+
+        <!-- Connect icon button — only for local-only rows. Single click
+             provisions a cloud bucket for this slug and writes the per-company
+             config. After success, parent re-fetches workspaces and the row
+             flips to Synced. Disabled while in flight; error state surfaces
+             via row-meta-error above. -->
+        {#if w.state === 'local-only'}
+          <button
+            class="row-action"
+            class:connecting={connectState[w.slug] === true}
+            disabled={connectState[w.slug] === true || !cloudReachable}
+            onclick={() => handleConnect(w.slug)}
+            title={cloudReachable ? 'Connect this folder to a cloud vault' : 'Cloud unreachable — try again later'}
+            aria-label="Connect {w.displayName} to cloud"
+          >
+            {#if connectState[w.slug] === true}
+              <span class="row-action-spinner" aria-hidden="true"></span>
+            {:else}
+              <!-- Cloud + plus icon -->
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M11.5 11.5h1a3 3 0 0 0 .3-5.98 4.5 4.5 0 0 0-8.85-.4A3 3 0 0 0 4 11.5h.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M8 8.5v5M5.5 11l2.5 2.5L10.5 11" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            {/if}
+          </button>
+        {/if}
+
         <span
           class="row-badge"
           class:badge-personal={w.state === 'personal'}
@@ -104,20 +149,6 @@
       </li>
     {/each}
   </ul>
-
-  <!-- Affordances — always visible so the menubar is never a dead-end.
-       These deep-link to onboarding rather than spawning sub-flows in the
-       menubar itself; the popover is intentionally lightweight. -->
-  <div class="affordances">
-    <button class="affordance" onclick={() => openOnboarding('/setup/company')}>
-      <span class="affordance-icon" aria-hidden="true">+</span>
-      <span class="affordance-text">Create a company</span>
-    </button>
-    <button class="affordance affordance-secondary" onclick={() => openOnboarding('')}>
-      <span class="affordance-icon" aria-hidden="true">↗</span>
-      <span class="affordance-text">Join via invite</span>
-    </button>
-  </div>
 </div>
 
 <style>
@@ -216,6 +247,57 @@
     line-height: 1.3;
   }
 
+  .row-meta-error {
+    color: #ef4444;
+  }
+
+  .row-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: rgba(56, 189, 248, 0.10);
+    color: #7dd3fc;
+    border: 1px solid rgba(56, 189, 248, 0.28);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.1s ease, color 0.1s ease, opacity 0.1s ease;
+    flex-shrink: 0;
+  }
+
+  .row-action:hover:not(:disabled) {
+    background: rgba(56, 189, 248, 0.18);
+    color: #bae6fd;
+  }
+
+  .row-action:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .row-action.connecting {
+    opacity: 0.85;
+    cursor: progress;
+  }
+
+  .row-action-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid rgba(125, 211, 252, 0.3);
+    border-top-color: #7dd3fc;
+    border-radius: 50%;
+    animation: row-spin 0.7s linear infinite;
+  }
+
+  @keyframes row-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
   .row-badge {
     flex-shrink: 0;
     padding: 0.125rem 0.4375rem;
@@ -251,61 +333,5 @@
     background: rgba(245, 158, 11, 0.10);
     color: #fbbf24;
     border-color: rgba(245, 158, 11, 0.28);
-  }
-
-  .affordances {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    margin-top: 0.25rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-  }
-
-  .affordance {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.4375rem 0.5rem;
-    background: none;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    font-family: inherit;
-    font-size: 0.75rem;
-    color: var(--popover-text, #e0e0e0);
-    text-align: left;
-    transition: background-color 0.1s ease;
-  }
-
-  .affordance:hover {
-    background: rgba(99, 102, 241, 0.08);
-  }
-
-  .affordance-secondary {
-    color: var(--popover-text-muted, #a0a0b0);
-  }
-
-  .affordance-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    border-radius: 4px;
-    background: rgba(99, 102, 241, 0.16);
-    color: var(--popover-primary, #6366f1);
-    font-weight: 700;
-    font-size: 0.75rem;
-    flex-shrink: 0;
-  }
-
-  .affordance-secondary .affordance-icon {
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--popover-text-muted, #a0a0b0);
-  }
-
-  .affordance-text {
-    flex: 1;
   }
 </style>
