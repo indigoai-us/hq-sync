@@ -13,14 +13,23 @@ mod util;
 
 #[cfg(target_os = "macos")]
 fn apply_liquid_glass(window: &tauri::WebviewWindow) {
+    use util::logfile::log;
     use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
 
-    let _ = apply_vibrancy(
+    // window-vibrancy's apply_vibrancy returns Result<(), Error>. Earlier we
+    // swallowed the error with `let _ =`, which made silent failures
+    // indistinguishable from "vibrancy applied but visually subtle." Log on
+    // both success and failure so the persistent diagnostic log can answer
+    // "is vibrancy actually being applied?" without a debugger attached.
+    match apply_vibrancy(
         window,
         NSVisualEffectMaterial::Popover,
         Some(NSVisualEffectState::Active),
         Some(18.0),
-    );
+    ) {
+        Ok(()) => log("ui", "apply_vibrancy: success (Popover material, blur 18, active)"),
+        Err(e) => log("ui", &format!("apply_vibrancy FAILED: {e}")),
+    }
 }
 
 fn main() {
