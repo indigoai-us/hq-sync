@@ -400,6 +400,59 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_settings_excluded_target_company_dirs_uploaded() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let co_dir = company_dir(root, "_test");
+
+        write_file(&co_dir.join("settings/secret.txt"), b"do not upload");
+        write_file(&co_dir.join("policies/p.md"), b"policy");
+        write_file(&co_dir.join("projects/x/prd.json"), b"{}");
+        write_file(&co_dir.join("knowledge/k.md"), b"knowledge");
+        write_file(&co_dir.join(".claude/commands/c.md"), b"command");
+
+        let calls = Arc::new(Mutex::new(vec![]));
+        let uploader = make_uploader(calls.clone());
+
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            let (uploaded, skipped) =
+                run_first_push(root, "_test", uploader, |_, _, _| {}, |_, _| {})
+                    .await
+                    .unwrap();
+            std::env::remove_var("HQ_STATE_DIR");
+
+            assert_eq!(uploaded, 4, "only the four target files should upload");
+            assert_eq!(
+                skipped, 0,
+                "ignored settings/ files are not counted as size skips"
+            );
+
+            let captured = calls.lock().unwrap();
+            assert_eq!(captured.len(), 4);
+            assert!(
+                !captured.iter().any(|k| k.contains("/settings/")),
+                "settings files must never reach the uploader: {:?}",
+                captured
+            );
+            for expected in [
+                "companies/_test/policies/p.md",
+                "companies/_test/projects/x/prd.json",
+                "companies/_test/knowledge/k.md",
+                "companies/_test/.claude/commands/c.md",
+            ] {
+                assert!(
+                    captured.iter().any(|k| k == expected),
+                    "expected upload key {expected}; got {:?}",
+                    captured
+                );
+            }
+        }
+    }
+
     // (b) Oversize file triggers on_skip callback; is NOT uploaded.
     #[tokio::test]
     async fn test_oversize_file_skipped() {

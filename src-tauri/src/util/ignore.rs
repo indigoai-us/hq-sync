@@ -11,6 +11,8 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // Node / JS
     "node_modules/", "dist/", "build/", ".next/", ".nuxt/",
     ".svelte-kit/", ".turbo/", ".parcel-cache/", ".vite/", "coverage/",
+    // Company-local secrets/config
+    "settings/",
     // Rust / Tauri
     "target/",
     // Python
