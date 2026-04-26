@@ -242,6 +242,57 @@ pub fn expires_at_iso(tokens: &CognitoTokens) -> String {
     format_unix_ms_as_iso(tokens.expires_at.max(0))
 }
 
+/// Subset of Cognito ID-token claims we actually use. The token is signed
+/// by Cognito and already-validated when it was minted; we don't re-verify
+/// the signature here (the API endpoints will reject anything that fails
+/// real verification on the server). Just decode + parse the middle JWT
+/// segment as JSON. Mirrors the TS `decodeJwtClaims` in sync-runner.ts.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct IdTokenClaims {
+    pub sub: Option<String>,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+}
+
+impl IdTokenClaims {
+    /// Best-effort display name: `name` first, then `given_name family_name`,
+    /// then `email`, else empty. Matches the TS runner's claim-dance fallback.
+    pub fn display_name(&self) -> String {
+        if let Some(n) = self.name.as_deref().filter(|s| !s.is_empty()) {
+            return n.to_string();
+        }
+        let given = self.given_name.as_deref().unwrap_or("").trim();
+        let family = self.family_name.as_deref().unwrap_or("").trim();
+        if !given.is_empty() || !family.is_empty() {
+            return [given, family]
+                .iter()
+                .filter(|s| !s.is_empty())
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+        self.email.clone().unwrap_or_default()
+    }
+}
+
+/// Decode the middle segment of a JWT and parse it as the claims struct.
+/// JWT format: `header.payload.signature` (base64url-encoded segments).
+pub fn decode_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+    let payload = id_token
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| "id_token: missing payload segment".to_string())?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(payload)
+        .map_err(|e| format!("id_token: base64 decode failed: {e}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|e| format!("id_token: claims json parse failed: {e}"))
+}
+
 fn format_unix_ms_as_iso(ms: i64) -> String {
     let total_secs = ms / 1000;
     let millis = ms % 1000;
