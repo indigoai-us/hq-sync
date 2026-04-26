@@ -10,8 +10,11 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // Node / JS
     "node_modules/", "dist/", "build/", ".next/", ".nuxt/",
     ".svelte-kit/", ".turbo/", ".parcel-cache/", ".vite/", "coverage/",
-    // Company-local secrets/config
+    // Company-local: secrets/config, datasets, prompt libraries — all stay
+    // on-disk and never round-trip through the company vault bucket.
     "settings/",
+    "data/",
+    "workers/",
     // Rust / Tauri
     "target/",
     // Python
@@ -126,6 +129,20 @@ mod tests {
         let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("knowledge/other.md")));
         assert!(filter.should_sync(&root.join("knowledge/keep.md")));
+    }
+
+    #[test]
+    fn company_local_dirs_are_ignored() {
+        // settings/, data/, and workers/ contain credentials, datasets, and
+        // company-private prompt libraries respectively — none of these belong
+        // in the company vault bucket. Regressing this would silently leak
+        // sensitive content to S3 on the next sync.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter.should_sync(&root.join("companies/indigo/settings/aws.json")));
+        assert!(!filter.should_sync(&root.join("companies/indigo/data/exports/leads.csv")));
+        assert!(!filter.should_sync(&root.join("companies/indigo/workers/cmo/worker.yaml")));
     }
 
     #[test]
