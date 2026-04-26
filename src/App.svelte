@@ -393,14 +393,13 @@
       }>('sync:complete', async (event) => {
         // Per-company event — just tick the counter. Don't go idle yet;
         // wait for sync:all-complete to know the whole fanout is done.
+        // We do NOT add filesSkipped to syncFilesProgressed: the runner
+        // only emits per-file `progress` events for transfers, not skips,
+        // and the new pre-walk denominator counts only transfers too.
+        // Adding skips here would inflate the numerator and break the
+        // ratio.
         syncFanoutDoneCount += 1;
         syncFanoutFilesSkipped += event.payload.filesSkipped;
-        // Roll skipped files into the progress counter so the bar reflects
-        // "files processed" (skipped + uploaded + downloaded), not just
-        // "files transferred". A run where the journal matches everything
-        // (no actual uploads) should still hit 100% — otherwise the bar
-        // looks stuck at 0 while the sync is actually a happy no-op.
-        syncFilesProgressed += event.payload.filesSkipped;
         if (event.payload.aborted) {
           // Conflict-aborted: show the conflict state so the user knows
           // something needs attention. ConflictModal wiring is follow-up

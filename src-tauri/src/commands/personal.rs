@@ -71,20 +71,35 @@ pub(crate) const PERSONAL_VAULT_PATHS: &[&str] = &[
 /// True when a relative path (relative to hq_root, forward-slash separators)
 /// falls under one of the allowlisted personal-vault top-level dirs.
 /// Empty / single-component paths (root files like `README.md`) return false.
-/// Pre-walk every syncable target (personal allowlist + each company folder)
-/// to count how many files we expect the runner to process. Fed into the UI
-/// so the progress bar uses a real denominator instead of fake workspace
-/// thirds. Best-effort: I/O errors on individual files are skipped silently
-/// so a single broken inode doesn't tank the count.
-pub(crate) fn count_files_to_sync(hq_root: &Path, company_slugs: &[String]) -> u64 {
+/// "Preparing sync…" pre-pass: walk every push-side target, hash each file,
+/// and compare against the journal to count exactly how many UPLOADS the
+/// runner will emit. The runner only fires `progress` events for actual
+/// transfers (skipped files are silent), so this count IS the bar's
+/// denominator for the upload phase.
+///
+/// Pull-side downloads aren't counted here yet — that requires an S3 LIST
+/// per bucket (vend STS + paginated list). For the common steady-state
+/// case (everything matches the journal), pull-side downloads = 0, so this
+/// count is exact. For first-time syncs (empty journal, empty bucket),
+/// downloads also = 0 (nothing remote to pull). Mid-life syncs with
+/// out-of-band changes may have a small under-count; the UI's honest-
+/// fallback caption switches from "X of Y" to bare "X transferred" once
+/// cumulative exceeds the estimate.
+///
+/// Cost: one full local walk + sha256 per file (matches what the runner
+/// will do anyway). For 13K files that's ~1-3s of disk I/O. Steady-state
+/// folder = mostly cached pages, much faster.
+pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) -> u64 {
     let filter = match crate::util::ignore::IgnoreFilter::for_hq_root(hq_root) {
         Ok(f) => f,
         Err(_) => return 0,
     };
 
-    let mut total: u64 = 0;
+    let mut to_upload: u64 = 0;
 
-    // Personal allowlist (.claude, knowledge, policies, projects at hq_root).
+    // ── Personal allowlist (.claude, knowledge, policies, projects) ───────
+    let personal_journal = crate::util::journal::read_journal("personal")
+        .unwrap_or_default();
     for entry in WalkDir::new(hq_root).into_iter().filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
@@ -99,16 +114,22 @@ pub(crate) fn count_files_to_sync(hq_root: &Path, company_slugs: &[String]) -> u
         if !is_personal_vault_path(&rel) {
             continue;
         }
-        total += 1;
+        if file_needs_upload(entry.path(), &rel, &personal_journal) {
+            to_upload += 1;
+        }
     }
 
-    // Each company folder. The same .hqignore filter applies — companies
-    // outside the slugs vec are skipped entirely (no walk).
+    // ── Each company folder ───────────────────────────────────────────────
     for slug in company_slugs {
         let dir = hq_root.join("companies").join(slug);
         if !dir.is_dir() {
             continue;
         }
+        let company_journal = crate::util::journal::read_journal(slug)
+            .unwrap_or_default();
+        // Remote keys are company-relative (e.g. "knowledge/foo.md"), not
+        // hq-root-relative. The runner's share() strips companies/{slug}/
+        // from the absolute path before journaling.
         for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
             if !entry.file_type().is_file() {
                 continue;
@@ -116,11 +137,38 @@ pub(crate) fn count_files_to_sync(hq_root: &Path, company_slugs: &[String]) -> u
             if !filter.should_sync(entry.path()) {
                 continue;
             }
-            total += 1;
+            let rel_to_company = match entry.path().strip_prefix(&dir) {
+                Ok(r) => r.to_string_lossy().replace('\\', "/"),
+                Err(_) => continue,
+            };
+            if file_needs_upload(entry.path(), &rel_to_company, &company_journal) {
+                to_upload += 1;
+            }
         }
     }
 
-    total
+    to_upload
+}
+
+/// True iff the file's current sha256 differs from its journal entry (or has
+/// no journal entry). Mirrors `share.ts` skipUnchanged logic. Hashing errors
+/// (missing file, permission denied) are treated as "needs upload" to err on
+/// the side of including it — the runner will hit the same error and surface
+/// it cleanly.
+fn file_needs_upload(
+    abs_path: &Path,
+    journal_key: &str,
+    journal: &crate::util::journal::SyncJournal,
+) -> bool {
+    let contents = match std::fs::read(abs_path) {
+        Ok(c) => c,
+        Err(_) => return true,
+    };
+    let hash = format!("{:x}", Sha256::digest(&contents));
+    match journal.files.get(journal_key) {
+        Some(entry) => entry.hash != hash,
+        None => true,
+    }
 }
 
 pub(crate) fn is_personal_vault_path(rel: &str) -> bool {

@@ -522,23 +522,29 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         }
     };
 
-    // Pre-walk every syncable target so the UI can show a real per-file
-    // progress bar instead of fake workspace thirds. Best-effort — a 0
-    // count just falls back to the workspace-level bar in the UI. Sums
-    // personal allowlist + every locally-discovered company folder.
-    // Emitted before personal first-push so the totals are available
-    // before any progress events tick the cumulative counter.
+    // "Preparing sync…" — walk every push-side target, hash each file,
+    // compare to journal, and count the ACTUAL number of uploads the
+    // runner will perform. The runner only emits `progress` events for
+    // transfers (not skips), so this count is the real denominator.
+    //
+    // Pull-side downloads aren't counted here yet (would need an S3 LIST
+    // per bucket). For steady-state syncs the journal already tells the
+    // runner there's nothing to download → 0. For first syncs the bucket
+    // is empty → 0. Mid-life out-of-band changes may slightly under-count;
+    // the UI's honest fallback handles overshoot gracefully.
     {
-        let pre_walk_root = std::path::PathBuf::from(&hq_folder_path);
+        let prep_root = std::path::PathBuf::from(&hq_folder_path);
         let (local_companies, _) =
-            crate::commands::workspaces::discover_local_companies(&pre_walk_root);
+            crate::commands::workspaces::discover_local_companies(&prep_root);
         let slugs: Vec<String> = local_companies.iter().map(|e| e.slug.clone()).collect();
-        let pre_walk_total =
-            crate::commands::personal::count_files_to_sync(&pre_walk_root, &slugs);
-        log("sync", &format!("pre-walk: {pre_walk_total} files expected"));
+        let prep_start = std::time::Instant::now();
+        let to_transfer =
+            crate::commands::personal::count_files_to_transfer(&prep_root, &slugs);
+        let elapsed = prep_start.elapsed().as_millis();
+        log("sync", &format!("preparing: {to_transfer} files to transfer ({elapsed}ms)"));
         let _ = app.emit(
             crate::events::EVENT_SYNC_TOTALS,
-            serde_json::json!({ "totalFiles": pre_walk_total }),
+            serde_json::json!({ "totalFiles": to_transfer }),
         );
     }
 
