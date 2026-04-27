@@ -107,7 +107,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// `commands::prewarm` task fires this same fetch on app startup so the
 /// fetch happens in the background rather than during the user's first
 /// click of "Sync Now".
-pub const HQ_CLOUD_VERSION: &str = "5.4.1";
+pub const HQ_CLOUD_VERSION: &str = "5.4.3";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -278,7 +278,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 /// The command line we spawn looks like:
 /// ```text
 /// npx -y --package=@indigoai-us/hq-cloud@5.1.11 hq-sync-runner \
-///   --companies --direction both --on-conflict abort --hq-root <path>
+///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
 /// npx flags:
@@ -296,9 +296,10 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///   then pull remote. Added in hq-cloud 5.1.11. Runner default is `pull`
 ///   for back-compat; the menubar explicitly opts into `both` so a single
 ///   "Sync Now" click broadcasts local edits AND pulls remote updates.
-/// - `--on-conflict abort` — V1 policy; conflicts surface as `aborted: true` on
-///   the per-company `complete` event. Interactive resolution is a follow-up
-///   (the runner protocol doesn't emit per-file conflict events).
+/// - `--on-conflict keep` — preserve local edits when a divergent file is
+///   detected, instead of aborting the company-wide sync. With `abort`, a
+///   single conflicting file halted every other file's progress. `keep`
+///   keeps the user's local copy as-is and continues syncing the rest.
 /// - `--hq-root <path>` — local HQ directory
 ///
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
@@ -327,7 +328,7 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
             "--direction".to_string(),
             "both".to_string(),
             "--on-conflict".to_string(),
-            "abort".to_string(),
+            "keep".to_string(),
             "--hq-root".to_string(),
             hq_folder_path.to_string(),
         ],
@@ -962,10 +963,25 @@ mod tests {
                 "--direction".to_string(),
                 "both".to_string(),
                 "--on-conflict".to_string(),
-                "abort".to_string(),
+                "keep".to_string(),
                 "--hq-root".to_string(),
                 "/Users/test/HQ".to_string(),
             ]
+        );
+    }
+
+    /// Sync Now must use `--on-conflict keep` so a divergent local file
+    /// preserves the user's edits instead of aborting the company-wide sync.
+    /// Regressing to `abort` would cause a single conflicting file to halt
+    /// every other file's progress on the affected company.
+    #[test]
+    fn test_build_sync_spawn_args_on_conflict_is_keep() {
+        let args = build_sync_spawn_args("/tmp");
+        let joined = args.args.join(" ");
+        assert!(
+            joined.contains("--on-conflict keep"),
+            "spawn args must include `--on-conflict keep`: {:?}",
+            args.args,
         );
     }
 

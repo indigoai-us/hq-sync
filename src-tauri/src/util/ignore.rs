@@ -31,6 +31,12 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // (no hyphen) and the `.hq/` directory is unaffected.
     "*.pid", ".hq-*",
     "modules.lock",
+    // hq-root identity marker — discovered locally per-machine, never synced.
+    "core.yaml",
+    // hq modules manifest — local module-resolution state, never synced.
+    "modules/modules.yaml",
+    // per-company identity file — written locally on first sync, never round-tripped.
+    "company.yaml",
     // HQ repos directory (managed separately, not synced)
     "repos/",
     // Secrets / env
@@ -151,6 +157,39 @@ mod tests {
     fn outside_of_root_returns_true() {
         let filter = IgnoreFilter::for_hq_root(Path::new("/some/other/path")).unwrap();
         assert!(filter.should_sync(Path::new("/tmp/not-hq/foo.md")));
+    }
+
+    #[test]
+    fn hq_root_core_yaml_marker_is_ignored() {
+        // core.yaml is the local hq-root identity marker. It must never
+        // round-trip through the bucket — pulling another machine's marker
+        // would corrupt root discovery.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter.should_sync(&root.join("core.yaml")));
+    }
+
+    #[test]
+    fn modules_manifest_is_ignored() {
+        // modules.yaml is the local modules-resolution manifest. Per-machine
+        // state, never synced.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter.should_sync(&root.join("modules/modules.yaml")));
+    }
+
+    #[test]
+    fn company_yaml_is_ignored() {
+        // company.yaml is written locally on first sync from the entity
+        // context. Round-tripping would let one machine's identity overwrite
+        // another's.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter.should_sync(&root.join("companies/indigo/company.yaml")));
+        assert!(!filter.should_sync(&root.join("company.yaml")));
     }
 
     #[test]
