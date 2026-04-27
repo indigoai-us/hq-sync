@@ -24,10 +24,12 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "vendor/", "out/", "*.class",
     // Generic caches / temp
     ".cache/", "tmp/", ".tmp/",
-    // HQ sync internal state (never round-trip these)
-    "*.pid", ".hq-sync.pid",
-    ".hq-sync-journal.json",
-    ".hq-sync-state.json",
+    // HQ sync internal state (never round-trip these). The `.hq-*` wildcard
+    // covers `.hq-sync.pid`, `.hq-sync-journal.json`, `.hq-sync-state.json`,
+    // `.hq-embeddings-pending.json`, and any future internal-state file. The
+    // `.hqignore` / `.hqsyncignore` / `.hqinclude` config files don't match
+    // (no hyphen) and the `.hq/` directory is unaffected.
+    "*.pid", ".hq-*",
     "modules.lock",
     // HQ repos directory (managed separately, not synced)
     "repos/",
@@ -149,6 +151,25 @@ mod tests {
     fn outside_of_root_returns_true() {
         let filter = IgnoreFilter::for_hq_root(Path::new("/some/other/path")).unwrap();
         assert!(filter.should_sync(Path::new("/tmp/not-hq/foo.md")));
+    }
+
+    #[test]
+    fn hq_dash_prefix_is_ignored_but_hqignore_family_and_hq_dir_sync() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        // .hq-* internal state files must never round-trip through the bucket.
+        assert!(!filter.should_sync(&root.join(".hq-sync.pid")));
+        assert!(!filter.should_sync(&root.join(".hq-sync-journal.json")));
+        assert!(!filter.should_sync(&root.join(".hq-sync-state.json")));
+        assert!(!filter.should_sync(&root.join(".hq-embeddings-pending.json")));
+        assert!(!filter.should_sync(&root.join("companies/indigo/.hq-foo.json")));
+        assert!(!filter.should_sync(&root.join(".hq-cache/blob.bin")));
+        // Sync-config files and the .hq/ directory still sync.
+        assert!(filter.should_sync(&root.join(".hqignore")));
+        assert!(filter.should_sync(&root.join(".hqsyncignore")));
+        assert!(filter.should_sync(&root.join(".hqinclude")));
+        assert!(filter.should_sync(&root.join("companies/indigo/.hq/config.json")));
     }
 
     #[test]
