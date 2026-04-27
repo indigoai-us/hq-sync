@@ -134,7 +134,11 @@ pub fn menubar_json_path() -> Result<PathBuf, String> {
 /// Resolve the HQ folder path with priority:
 /// 1. menubar_override (from menubar.json hqPath)
 /// 2. config_path (from config.json hqFolderPath)
-/// 3. ~/HQ default
+/// 3. Discovery: scan likely locations for a folder containing a valid
+///    `core.yaml` (the canonical hq-core marker — version + hqVersion fields).
+///    First match wins. This is the safety net for installs that didn't
+///    write the path back to menubar.json (older installer flows).
+/// 4. ~/HQ default
 pub fn resolve_hq_folder(
     config_path: Option<&str>,
     menubar_override: Option<&str>,
@@ -153,10 +157,65 @@ pub fn resolve_hq_folder(
         }
     }
 
-    // Priority 3: ~/HQ default
+    // Priority 3: discover via core.yaml signature.
+    if let Some(found) = discover_hq_folder_via_core_yaml() {
+        return found;
+    }
+
+    // Priority 4: ~/HQ default
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/"))
         .join("HQ")
+}
+
+/// Candidate parent paths the installer wizard typically uses (or that users
+/// commonly choose). First entry that contains a valid `core.yaml` wins.
+/// Order matters — most-likely first to avoid scanning the entire home dir.
+fn hq_discovery_candidates() -> Vec<PathBuf> {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return Vec::new(),
+    };
+    vec![
+        home.join("HQ"),
+        home.join("hq"),
+        home.join("Documents").join("HQ"),
+        home.join("Documents").join("hq"),
+        home.join("Desktop").join("HQ"),
+        home.join("Desktop").join("hq"),
+    ]
+}
+
+/// True iff `path/core.yaml` exists, parses as YAML, and has the canonical
+/// hq-core schema fields (`version` + `hqVersion`). Validates beyond mere
+/// presence so a random folder named `core.yaml` (config file from another
+/// tool, abandoned scratch) won't false-match.
+pub fn is_valid_hq_root(path: &Path) -> bool {
+    let core_yaml = path.join("core.yaml");
+    if !core_yaml.is_file() {
+        return false;
+    }
+    let bytes = match std::fs::read(&core_yaml) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let parsed: serde_yaml::Value = match serde_yaml::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    // Both fields must be present per the hq-core schema (see
+    // indigoai-us/hq-core core.yaml). `version` is the schema version,
+    // `hqVersion` is the template version. Random YAML files won't have both.
+    parsed.get("version").is_some() && parsed.get("hqVersion").is_some()
+}
+
+/// Scan the well-known candidate locations for an HQ folder. Returns the
+/// first valid root found, or None. Cheap — a few `stat` calls plus one
+/// small YAML parse on a hit; no fs walk.
+pub fn discover_hq_folder_via_core_yaml() -> Option<PathBuf> {
+    hq_discovery_candidates()
+        .into_iter()
+        .find(|p| is_valid_hq_root(p))
 }
 
 #[cfg(test)]
