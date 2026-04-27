@@ -21,7 +21,7 @@ npm run tauri build
 
 ### Manual Testing
 
-All testing is done via a structured manual checklist covering the 5 user journeys defined in the PRD:
+All testing is done via a structured manual checklist covering the 7 user journeys defined in the PRD:
 
 | Journey | Description |
 |---------|-------------|
@@ -30,6 +30,8 @@ All testing is done via a structured manual checklist covering the 5 user journe
 | UJ-003  | Sync conflict — resolve in popover modal, no terminal |
 | UJ-004  | Retether — user changes HQ path via Settings |
 | UJ-005  | Auto-update — new version installed silently |
+| UJ-006  | Auto-provisioning + Personal HQ — first sync auto-creates `person` entity in HQ-Cloud and provisions the `personal` company bucket |
+| UJ-007  | Telemetry opt-in round-trip — toggle in Settings persists to `~/.hq/menubar.json`, vault `/v1/usage/opt-in` reflects the change, next sync respects new state |
 
 Full checklist with step-by-step instructions, expected outcomes, and pass/fail checkboxes: **[`tests/MANUAL_TESTING.md`](tests/MANUAL_TESTING.md)**
 
