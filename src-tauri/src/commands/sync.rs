@@ -120,6 +120,49 @@ pub const HQ_CLOUD_PACKAGE: &str = "@indigoai-us/hq-cloud";
 pub const RUNNER_BIN: &str = "hq-sync-runner";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Error reporting
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Emit a `sync:error` Tauri event AND capture the message to Sentry.
+///
+/// Used at exactly one call site today: the runner non-zero exit handler
+/// in `start_sync`'s background task. By the time we reach that site, the
+/// runner's stderr breadcrumbs have already accumulated on the Sentry
+/// scope (see `ProcessEvent::Stderr` arm), so the captured event ships
+/// with a trail of "what the runner was doing right before it died".
+///
+/// Other emit sites (`personal first-push`, runner-emitted ndjson `error`
+/// events on stdout, `run_process_impl` spawn failures) intentionally
+/// only call `app.emit(...)` — see the comments at each site for why.
+/// In short: those failure modes either happen before the runner is up
+/// (no breadcrumbs to attach) or are per-file errors that don't terminate
+/// the run. If they prove to be recurring silent failures, add an explicit
+/// `report_sync_error(...)` call at the relevant site.
+///
+/// History: prior to this helper, the `hq-sync-runner exited with code …`
+/// path surfaced in the UI but never reached Sentry, so `#hq-alerts` was
+/// silent during prod sync failures. See the broader silent-prod-error
+/// fix for hq-onboarding (Cognito `invalid_client`) for the incident
+/// context.
+fn report_sync_error(app: &AppHandle, payload: SyncErrorEvent) -> tauri::Result<()> {
+    sentry::with_scope(
+        |scope| {
+            if let Some(c) = &payload.company {
+                scope.set_tag("company", c);
+            }
+            scope.set_tag("path", &payload.path);
+        },
+        || {
+            sentry::capture_message(
+                &format!("[sync] {}", payload.message),
+                sentry::Level::Error,
+            );
+        },
+    );
+    app.emit(EVENT_SYNC_ERROR, payload)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Config resolution (inline — avoids calling async Tauri command)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -398,6 +441,13 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                 // these companies have no real files to count.
                 app.emit(EVENT_SYNC_COMPLETE, complete_event)
             } else {
+                // Per-file ndjson `error` events from the runner. These are
+                // *not* captured to Sentry here — the runner-level error
+                // (likely visible in stderr breadcrumbs) will surface via the
+                // `report_sync_error` capture at the non-zero-exit site below
+                // if the run terminates because of these. Per-file errors that
+                // co-exist with a clean exit (`success=true, errors[] in
+                // all-complete`) are intentionally renderer-only.
                 app.emit(EVENT_SYNC_ERROR, payload.clone())
             }
         }
@@ -636,6 +686,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         log("sync", &format!("personal first-push failed: {e}"));
         #[cfg(debug_assertions)]
         eprintln!("[sync] personal first-push failed: {}", e);
+        // NOT captured to Sentry: personal first-push happens before the
+        // runner spawns, so it has no stderr breadcrumb context, and the
+        // exit-time `report_sync_error` capture below won't fire because we
+        // continue past this and let the runner take over. If this path ever
+        // becomes a recurring silent failure, add an explicit capture here.
         let _ = app.emit(
             EVENT_SYNC_ERROR,
             SyncErrorEvent {
@@ -699,6 +754,27 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // most likely place the cause shows up (npx download retry,
                 // node uncaught exception, runner panic, etc.).
                 log("runner.stderr", &line);
+                // Catch-all error pipeline: every runner stderr line becomes
+                // a Sentry breadcrumb attached to the current scope. If the
+                // runner exits non-zero, the `report_sync_error` capture at
+                // the exit site below will publish a single Sentry event with
+                // these breadcrumbs as the trail of "what the runner was
+                // doing right before it died". This is the design intent —
+                // breadcrumbs accumulate noise for free, exit-time capture
+                // converts that into a single alertable issue with context.
+                //
+                // PROTOCOL NOTE (2026-04-25): the runner currently emits
+                // structured per-file error events on STDOUT as ndjson. Once
+                // the runner is updated to emit errors on STDERR (planned
+                // protocol change in @indigoai-us/hq-cloud), each runner
+                // error becomes a breadcrumb here automatically — no Tauri
+                // changes required.
+                sentry::add_breadcrumb(sentry::Breadcrumb {
+                    category: Some("runner.stderr".into()),
+                    level: sentry::Level::Warning,
+                    message: Some(line.clone()),
+                    ..Default::default()
+                });
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
@@ -716,8 +792,8 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // the frontend already knows. A non-zero exit means the runner
                 // bailed before emitting a useful protocol stream.
                 if !success {
-                    let _ = app_bg.emit(
-                        EVENT_SYNC_ERROR,
+                    let _ = report_sync_error(
+                        &app_bg,
                         crate::events::SyncErrorEvent {
                             company: None,
                             path: "(runner)".to_string(),
@@ -765,6 +841,11 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
 
         if let Err(e) = result {
             log("sync", &format!("run_process_impl error: {e}"));
+            // NOT captured to Sentry: spawn failures happen before the runner
+            // produces any stderr/stdout, so there's nothing for the catch-all
+            // breadcrumb listener to attach. If `npx` repeatedly fails to
+            // resolve `@indigoai-us/hq-cloud@<ver>` and this path becomes the
+            // silent failure mode, add an explicit capture here.
             let _ = app_bg.emit(
                 EVENT_SYNC_ERROR,
                 crate::events::SyncErrorEvent {
@@ -1149,7 +1230,10 @@ mod tests {
 
     #[test]
     fn test_accumulate_ignores_all_complete() {
-        let mut t = RunTotals { conflicts: 4 };
+        let mut t = RunTotals {
+            conflicts: 4,
+            ..Default::default()
+        };
         t.accumulate(&SyncEvent::AllComplete(SyncAllCompleteEvent {
             companies_attempted: 1,
             files_downloaded: 0,
@@ -1170,7 +1254,10 @@ mod tests {
 
     #[test]
     fn test_accumulate_zero_conflicts_is_noop() {
-        let mut t = RunTotals { conflicts: 10 };
+        let mut t = RunTotals {
+            conflicts: 10,
+            ..Default::default()
+        };
         t.accumulate(&complete("a", 0, false));
         assert_eq!(t.conflicts, 10);
     }
@@ -1179,6 +1266,7 @@ mod tests {
     fn test_accumulate_saturates_on_overflow() {
         let mut t = RunTotals {
             conflicts: u32::MAX,
+            ..Default::default()
         };
         t.accumulate(&complete("a", 1, false));
         assert_eq!(t.conflicts, u32::MAX);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import * as Sentry from '@sentry/svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -448,6 +449,20 @@
       await listen<{ company?: string; path: string; message: string }>(
         'sync:error',
         async (event) => {
+          // Defence-in-depth: the Rust side already captures this via
+          // `report_sync_error` in src-tauri/src/commands/sync.rs (which fires
+          // for the same payload that produced this Tauri event). We capture
+          // here too so the renderer-tagged Sentry project (`hq-sync-web`)
+          // still receives the issue when the Rust build is missing
+          // `HQ_SYNC_SENTRY_DSN` or its DSN parses to None at startup. Sentry
+          // groups by message text so duplicate captures merge into one issue.
+          Sentry.captureMessage(`[sync] ${event.payload.message}`, {
+            level: 'error',
+            tags: {
+              path: event.payload.path,
+              ...(event.payload.company ? { company: event.payload.company } : {}),
+            },
+          });
           syncState = 'error';
           syncProgress = null;
           syncErrorMessage = event.payload.message;
