@@ -101,6 +101,7 @@ fn main() {
             commands::workspaces::connect_workspace_to_cloud,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
+            commands::conflicts::read_conflict_index_count,
             commands::settings::get_settings,
             commands::settings::save_settings,
             commands::folder_picker::pick_folder,

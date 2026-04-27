@@ -13,6 +13,26 @@ pub struct JournalEntry {
     #[serde(rename = "syncedAt")]
     pub synced_at: String,           // ISO-8601
     pub direction: Direction,        // "up" | "down"
+    /// Opaque S3 VersionId of the cloud object at last successful sync —
+    /// the parent pointer for lineage-based divergence detection (TS-side
+    /// `share()`/`sync()` use it as the `If-Match` precondition on push and
+    /// the chain-membership probe on pull).
+    ///
+    /// Optional: this Rust first-push doesn't capture VersionId from S3
+    /// `put_object` responses, so entries it writes leave the field unset.
+    /// The TS-side degraded path picks them up on next sync, does a plain
+    /// PUT, and stamps the VersionId — activating lineage from then on.
+    ///
+    /// Preserves the field on round-trip when the TS side has stamped it,
+    /// so reading + writing through Rust never drops lineage state.
+    ///
+    /// Note: the JSON `null` vs absent distinction is collapsed to `None`
+    /// on the Rust side. TS code treats both as "degraded mode," so this
+    /// is observationally equivalent — a HEAD + plain PUT either confirms
+    /// the bucket is unversioned (writes `null` again) or stamps a new
+    /// VersionId.
+    #[serde(rename = "s3VersionId", default, skip_serializing_if = "Option::is_none")]
+    pub s3_version_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -147,6 +167,7 @@ mod tests {
                     size: 42,
                     synced_at: "2026-01-01T00:00:00Z".into(),
                     direction: Direction::Up,
+                    s3_version_id: Some("v_test".into()),
                 },
             );
             let original = SyncJournal {

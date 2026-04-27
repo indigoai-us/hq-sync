@@ -209,6 +209,48 @@ pub fn open_in_editor(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Read the count of pending lineage conflicts from
+/// `<hq_folder>/.hq-conflicts/index.json`.
+///
+/// Returns 0 when the file is missing (no conflicts ever recorded), the
+/// directory has been manually cleared, or the JSON is unparseable. We
+/// deliberately swallow parse errors here — the badge is informational,
+/// and a corrupt index is the user's signal to inspect manually via
+/// `/resolve-conflicts`. Returning an error would block the Popover render.
+///
+/// The frontend calls this on mount to hydrate the badge across app
+/// restarts (the in-memory event counter resets on app reload), and again
+/// after each `sync:conflict-detected` event to stay in sync.
+#[tauri::command]
+pub fn read_conflict_index_count() -> Result<u32, String> {
+    let hq_folder = resolve_hq_folder_path()?;
+    let index_path = std::path::Path::new(&hq_folder)
+        .join(".hq-conflicts")
+        .join("index.json");
+
+    if !index_path.exists() {
+        return Ok(0);
+    }
+
+    let raw = match std::fs::read_to_string(&index_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(0),
+    };
+
+    // Parse just enough to count — full schema validation is the
+    // /resolve-conflicts skill's job.
+    #[derive(serde::Deserialize)]
+    struct ShallowIndex {
+        #[serde(default)]
+        conflicts: Vec<serde_json::Value>,
+    }
+
+    match serde_json::from_str::<ShallowIndex>(&raw) {
+        Ok(idx) => Ok(idx.conflicts.len() as u32),
+        Err(_) => Ok(0),
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────

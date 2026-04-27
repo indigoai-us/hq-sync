@@ -75,6 +75,13 @@
   let syncErrorMessage = $state(''); // Last auth-error or error message
   let showConflictModal = $state(false);
   let conflicts = $state<ConflictFile[]>([]);
+  // Pending lineage conflicts (S3 VersionId divergence). Hydrated on mount
+  // from `<hq_root>/.hq-conflicts/index.json` so the badge survives app
+  // restarts; updated live by `sync:conflict-detected` events. Distinct
+  // from `conflicts` above (which is the legacy in-app prompt-resolution
+  // queue — empty in the lineage flow because the runner doesn't surface
+  // those for in-app handling).
+  let lineageConflictCount = $state(0);
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
@@ -207,6 +214,22 @@
 
   async function handleOpenInEditor(path: string) {
     await conflictStore.openInEditor(path);
+  }
+
+  /**
+   * Re-read the lineage conflict count from disk. Cheap (one fs::read of a
+   * small JSON file). Called on mount, after each sync run, and after each
+   * `sync:conflict-detected` event so the badge stays accurate without
+   * mirroring the index in client state. Tolerates errors silently —
+   * the badge is informational, not blocking.
+   */
+  async function refreshLineageConflictCount() {
+    try {
+      lineageConflictCount = await invoke<number>('read_conflict_index_count');
+    } catch {
+      // Index missing or unreadable — treat as zero.
+      lineageConflictCount = 0;
+    }
   }
 
   function handleDismissConflicts() {
@@ -441,6 +464,12 @@
         // Refresh workspaces — sync may have created new local folders
         // (for newly-provisioned companies) or updated last-synced timestamps.
         loadWorkspaces();
+        // Re-read conflict index — sync may have detected new conflicts
+        // (already counted via per-event listener, but this is the truth-up
+        // call after the run completes) or the user may have resolved some
+        // out-of-band before the run, in which case the badge needs to
+        // reflect the lower count.
+        refreshLineageConflictCount();
       })
     );
 
@@ -454,6 +483,23 @@
           await invoke('set_tray_state', { state: 'error' });
         }
       )
+    );
+
+    // Lineage divergence — runner has already written a `.conflict-` file
+    // and appended to <hq_root>/.hq-conflicts/index.json. Re-read the index
+    // (cheap fs::read of small JSON) so the badge reflects the on-disk
+    // truth, not a client-side counter that could drift if events were
+    // dropped or the index was edited externally.
+    unlisteners.push(
+      await listen<{
+        company: string;
+        path: string;
+        conflictPath: string;
+        side: 'push' | 'pull';
+        remoteVersionId: string;
+      }>('sync:conflict-detected', async () => {
+        await refreshLineageConflictCount();
+      })
     );
 
     // --- Updater event listener ---
@@ -485,6 +531,11 @@
     checkAuth();
     loadConfig();
     loadWorkspaces();
+    // Hydrate the lineage badge from disk before any sync runs — pending
+    // conflicts from a previous session need to surface immediately, not
+    // wait for the next sync to re-detect them. The Rust side returns 0
+    // when the index file is absent (steady state, no conflicts).
+    refreshLineageConflictCount();
     setupTrayListeners();
 
     return () => {
@@ -554,6 +605,7 @@
       errorMessage={syncErrorMessage}
       {conflicts}
       {showConflictModal}
+      {lineageConflictCount}
       {updateAvailable}
       {updateInstalling}
       onsync={handleSyncNow}

@@ -83,6 +83,30 @@ pub struct SyncConflictEvent {
     pub can_auto_resolve: bool,
 }
 
+/// `{type: "conflict-detected", company, path, conflictPath, side, remoteVersionId}`
+///
+/// Lineage divergence — the cloud's VersionId chain doesn't include our
+/// last-known parent. The runner has already written a `.conflict-` file
+/// next to the original (HQ-relative path in `conflictPath`) and appended
+/// to `<hq_root>/.hq-conflicts/index.json`. Local stays untouched.
+///
+/// The menubar increments its conflict-count badge and points the user at
+/// the `/resolve-conflicts` HQ skill — in-app resolution UI is a follow-up
+/// (defer to Claude Code as the resolution path).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncConflictDetectedEvent {
+    pub company: String,
+    /// S3 key (company-relative, or HQ-relative in personal mode).
+    pub path: String,
+    /// HQ-relative path of the `.conflict-…` file holding the cloud version.
+    pub conflict_path: String,
+    /// Which side detected: push (412 from If-Match) or pull (chain mismatch).
+    pub side: String,
+    /// Cloud's current S3 VersionId at detection time.
+    pub remote_version_id: String,
+}
+
 /// `{type: "complete", company, filesDownloaded, bytesDownloaded, filesSkipped, conflicts, aborted}`
 /// Emitted once per company after that company's sync finishes (or aborts).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -128,6 +152,9 @@ pub enum SyncEvent {
     FanoutPlan(SyncFanoutPlanEvent),
     Progress(SyncProgressEvent),
     Error(SyncErrorEvent),
+    /// Lineage divergence — runner wrote a `.conflict-` file and appended
+    /// to the conflict index. Menubar increments its badge counter.
+    ConflictDetected(SyncConflictDetectedEvent),
     Complete(SyncCompleteEvent),
     AllComplete(SyncAllCompleteEvent),
 }
@@ -145,6 +172,11 @@ pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
 pub const EVENT_SYNC_ALL_COMPLETE: &str = "sync:all-complete";
 /// Deprecated — kept for frontend shape-compat. Not emitted by the runner.
 pub const EVENT_SYNC_CONFLICT: &str = "sync:conflict";
+/// Lineage divergence — runner wrote a `.conflict-` file and appended to
+/// `<hq_root>/.hq-conflicts/index.json`. Frontend increments its badge
+/// counter and surfaces the `/resolve-conflicts` HQ skill as the
+/// resolution path.
+pub const EVENT_SYNC_CONFLICT_DETECTED: &str = "sync:conflict-detected";
 /// Emitted once per newly-provisioned company after `provision_missing_companies` succeeds.
 pub const EVENT_SYNC_COMPANY_PROVISIONED: &str = "sync:company-provisioned";
 

@@ -48,8 +48,8 @@ use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
     SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent,
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
-    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS,
-    EVENT_SYNC_SETUP_NEEDED,
+    EVENT_SYNC_COMPLETE, EVENT_SYNC_CONFLICT_DETECTED, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN,
+    EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -107,7 +107,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// `commands::prewarm` task fires this same fetch on app startup so the
 /// fetch happens in the background rather than during the user's first
 /// click of "Sync Now".
-pub const HQ_CLOUD_VERSION: &str = "5.2.1";
+pub const HQ_CLOUD_VERSION: &str = "5.3.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -400,6 +400,9 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             } else {
                 app.emit(EVENT_SYNC_ERROR, payload.clone())
             }
+        }
+        SyncEvent::ConflictDetected(payload) => {
+            app.emit(EVENT_SYNC_CONFLICT_DETECTED, payload.clone())
         }
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),
         SyncEvent::AllComplete(payload) => {
@@ -1149,7 +1152,7 @@ mod tests {
 
     #[test]
     fn test_accumulate_ignores_all_complete() {
-        let mut t = RunTotals { conflicts: 4 };
+        let mut t = RunTotals { conflicts: 4, ..Default::default() };
         t.accumulate(&SyncEvent::AllComplete(SyncAllCompleteEvent {
             companies_attempted: 1,
             files_downloaded: 0,
@@ -1170,7 +1173,7 @@ mod tests {
 
     #[test]
     fn test_accumulate_zero_conflicts_is_noop() {
-        let mut t = RunTotals { conflicts: 10 };
+        let mut t = RunTotals { conflicts: 10, ..Default::default() };
         t.accumulate(&complete("a", 0, false));
         assert_eq!(t.conflicts, 10);
     }
@@ -1179,6 +1182,7 @@ mod tests {
     fn test_accumulate_saturates_on_overflow() {
         let mut t = RunTotals {
             conflicts: u32::MAX,
+            ..Default::default()
         };
         t.accumulate(&complete("a", 1, false));
         assert_eq!(t.conflicts, u32::MAX);

@@ -72,6 +72,14 @@
     errorMessage?: string;
     conflicts?: ConflictFile[];
     showConflictModal?: boolean;
+    /**
+     * Count of pending lineage conflicts (S3 VersionId divergence). Hydrated
+     * from `<hq_root>/.hq-conflicts/index.json` on App mount, then updated
+     * live by `sync:conflict-detected` events. When > 0, a soft banner in
+     * the idle popover surfaces the count and points the user at the
+     * `/resolve-conflicts` HQ skill — in-app resolution UI is deferred.
+     */
+    lineageConflictCount?: number;
     /** Non-null when the Tauri updater has found a newer release. */
     updateAvailable?: { version: string; body?: string; date?: string } | null;
     /** True while `install_update` is in flight — disables the button. */
@@ -114,6 +122,7 @@
     errorMessage = '',
     conflicts = [],
     showConflictModal = false,
+    lineageConflictCount = 0,
     updateAvailable = null,
     updateInstalling = false,
     onsync,
@@ -334,6 +343,25 @@
           <p class="banner-title">Sync failed</p>
           <p class="banner-body">{errorMessage}</p>
         </div>
+      {/if}
+
+      <!-- Lineage conflicts: surfaces only when at least one is pending and
+           we're not actively syncing. The badge hydrates from the on-disk
+           index on App mount, so it survives app restarts (the in-memory
+           event count would not). Click copies the slash command — in-app
+           resolution is deferred to the /resolve-conflicts HQ skill. -->
+      {#if lineageConflictCount > 0 && syncState !== 'syncing'}
+        <button
+          class="banner banner-conflict"
+          onclick={() => navigator.clipboard?.writeText('/resolve-conflicts')}
+          title="Copy /resolve-conflicts to clipboard"
+        >
+          <span class="banner-conflict-count">{lineageConflictCount}</span>
+          <span class="banner-conflict-text">
+            conflict{lineageConflictCount === 1 ? '' : 's'} pending — run
+            <code>/resolve-conflicts</code> in HQ
+          </span>
+        </button>
       {/if}
 
       <!-- Top stats slot: while syncing, the SyncStats card is replaced
@@ -681,6 +709,54 @@
   .banner-error {
     background: rgba(239, 68, 68, 0.08);
     border-color: rgba(239, 68, 68, 0.25);
+  }
+
+  /* Lineage conflict banner — amber tone, clickable, matches the warning
+     palette already used by the (unrelated) ConflictModal so users get a
+     consistent "needs attention" signal across the app. */
+  .banner-conflict {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.3);
+    color: var(--popover-text, #e0e0e0);
+    cursor: pointer;
+    text-align: left;
+    font-family: inherit;
+    transition: background-color 0.1s ease;
+  }
+
+  .banner-conflict:hover {
+    background: rgba(245, 158, 11, 0.14);
+  }
+
+  .banner-conflict-count {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.25rem;
+    height: 1.25rem;
+    padding: 0 0.35rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    border-radius: 10px;
+    background: rgba(245, 158, 11, 0.2);
+    color: var(--popover-warning, #f59e0b);
+  }
+
+  .banner-conflict-text {
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+
+  .banner-conflict code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 0.7rem;
+    padding: 0.05rem 0.25rem;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
   }
 
   .banner-title {

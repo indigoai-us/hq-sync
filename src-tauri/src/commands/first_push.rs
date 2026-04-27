@@ -171,6 +171,9 @@ where
                 size,
                 synced_at: now.clone(),
                 direction: Direction::Up,
+                // Rust first-push doesn't capture VersionId from put_object —
+                // TS-side degraded path stamps it on next sync. See journal.rs.
+                s3_version_id: None,
             },
         );
         // Flush after every successful upload so a mid-stream failure never
