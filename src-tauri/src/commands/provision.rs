@@ -3,19 +3,39 @@
 //! `provision_missing_companies` walks `$HQ/companies/*/company.yaml`, keeps
 //! entries where `cloud: true`, and handles three cases:
 //!   A. `.hq/config.json` present → verify entity still exists via find_by_slug;
-//!      if not found, remove stale config and re-provision.
+//!      if not found, remove stale config and re-provision via CLI.
 //!   B. `.hq/config.json` absent but YAML has `cloudCompanyUid` → migration:
 //!      look up entity, write config.json using the legacy UID, do NOT touch YAML.
-//!   C. Otherwise → find_by_slug-first / create-second idempotency, then
-//!      provision_bucket, then write config.json.
+//!   C. Otherwise → delegate to `hq cloud provision company <slug>` (the
+//!      canonical CLI subcommand from `@indigoai-us/hq-cli`), which performs
+//!      GET-then-POST idempotency, atomic manifest patch, atomic
+//!      `.hq/config.json` write, AND triggers an initial sync via `share()`.
 //!
 //! `company.yaml` is NEVER written back — the file is read-only from this module.
+//!
+//! ## Why Paths A + B stay inline (not CLI)
+//!
+//! Path A is a pure local-cache fast path: if `.hq/config.json` already exists
+//! and the cloud entity is still alive, there is nothing to do. Spawning the
+//! CLI would re-run idempotency checks the local cache already short-circuits.
+//!
+//! Path B is a one-shot migration from the legacy `cloudCompanyUid` field
+//! that older `hq-installer` versions wrote into `company.yaml`. The CLI has
+//! no equivalent of "promote a known UID into a config.json without touching
+//! the entity"; it would either reuse-by-slug (different UID) or re-create
+//! (also different UID). Keeping the migration inline preserves the legacy
+//! UID exactly as recorded.
+//!
+//! Only Path C goes through the CLI — that is where the GET-then-POST,
+//! manifest patch, config write, and initial sync all happen behind one
+//! canonical implementation.
 
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::commands::vault_client::{CreateEntityInput, VaultClient};
+use crate::commands::run_cli_provision::{run_cli_provision, CliProvisionError};
+use crate::commands::vault_client::VaultClient;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -176,49 +196,57 @@ pub async fn provision_missing_companies(
             }
         }
 
-        // ── Path C: unprovisioned — find_by_slug first, create only if None ───
-        let uid = match vault.find_entity_by_slug("company", &folder_name).await {
-            Ok(Some(info)) => info.uid,
-            Ok(None) => {
-                let entity_name = company_yaml
-                    .name
-                    .unwrap_or_else(|| folder_name.clone());
-                let input = CreateEntityInput {
-                    entity_type: "company".to_string(),
-                    slug: folder_name.clone(),
-                    name: entity_name,
-                    email: None,
-                    owner_uid: None,
-                };
-                vault
-                    .create_entity(&input)
-                    .await
-                    .map_err(|e| format!("create entity '{}': {e}", folder_name))?
-                    .uid
+        // ── Path C: unprovisioned — delegate to `hq cloud provision company` ─
+        //
+        // The CLI subprocess is the canonical source of truth for:
+        //   * GET-then-POST entity idempotency
+        //   * Atomic `companies/manifest.yaml` patch (cloud_uid + bucket_name)
+        //   * Atomic `companies/<slug>/.hq/config.json` write
+        //   * Initial sync via `share()` from `@indigoai-us/hq-cloud`
+        //
+        // We pass through a friendly display `--name` from the YAML when present
+        // (the CLI defaults to slug otherwise). On exit code 3 the CLI still
+        // writes the config + manifest before failing, and the partial result
+        // carries the `cloud_uid` — we record the company so the caller's
+        // "newly provisioned" emit fires for UI feedback, then surface the
+        // sync error so the operator can investigate.
+        //
+        // NB: we deliberately do NOT fall back to the legacy direct-vault
+        // path on CLI failure. Doing so would re-introduce the divergence
+        // this refactor exists to eliminate (see
+        // workspace/reports/cloud-promote-architecture-2026-04-27.md).
+        let display_name = company_yaml.name.as_deref();
+        match run_cli_provision(&folder_name, display_name).await {
+            Ok(cli_result) => {
+                result.push(ProvisionedCompany {
+                    slug: folder_name,
+                    uid: cli_result.cloud_uid,
+                    bucket_name: cli_result.bucket_name,
+                });
+            }
+            Err(CliProvisionError::Sync { partial, message }) => {
+                // Entity + manifest + config all succeeded — only the initial
+                // sync failed. Record the provisioned company (so the UI shows
+                // "ready, sync pending") and propagate the error so callers
+                // surface a notice. Subsequent sync runs will retry uploads
+                // through the normal `first_push` path.
+                if let Some(p) = partial {
+                    result.push(ProvisionedCompany {
+                        slug: folder_name.clone(),
+                        uid: p.cloud_uid,
+                        bucket_name: p.bucket_name,
+                    });
+                }
+                return Err(format!(
+                    "provision '{folder_name}' via hq CLI: {message}"
+                ));
             }
             Err(e) => {
-                return Err(format!("find_by_slug '{}': {e}", folder_name));
+                return Err(format!(
+                    "provision '{folder_name}' via hq CLI: {e}"
+                ));
             }
-        };
-
-        let bucket_info = vault
-            .provision_bucket(&uid)
-            .await
-            .map_err(|e| format!("provision_bucket '{}' uid={uid}: {e}", folder_name))?;
-
-        let cfg = CompanyConfig {
-            company_uid: uid.clone(),
-            company_slug: folder_name.clone(),
-            bucket_name: bucket_info.bucket_name.clone(),
-            vault_api_url: vault_api_url.to_string(),
-        };
-        write_company_config(&hq_config_path, &cfg)?;
-
-        result.push(ProvisionedCompany {
-            slug: folder_name,
-            uid,
-            bucket_name: bucket_info.bucket_name,
-        });
+        }
     }
 
     Ok(result)
