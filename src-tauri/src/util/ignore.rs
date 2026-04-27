@@ -37,6 +37,9 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "modules/modules.yaml",
     // per-company identity file — written locally on first sync, never round-tripped.
     "company.yaml",
+    // auto-generated tool index and policy digest — regenerated locally per-machine.
+    "INDEX.md",
+    "policies/_digest.md",
     // HQ repos directory (managed separately, not synced)
     "repos/",
     // Secrets / env
@@ -190,6 +193,18 @@ mod tests {
         let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("companies/indigo/company.yaml")));
         assert!(!filter.should_sync(&root.join("company.yaml")));
+    }
+
+    #[test]
+    fn index_md_and_policies_digest_are_ignored() {
+        // Both are auto-generated locally — INDEX.md by the tools indexer
+        // and policies/_digest.md by the policies digest builder.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter.should_sync(&root.join("INDEX.md")));
+        assert!(!filter.should_sync(&root.join("companies/ghq/tools/INDEX.md")));
+        assert!(!filter.should_sync(&root.join("policies/_digest.md")));
     }
 
     #[test]
