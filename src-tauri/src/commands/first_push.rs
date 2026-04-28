@@ -1,23 +1,85 @@
-//! First-push: upload every local file under a company folder to S3 after provisioning.
+//! First-push: shell out to `hq sync push --creds-from-stdin --json` to
+//! upload every local file under a company folder to S3 after provisioning.
 //!
-//! `first_push_company` is the public entry point; it vends STS credentials, builds an S3
-//! client, and delegates to the testable inner `run_first_push` function.
+//! ## Why a subprocess and not direct S3 calls
+//!
+//! Before Option C3 of the cloud-promote consolidation, this file held a
+//! 719-line independent S3 upload implementation (WalkDir + journal + retry
+//! + per-file PUT). That duplicated `share()` from `@indigoai-us/hq-cloud`
+//! line-for-line — every bug fix had to land in both places, and the two
+//! implementations had subtly different ignore rules and conflict semantics.
+//!
+//! After C3, the canonical upload path is `hq sync push` (which uses
+//! `share()` under the hood). AppBar still owns:
+//!
+//! * **STS-vending via `/sts/vend-child`** — preserves task-scoped audit
+//!   traceability (`task_id` + `task_description` + `task_scope`) that the
+//!   simpler `/sts/vend` used by `share()`'s default Cognito path doesn't
+//!   carry. Two STS endpoints in production by design — the upload path is
+//!   consolidated, the credential-vending path stays differentiated.
+//! * **Tauri event emission** — the menubar UI subscribes to per-file
+//!   progress and a terminal complete event. We translate from the CLI's
+//!   stderr JSONL stream (`--json`) into these Tauri events 1:1.
+//!
+//! See `workspace/reports/cloud-promote-architecture-2026-04-27.md` and
+//! the C3 PR description in `repos/private/hq-sync` for the full rationale.
+//!
+//! ## Subprocess contract
+//!
+//! Argv:
+//!
+//! ```text
+//! hq sync push --creds-from-stdin --json --company <slug> --hq-root <path> <company_dir>
+//! ```
+//!
+//! Stdin: a single JSON document conforming to `@indigoai-us/hq-cloud`'s
+//! `EntityContext` shape (camelCase keys):
+//!
+//! ```json
+//! {
+//!   "uid": "cmp_...",
+//!   "slug": "...",
+//!   "bucketName": "hq-vault-...",
+//!   "region": "us-east-1",
+//!   "credentials": {
+//!     "accessKeyId": "...",
+//!     "secretAccessKey": "...",
+//!     "sessionToken": "..."
+//!   },
+//!   "expiresAt": "2026-..."
+//! }
+//! ```
+//!
+//! Stderr (JSON Lines, one record per line):
+//!
+//! * `{"type":"plan", "filesToUpload": N, "bytesToUpload": N, ...}` — once at start
+//! * `{"type":"progress", "path": "...", "bytes": N, "message"?: "..."}` — per uploaded file
+//! * `{"type":"conflict", "path": "...", "direction":"push", "resolution": "..."}`
+//! * `{"type":"error", "path": "...", "message": "..."}`
+//! * `{"type":"complete", "filesUploaded": N, "bytesUploaded": N, "filesSkipped": N, "conflictPaths": [...], "aborted": bool}` — once at end
+//! * `{"type":"fatal", "message": "..."}` — on terminal failure (instead of aborting silently)
+//!
+//! Exit codes:
+//!
+//! * `0` — success; `complete` event has been emitted with final counts
+//! * `1` — terminal failure; `fatal` event sent to stderr first, OR an
+//!   `aborted` complete event was emitted (conflict-strategy abort)
+//!
+//! ## Why we still vend ourselves vs. letting share() vend
+//!
+//! AppBar already has the STS infrastructure (`vend_child`, task scoping).
+//! Switching to share()'s internal `/sts/vend` would silently drop the
+//! task-scoped audit metadata. The `/sts/vend-child` endpoint exists
+//! specifically for callers that want explicit task tracing, and AppBar
+//! is exactly that caller.
 
-use std::path::{Path, PathBuf};
-use std::pin::Pin;
-use std::future::Future;
-use std::sync::Arc;
+use std::path::Path;
+use std::process::Stdio;
 
-use base64::Engine as _;
-use bytes::Bytes;
-use chrono::Utc;
-use sha2::{Digest, Sha256};
-use walkdir::WalkDir;
-
-use aws_credential_types::Credentials;
-use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region};
-use aws_sdk_s3::primitives::ByteStream;
+use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
 
 use crate::commands::provision::ProvisionedCompany;
 use crate::commands::vault_client::{TaskScope, VaultClient, VendChildInput};
@@ -25,218 +87,72 @@ use crate::events::{
     SyncCompanyFirstPushCompleteEvent, SyncCompanyFirstPushProgressEvent,
     EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE, EVENT_SYNC_COMPANY_FIRST_PUSH_PROGRESS,
 };
-use crate::util::ignore::IgnoreFilter;
-use crate::util::journal::{read_journal, write_journal, Direction, JournalEntry};
+use crate::util::logfile::log;
+use crate::util::paths;
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Subprocess wire format ────────────────────────────────────────────────────
 
-pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
-
-#[derive(Debug)]
-pub enum UploadOutcome {
-    Ok,
-    Transient(String),
-    Permanent(String),
+/// Mirror of `@indigoai-us/hq-cloud`'s `EntityContext` type. We construct
+/// this from a `vend_child` result and serialize to JSON for the CLI's
+/// `--creds-from-stdin` flag. Field names are camelCase to match the JS side.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityContextPayload {
+    uid: String,
+    slug: String,
+    bucket_name: String,
+    region: String,
+    credentials: EntityCredentials,
+    expires_at: String,
 }
 
-// ── Retry helper ──────────────────────────────────────────────────────────────
-
-async fn upload_with_retry<F>(
-    key: &str,
-    data: Bytes,
-    sha256_hex: &str,
-    uploader: &F,
-) -> Result<(), String>
-where
-    F: Fn(String, Bytes, String) -> BoxFuture<UploadOutcome> + Send + Sync,
-{
-    const MAX_ATTEMPTS: usize = 3;
-    const DELAY_MS: [u64; 2] = [1000, 3000];
-
-    let mut last_err = String::new();
-    for attempt in 0..MAX_ATTEMPTS {
-        if attempt > 0 {
-            #[cfg(not(test))]
-            tokio::time::sleep(std::time::Duration::from_millis(DELAY_MS[attempt - 1])).await;
-        }
-        // Bytes::clone is a cheap ref-count increment — no buffer copy on retry.
-        match uploader(key.to_string(), data.clone(), sha256_hex.to_string()).await {
-            UploadOutcome::Ok => return Ok(()),
-            UploadOutcome::Transient(e) => last_err = e,
-            UploadOutcome::Permanent(e) => return Err(format!("permanent upload error: {e}")),
-        }
-    }
-    Err(format!("upload '{key}' failed after {MAX_ATTEMPTS} attempts: {last_err}"))
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EntityCredentials {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: String,
 }
 
-// ── Core algorithm ────────────────────────────────────────────────────────────
-
-/// Walk `{hq_root}/companies/{company_slug}/`, upload files that pass the ignore
-/// filter and aren't already in the journal, return (files_uploaded, files_skipped).
+/// One line from the CLI's `--json` stderr stream. We don't strictly model
+/// every variant — the parent only cares about `progress`, `complete`, and
+/// `fatal`. Other types (`plan`, `conflict`, `error`, future additions) are
+/// tolerated and logged but don't drive UI state. Forward-compatibility
+/// matters because the CLI ships independently and may add event types.
 ///
-/// `uploader` is injectable so tests can mock S3 without a real AWS connection.
-pub(crate) async fn run_first_push<F, P, S>(
-    hq_root: &Path,
-    company_slug: &str,
-    uploader: F,
-    on_progress: P,
-    on_skip: S,
-) -> Result<(usize, usize), String>
-where
-    F: Fn(String, Bytes, String) -> BoxFuture<UploadOutcome> + Send + Sync,
-    P: Fn(usize, usize, Option<String>),
-    S: Fn(String, String),
-{
-    let filter = IgnoreFilter::for_hq_root(hq_root)?;
-    let company_dir = hq_root.join("companies").join(company_slug);
-    if !company_dir.exists() {
-        return Ok((0, 0));
-    }
-
-    // Phase 1: collect eligible paths
-    let mut file_paths: Vec<PathBuf> = Vec::new();
-    for entry in WalkDir::new(&company_dir).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let abs = entry.path().to_path_buf();
-        if !filter.should_sync(&abs) {
-            continue;
-        }
-        file_paths.push(abs);
-    }
-
-    let total = file_paths.len();
-    let mut uploaded = 0usize;
-    let mut skipped = 0usize;
-    let mut journal = read_journal(company_slug)?;
-    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-
-    // Phase 2: upload or skip each file.
-    // On any failure, break out of the loop so the journal is always flushed on the
-    // way out — preserving entries for files already successfully uploaded this run
-    // (load-bearing idempotency invariant, plan.md:1337).
-    let mut upload_err: Option<String> = None;
-    'upload: for (i, abs) in file_paths.into_iter().enumerate() {
-        let rel_key = match abs.strip_prefix(hq_root) {
-            Ok(p) => p.to_string_lossy().replace('\\', "/"),
-            Err(e) => {
-                upload_err = Some(format!("path strip error: {e}"));
-                break 'upload;
-            }
-        };
-
-        on_progress(i, total, Some(rel_key.clone()));
-
-        // Oversize guard
-        if !IgnoreFilter::within_size_limit(&abs) {
-            on_skip(rel_key.clone(), "exceeds 50MB limit".into());
-            skipped += 1;
-            continue;
-        }
-
-        // Read and hash
-        let contents = match std::fs::read(&abs) {
-            Ok(c) => Bytes::from(c),
-            Err(e) => {
-                upload_err = Some(format!("{}: {e}", abs.display()));
-                break 'upload;
-            }
-        };
-        let size = contents.len() as u64;
-        let digest = Sha256::digest(&contents);
-        let sha256_hex = format!("{:x}", digest);
-
-        // Journal idempotency check
-        if let Some(entry) = journal.files.get(&rel_key) {
-            if entry.hash == sha256_hex {
-                skipped += 1;
-                continue;
-            }
-        }
-
-        // Upload with retry — break on error so the finally-block below can flush.
-        match upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await {
-            Ok(()) => {}
-            Err(e) => {
-                upload_err = Some(e);
-                break 'upload;
-            }
-        }
-
-        journal.files.insert(
-            rel_key.clone(),
-            JournalEntry {
-                hash: sha256_hex,
-                size,
-                synced_at: now.clone(),
-                direction: Direction::Up,
-            },
-        );
-        // Flush after every successful upload so a mid-stream failure never
-        // discards previously-uploaded entries (idempotency invariant).
-        write_journal(company_slug, &journal)?;
-        uploaded += 1;
-    }
-
-    // Terminal progress event — UI consumers see done == total.
-    on_progress(total, total, None);
-
-    // Always flush the final journal state on the way out, even on error, so
-    // any partial progress is persisted for the next run.
-    journal.last_sync = now;
-    let _ = write_journal(company_slug, &journal);
-
-    if let Some(e) = upload_err {
-        return Err(e);
-    }
-
-    Ok((uploaded, skipped))
-}
-
-// ── S3 helpers ────────────────────────────────────────────────────────────────
-
-fn hex_to_bytes(hex: &str) -> Vec<u8> {
-    (0..hex.len())
-        .step_by(2)
-        .filter(|&i| i + 2 <= hex.len())
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16)
-            .expect("Sha256::digest() always emits valid hex"))
-        .collect()
-}
-
-fn build_s3_client(
-    access_key_id: &str,
-    secret_access_key: &str,
-    session_token: &str,
-) -> aws_sdk_s3::Client {
-    let creds = Credentials::new(
-        access_key_id,
-        secret_access_key,
-        Some(session_token.to_string()),
-        None,
-        "hq-sync-first-push",
-    );
-    // Hard-coded to us-east-1 because the vault Lambda always provisions buckets
-    // in us-east-1 today. If multi-region tenants are added, ProvisionedCompany
-    // will need a `region` field and this must be wired through. TODO: track in
-    // the follow-up for regulatory-tenant work.
-    let config = S3ConfigBuilder::new()
-        .credentials_provider(creds)
-        .region(Region::new("us-east-1"))
-        .build();
-    aws_sdk_s3::Client::from_conf(config)
+/// `#[serde(flatten)]` on `rest` captures every non-`type` field as a raw
+/// JSON map, which we reach into for the specific fields we care about
+/// without fragmenting this type into a per-variant enum.
+#[derive(Debug, Clone, Deserialize)]
+struct CliEvent {
+    #[serde(rename = "type")]
+    event_type: String,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, serde_json::Value>,
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/// Run an initial push for `company`: vend STS creds → spawn `hq sync push` →
+/// re-emit per-file progress + final-complete events through Tauri so the
+/// menubar UI sees the same stream it did under the pre-C3 implementation.
+///
+/// On success, emits `EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE` with final
+/// upload/skip counts and returns `Ok(())`. On failure (subprocess crash,
+/// non-zero exit, or `fatal` event), returns `Err(message)`; the caller
+/// (`sync.rs::run_sync_now`) is responsible for surfacing that to the UI.
 pub async fn first_push_company(
     app: &tauri::AppHandle,
     vault: &VaultClient,
     hq_root: &Path,
     company: &ProvisionedCompany,
 ) -> Result<(), String> {
-    // Vend task-scoped STS creds for this company
+    // Step 1: Vend STS creds via /sts/vend-child. UNCHANGED from the pre-C3
+    // implementation — preserves task-scoped audit (task_id + description +
+    // scope) that share()'s simpler /sts/vend doesn't carry. 15-min TTL is
+    // well above typical first-push runtime so the subprocess never has to
+    // worry about refresh; share() with a pre-vended context does NOT
+    // attempt to refresh (no Cognito token to re-vend with).
     let vend_result = vault
         .vend_child(&VendChildInput {
             company_uid: company.uid.clone(),
@@ -246,86 +162,257 @@ pub async fn first_push_company(
                 allowed_prefixes: vec!["".to_string()],
                 allowed_actions: Some(vec!["read".to_string(), "write".to_string()]),
             },
-            duration_seconds: None,
+            duration_seconds: Some(900),
         })
         .await
         .map_err(|e| format!("vend_child for {}: {e}", company.uid))?;
 
-    let s3 = Arc::new(build_s3_client(
-        &vend_result.credentials.access_key_id,
-        &vend_result.credentials.secret_access_key,
-        &vend_result.credentials.session_token,
-    ));
-    let bucket = company.bucket_name.clone();
-
-    let app_ref = app.clone();
-    let uid = company.uid.clone();
-    let slug = company.slug.clone();
-    let uid_p = uid.clone();
-    let slug_p = slug.clone();
-
-    let uploader = {
-        let s3 = s3.clone();
-        let bucket = bucket.clone();
-        move |key: String, data: Bytes, sha256_hex: String| -> BoxFuture<UploadOutcome> {
-            let s3 = s3.clone();
-            let bucket = bucket.clone();
-            Box::pin(async move {
-                let sha256_b64 = base64::engine::general_purpose::STANDARD
-                    .encode(hex_to_bytes(&sha256_hex));
-                match s3
-                    .put_object()
-                    .bucket(&bucket)
-                    .key(&key)
-                    .body(ByteStream::from(data))
-                    .checksum_sha256(sha256_b64)
-                    .send()
-                    .await
-                {
-                    Ok(_) => UploadOutcome::Ok,
-                    Err(e) => {
-                        let status = e
-                            .raw_response()
-                            .map(|r| r.status().as_u16())
-                            .unwrap_or(0);
-                        if status == 0 || status >= 500 {
-                            UploadOutcome::Transient(e.to_string())
-                        } else {
-                            UploadOutcome::Permanent(e.to_string())
-                        }
-                    }
-                }
-            })
-        }
+    // Step 2: Build the EntityContext payload that share() consumes via
+    // --creds-from-stdin. Region is hard-coded to us-east-1 for the same
+    // reason the pre-C3 build_s3_client did: the vault Lambda always
+    // provisions buckets there today. Multi-region would need a region
+    // field on ProvisionedCompany (or a vend_child response field) and
+    // careful wiring through both AppBar and share().
+    let payload = EntityContextPayload {
+        uid: company.uid.clone(),
+        slug: company.slug.clone(),
+        bucket_name: company.bucket_name.clone(),
+        region: "us-east-1".to_string(),
+        credentials: EntityCredentials {
+            access_key_id: vend_result.credentials.access_key_id,
+            secret_access_key: vend_result.credentials.secret_access_key,
+            session_token: vend_result.credentials.session_token,
+        },
+        expires_at: vend_result.expires_at,
     };
+    let payload_json = serde_json::to_string(&payload)
+        .map_err(|e| format!("serialize EntityContext: {e}"))?;
 
-    let (files_uploaded, files_skipped) = run_first_push(
-        hq_root,
-        &company.slug,
-        uploader,
-        move |done, total, file| {
-            let _ = app_ref.emit(
-                EVENT_SYNC_COMPANY_FIRST_PUSH_PROGRESS,
-                SyncCompanyFirstPushProgressEvent {
-                    company_uid: uid_p.clone(),
-                    company_slug: slug_p.clone(),
-                    files_done: done,
-                    files_total: total,
-                    current_file: file,
-                },
-            );
-        },
-        |_key, _reason| {
-            // Oversize skips are counted in files_skipped; no separate event emitted
-        },
-    )
-    .await?;
+    // Step 3: Spawn `hq sync push --creds-from-stdin --json ...`. We use
+    // the same paths::resolve_bin / paths::child_path trick run_cli_provision
+    // does so the binary is found regardless of how the Tauri app was
+    // launched (Dock-launched apps inherit a minimal launchd PATH that
+    // lacks /opt/homebrew/bin and the user's shell additions).
+    let hq_bin = paths::resolve_bin("hq");
+    let path_env = paths::child_path();
+    let company_dir = hq_root.join("companies").join(&company.slug);
 
+    log(
+        "first-push-cli",
+        &format!(
+            "spawn: {hq_bin} sync push --creds-from-stdin --json --company {} --hq-root {} {}",
+            company.slug,
+            hq_root.display(),
+            company_dir.display(),
+        ),
+    );
+
+    let mut cmd = Command::new(&hq_bin);
+    cmd.arg("sync")
+        .arg("push")
+        .arg("--creds-from-stdin")
+        .arg("--json")
+        .arg("--company")
+        .arg(&company.slug)
+        .arg("--hq-root")
+        .arg(hq_root.as_os_str())
+        .arg(company_dir.as_os_str())
+        .env("PATH", &path_env)
+        .stdin(Stdio::piped())
+        // share()'s default human output goes to stdout — in --json mode all
+        // events go to stderr, and stdout carries nothing useful. Discarding
+        // it avoids burning a kernel buffer on output we'd ignore anyway.
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        // Without kill_on_drop a panic / cancellation in the caller would
+        // leak an orphan `hq` subprocess — the user has no UI to see or
+        // kill it. Same posture as run_cli_provision.
+        .kill_on_drop(true);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn `hq sync push` ({hq_bin}): {e}"))?;
+
+    // Step 4: Pipe payload JSON to the child's stdin, then close stdin so
+    // the CLI's `for await (chunk of process.stdin)` loop terminates and
+    // the credentials are parsed.
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "child stdin pipe missing".to_string())?;
+        stdin
+            .write_all(payload_json.as_bytes())
+            .await
+            .map_err(|e| format!("write child stdin: {e}"))?;
+        stdin.flush().await.ok();
+        // dropped here → close
+    }
+
+    // Step 5: Stream stderr line-by-line. Each line is either:
+    //   * a JSON event (parse + dispatch to Tauri events)
+    //   * free-form text (log to diagnostic file, ignore for UI)
+    //
+    // We read sequentially before calling wait() because there's only one
+    // pipe to drain (stdout is /dev/null). Once stderr closes (child exits)
+    // next_line() returns None and we fall through to wait().
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "child stderr pipe missing".to_string())?;
+    let mut reader = BufReader::new(stderr).lines();
+
+    let mut total_files: usize = 0;
+    let mut files_done: usize = 0;
+    let mut files_uploaded: usize = 0;
+    let mut files_skipped: usize = 0;
+    let mut last_fatal: Option<String> = None;
+    let mut saw_complete = false;
+    let mut aborted = false;
+
+    while let Ok(Some(line)) = reader.next_line().await {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // Tolerate non-JSON lines (e.g. shell warnings, accidental println
+        // from a future CLI version) — log and continue rather than killing
+        // the stream.
+        let event: CliEvent = match serde_json::from_str(trimmed) {
+            Ok(e) => e,
+            Err(_) => {
+                log("first-push-cli", &format!("(non-json) {trimmed}"));
+                continue;
+            }
+        };
+
+        match event.event_type.as_str() {
+            "plan" => {
+                total_files = event
+                    .rest
+                    .get("filesToUpload")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                log(
+                    "first-push-cli",
+                    &format!("plan: filesToUpload={total_files}"),
+                );
+            }
+            "progress" => {
+                files_done += 1;
+                let path = event
+                    .rest
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let _ = app.emit(
+                    EVENT_SYNC_COMPANY_FIRST_PUSH_PROGRESS,
+                    SyncCompanyFirstPushProgressEvent {
+                        company_uid: company.uid.clone(),
+                        company_slug: company.slug.clone(),
+                        files_done,
+                        files_total: total_files,
+                        current_file: path,
+                    },
+                );
+            }
+            "complete" => {
+                files_uploaded = event
+                    .rest
+                    .get("filesUploaded")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                files_skipped = event
+                    .rest
+                    .get("filesSkipped")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                aborted = event
+                    .rest
+                    .get("aborted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                saw_complete = true;
+                log(
+                    "first-push-cli",
+                    &format!(
+                        "complete: uploaded={files_uploaded} skipped={files_skipped} aborted={aborted}"
+                    ),
+                );
+            }
+            "fatal" => {
+                let msg = event
+                    .rest
+                    .get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(no message)")
+                    .to_string();
+                log("first-push-cli", &format!("fatal: {msg}"));
+                last_fatal = Some(msg);
+            }
+            // `error` is per-file (already-retried, then skipped); `conflict`
+            // is per-file (already resolved). Neither kills the run — log
+            // for forensics and let the loop continue.
+            other => {
+                log(
+                    "first-push-cli",
+                    &format!("event type={other}: {trimmed}"),
+                );
+            }
+        }
+    }
+
+    // Step 6: Wait for exit and reconcile.
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| format!("wait child: {e}"))?;
+
+    log(
+        "first-push-cli",
+        &format!(
+            "exit code={:?}, saw_complete={saw_complete}, aborted={aborted}, slug={}",
+            status.code(),
+            company.slug,
+        ),
+    );
+
+    if !status.success() {
+        let msg = last_fatal.unwrap_or_else(|| {
+            format!(
+                "hq sync push exited with status {} for slug={}",
+                status.code().unwrap_or(-1),
+                company.slug,
+            )
+        });
+        return Err(msg);
+    }
+
+    if aborted {
+        return Err(format!(
+            "hq sync push aborted for slug={} (uploaded={files_uploaded}, skipped={files_skipped})",
+            company.slug,
+        ));
+    }
+
+    if !saw_complete {
+        // Process exited 0 without emitting a `complete` event. That
+        // shouldn't happen with the current CLI but is plausible if a
+        // future CLI version crashes after share() returns. Surface as
+        // an error rather than silently emitting a complete event with
+        // (0, 0) counts that would mislead the UI.
+        return Err(format!(
+            "hq sync push exited 0 without `complete` event for slug={}",
+            company.slug,
+        ));
+    }
+
+    // Emit the terminal Tauri event the menubar listens for.
     let _ = app.emit(
         EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE,
         SyncCompanyFirstPushCompleteEvent {
-            company_uid: uid.clone(),
-            company_slug: slug.clone(),
+            company_uid: company.uid.clone(),
+            company_slug: company.slug.clone(),
             files_uploaded,
             files_skipped,
         },
@@ -334,383 +421,132 @@ pub async fn first_push_company(
     Ok(())
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
+//
+// Pre-C3 this file shipped ~378 lines of tests covering the upload mechanics
+// (retry-on-transient, journal idempotency, IgnoreFilter integration,
+// oversize skip). All of that logic moved to `share()` in
+// `@indigoai-us/hq-cloud` and is tested there (see
+// `repos/public/hq/packages/hq-cloud/src/cli/share.test.ts`).
+//
+// What's left to test in this file is narrow: the wrapper logic — the JSON
+// shape we send on stdin (cross-language contract) and the JSON shape we
+// expect on stderr (forward-compat against future CLI versions).
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::test_support::ENV_MUTEX;
-    use std::sync::Mutex;
-    use tempfile::TempDir;
+    use serde_json::json;
 
-    fn make_uploader(
-        calls: Arc<Mutex<Vec<String>>>,
-    ) -> impl Fn(String, Bytes, String) -> BoxFuture<UploadOutcome> + Send + Sync {
-        move |key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
-            calls.lock().unwrap().push(key);
-            Box::pin(async { UploadOutcome::Ok })
-        }
-    }
-
-    fn company_dir(root: &Path, slug: &str) -> PathBuf {
-        let dir = root.join("companies").join(slug);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn write_file(path: &Path, content: &[u8]) {
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p).unwrap();
-        }
-        std::fs::write(path, content).unwrap();
-    }
-
-    // (a) Files in ignored dirs (.git/, node_modules/) are NOT uploaded.
-    #[tokio::test]
-    async fn test_ignored_files_not_uploaded() {
-        let tmp_state = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let co_dir = company_dir(root, "acme");
-
-        write_file(&co_dir.join("README.md"), b"hello");
-        write_file(&co_dir.join(".git/config"), b"git config");
-        write_file(&co_dir.join("node_modules/pkg/index.js"), b"js");
-
-        let calls = Arc::new(Mutex::new(vec![]));
-        let uploader = make_uploader(calls.clone());
-
-        {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            let (uploaded, _skipped) =
-                run_first_push(root, "acme", uploader, |_, _, _| {}, |_, _| {})
-                    .await
-                    .unwrap();
-            std::env::remove_var("HQ_STATE_DIR");
-
-            assert_eq!(uploaded, 1, "only README.md should be uploaded");
-            let captured = calls.lock().unwrap();
-            assert_eq!(captured.len(), 1);
-            assert!(
-                captured[0].ends_with("README.md"),
-                "expected README.md; got {:?}",
-                captured[0]
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_settings_excluded_target_company_dirs_uploaded() {
-        let tmp_state = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let co_dir = company_dir(root, "_test");
-
-        write_file(&co_dir.join("settings/secret.txt"), b"do not upload");
-        write_file(&co_dir.join("policies/p.md"), b"policy");
-        write_file(&co_dir.join("projects/x/prd.json"), b"{}");
-        write_file(&co_dir.join("knowledge/k.md"), b"knowledge");
-        write_file(&co_dir.join(".claude/commands/c.md"), b"command");
-
-        let calls = Arc::new(Mutex::new(vec![]));
-        let uploader = make_uploader(calls.clone());
-
-        {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            let (uploaded, skipped) =
-                run_first_push(root, "_test", uploader, |_, _, _| {}, |_, _| {})
-                    .await
-                    .unwrap();
-            std::env::remove_var("HQ_STATE_DIR");
-
-            assert_eq!(uploaded, 4, "only the four target files should upload");
-            assert_eq!(
-                skipped, 0,
-                "ignored settings/ files are not counted as size skips"
-            );
-
-            let captured = calls.lock().unwrap();
-            assert_eq!(captured.len(), 4);
-            assert!(
-                !captured.iter().any(|k| k.contains("/settings/")),
-                "settings files must never reach the uploader: {:?}",
-                captured
-            );
-            for expected in [
-                "companies/_test/policies/p.md",
-                "companies/_test/projects/x/prd.json",
-                "companies/_test/knowledge/k.md",
-                "companies/_test/.claude/commands/c.md",
-            ] {
-                assert!(
-                    captured.iter().any(|k| k == expected),
-                    "expected upload key {expected}; got {:?}",
-                    captured
-                );
-            }
-        }
-    }
-
-    // (b) Oversize file triggers on_skip callback; is NOT uploaded.
-    #[tokio::test]
-    async fn test_oversize_file_skipped() {
-        let tmp_state = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let co_dir = company_dir(root, "bigco");
-
-        // Create a sparse file > 50 MB (no actual disk space used)
-        let big_path = co_dir.join("huge.bin");
-        {
-            let f = std::fs::File::create(&big_path).unwrap();
-            f.set_len(50 * 1024 * 1024 + 1).unwrap();
-        }
-        write_file(&co_dir.join("small.txt"), b"tiny");
-
-        let calls = Arc::new(Mutex::new(vec![]));
-        let uploader = make_uploader(calls.clone());
-        let skipped_keys = Arc::new(Mutex::new(vec![]));
-        let sk = skipped_keys.clone();
-
-        {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            let (_uploaded, skipped) = run_first_push(
-                root,
-                "bigco",
-                uploader,
-                |_, _, _| {},
-                move |key, _reason| {
-                    sk.lock().unwrap().push(key);
-                },
-            )
-            .await
-            .unwrap();
-            std::env::remove_var("HQ_STATE_DIR");
-
-            assert_eq!(skipped, 1, "huge.bin should be counted as skipped");
-            let sk_list = skipped_keys.lock().unwrap();
-            assert_eq!(sk_list.len(), 1);
-            assert!(sk_list[0].ends_with("huge.bin"), "skip key: {:?}", sk_list[0]);
-            let captured = calls.lock().unwrap();
-            assert_eq!(captured.len(), 1, "small.txt should have been uploaded");
-        }
-    }
-
-    // (c) Successful upload writes a journal entry with correct hash.
-    //     Also asserts the terminal progress event fires with done == total.
-    #[tokio::test]
-    async fn test_upload_writes_journal_entry() {
-        let tmp_state = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let co_dir = company_dir(root, "newco");
-        let content = b"Hello, world!";
-        write_file(&co_dir.join("README.md"), content);
-
-        let calls = Arc::new(Mutex::new(vec![]));
-        let uploader = make_uploader(calls.clone());
-        let progress_events = Arc::new(Mutex::new(vec![]));
-        let pe = progress_events.clone();
-
-        {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            let (uploaded, skipped) =
-                run_first_push(root, "newco", uploader, move |done, total, file| {
-                    pe.lock().unwrap().push((done, total, file));
-                }, |_, _| {})
-                    .await
-                    .unwrap();
-
-            assert_eq!(uploaded, 1);
-            assert_eq!(skipped, 0);
-
-            let journal = crate::util::journal::read_journal("newco").unwrap();
-            std::env::remove_var("HQ_STATE_DIR");
-
-            let key = "companies/newco/README.md";
-            assert!(journal.files.contains_key(key), "journal missing key {key}");
-            let entry = &journal.files[key];
-            let expected_hash = format!("{:x}", Sha256::digest(content));
-            assert_eq!(entry.hash, expected_hash);
-            assert_eq!(entry.size, content.len() as u64);
-
-            // Terminal progress event: last event must have done == total.
-            let events = progress_events.lock().unwrap();
-            let last = events.last().expect("at least one progress event");
-            assert_eq!(last.0, last.1, "terminal progress event must have done == total");
-        }
-    }
-
-    // (d) Retry-on-transient: uploader returns Transient for first 2 calls, Ok on 3rd.
-    #[tokio::test]
-    async fn test_retry_on_transient_error() {
-        let tmp_state = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let co_dir = company_dir(root, "retryco");
-        write_file(&co_dir.join("doc.md"), b"retry me");
-
-        let attempt_count = Arc::new(Mutex::new(0u32));
-        let ac = attempt_count.clone();
-        let uploader =
-            move |_key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
-                let ac = ac.clone();
-                Box::pin(async move {
-                    let mut count = ac.lock().unwrap();
-                    *count += 1;
-                    if *count < 3 {
-                        UploadOutcome::Transient(format!("503 attempt {}", *count))
-                    } else {
-                        UploadOutcome::Ok
-                    }
-                })
-            };
-
-        {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            let (uploaded, _) =
-                run_first_push(root, "retryco", uploader, |_, _, _| {}, |_, _| {})
-                    .await
-                    .unwrap();
-            std::env::remove_var("HQ_STATE_DIR");
-
-            assert_eq!(uploaded, 1, "file must be uploaded after retries");
-            assert_eq!(
-                *attempt_count.lock().unwrap(),
-                3,
-                "must have attempted 3 times"
-            );
-        }
-    }
-
-    // (e) Re-run with journal already populated → zero PutObject calls (idempotency).
-    #[tokio::test]
-    async fn test_rerun_skips_all_if_journal_matches() {
-        let tmp_state = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let co_dir = company_dir(root, "idempco");
-        let content = b"stable content";
-        write_file(&co_dir.join("file.md"), content);
-
-        {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-
-            // First run populates the journal
-            let calls1 = Arc::new(Mutex::new(vec![]));
-            run_first_push(
-                root,
-                "idempco",
-                make_uploader(calls1.clone()),
-                |_, _, _| {},
-                |_, _| {},
-            )
-            .await
-            .unwrap();
-            assert_eq!(calls1.lock().unwrap().len(), 1);
-
-            // Second run: same hash → zero uploads
-            let calls2 = Arc::new(Mutex::new(vec![]));
-            let (uploaded2, _) = run_first_push(
-                root,
-                "idempco",
-                make_uploader(calls2.clone()),
-                |_, _, _| {},
-                |_, _| {},
-            )
-            .await
-            .unwrap();
-
-            std::env::remove_var("HQ_STATE_DIR");
-
-            assert_eq!(uploaded2, 0, "second run must upload nothing");
-            assert!(
-                calls2.lock().unwrap().is_empty(),
-                "no PutObject calls expected on re-run"
-            );
-        }
-    }
-
-    // (f) Partial failure: uploader returns Ok for the first file it sees,
-    //     Permanent for the second. The journal must contain the first file's
-    //     entry, and a re-run must NOT re-upload it (idempotency after
-    //     mid-stream failure).
-    #[tokio::test]
-    async fn test_partial_failure_persists_prior_entries() {
-        let tmp_state = TempDir::new().unwrap();
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let co_dir = company_dir(root, "partco");
-
-        write_file(&co_dir.join("file1.txt"), b"first file");
-        write_file(&co_dir.join("file2.txt"), b"second file");
-
-        let call_count = Arc::new(Mutex::new(0u32));
-        let first_uploaded_key: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-
-        let cc = call_count.clone();
-        let fuk = first_uploaded_key.clone();
-        let uploader = move |key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
-            let cc = cc.clone();
-            let fuk = fuk.clone();
-            Box::pin(async move {
-                let mut n = cc.lock().unwrap();
-                *n += 1;
-                if *n == 1 {
-                    *fuk.lock().unwrap() = key;
-                    UploadOutcome::Ok
-                } else {
-                    UploadOutcome::Permanent("403 IAM propagation".into())
-                }
-            })
+    /// The EntityContext payload must serialize with camelCase keys to
+    /// match `@indigoai-us/hq-cloud`'s `EntityContext` interface — that's
+    /// the cross-language contract the CLI relies on. If this test fails,
+    /// `share()` will reject the stdin JSON and first-push will break.
+    #[test]
+    fn entity_context_serializes_camel_case() {
+        let payload = EntityContextPayload {
+            uid: "cmp_01H".to_string(),
+            slug: "acme".to_string(),
+            bucket_name: "hq-vault-cmp-01h".to_string(),
+            region: "us-east-1".to_string(),
+            credentials: EntityCredentials {
+                access_key_id: "ASIA".to_string(),
+                secret_access_key: "secret".to_string(),
+                session_token: "token".to_string(),
+            },
+            expires_at: "2026-04-27T22:00:00Z".to_string(),
         };
+        let json_str = serde_json::to_string(&payload).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
-        {
-            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+        // Top-level keys: every snake_case field must serialize to camelCase.
+        assert_eq!(parsed["uid"], "cmp_01H");
+        assert_eq!(parsed["slug"], "acme");
+        assert_eq!(parsed["bucketName"], "hq-vault-cmp-01h");
+        assert_eq!(parsed["region"], "us-east-1");
+        assert_eq!(parsed["expiresAt"], "2026-04-27T22:00:00Z");
+        // Nested credentials: same rule.
+        assert_eq!(parsed["credentials"]["accessKeyId"], "ASIA");
+        assert_eq!(parsed["credentials"]["secretAccessKey"], "secret");
+        assert_eq!(parsed["credentials"]["sessionToken"], "token");
+        // Anti-test: the snake_case keys must NOT be present (would mean
+        // serde rename_all isn't actually applied).
+        assert!(parsed.get("bucket_name").is_none());
+        assert!(parsed["credentials"].get("access_key_id").is_none());
+    }
 
-            // First run: first-visited file uploads ok, second fails permanently.
-            let result = run_first_push(root, "partco", uploader, |_, _, _| {}, |_, _| {}).await;
-            assert!(result.is_err(), "expected Err on permanent upload failure");
+    /// `complete` event roundtrips into our `CliEvent` decoder and yields
+    /// the fields we read (filesUploaded, filesSkipped, aborted). Locks the
+    /// CLI ↔ Rust contract for the only event that determines success.
+    #[test]
+    fn cli_complete_event_round_trip() {
+        let line = json!({
+            "type": "complete",
+            "filesUploaded": 42,
+            "bytesUploaded": 12345,
+            "filesSkipped": 7,
+            "conflictPaths": ["a.md", "b.md"],
+            "aborted": false
+        })
+        .to_string();
+        let event: CliEvent = serde_json::from_str(&line).unwrap();
+        assert_eq!(event.event_type, "complete");
+        assert_eq!(event.rest.get("filesUploaded").and_then(|v| v.as_u64()), Some(42));
+        assert_eq!(event.rest.get("filesSkipped").and_then(|v| v.as_u64()), Some(7));
+        assert_eq!(event.rest.get("aborted").and_then(|v| v.as_bool()), Some(false));
+    }
 
-            let first_key = first_uploaded_key.lock().unwrap().clone();
-            assert!(!first_key.is_empty(), "uploader must have been called at least once");
+    /// `progress` event carries the `path` we surface to the UI as
+    /// `current_file`. Locks the field name (`path`, not `file` or `key`).
+    #[test]
+    fn cli_progress_event_round_trip() {
+        let line = json!({
+            "type": "progress",
+            "path": "knowledge/readme.md",
+            "bytes": 2048
+        })
+        .to_string();
+        let event: CliEvent = serde_json::from_str(&line).unwrap();
+        assert_eq!(event.event_type, "progress");
+        assert_eq!(
+            event.rest.get("path").and_then(|v| v.as_str()),
+            Some("knowledge/readme.md"),
+        );
+    }
 
-            // Journal must contain the first-uploaded entry despite the error.
-            let journal = crate::util::journal::read_journal("partco").unwrap();
-            assert!(
-                journal.files.contains_key(&first_key),
-                "journal must contain first-uploaded entry after partial failure; got keys: {:?}",
-                journal.files.keys().collect::<Vec<_>>()
-            );
+    /// `fatal` carries a `message` we surface as the Err string when the
+    /// subprocess exits non-zero. Locks the field name.
+    #[test]
+    fn cli_fatal_event_round_trip() {
+        let line = json!({
+            "type": "fatal",
+            "message": "vault auth expired mid-run"
+        })
+        .to_string();
+        let event: CliEvent = serde_json::from_str(&line).unwrap();
+        assert_eq!(event.event_type, "fatal");
+        assert_eq!(
+            event.rest.get("message").and_then(|v| v.as_str()),
+            Some("vault auth expired mid-run"),
+        );
+    }
 
-            // Re-run must skip the first-uploaded file (already in journal).
-            let rerun_calls = Arc::new(Mutex::new(vec![]));
-            let rc = rerun_calls.clone();
-            let rerun_uploader = move |key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
-                let rc = rc.clone();
-                Box::pin(async move {
-                    rc.lock().unwrap().push(key);
-                    UploadOutcome::Ok
-                })
-            };
-            let _ = run_first_push(root, "partco", rerun_uploader, |_, _, _| {}, |_, _| {}).await;
-
-            std::env::remove_var("HQ_STATE_DIR");
-
-            // Re-run must NOT have re-uploaded the first file.
-            let rerun_keys = rerun_calls.lock().unwrap();
-            assert!(
-                !rerun_keys.iter().any(|k| *k == first_key),
-                "re-run must not re-upload already-journaled file {first_key}; got: {:?}",
-                rerun_keys
-            );
-        }
+    /// Forward-compat: an unknown event type must parse cleanly so the
+    /// stream-reading loop can log-and-continue instead of crashing.
+    /// Without this, a future CLI version that adds (say) `{"type":"warn"}`
+    /// would silently break first-push for users on older AppBar builds.
+    #[test]
+    fn cli_unknown_event_type_parses_cleanly() {
+        let line = json!({
+            "type": "warn",
+            "code": "FUTURE_FEATURE",
+            "message": "hq-cli vN+1 emits a new event"
+        })
+        .to_string();
+        let event: CliEvent = serde_json::from_str(&line).unwrap();
+        assert_eq!(event.event_type, "warn");
+        // The unknown fields are captured in `rest` for logging.
+        assert!(event.rest.contains_key("code"));
+        assert!(event.rest.contains_key("message"));
     }
 }
