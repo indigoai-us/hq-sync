@@ -190,6 +190,11 @@ pub async fn run_cli_provision(
         .arg("provision")
         .arg("company")
         .arg(slug)
+        // AppBar always opts out of the CLI's post-provision share() — our own
+        // first_push_company runs with STS-vended per-company creds + Tauri
+        // progress events. Without this flag the same files would upload twice.
+        // (Full consolidation tracked as the punted Option C3 follow-up.)
+        .arg("--skip-initial-sync")
         .env("PATH", &path_env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
