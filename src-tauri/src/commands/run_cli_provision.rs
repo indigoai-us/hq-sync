@@ -60,8 +60,8 @@ use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
+use crate::util::hq_resolver::{self, HqInvocation};
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -172,28 +172,41 @@ pub async fn run_cli_provision(
     slug: &str,
     display_name: Option<&str>,
 ) -> Result<CliProvisionResult, CliProvisionError> {
-    let hq_bin = paths::resolve_bin("hq");
+    // `hq_resolver::resolve_hq()` self-heals when the user's local `hq`
+    // is missing or older than 5.7.0 by routing through `npx -y --package=
+    // @indigoai-us/hq-cli@^5.7.0 hq`. The capability probe is shared with
+    // first_push and cached for the AppBar process lifetime, so this call
+    // is free after the first invocation.
+    //
+    // Note: ^5.7.0 also covers the cloud-provision flags this command needs
+    // (`--skip-initial-sync` shipped in 5.6.1, `cloud provision company`
+    // shipped in 5.6.0), so the resolver's choice is safe here.
+    let invocation: HqInvocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
 
     log(
         "provision-cli",
         &format!(
-            "spawn: {hq_bin} cloud provision company {slug}{}",
+            "spawn ({}): hq cloud provision company {slug}{}",
+            invocation.label(),
             display_name
                 .map(|n| format!(" --name {n:?}"))
                 .unwrap_or_default()
         ),
     );
 
-    let mut cmd = Command::new(&hq_bin);
+    let mut cmd = invocation.command();
     cmd.arg("cloud")
         .arg("provision")
         .arg("company")
         .arg(slug)
         // AppBar always opts out of the CLI's post-provision share() — our own
         // first_push_company runs with STS-vended per-company creds + Tauri
-        // progress events. Without this flag the same files would upload twice.
-        // (Full consolidation tracked as the punted Option C3 follow-up.)
+        // progress events. Pre-C3 this comment said "would otherwise upload
+        // twice"; post-C3 we still want to keep this flag so the CLI doesn't
+        // perform a Cognito-credentialed upload before AppBar's vend-child
+        // upload runs (the two would race and produce different journal
+        // states).
         .arg("--skip-initial-sync")
         .env("PATH", &path_env)
         .stdin(Stdio::null())
@@ -211,7 +224,7 @@ pub async fn run_cli_provision(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| CliProvisionError::Spawn(format!("{hq_bin}: {e}")))?;
+        .map_err(|e| CliProvisionError::Spawn(format!("{}: {e}", invocation.label())))?;
 
     let stdout = child
         .stdout

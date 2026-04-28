@@ -1,3 +1,4 @@
+pub mod hq_resolver;
 pub mod ignore;
 pub mod journal;
 pub mod logfile;
