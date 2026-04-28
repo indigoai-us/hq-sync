@@ -79,7 +79,6 @@ use std::process::Stdio;
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
 
 use crate::commands::provision::ProvisionedCompany;
 use crate::commands::vault_client::{TaskScope, VaultClient, VendChildInput};
@@ -87,6 +86,7 @@ use crate::events::{
     SyncCompanyFirstPushCompleteEvent, SyncCompanyFirstPushProgressEvent,
     EVENT_SYNC_COMPANY_FIRST_PUSH_COMPLETE, EVENT_SYNC_COMPANY_FIRST_PUSH_PROGRESS,
 };
+use crate::util::hq_resolver::{self, HqInvocation};
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -188,26 +188,31 @@ pub async fn first_push_company(
     let payload_json = serde_json::to_string(&payload)
         .map_err(|e| format!("serialize EntityContext: {e}"))?;
 
-    // Step 3: Spawn `hq sync push --creds-from-stdin --json ...`. We use
-    // the same paths::resolve_bin / paths::child_path trick run_cli_provision
-    // does so the binary is found regardless of how the Tauri app was
-    // launched (Dock-launched apps inherit a minimal launchd PATH that
-    // lacks /opt/homebrew/bin and the user's shell additions).
-    let hq_bin = paths::resolve_bin("hq");
+    // Step 3: Spawn `hq sync push --creds-from-stdin --json ...`.
+    //
+    // `hq_resolver::resolve_hq()` decides whether to invoke a local `hq`
+    // binary or fall back to `npx -y --package=@indigoai-us/hq-cli@^5.7.0
+    // hq` based on a one-time capability probe (looks for the
+    // --creds-from-stdin flag in `hq sync push --help`). This makes the
+    // subprocess self-healing when the user's local `hq` is missing or
+    // older than 5.7.0 — the contract still works, just with a one-time
+    // npx cold-start cost.
+    let invocation: HqInvocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
     let company_dir = hq_root.join("companies").join(&company.slug);
 
     log(
         "first-push-cli",
         &format!(
-            "spawn: {hq_bin} sync push --creds-from-stdin --json --company {} --hq-root {} {}",
+            "spawn ({}): hq sync push --creds-from-stdin --json --company {} --hq-root {} {}",
+            invocation.label(),
             company.slug,
             hq_root.display(),
             company_dir.display(),
         ),
     );
 
-    let mut cmd = Command::new(&hq_bin);
+    let mut cmd = invocation.command();
     cmd.arg("sync")
         .arg("push")
         .arg("--creds-from-stdin")
@@ -231,7 +236,7 @@ pub async fn first_push_company(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("spawn `hq sync push` ({hq_bin}): {e}"))?;
+        .map_err(|e| format!("spawn `hq sync push` ({}): {e}", invocation.label()))?;
 
     // Step 4: Pipe payload JSON to the child's stdin, then close stdin so
     // the CLI's `for await (chunk of process.stdin)` loop terminates and
