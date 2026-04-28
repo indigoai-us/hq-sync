@@ -94,8 +94,8 @@ impl RunTotals {
 /// Singleton handle — only one sync at a time.
 const SYNC_HANDLE: &str = "hq-sync";
 
-/// Hard timeout for a sync run (10 minutes).
-const SYNC_TIMEOUT: Duration = Duration::from_secs(600);
+/// Hard timeout for a sync run (1 hour).
+const SYNC_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// SIGKILL delay after SIGTERM on cancel.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
@@ -527,7 +527,7 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
 /// - Only one sync can run at a time (singleton handle).
 /// - Emits typed sync events (see `events.rs`) to the Svelte renderer as
 ///   ndjson lines arrive.
-/// - Hard timeout of 10 minutes; the sync is cancelled if it exceeds this.
+/// - Hard timeout of 1 hour; the sync is cancelled if it exceeds this.
 ///
 /// Returns the handle string on success (always `"hq-sync"`).
 #[tauri::command]
