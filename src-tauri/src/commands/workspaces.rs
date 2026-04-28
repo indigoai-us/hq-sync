@@ -55,9 +55,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::commands::config::{HqConfig, MenubarPrefs};
-use crate::commands::provision::CompanyConfig;
 use crate::commands::sync::{resolve_jwt, resolve_vault_api_url};
-use crate::commands::vault_client::{CreateEntityInput, EntityInfo, MembershipInfo, VaultClient};
+use crate::commands::vault_client::{EntityInfo, MembershipInfo, VaultClient};
 use crate::util::journal::read_journal;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -852,14 +851,27 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
 
 // ── Tauri command: connect_workspace_to_cloud ─────────────────────────────────
 
-/// Provision a cloud bucket for the given local company `slug` and write BOTH:
-///   1. Per-folder `companies/{slug}/.hq/config.json` (authoritative runtime).
-///   2. Manifest patch with `cloud_uid` + `bucket_name` (best-effort —
-///      logs and continues if manifest is missing/broken).
+/// Provision a cloud bucket for the given local company `slug` by delegating
+/// to `hq cloud provision company <slug>` — the canonical CLI subcommand from
+/// `@indigoai-us/hq-cli` (introduced 2026-04-27).
 ///
-/// Idempotent: if an entity with this slug exists, we reuse its UID.
-/// Reconnect-safe: re-running on a Broken workspace re-finds the cloud entity
-/// and overwrites both records with the current truth.
+/// Single source of truth: the CLI handles GET-then-POST entity idempotency,
+/// atomic `companies/manifest.yaml` patch, atomic `companies/<slug>/.hq/config.json`
+/// write, and the initial sync via `share()`. We pre-validate locally so the
+/// user gets a fast UI error for trivially-bad inputs (empty slug, "personal",
+/// missing folder), then shell out for the real work.
+///
+/// Reconnect-safe: re-running on a Broken workspace re-runs the CLI, which
+/// reuses the existing cloud entity by slug and overwrites both records with
+/// the current truth — same behaviour as before, just executed in one place.
+///
+/// On exit code 3 (entity provisioned, manifest patched, config written, but
+/// initial sync failed) we return Err so the UI surfaces a notice — but the
+/// next sync run will pick up where the CLI left off.
+///
+/// `vault_client.rs` entity functions (`find_entity_by_slug`, `create_entity`,
+/// `provision_bucket`) are intentionally NOT used here anymore; they remain
+/// for membership lookups, telemetry, and STS vending elsewhere in the app.
 #[tauri::command]
 pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
     log("workspaces", &format!("connect: slug='{slug}' start"));
@@ -880,7 +892,11 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
     log("workspaces", &format!("connect '{slug}': hq_root={}", hq_root.display()));
 
     // Resolve the folder path. Prefer the manifest's `path` field when set
-    // (custom layouts); fall back to `companies/{slug}` for default HQs.
+    // (custom layouts); fall back to `companies/{slug}` for default HQs. We
+    // only use this to fail-fast if the user clicked Connect on a workspace
+    // whose local folder has been moved or deleted — the CLI itself also
+    // validates the directory exists, but the local check gives us a tighter
+    // UI error before we eat the subprocess startup cost.
     let folder = match read_manifest(&hq_root) {
         ManifestLoad::Present(entries) => entries
             .into_iter()
@@ -900,106 +916,37 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
         return Err(err);
     }
 
-    let vault_url = resolve_vault_api_url().map_err(|e| {
-        log("workspaces", &format!("connect '{slug}': vault_url resolve failed: {e}"));
-        e
-    })?;
-    let jwt = resolve_jwt().await.map_err(|e| {
-        log("workspaces", &format!("connect '{slug}': jwt resolve failed: {e}"));
-        e
-    })?;
-    let vault = VaultClient::new(&vault_url, &jwt);
-
+    // Forward the manifest/yaml-derived display name as `--name` so the CLI
+    // creates a friendly entity rather than defaulting to the bare slug.
     let display_name = read_local_company_name(&hq_root, &slug)
         .unwrap_or_else(|| humanize_slug(&slug));
+    log(
+        "workspaces",
+        &format!(
+            "connect '{slug}': delegating to `hq cloud provision company` (display={display_name:?})"
+        ),
+    );
 
-    log("workspaces", &format!("connect '{slug}': find_entity_by_slug start"));
-    let uid = match vault
-        .find_entity_by_slug("company", &slug)
-        .await
-        .map_err(|e| {
-            let err = format!("find_by_slug '{slug}': {e}");
-            log("workspaces", &format!("connect '{slug}': {err}"));
-            err
-        })? {
-        Some(info) => {
-            log("workspaces", &format!("connect '{slug}': found existing uid={}", info.uid));
-            info.uid
+    match crate::commands::run_cli_provision::run_cli_provision(&slug, Some(&display_name)).await {
+        Ok(result) => {
+            log(
+                "workspaces",
+                &format!(
+                    "connect '{slug}': complete cloud_uid={} bucket={} created_entity={} files_uploaded={:?}",
+                    result.cloud_uid,
+                    result.bucket_name,
+                    result.created_entity,
+                    result.initial_sync.files_uploaded,
+                ),
+            );
+            Ok(())
         }
-        None => {
-            log("workspaces", &format!("connect '{slug}': creating new entity"));
-            vault
-                .create_entity(&CreateEntityInput {
-                    entity_type: "company".to_string(),
-                    slug: slug.clone(),
-                    name: display_name,
-                    email: None,
-                    owner_uid: None,
-                })
-                .await
-                .map_err(|e| {
-                    let err = format!("create entity '{slug}': {e}");
-                    log("workspaces", &format!("connect '{slug}': {err}"));
-                    err
-                })?
-                .uid
-        }
-    };
-
-    log("workspaces", &format!("connect '{slug}': provision_bucket uid={uid}"));
-    let bucket = vault
-        .provision_bucket(&uid)
-        .await
-        .map_err(|e| {
-            let err = format!("provision_bucket for {uid}: {e}");
-            log("workspaces", &format!("connect '{slug}': {err}"));
-            err
-        })?;
-    log("workspaces", &format!("connect '{slug}': bucket={}", bucket.bucket_name));
-
-    // Write 1: per-folder .hq/config.json (authoritative for runtime).
-    let config = CompanyConfig {
-        company_uid: uid.clone(),
-        company_slug: slug.clone(),
-        bucket_name: bucket.bucket_name.clone(),
-        vault_api_url: vault_url,
-    };
-    let config_path = folder.join(".hq").join("config.json");
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            let err = format!("create_dir_all {}: {e}", parent.display());
-            log("workspaces", &format!("connect '{slug}': {err}"));
-            err
-        })?;
-    }
-    let body = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("serialize config: {e}"))?;
-    std::fs::write(&config_path, body).map_err(|e| {
-        let err = format!("write {}: {e}", config_path.display());
-        log("workspaces", &format!("connect '{slug}': {err}"));
-        err
-    })?;
-    log("workspaces", &format!("connect '{slug}': wrote config to {}", config_path.display()));
-
-    // Write 2: patch manifest (best-effort). A failure here doesn't roll back
-    // the per-folder config — runtime is correct, only audit/UI is degraded
-    // until the next connect or repair pass.
-    let manifest_path = hq_root.join("companies").join("manifest.yaml");
-    if manifest_path.exists() {
-        if let Err(e) = patch_manifest_with_cloud_info(
-            &manifest_path,
-            &slug,
-            &uid,
-            &bucket.bucket_name,
-        ) {
-            log("workspaces", &format!("manifest patch for '{slug}' failed (non-fatal): {e}"));
-        } else {
-            log("workspaces", &format!("connect '{slug}': manifest patched"));
+        Err(e) => {
+            let msg = format!("hq CLI failed for '{slug}': {e}");
+            log("workspaces", &msg);
+            Err(msg)
         }
     }
-
-    log("workspaces", &format!("connect '{slug}': complete"));
-    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

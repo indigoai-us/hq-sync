@@ -11,6 +11,7 @@ pub mod personal;
 pub mod prewarm;
 pub mod process;
 pub mod provision;
+pub mod run_cli_provision;
 pub mod settings;
 pub mod status;
 pub mod sync;
