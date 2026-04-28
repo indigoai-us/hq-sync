@@ -215,8 +215,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// See hq-pro ADR-0003 for the canonical-stage rationale.
 pub(crate) fn resolve_vault_api_url() -> Result<String, String> {
-    const DEFAULT_VAULT_API_URL: &str =
-        "https://4nfy67z28h.execute-api.us-east-1.amazonaws.com";
+    const DEFAULT_VAULT_API_URL: &str = "https://hqapi.getindigo.ai";
 
     if let Ok(url) = std::env::var("HQ_VAULT_API_URL") {
         if !url.is_empty() {
