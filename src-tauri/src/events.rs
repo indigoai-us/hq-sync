@@ -96,6 +96,28 @@ pub struct SyncCompleteEvent {
     pub aborted: bool,
 }
 
+/// `{type: "plan", company, filesToDownload, bytesToDownload, filesToUpload, bytesToUpload, filesToSkip, filesToConflict}`
+/// Stage-1 result from `hq-sync-runner` (≥5.5.0). Emitted once per company
+/// per direction — i.e. for `--direction both` a company emits one plan
+/// event for the push phase and another for the pull phase. The menubar
+/// uses these to compute an accurate progress denominator before
+/// transfers start, replacing the Rust-side `count_files_to_transfer`
+/// pre-pass that lived inline in `start_sync`. When connected to an
+/// older runner that doesn't emit `plan`, the pre-pass remains as a
+/// fallback (it computed the upload count only and never the
+/// pull-side count, so plan events strictly improve accuracy).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPlanEvent {
+    pub company: String,
+    pub files_to_download: u32,
+    pub bytes_to_download: u64,
+    pub files_to_upload: u32,
+    pub bytes_to_upload: u64,
+    pub files_to_skip: u32,
+    pub files_to_conflict: u32,
+}
+
 /// `{type: "all-complete", companiesAttempted, filesDownloaded, bytesDownloaded, errors}`
 /// Terminal event. Emitted exactly once after the fanout loop finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -126,6 +148,10 @@ pub enum SyncEvent {
     SetupNeeded,
     AuthError(SyncAuthErrorEvent),
     FanoutPlan(SyncFanoutPlanEvent),
+    /// Stage-1 result for a single company / direction. Optional in the
+    /// protocol — older runners (hq-cloud <5.5.0) skip it. When present,
+    /// arrives before any `Progress` events for that company.
+    Plan(SyncPlanEvent),
     Progress(SyncProgressEvent),
     Error(SyncErrorEvent),
     Complete(SyncCompleteEvent),
@@ -139,6 +165,10 @@ pub enum SyncEvent {
 pub const EVENT_SYNC_SETUP_NEEDED: &str = "sync:setup-needed";
 pub const EVENT_SYNC_AUTH_ERROR: &str = "sync:auth-error";
 pub const EVENT_SYNC_FANOUT_PLAN: &str = "sync:fanout-plan";
+/// Per-company / per-direction Stage-1 result from the runner (≥hq-cloud@5.5.0).
+/// Frontend uses these to refine the progress denominator established
+/// by the upstream `EVENT_SYNC_TOTALS` pre-pass.
+pub const EVENT_SYNC_PLAN: &str = "sync:plan";
 pub const EVENT_SYNC_PROGRESS: &str = "sync:progress";
 pub const EVENT_SYNC_ERROR: &str = "sync:error";
 pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";

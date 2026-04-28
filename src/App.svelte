@@ -62,6 +62,14 @@
   // per-file progress bar. 0 means pre-walk hasn't fired yet (or hit an
   // error); the UI falls back to workspace-level progress in that case.
   let syncTotalFiles = $state(0);
+  // Plan-event-derived denominator (hq-cloud@5.5.0+). Each plan event from
+  // the runner adds (filesToDownload + filesToUpload + filesToConflict)
+  // for one company / direction. When the runner is new enough to emit
+  // these, this gives us an accurate denominator for the progress bar
+  // that includes BOTH push and pull work — improving on the older
+  // upload-only `syncTotalFiles` from the Rust pre-pass. When 0, the
+  // UI falls back to `syncTotalFiles`.
+  let syncPlanTotalFiles = $state(0);
   // filesSkipped is not on sync:all-complete (backend only aggregates
   // filesDownloaded), so we sum it client-side from per-company complete
   // events. Lets the popover surface "Up to date" when everything was
@@ -74,6 +82,16 @@
     filesSkipped: number;
   } | null>(null);
   let syncErrorMessage = $state(''); // Last auth-error or error message
+
+  // Effective progress denominator. When the runner is new enough to emit
+  // Stage-1 plan events (hq-cloud@5.5.0+), `syncPlanTotalFiles` accumulates
+  // a more accurate count that includes both push and pull work; otherwise
+  // we fall through to the older Rust-side pre-pass total in
+  // `syncTotalFiles`. Either source is fine — the popover bar treats this
+  // as the denominator and renders honestly when it's still 0.
+  const effectiveTotalFiles = $derived(
+    syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles
+  );
   let showConflictModal = $state(false);
   let conflicts = $state<ConflictFile[]>([]);
   let showSettings = $state(false);
@@ -149,6 +167,7 @@
     personalFilesTotal = null;
     personalFirstPushDone = false;
     syncTotalFiles = 0;
+    syncPlanTotalFiles = 0;
     syncLastSummary = null;
     syncErrorMessage = '';
     await invoke('set_tray_state', { state: 'syncing' });
@@ -311,6 +330,29 @@
     unlisteners.push(
       await listen<{ totalFiles: number }>('sync:totals', async (event) => {
         syncTotalFiles = event.payload.totalFiles;
+      })
+    );
+
+    // Stage-1 plan events from the runner (hq-cloud@5.5.0+). Each plan
+    // event covers one company / direction (push or pull). Accumulating
+    // gives a denominator that includes BOTH push and pull work — the
+    // older `sync:totals` event only counted uploads. When connected to
+    // an older runner that doesn't emit plan, this stays at 0 and the
+    // UI falls back to syncTotalFiles automatically (the renderer below
+    // picks the larger of the two — see `progressDenominator` derived).
+    unlisteners.push(
+      await listen<{
+        company: string;
+        filesToDownload: number;
+        bytesToDownload: number;
+        filesToUpload: number;
+        bytesToUpload: number;
+        filesToSkip: number;
+        filesToConflict: number;
+      }>('sync:plan', async (event) => {
+        const { filesToDownload, filesToUpload, filesToConflict } = event.payload;
+        // Sum work across the run: each plan event adds its own slice.
+        syncPlanTotalFiles += filesToDownload + filesToUpload + filesToConflict;
       })
     );
 
@@ -558,7 +600,7 @@
       {personalFilesDone}
       {personalFilesTotal}
       {personalFirstPushDone}
-      {syncTotalFiles}
+      syncTotalFiles={effectiveTotalFiles}
       companies={syncCompanies}
       {workspaces}
       cloudReachable={workspacesCloudReachable}

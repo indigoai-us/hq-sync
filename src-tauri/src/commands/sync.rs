@@ -48,8 +48,8 @@ use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
     SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent,
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
-    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PROGRESS,
-    EVENT_SYNC_SETUP_NEEDED,
+    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PLAN,
+    EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -426,6 +426,13 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         SyncEvent::SetupNeeded => app.emit(EVENT_SYNC_SETUP_NEEDED, ()),
         SyncEvent::AuthError(payload) => app.emit(EVENT_SYNC_AUTH_ERROR, payload.clone()),
         SyncEvent::FanoutPlan(payload) => app.emit(EVENT_SYNC_FANOUT_PLAN, payload.clone()),
+        // Per-company / per-direction Stage-1 totals from `hq-sync-runner`
+        // (≥hq-cloud@5.5.0). Forwarded to the Svelte frontend so it can
+        // refine the progress denominator established by EVENT_SYNC_TOTALS
+        // before any per-file Progress events arrive. When connected to an
+        // older runner that doesn't emit Plan, this branch is simply never
+        // taken — the existing TOTALS-based denominator stays authoritative.
+        SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
         SyncEvent::Progress(payload) => app.emit(EVENT_SYNC_PROGRESS, payload.clone()),
         SyncEvent::Error(payload) => {
             // `classify_error_event` is the test-covered classification boundary;
@@ -1091,6 +1098,42 @@ mod tests {
                 assert_eq!(p.companies[0].slug, "indigo");
             }
             _ => panic!("Expected FanoutPlan event"),
+        }
+    }
+
+    /// Stage-1 plan event from hq-cloud@5.5.0 runner. Forwarded to the
+    /// frontend as `sync:plan` so the menubar can refine the progress
+    /// denominator before any per-file events arrive.
+    #[test]
+    fn test_parse_plan_ndjson() {
+        let line = r#"{"type":"plan","company":"indigo","filesToDownload":7,"bytesToDownload":4096,"filesToUpload":2,"bytesToUpload":1024,"filesToSkip":3,"filesToConflict":1}"#;
+        let event: SyncEvent = serde_json::from_str(line).unwrap();
+        match event {
+            SyncEvent::Plan(p) => {
+                assert_eq!(p.company, "indigo");
+                assert_eq!(p.files_to_download, 7);
+                assert_eq!(p.bytes_to_download, 4096);
+                assert_eq!(p.files_to_upload, 2);
+                assert_eq!(p.bytes_to_upload, 1024);
+                assert_eq!(p.files_to_skip, 3);
+                assert_eq!(p.files_to_conflict, 1);
+            }
+            _ => panic!("Expected Plan event"),
+        }
+    }
+
+    /// A pull-only plan (push counts zero) must still parse cleanly.
+    /// Mirrors what `sync()` emits in pull-only direction.
+    #[test]
+    fn test_parse_plan_ndjson_pull_only() {
+        let line = r#"{"type":"plan","company":"indigo","filesToDownload":5,"bytesToDownload":2048,"filesToUpload":0,"bytesToUpload":0,"filesToSkip":0,"filesToConflict":0}"#;
+        let event: SyncEvent = serde_json::from_str(line).unwrap();
+        match event {
+            SyncEvent::Plan(p) => {
+                assert_eq!(p.files_to_download, 5);
+                assert_eq!(p.files_to_upload, 0);
+            }
+            _ => panic!("Expected Plan event"),
         }
     }
 
