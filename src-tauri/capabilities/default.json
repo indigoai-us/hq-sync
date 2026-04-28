@@ -17,6 +17,7 @@
       "allow": [
         { "url": "https://*.auth.us-east-1.amazoncognito.com/*" },
         { "url": "https://*.execute-api.us-east-1.amazonaws.com/*" },
+        { "url": "https://hqapi.getindigo.ai/*" },
         { "url": "https://*.amazonaws.com/*" },
         { "url": "https://*.s3.amazonaws.com/*" },
         { "url": "https://*.s3.us-east-1.amazonaws.com/*" },
