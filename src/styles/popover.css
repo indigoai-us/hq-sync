@@ -1,5 +1,20 @@
 /* Popover shared styles — native-glass custom properties for light/dark mode */
 
+/* Disable text selection app-wide — this is a menubar utility, not a
+   document. Selection drags inside dense rows feel like a bug. Inputs and
+   textareas keep selection so users can still edit/copy from settings. */
+:root,
+:root *:not(input):not(textarea) {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 :root {
   /* Colors — dark mode defaults */
   --popover-bg: rgba(18, 18, 20, 0.68);

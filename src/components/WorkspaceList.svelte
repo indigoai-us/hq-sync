@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { open } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../lib/workspaces';
 
   interface Props {
@@ -69,6 +70,19 @@
     return d.toLocaleDateString();
   }
 
+  function isCompanyClickable(w: Workspace): boolean {
+    return w.kind === 'company' && (w.state === 'synced' || w.state === 'cloud-only');
+  }
+
+  async function handleOpenCompany(w: Workspace) {
+    if (!isCompanyClickable(w)) return;
+    try {
+      await open(`https://hq.getindigo.ai/companies/${w.slug}`);
+    } catch (err) {
+      console.error('Failed to open company URL:', err);
+    }
+  }
+
   async function handleConnect(slug: string) {
     // Block double-clicks while in flight.
     if (connectState[slug] === true) return;
@@ -121,7 +135,23 @@
         class="workspace-row"
         class:local-only={w.state === 'local-only'}
         class:broken={w.state === 'broken'}
+        class:clickable={isCompanyClickable(w)}
       >
+        {#if isCompanyClickable(w)}
+          <!-- Stretched-link pattern: a real <button> sits in the row-main
+               flow, and its ::after pseudo-element overlays the entire
+               .workspace-row to capture clicks anywhere on the row. The
+               sibling Connect button + status badge use position:relative
+               + z-index to stay above the overlay. No nested handlers, no
+               stopPropagation needed. -->
+          <button
+            class="row-link"
+            type="button"
+            onclick={() => handleOpenCompany(w)}
+            title={`Open ${w.displayName} in HQ`}
+            aria-label={`Open ${w.displayName} in HQ`}
+          ></button>
+        {/if}
         <div class="row-main">
           <div class="row-name-line">
             <span class="row-name" title={w.displayName}>{w.displayName}</span>
@@ -257,6 +287,7 @@
   }
 
   .workspace-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -267,6 +298,39 @@
 
   .workspace-row:hover {
     background: rgba(255, 255, 255, 0.025);
+  }
+
+  .workspace-row.clickable {
+    cursor: pointer;
+  }
+
+  /* Stretched-link button: invisible, zero-size, but its ::after expands to
+     fill the entire .workspace-row, making the whole row clickable while
+     keeping a real <button> in the DOM (proper keyboard + a11y semantics).
+     Sibling .row-action / .row-badge use z-index to stay above this overlay. */
+  .row-link {
+    appearance: none;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    width: 0;
+    height: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  .row-link::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+  }
+
+  .row-link:focus-visible::after {
+    outline: 1px solid var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    outline-offset: -1px;
   }
 
   .workspace-row.local-only {
@@ -326,6 +390,8 @@
   }
 
   .row-action {
+    position: relative;
+    z-index: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -385,6 +451,8 @@
   }
 
   .row-badge {
+    position: relative;
+    z-index: 1;
     flex-shrink: 0;
     padding: 0.125rem 0.4375rem;
     border-radius: 999px;
