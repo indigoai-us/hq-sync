@@ -56,6 +56,7 @@
 //! telemetry, STS vending, etc.) — only the cloud-promote callers were
 //! migrated.
 
+use std::path::Path;
 use std::process::Stdio;
 
 use serde::{Deserialize, Serialize};
@@ -152,13 +153,19 @@ impl From<CliProvisionError> for String {
 
 // ── Public entry point ───────────────────────────────────────────────────────
 
-/// Spawn `hq cloud provision company <slug> [--name <name>]` and parse the
-/// JSON result.
+/// Spawn `hq cloud provision company <slug> [--name <name>] --hq-root <root>`
+/// and parse the JSON result.
 ///
 /// * `slug` — company slug (must match a top-level key under `.companies` in
 ///   `companies/manifest.yaml`). The CLI rejects `"personal"` itself.
 /// * `display_name` — optional human-readable name forwarded as `--name`.
 ///   Falls back to the CLI's default (the slug) when None.
+/// * `hq_root` — absolute path to the user's HQ folder. Forwarded as
+///   `--hq-root <path>` AND set as the subprocess `current_dir`. Without
+///   this the CLI defaults `--hq-root` to `~/hq` and bails with
+///   `companies/manifest.yaml not found at /Users/<u>/hq/companies/manifest.yaml`
+///   for any user whose HQ folder isn't at the lowercase default — exit 2
+///   silently propagates back to the menubar with no UI feedback.
 ///
 /// Stderr lines are tee'd into `~/.hq/logs/hq-sync.log` under the
 /// `provision-cli` tag so a hung or failed provision leaves a trail.
@@ -171,6 +178,7 @@ impl From<CliProvisionError> for String {
 pub async fn run_cli_provision(
     slug: &str,
     display_name: Option<&str>,
+    hq_root: &Path,
 ) -> Result<CliProvisionResult, CliProvisionError> {
     // `hq_resolver::resolve_hq()` self-heals when the user's local `hq`
     // is missing or older than 5.7.0 by routing through `npx -y --package=
@@ -187,8 +195,9 @@ pub async fn run_cli_provision(
     log(
         "provision-cli",
         &format!(
-            "spawn ({}): hq cloud provision company {slug}{}",
+            "spawn ({}): hq cloud provision company {slug} --hq-root {}{}",
             invocation.label(),
+            hq_root.display(),
             display_name
                 .map(|n| format!(" --name {n:?}"))
                 .unwrap_or_default()
@@ -208,6 +217,15 @@ pub async fn run_cli_provision(
         // upload runs (the two would race and produce different journal
         // states).
         .arg("--skip-initial-sync")
+        // Pass the resolved HQ folder explicitly. The CLI defaults
+        // `--hq-root` to `~/hq` (lowercase) — if the user's HQ folder is
+        // anywhere else (e.g. `~/Documents/HQ`), the CLI exits 2 with
+        // "companies/manifest.yaml not found at ..." and the menubar shows
+        // nothing. `current_dir` is set to the same path as belt-and-
+        // suspenders for any future code path that reads cwd-relative.
+        .arg("--hq-root")
+        .arg(hq_root)
+        .current_dir(hq_root)
         .env("PATH", &path_env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

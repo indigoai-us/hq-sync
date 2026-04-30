@@ -927,7 +927,7 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
         ),
     );
 
-    match crate::commands::run_cli_provision::run_cli_provision(&slug, Some(&display_name)).await {
+    match crate::commands::run_cli_provision::run_cli_provision(&slug, Some(&display_name), &hq_root).await {
         Ok(result) => {
             log(
                 "workspaces",

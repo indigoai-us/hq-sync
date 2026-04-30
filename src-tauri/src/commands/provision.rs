@@ -216,7 +216,7 @@ pub async fn provision_missing_companies(
         // this refactor exists to eliminate (see
         // workspace/reports/cloud-promote-architecture-2026-04-27.md).
         let display_name = company_yaml.name.as_deref();
-        match run_cli_provision(&folder_name, display_name).await {
+        match run_cli_provision(&folder_name, display_name, hq_root).await {
             Ok(cli_result) => {
                 result.push(ProvisionedCompany {
                     slug: folder_name,
