@@ -123,6 +123,28 @@ pub const RUNNER_BIN: &str = "hq-sync-runner";
 // Error reporting
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Render a process termination as a human-readable string. When `code` is
+/// `Some(N)`, the process called `exit(N)`. When `signal` is `Some(N)`, the
+/// OS killed it with that signal — name it (SIGKILL=9, SIGTERM=15, SIGSEGV=11,
+/// SIGBUS=10, SIGABRT=6) so "code unknown" no longer hides whether the runner
+/// was OOM-killed vs crashed vs cancelled.
+fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
+    if let Some(c) = code {
+        return format!("with code {}", c);
+    }
+    match signal {
+        Some(9) => "killed by SIGKILL (likely OOM or force-quit)".into(),
+        Some(15) => "killed by SIGTERM (cancelled)".into(),
+        Some(11) => "crashed with SIGSEGV (segfault)".into(),
+        Some(10) => "crashed with SIGBUS".into(),
+        Some(6) => "aborted with SIGABRT".into(),
+        Some(2) => "killed by SIGINT".into(),
+        Some(1) => "killed by SIGHUP".into(),
+        Some(n) => format!("killed by signal {}", n),
+        None => "with code unknown".into(),
+    }
+}
+
 /// Emit a `sync:error` Tauri event AND capture the message to Sentry.
 ///
 /// Used at exactly one call site today: the runner non-zero exit handler
@@ -785,15 +807,13 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
-            ProcessEvent::Exit { code, success } => {
-                log(
-                    "sync",
-                    &format!(
-                        "runner exited: success={} code={}",
-                        success,
-                        code.map(|c| c.to_string()).unwrap_or_else(|| "unknown".into()),
-                    ),
-                );
+            ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } => {
+                let exit_desc = describe_exit(code, signal);
+                log("sync", &format!("runner exited: success={} {}", success, exit_desc));
                 // The runner exits 0 for recoverable conditions (setup-needed,
                 // auth-error) — those surface as ndjson events before exit, so
                 // the frontend already knows. A non-zero exit means the runner
@@ -804,11 +824,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                         crate::events::SyncErrorEvent {
                             company: None,
                             path: "(runner)".to_string(),
-                            message: format!(
-                                "hq-sync-runner exited with code {}",
-                                code.map(|c| c.to_string())
-                                    .unwrap_or_else(|| "unknown".to_string())
-                            ),
+                            message: format!("hq-sync-runner exited {}", exit_desc),
                         },
                     );
                 } else {
@@ -886,6 +902,42 @@ pub fn cancel_sync() -> bool {
 mod tests {
     use super::*;
     use crate::commands::cognito::CognitoTokens;
+
+    // ── describe_exit ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn describe_exit_with_normal_exit_code() {
+        assert_eq!(describe_exit(Some(0), None), "with code 0");
+        assert_eq!(describe_exit(Some(1), None), "with code 1");
+        assert_eq!(describe_exit(Some(127), None), "with code 127");
+    }
+
+    #[test]
+    fn describe_exit_names_well_known_signals() {
+        assert!(describe_exit(None, Some(9)).contains("SIGKILL"));
+        assert!(describe_exit(None, Some(15)).contains("SIGTERM"));
+        assert!(describe_exit(None, Some(11)).contains("SIGSEGV"));
+        assert!(describe_exit(None, Some(10)).contains("SIGBUS"));
+        assert!(describe_exit(None, Some(6)).contains("SIGABRT"));
+        assert!(describe_exit(None, Some(2)).contains("SIGINT"));
+        assert!(describe_exit(None, Some(1)).contains("SIGHUP"));
+    }
+
+    #[test]
+    fn describe_exit_falls_back_to_signal_number() {
+        assert_eq!(describe_exit(None, Some(31)), "killed by signal 31");
+    }
+
+    #[test]
+    fn describe_exit_with_neither_returns_unknown() {
+        assert_eq!(describe_exit(None, None), "with code unknown");
+    }
+
+    #[test]
+    fn describe_exit_prefers_code_over_signal() {
+        // Should never happen in practice (POSIX is XOR), but be defensive.
+        assert_eq!(describe_exit(Some(42), Some(9)), "with code 42");
+    }
 
     // ── resolve_jwt_impl ─────────────────────────────────────────────────────────
 

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
-use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -46,9 +46,15 @@ pub struct StderrEvent {
 }
 
 /// Payload for the terminal `process://{handle}/exit` event.
+///
+/// `signal` is `Some(N)` only when the OS killed the process with a Unix
+/// signal — in that case `code` is `None`. Distinguishes "runner crashed
+/// with SIGSEGV" (signal=11) from "runner OOM-killed" (signal=9) from
+/// "runner cancelled" (signal=15) from a normal `exit(code)`.
 #[derive(Debug, Serialize, Clone)]
 pub struct ExitEvent {
     pub code: Option<i32>,
+    pub signal: Option<i32>,
     pub success: bool,
 }
 
@@ -147,7 +153,11 @@ fn mark_cancelled(handle: &str) -> bool {
 pub enum ProcessEvent {
     Stdout(String),
     Stderr(String),
-    Exit { code: Option<i32>, success: bool },
+    Exit {
+        code: Option<i32>,
+        signal: Option<i32>,
+        success: bool,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,6 +267,7 @@ where
     if let Some(err) = first_stream_err {
         on_event_mut(ProcessEvent::Exit {
             code: None,
+            signal: None,
             success: false,
         });
         return Err(err);
@@ -265,6 +276,7 @@ where
     let status = wait_result?;
     on_event_mut(ProcessEvent::Exit {
         code: status.code(),
+        signal: status.signal(),
         success: status.success(),
     });
 
@@ -318,6 +330,7 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
                 &format!("process://{}/exit", handle_bg),
                 ExitEvent {
                     code: Some(-1),
+                    signal: None,
                     success: false,
                 },
             );
@@ -337,10 +350,18 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
                     StderrEvent { line },
                 );
             }
-            ProcessEvent::Exit { code, success } => {
+            ProcessEvent::Exit {
+                code,
+                signal,
+                success,
+            } => {
                 let _ = app.emit(
                     &format!("process://{}/exit", handle_bg),
-                    ExitEvent { code, success },
+                    ExitEvent {
+                        code,
+                        signal,
+                        success,
+                    },
                 );
             }
         });
@@ -350,6 +371,7 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
                 &format!("process://{}/exit", handle_bg),
                 ExitEvent {
                     code: Some(-1),
+                    signal: None,
                     success: false,
                 },
             );

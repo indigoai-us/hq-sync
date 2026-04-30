@@ -233,7 +233,11 @@ pub fn start_daemon() -> Result<String, String> {
                     #[cfg(debug_assertions)]
                     eprintln!("[daemon stderr] {}", _line);
                 }
-                ProcessEvent::Exit { code, success: _ } => {
+                ProcessEvent::Exit {
+                    code,
+                    signal: _,
+                    success: _,
+                } => {
                     #[cfg(debug_assertions)]
                     eprintln!("[daemon] exited with code {:?}", code);
                 }
