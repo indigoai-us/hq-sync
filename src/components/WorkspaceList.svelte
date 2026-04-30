@@ -308,14 +308,17 @@
      fill the entire .workspace-row, making the whole row clickable while
      keeping a real <button> in the DOM (proper keyboard + a11y semantics).
      Sibling .row-action / .row-badge use z-index to stay above this overlay. */
+  /* Pulled out of the flex flow so it doesn't consume a slot or trigger
+     the row's `gap`, which would shift sibling content right on clickable
+     rows and visually misalign clickable vs. non-clickable rows. */
   .row-link {
+    position: absolute;
+    inset: 0;
     appearance: none;
     background: none;
     border: 0;
     padding: 0;
     margin: 0;
-    width: 0;
-    height: 0;
     color: inherit;
     font: inherit;
     cursor: pointer;
