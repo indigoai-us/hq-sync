@@ -1,3 +1,4 @@
+pub mod app;
 pub mod auth;
 pub mod autostart;
 pub mod cognito;

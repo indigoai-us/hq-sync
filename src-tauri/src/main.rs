@@ -85,6 +85,7 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            commands::app::quit_app,
             commands::process::spawn_process,
             commands::process::cancel_process,
             commands::oauth::start_oauth_login,

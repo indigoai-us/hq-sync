@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SyncStats from './SyncStats.svelte';
   import ConflictModal from './ConflictModal.svelte';
@@ -194,9 +195,11 @@
 
   async function handleQuit() {
     try {
-      // For a menubar app, closing the window hides the popover.
-      // The Rust backend handles actual app exit via tray quit menu.
-      await getCurrentWindow().close();
+      // Mirror the tray's Quit menu item: terminate the process via the
+      // dedicated `quit_app` Rust command. We can't use window.close()
+      // here — the menubar-app close handler in main.rs intercepts that
+      // and only hides the popover, leaving the process running.
+      await invoke('quit_app');
     } catch (e) {
       console.error('Failed to quit:', e);
     }

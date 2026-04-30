@@ -478,5 +478,10 @@
 
   .toggle.active .toggle-knob {
     transform: translateX(16px);
+    /* Active pill is `--popover-primary` (white in dark mode, black in light).
+       Default knob is also white, so on dark mode the knob disappeared into
+       the pill. Flip the knob to the inverted contrast color when active so
+       it stays visible against the filled pill. */
+    background: var(--popover-primary-text, #111113);
   }
 </style>
