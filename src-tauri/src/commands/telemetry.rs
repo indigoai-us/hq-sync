@@ -10,7 +10,6 @@ use std::io::{Read, Seek, SeekFrom};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::commands::vault_client::{UsageBatch, VaultClient};
 use crate::commands::sync::resolve_vault_api_url;
@@ -66,15 +65,9 @@ fn save_cursor(cursor: &TelemetryCursor) -> Result<(), String> {
 
 // ── Sanitizer ─────────────────────────────────────────────────────────────────
 
-fn cwd_hash(cwd: &str) -> String {
-    let digest = Sha256::digest(cwd.as_bytes());
-    let hex = format!("{:x}", digest);
-    hex[..12.min(hex.len())].to_string()
-}
-
-/// Build an outgoing event row from the explicit KEEP allowlist.
-/// Unknown fields are dropped by default. Fields in the REMOVE list are absent
-/// because they are not in the KEEP list.
+/// Build an outgoing event row matching the server's KEEP allowlist
+/// (hq-pro vault-service /v1/usage). Any field outside this set is rejected
+/// by the server with `unexpected-event-field`, so we emit ONLY those fields.
 fn sanitize_row(row: &Value) -> Option<Value> {
     let obj = row.as_object()?;
     let mut out = serde_json::Map::new();
@@ -87,34 +80,32 @@ fn sanitize_row(row: &Value) -> Option<Value> {
         };
     }
 
-    copy_opt!("type");
-    copy_opt!("timestamp");
     copy_opt!("sessionId");
+    copy_opt!("timestamp");
     copy_opt!("uuid");
-    // parentUuid is explicitly kept (can be null)
-    copy_opt!("parentUuid");
-    copy_opt!("userType");
-    copy_opt!("entrypoint");
-
-    // cwdHash: sha256 of cwd, first 12 hex chars — never expose raw cwd
-    if let Some(cwd) = obj.get("cwd").and_then(|v| v.as_str()) {
-        out.insert("cwdHash".to_string(), Value::String(cwd_hash(cwd)));
-    }
-
+    copy_opt!("cwd");
     copy_opt!("gitBranch");
-    copy_opt!("version");
-    copy_opt!("requestId");
+    copy_opt!("userType");
 
-    // Extract message sub-fields into the top level
+    // Promote message.model and flatten message.usage.* into top-level
+    // camelCase fields the server expects.
     if let Some(msg) = obj.get("message").and_then(|v| v.as_object()) {
         if let Some(v) = msg.get("model") {
             out.insert("model".to_string(), v.clone());
         }
-        if let Some(v) = msg.get("role") {
-            out.insert("role".to_string(), v.clone());
-        }
-        if let Some(v) = msg.get("usage") {
-            out.insert("usage".to_string(), v.clone());
+        if let Some(usage) = msg.get("usage").and_then(|v| v.as_object()) {
+            if let Some(v) = usage.get("input_tokens") {
+                out.insert("inputTokens".to_string(), v.clone());
+            }
+            if let Some(v) = usage.get("output_tokens") {
+                out.insert("outputTokens".to_string(), v.clone());
+            }
+            if let Some(v) = usage.get("cache_creation_input_tokens") {
+                out.insert("cacheCreationInputTokens".to_string(), v.clone());
+            }
+            if let Some(v) = usage.get("cache_read_input_tokens") {
+                out.insert("cacheReadInputTokens".to_string(), v.clone());
+            }
         }
     }
 
@@ -563,16 +554,28 @@ mod tests {
         let posts: Vec<_> = reqs.iter().filter(|r| r.method == wiremock::http::Method::POST).collect();
         assert!(!posts.is_empty());
         let body: Value = serde_json::from_slice(&posts[0].body).unwrap();
+        // Server allowlist (KEEP_FIELDS in hq-pro vault-service /v1/usage):
+        //   sessionId, timestamp, uuid, cwd, gitBranch, userType, model,
+        //   inputTokens, outputTokens, cacheCreationInputTokens, cacheReadInputTokens
+        let allowed: std::collections::HashSet<&str> = [
+            "sessionId", "timestamp", "uuid", "cwd", "gitBranch", "userType",
+            "model", "inputTokens", "outputTokens",
+            "cacheCreationInputTokens", "cacheReadInputTokens",
+        ].into_iter().collect();
         for event in body["events"].as_array().unwrap() {
             let obj = event.as_object().unwrap();
-            for removed in &["content", "thinking", "text", "toolUseIds", "toolResults"] {
-                assert!(!obj.contains_key(*removed), "top-level `{}` must be absent", removed);
+            for key in obj.keys() {
+                assert!(
+                    allowed.contains(key.as_str()),
+                    "field `{}` is not in server allowlist",
+                    key,
+                );
             }
-            if let Some(msg) = obj.get("message") {
-                let msg_obj = msg.as_object().unwrap();
-                for removed in &["content", "thinking", "text", "stop_sequence", "id"] {
-                    assert!(!msg_obj.contains_key(*removed), "message.`{}` must be absent", removed);
-                }
+            // `message` must be flattened — no nested object should remain
+            assert!(!obj.contains_key("message"), "`message` must not be nested");
+            // Sensitive fields must be absent
+            for removed in &["content", "thinking", "text", "toolUseIds", "toolResults"] {
+                assert!(!obj.contains_key(*removed), "`{}` must be absent", removed);
             }
         }
     }
@@ -921,7 +924,21 @@ mod tests {
                     .expect("sanitize_row must return Some for valid rows");
                 let obj = sanitized.as_object().unwrap();
 
-                // No REMOVE field at top level
+                // Every sanitized field must be in the server's KEEP allowlist
+                let allowed: std::collections::HashSet<&str> = [
+                    "sessionId", "timestamp", "uuid", "cwd", "gitBranch", "userType",
+                    "model", "inputTokens", "outputTokens",
+                    "cacheCreationInputTokens", "cacheReadInputTokens",
+                ].into_iter().collect();
+                for key in obj.keys() {
+                    assert!(
+                        allowed.contains(key.as_str()),
+                        "fixture {:?}: field `{}` is not in server allowlist",
+                        entry.path(),
+                        key,
+                    );
+                }
+                // Sensitive fields must be absent at top level
                 for removed in &["content", "thinking", "text", "toolUseIds", "toolResults"] {
                     assert!(
                         !obj.contains_key(*removed),
@@ -930,7 +947,7 @@ mod tests {
                         removed,
                     );
                 }
-                // No REMOVE field inside `message` (there should be no `message` key after sanitization)
+                // `message` must be flattened
                 assert!(!obj.contains_key("message"),
                     "fixture {:?}: `message` must be flattened — no sub-object should remain",
                     entry.path());
