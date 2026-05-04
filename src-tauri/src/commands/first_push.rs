@@ -191,12 +191,12 @@ pub async fn first_push_company(
     // Step 3: Spawn `hq sync push --creds-from-stdin --json ...`.
     //
     // `hq_resolver::resolve_hq()` decides whether to invoke a local `hq`
-    // binary or fall back to `npx -y --package=@indigoai-us/hq-cli@^5.7.0
-    // hq` based on a one-time capability probe (looks for the
-    // --creds-from-stdin flag in `hq sync push --help`). This makes the
-    // subprocess self-healing when the user's local `hq` is missing or
-    // older than 5.7.0 — the contract still works, just with a one-time
-    // npx cold-start cost.
+    // binary or fall back to `npx -y --package=@indigoai-us/hq-cli@<range>
+    // hq` (range pinned by `HQ_CLI_NPM_RANGE`) based on a one-time
+    // capability probe (looks for the --creds-from-stdin flag in
+    // `hq sync push --help`). This makes the subprocess self-healing when
+    // the user's local `hq` is missing or older than the floor — the
+    // contract still works, just with a one-time npx cold-start cost.
     let invocation: HqInvocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
     let company_dir = hq_root.join("companies").join(&company.slug);

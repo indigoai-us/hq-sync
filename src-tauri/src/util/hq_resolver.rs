@@ -8,21 +8,25 @@
 //!
 //! Both contracts depend on flags that arrived in `@indigoai-us/hq-cli@5.7.0`
 //! (the C3 push flags) and earlier versions (`cloud provision company` in
-//! 5.6.0, `--skip-initial-sync` in 5.6.1). If the user's installed `hq`
-//! binary is missing, on a stale PATH, or older than 5.7.0, the subprocess
-//! fails with a cryptic error — "spawn ENOENT" or "unknown option
+//! 5.6.0, `--skip-initial-sync` in 5.6.1). The Path A demote-to-local flow
+//! shells out to `hq cloud demote company <slug> --force`, which arrived in
+//! `@indigoai-us/hq-cli@5.10.0`. If the user's installed `hq` binary is
+//! missing, on a stale PATH, or older than 5.10.0, the subprocess fails
+//! with a cryptic error — "spawn ENOENT" or "unknown option
 //! '--creds-from-stdin'" — that surfaces as a "Sync failed" toast in the
 //! menubar with no actionable hint.
 //!
 //! ## What it does
 //!
-//! Probes the local `hq sync push --help` output once per AppBar process
-//! and looks for `--creds-from-stdin` in stdout. If present, the local
-//! binary supports the C3 contract and we use it directly (fast path).
+//! Runs two `--help` probes against the local `hq` once per AppBar
+//! process: `hq sync push --help` must contain `--creds-from-stdin`
+//! (5.7-era flag), AND `hq cloud --help` must list the `demote`
+//! subcommand (5.10-era; required by Path A's tombstone branch).
+//! If both pass, the local binary is used directly (fast path).
 //! Otherwise we fall back to:
 //!
 //! ```text
-//! npx -y --package=@indigoai-us/hq-cli@^5.7.0 hq <args>
+//! npx -y --package=@indigoai-us/hq-cli@<HQ_CLI_NPM_RANGE> hq <args>
 //! ```
 //!
 //! Same pattern as `commands::sync::HQ_CLOUD_VERSION`'s npx pin for
@@ -51,7 +55,10 @@ use crate::util::paths;
 
 /// npm range used for the auto-fallback. Bump when AppBar starts depending
 /// on a flag introduced in a newer hq-cli version.
-pub const HQ_CLI_NPM_RANGE: &str = "^5.7.0";
+///
+/// Floor raised 5.7.0 → 5.10.0 to require `hq cloud demote company`, the
+/// CLI subcommand Path A shells out to when an entity is `deleted=true`.
+pub const HQ_CLI_NPM_RANGE: &str = "^5.10.0";
 
 /// Cached invocation decision for the current process.
 static HQ_INVOCATION: OnceLock<HqInvocation> = OnceLock::new();
@@ -124,13 +131,23 @@ fn probe() -> HqInvocation {
         return HqInvocation::Npx;
     }
 
-    if capability_probe_passes(&local) {
+    let (creds_ok, demote_ok) = (
+        capability_probe_creds_from_stdin(&local),
+        capability_probe_cloud_demote(&local),
+    );
+    if creds_ok && demote_ok {
         HqInvocation::Local(local)
     } else {
+        let missing = match (creds_ok, demote_ok) {
+            (false, false) => "--creds-from-stdin AND `cloud demote` subcommand",
+            (false, true) => "--creds-from-stdin",
+            (true, false) => "`cloud demote` subcommand",
+            (true, true) => unreachable!(),
+        };
         log(
             "hq-resolver",
             &format!(
-                "local `hq` at {local} failed C3 capability probe (missing --creds-from-stdin); \
+                "local `hq` at {local} failed capability probe (missing {missing}); \
                  falling back to npx. Hint: `npm install -g @indigoai-us/hq-cli@latest` to upgrade.",
             ),
         );
@@ -138,33 +155,50 @@ fn probe() -> HqInvocation {
     }
 }
 
+/// Common subprocess wrapper for capability probes. Spawns `bin <args>`,
+/// returns stdout on success, `None` on spawn-error or non-zero exit.
+/// Shared between the probes so a future probe addition is one helper call.
+fn run_help(bin: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(bin)
+        .args(args)
+        // Inherit PATH from parent so node-shebanged `hq` can find `node`.
+        .env("PATH", paths::child_path())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// True iff the local `hq` at `bin` supports the C3 subprocess contract.
 /// Probes `hq sync push --help` and looks for `--creds-from-stdin` in
-/// stdout — the canonical capability signal for this AppBar build.
+/// stdout — shipped in `@indigoai-us/hq-cli@5.7.0`.
 ///
 /// Capability-based check is more reliable than parsing `hq --version`
 /// because index.ts has a stale hardcoded version string that lies about
 /// the actual installed capabilities.
 ///
 /// ~100-300ms cold cost (one-time per AppBar startup).
-fn capability_probe_passes(bin: &str) -> bool {
-    let output = match Command::new(bin)
-        .args(["sync", "push", "--help"])
-        // Inherit PATH from parent so node-shebanged `hq` can find `node`.
-        .env("PATH", paths::child_path())
-        .output()
-    {
-        Ok(o) => o,
-        Err(_) => return false,
-    };
-    if !output.status.success() {
-        return false;
-    }
-    // Help text goes to stdout; we look for the literal flag name. If a
-    // future commander version changes the formatting, this still matches
-    // because the flag name itself is stable across formatting variants.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout.contains("--creds-from-stdin")
+fn capability_probe_creds_from_stdin(bin: &str) -> bool {
+    run_help(bin, &["sync", "push", "--help"])
+        .map(|s| s.contains("--creds-from-stdin"))
+        .unwrap_or(false)
+}
+
+/// True iff the local `hq` at `bin` supports `cloud demote company`,
+/// shipped in `@indigoai-us/hq-cli@5.10.0`. Probes `hq cloud --help` and
+/// looks for the literal `demote` subcommand line.
+///
+/// Required because `--creds-from-stdin` alone is a 5.7-era capability —
+/// a 5.7–5.9 local binary passes the C3 probe but lacks the demote
+/// subcommand AppBar's Path A relies on. Without this probe, those
+/// users would silently get `error: unknown command 'demote'` instead
+/// of the npx self-heal.
+fn capability_probe_cloud_demote(bin: &str) -> bool {
+    run_help(bin, &["cloud", "--help"])
+        .map(|s| s.contains("demote"))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -172,13 +206,13 @@ mod tests {
     use super::*;
 
     /// A bin path that doesn't exist must produce a `false` probe result
-    /// (not a panic, not a hang). This is the primary `Local → Npx`
-    /// fallback trigger and we lock the contract here.
+    /// (not a panic, not a hang) for both probes. This is the primary
+    /// `Local → Npx` fallback trigger and we lock the contract here.
     #[test]
-    fn capability_probe_rejects_nonexistent_binary() {
-        assert!(!capability_probe_passes(
-            "/nonexistent/path/to/hq-binary-xyz-123",
-        ));
+    fn capability_probes_reject_nonexistent_binary() {
+        let bogus = "/nonexistent/path/to/hq-binary-xyz-123";
+        assert!(!capability_probe_creds_from_stdin(bogus));
+        assert!(!capability_probe_cloud_demote(bogus));
     }
 
     /// The Npx invocation must build the exact npx argv shape the
