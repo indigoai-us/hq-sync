@@ -71,15 +71,28 @@ use crate::util::paths;
 /// Per-step sync result inside `CliProvisionResult`. Mirrors the CLI's
 /// `initial_sync` field — `ok: false` means the entity was provisioned but the
 /// follow-up `share()` call failed (exit code 3).
+///
+/// Every field is optional because the CLI's TS interface declares them all
+/// optional too: a happy-path run carries `ok` + counts; a failed run carries
+/// `ok: false` + `error`; and a `--skip-initial-sync` run (always used by
+/// AppBar) carries only `skipped: true`. Treating any of these as required
+/// caused serde to reject the skip payload silently and surface as
+/// "exit 0 but no JSON line on stdout".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CliInitialSync {
-    pub ok: bool,
+    #[serde(default)]
+    pub ok: Option<bool>,
     #[serde(default)]
     pub files_uploaded: Option<u64>,
     #[serde(default)]
     pub bytes_uploaded: Option<u64>,
     #[serde(default)]
     pub error: Option<String>,
+    /// True when the CLI was invoked with `--skip-initial-sync`. AppBar passes
+    /// this on every call because it owns its own STS-credentialed upload
+    /// pipeline (`first_push_company` + Tauri progress events).
+    #[serde(default)]
+    pub skipped: Option<bool>,
 }
 
 /// Parsed JSON result emitted on stdout by `hq cloud provision company`.
@@ -301,8 +314,12 @@ pub async fn run_cli_provision(
         .find(|l| !l.trim().is_empty())
         .map(|s| s.as_str());
 
-    let parsed: Option<CliProvisionResult> = last_json_line
-        .and_then(|l| serde_json::from_str::<CliProvisionResult>(l).ok());
+    let parse_result: Option<Result<CliProvisionResult, serde_json::Error>> =
+        last_json_line.map(serde_json::from_str::<CliProvisionResult>);
+    let parsed: Option<CliProvisionResult> = parse_result
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .cloned();
 
     let exit_code = status.code();
     log(
@@ -314,13 +331,27 @@ pub async fn run_cli_provision(
         ),
     );
 
+    // Differentiate the failure modes for the exit-0 path so the error message
+    // points at the actual cause: missing stdout vs. parse failure. The previous
+    // single message ("no JSON line on stdout") falsely accused the CLI when
+    // the real culprit was a Rust↔TS schema drift (e.g. CliInitialSync requiring
+    // `ok` while the CLI emitted `{ skipped: true }`).
+    let exit0_err = || -> CliProvisionError {
+        match (last_json_line, parse_result.as_ref()) {
+            (None, _) => CliProvisionError::Other(format!(
+                "exit 0 but no output on stdout for slug={slug}"
+            )),
+            (Some(line), Some(Err(e))) => CliProvisionError::Other(format!(
+                "exit 0 but stdout JSON failed to parse for slug={slug}: {e} (last_line={line:?})"
+            )),
+            (Some(_), _) => CliProvisionError::Other(format!(
+                "exit 0 but no JSON line on stdout for slug={slug} (last_line={last_json_line:?})"
+            )),
+        }
+    };
+
     match exit_code {
-        Some(0) => parsed.ok_or_else(|| {
-            CliProvisionError::Other(format!(
-                "exit 0 but no JSON line on stdout (last_line={:?})",
-                last_json_line
-            ))
-        }),
+        Some(0) => parsed.ok_or_else(exit0_err),
         Some(1) => Err(CliProvisionError::Network(format!(
             "exit 1 (vault) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
         ))),
@@ -375,7 +406,7 @@ mod tests {
         assert_eq!(r.cloud_uid, "cmp_01H123");
         assert_eq!(r.bucket_name, "hq-vault-cmp-01H123");
         assert_eq!(r.kms_key_id.as_deref(), Some("key-abc"));
-        assert!(r.initial_sync.ok);
+        assert_eq!(r.initial_sync.ok, Some(true));
         assert_eq!(r.initial_sync.files_uploaded, Some(42));
     }
 
@@ -422,11 +453,39 @@ mod tests {
         let r: CliProvisionResult = serde_json::from_str(&line).unwrap();
         assert!(!r.ok);
         assert_eq!(r.cloud_uid, "cmp_partial");
-        assert!(!r.initial_sync.ok);
+        assert_eq!(r.initial_sync.ok, Some(false));
         assert_eq!(
             r.initial_sync.error.as_deref(),
             Some("S3 PutObject failed: timeout"),
         );
+    }
+
+    /// AppBar always invokes the CLI with `--skip-initial-sync`, in which case
+    /// the CLI emits `initial_sync: { skipped: true }` (no `ok` field). The
+    /// Rust struct used to require `ok: bool`, so this payload silently failed
+    /// to deserialize and the caller surfaced "exit 0 but no JSON line on
+    /// stdout" — the actual stdout was fine, the parser was wrong. Lock the
+    /// contract here so it can't regress.
+    #[test]
+    fn deserialize_skip_initial_sync_payload() {
+        let line = json!({
+            "ok": true,
+            "company_slug": "bug2-verify",
+            "cloud_uid": "cmp_01KQSR92SNH",
+            "bucket_name": "hq-vault-cmp-01kqsr92snh21n8nba2r77zaqk",
+            "vault_api_url": "https://v",
+            "kms_key_id": null,
+            "created_entity": true,
+            "manifest_patched": true,
+            "config_written": true,
+            "initial_sync": { "skipped": true }
+        })
+        .to_string();
+        let r: CliProvisionResult = serde_json::from_str(&line).unwrap();
+        assert!(r.ok);
+        assert_eq!(r.initial_sync.skipped, Some(true));
+        assert_eq!(r.initial_sync.ok, None);
+        assert_eq!(r.initial_sync.files_uploaded, None);
     }
 
     #[test]
