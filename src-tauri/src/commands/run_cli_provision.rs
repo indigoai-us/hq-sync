@@ -194,12 +194,13 @@ pub async fn run_cli_provision(
     hq_root: &Path,
 ) -> Result<CliProvisionResult, CliProvisionError> {
     // `hq_resolver::resolve_hq()` self-heals when the user's local `hq`
-    // is missing or older than 5.7.0 by routing through `npx -y --package=
-    // @indigoai-us/hq-cli@^5.7.0 hq`. The capability probe is shared with
-    // first_push and cached for the AppBar process lifetime, so this call
-    // is free after the first invocation.
+    // is missing or older than the pinned floor (HQ_CLI_NPM_RANGE) by
+    // routing through `npx -y --package=@indigoai-us/hq-cli@<range> hq`.
+    // The capability probe is shared with first_push and cached for the
+    // AppBar process lifetime, so this call is free after the first
+    // invocation.
     //
-    // Note: ^5.7.0 also covers the cloud-provision flags this command needs
+    // The pinned range covers the cloud-provision flags this command needs
     // (`--skip-initial-sync` shipped in 5.6.1, `cloud provision company`
     // shipped in 5.6.0), so the resolver's choice is safe here.
     let invocation: HqInvocation = hq_resolver::resolve_hq();

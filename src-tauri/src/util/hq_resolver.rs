@@ -8,9 +8,11 @@
 //!
 //! Both contracts depend on flags that arrived in `@indigoai-us/hq-cli@5.7.0`
 //! (the C3 push flags) and earlier versions (`cloud provision company` in
-//! 5.6.0, `--skip-initial-sync` in 5.6.1). If the user's installed `hq`
-//! binary is missing, on a stale PATH, or older than 5.7.0, the subprocess
-//! fails with a cryptic error — "spawn ENOENT" or "unknown option
+//! 5.6.0, `--skip-initial-sync` in 5.6.1). The Path A demote-to-local flow
+//! shells out to `hq cloud demote company <slug> --force`, which arrived in
+//! `@indigoai-us/hq-cli@5.10.0`. If the user's installed `hq` binary is
+//! missing, on a stale PATH, or older than 5.10.0, the subprocess fails
+//! with a cryptic error — "spawn ENOENT" or "unknown option
 //! '--creds-from-stdin'" — that surfaces as a "Sync failed" toast in the
 //! menubar with no actionable hint.
 //!
@@ -22,7 +24,7 @@
 //! Otherwise we fall back to:
 //!
 //! ```text
-//! npx -y --package=@indigoai-us/hq-cli@^5.7.0 hq <args>
+//! npx -y --package=@indigoai-us/hq-cli@<HQ_CLI_NPM_RANGE> hq <args>
 //! ```
 //!
 //! Same pattern as `commands::sync::HQ_CLOUD_VERSION`'s npx pin for
@@ -51,7 +53,10 @@ use crate::util::paths;
 
 /// npm range used for the auto-fallback. Bump when AppBar starts depending
 /// on a flag introduced in a newer hq-cli version.
-pub const HQ_CLI_NPM_RANGE: &str = "^5.7.0";
+///
+/// Floor raised 5.7.0 → 5.10.0 to require `hq cloud demote company`, the
+/// CLI subcommand Path A shells out to when an entity is `deleted=true`.
+pub const HQ_CLI_NPM_RANGE: &str = "^5.10.0";
 
 /// Cached invocation decision for the current process.
 static HQ_INVOCATION: OnceLock<HqInvocation> = OnceLock::new();
