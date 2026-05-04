@@ -45,6 +45,13 @@ pub struct EntityInfo {
     pub status: String,
     /// Non-optional: server always writes `createdAt: now` on every createEntity.
     pub created_at: String,
+    /// Set when hq-pro has soft-tombstoned the entity (Settings → Delete
+    /// company). The DDB row + S3 bucket + memberships are preserved, but
+    /// every consumer (hq-console picker, hq-sync provision) must treat the
+    /// entity as gone. Optional because older hq-pro deploys don't surface
+    /// the flag at all.
+    #[serde(default)]
+    pub deleted: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -481,6 +488,60 @@ mod tests {
             .unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().uid, "cmp_y");
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_slug_surfaces_deleted_flag() {
+        // Soft-tombstoned company entities still exist in the slugTypeKey GSI,
+        // so /entity/by-slug returns them with `deleted: true` rather than 404.
+        // hq-sync's provision detector relies on this flag to demote-to-local
+        // instead of re-provisioning a fresh cloud company.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-slug/company/tombstoned"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_tomb", "slug": "tombstoned", "type": "company",
+                    "name": "Tomb", "status": "active",
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "deleted": true
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let entity = client(&server.uri())
+            .find_entity_by_slug("company", "tombstoned")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entity.deleted, Some(true));
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_slug_deleted_field_optional() {
+        // Older hq-pro deploys (and any non-company entity) have no `deleted`
+        // field. Must round-trip cleanly into None — failing to deserialize
+        // would block every sync against an older API version.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/by-slug/company/legacy"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_legacy", "slug": "legacy", "type": "company",
+                    "name": "Legacy", "status": "active",
+                    "createdAt": "2026-01-01T00:00:00Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let entity = client(&server.uri())
+            .find_entity_by_slug("company", "legacy")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(entity.deleted, None);
     }
 
     #[tokio::test]

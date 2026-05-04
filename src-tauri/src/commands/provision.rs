@@ -11,7 +11,11 @@
 //!      GET-then-POST idempotency, atomic manifest patch, atomic
 //!      `.hq/config.json` write, AND triggers an initial sync via `share()`.
 //!
-//! `company.yaml` is NEVER written back — the file is read-only from this module.
+//! `company.yaml` is read-only from this module with one deliberate exception:
+//! `demote_company_to_local` flips `cloud: true → false` when hq-pro has
+//! soft-tombstoned the cloud entity. Without that flip, the next sync would
+//! re-enter Path C and create a fresh cloud company — exactly what the user
+//! tried to avoid by hitting Delete in the console.
 //!
 //! ## Why Paths A + B stay inline (not CLI)
 //!
@@ -36,6 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::run_cli_provision::{run_cli_provision, CliProvisionError};
 use crate::commands::vault_client::VaultClient;
+use crate::util::logfile::log;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -91,6 +96,94 @@ fn write_company_config(config_path: &Path, config: &CompanyConfig) -> Result<()
     Ok(())
 }
 
+/// Flip `cloud: true` → `cloud: false` in `companies/{slug}/company.yaml` and
+/// preserve every other key. No-op when the field is already `false` or
+/// missing. Atomic (tmp + rename).
+fn flip_company_cloud_off(yaml_path: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(yaml_path)
+        .map_err(|e| format!("read {}: {e}", yaml_path.display()))?;
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes)
+        .map_err(|e| format!("parse {}: {e}", yaml_path.display()))?;
+    let mapping = value
+        .as_mapping_mut()
+        .ok_or_else(|| format!("{} root is not a mapping", yaml_path.display()))?;
+    mapping.insert(
+        serde_yaml::Value::String("cloud".to_string()),
+        serde_yaml::Value::Bool(false),
+    );
+    let serialized = serde_yaml::to_string(&value)
+        .map_err(|e| format!("serialize {}: {e}", yaml_path.display()))?;
+    let tmp = yaml_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, &serialized)
+        .map_err(|e| format!("write tmp {}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, yaml_path)
+        .map_err(|e| format!("rename {} → {}: {e}", tmp.display(), yaml_path.display()))?;
+    Ok(())
+}
+
+/// Remove `cloud_uid` and `bucket_name` from the `companies.{slug}` entry of
+/// `companies/manifest.yaml`. Other fields on the entry (e.g. `name`, `path`)
+/// are preserved. The slug entry itself is preserved so the company stays
+/// listed locally. No-op when the manifest is missing or doesn't have a
+/// matching slug entry.
+fn strip_manifest_cloud_for_slug(manifest_path: &Path, slug: &str) -> Result<(), String> {
+    if !manifest_path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(manifest_path)
+        .map_err(|e| format!("read manifest: {e}"))?;
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes)
+        .map_err(|e| format!("parse manifest: {e}"))?;
+    let companies_key = serde_yaml::Value::String("companies".to_string());
+    let Some(mapping) = value.as_mapping_mut() else {
+        return Ok(());
+    };
+    let Some(companies) = mapping.get_mut(&companies_key).and_then(|v| v.as_mapping_mut()) else {
+        return Ok(());
+    };
+    let slug_key = serde_yaml::Value::String(slug.to_string());
+    let Some(entry) = companies.get_mut(&slug_key).and_then(|v| v.as_mapping_mut()) else {
+        return Ok(());
+    };
+    entry.remove(&serde_yaml::Value::String("cloud_uid".to_string()));
+    entry.remove(&serde_yaml::Value::String("bucket_name".to_string()));
+    let serialized = serde_yaml::to_string(&value)
+        .map_err(|e| format!("serialize manifest: {e}"))?;
+    let tmp = manifest_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
+    std::fs::rename(&tmp, manifest_path)
+        .map_err(|e| format!("rename manifest: {e}"))?;
+    Ok(())
+}
+
+/// Convert a previously-cloud company to local-only after hq-pro has
+/// soft-tombstoned the cloud entity:
+///   1. Remove `companies/{slug}/.hq/config.json` (cloud-bound runtime cache).
+///   2. Flip `cloud: true → false` in `companies/{slug}/company.yaml` so the
+///      next sync doesn't re-enter the provision path.
+///   3. Strip `cloud_uid` + `bucket_name` from `companies/manifest.yaml`'s
+///      slug entry. The local folder + entry stays.
+///
+/// Idempotent: every step is no-op-safe when its target is already in the
+/// post-demote state. Tolerant of missing manifest / missing config — only
+/// the YAML flip needs to succeed for the demote to be stable.
+pub(crate) fn demote_company_to_local(hq_root: &Path, slug: &str) -> Result<(), String> {
+    let folder = hq_root.join("companies").join(slug);
+    let yaml_path = folder.join("company.yaml");
+    let config_path = folder.join(".hq").join("config.json");
+    let manifest_path = hq_root.join("companies").join("manifest.yaml");
+
+    if config_path.exists() {
+        std::fs::remove_file(&config_path)
+            .map_err(|e| format!("remove {}: {e}", config_path.display()))?;
+    }
+    if yaml_path.exists() {
+        flip_company_cloud_off(&yaml_path)?;
+    }
+    strip_manifest_cloud_for_slug(&manifest_path, slug)?;
+    Ok(())
+}
+
 // ── Core logic ────────────────────────────────────────────────────────────────
 
 /// Walk `$hq_root/companies/*/company.yaml`, detect unprovisioned `cloud: true`
@@ -143,6 +236,29 @@ pub async fn provision_missing_companies(
         // ── Path A: config.json already present ────────────────────────────────
         if hq_config_path.exists() {
             match vault.find_entity_by_slug("company", &folder_name).await {
+                Ok(Some(info)) if info.deleted == Some(true) => {
+                    // Cloud entity tombstoned via hq-console (Settings → Delete).
+                    // Demote to local-only: drop .hq/config.json + manifest cloud
+                    // refs and flip company.yaml `cloud: true → false`. Skip the
+                    // re-provision path so we don't silently mint a fresh
+                    // cloud company the user just deleted.
+                    log(
+                        "provision",
+                        &format!(
+                            "demote '{}': cloud entity is soft-tombstoned (deleted=true), converting to local-only",
+                            folder_name
+                        ),
+                    );
+                    if let Err(e) = demote_company_to_local(hq_root, &folder_name) {
+                        // Non-fatal: log + skip. The next sync re-detects
+                        // deleted=true and tries again.
+                        log(
+                            "provision",
+                            &format!("demote '{folder_name}' failed (non-fatal): {e}"),
+                        );
+                    }
+                    continue;
+                }
                 Ok(Some(_)) => continue, // provisioned and verified
                 Ok(None) => {
                     // Stale config — entity gone; remove and fall through to re-provision
@@ -671,5 +787,171 @@ mod tests {
         let written: CompanyConfig =
             serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
         assert_eq!(written.company_uid, "cmp_created");
+    }
+
+    // ── demote_company_to_local ─────────────────────────────────────────────────
+
+    fn read_yaml_value(path: &Path) -> serde_yaml::Value {
+        serde_yaml::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    /// Helper: minimal happy-path manifest with one slug entry carrying cloud refs.
+    fn write_manifest(root: &Path, slug: &str) {
+        let dir = root.join("companies");
+        std::fs::create_dir_all(&dir).unwrap();
+        let body = format!(
+            "companies:\n  {slug}:\n    name: Acme\n    cloud_uid: cmp_old\n    bucket_name: hq-vault-cmp-old\n"
+        );
+        std::fs::write(dir.join("manifest.yaml"), body).unwrap();
+    }
+
+    #[test]
+    fn demote_clears_config_flips_yaml_strips_manifest_cloud() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let yaml_path = setup_company(
+            tmp.path(),
+            slug,
+            Some("cloud: true\nname: Acme\n"),
+        );
+        let hq_dir = tmp.path().join("companies").join(slug).join(".hq");
+        std::fs::create_dir_all(&hq_dir).unwrap();
+        std::fs::write(hq_dir.join("config.json"), "{}").unwrap();
+        write_manifest(tmp.path(), slug);
+
+        demote_company_to_local(tmp.path(), slug).unwrap();
+
+        // .hq/config.json removed.
+        assert!(!hq_dir.join("config.json").exists());
+        // company.yaml has cloud: false.
+        let yaml = read_yaml_value(&yaml_path);
+        assert_eq!(
+            yaml.get("cloud").and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            yaml.get("name").and_then(serde_yaml::Value::as_str),
+            Some("Acme")
+        );
+        // manifest entry kept, cloud_uid + bucket_name stripped.
+        let manifest = read_yaml_value(&tmp.path().join("companies").join("manifest.yaml"));
+        let entry = manifest
+            .get("companies")
+            .and_then(|v| v.get(slug))
+            .and_then(serde_yaml::Value::as_mapping)
+            .unwrap();
+        assert!(!entry.contains_key("cloud_uid"));
+        assert!(!entry.contains_key("bucket_name"));
+        // Other fields (e.g. `name`) preserved.
+        assert!(entry.contains_key("name"));
+    }
+
+    #[test]
+    fn demote_is_idempotent_when_already_local() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let yaml_path = setup_company(
+            tmp.path(),
+            slug,
+            Some("cloud: false\nname: Acme\n"),
+        );
+        // No .hq/config.json. Manifest with no cloud refs.
+        std::fs::create_dir_all(tmp.path().join("companies")).unwrap();
+        std::fs::write(
+            tmp.path().join("companies").join("manifest.yaml"),
+            format!("companies:\n  {slug}:\n    name: Acme\n"),
+        )
+        .unwrap();
+
+        demote_company_to_local(tmp.path(), slug).unwrap();
+
+        let yaml = read_yaml_value(&yaml_path);
+        assert_eq!(
+            yaml.get("cloud").and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn demote_tolerates_missing_manifest() {
+        // A user could have a company folder + yaml but no top-level manifest.
+        // Demote must not blow up — the .hq/config.json delete + cloud:false
+        // flip are still meaningful.
+        let tmp = TempDir::new().unwrap();
+        let slug = "acme";
+        let yaml_path = setup_company(
+            tmp.path(),
+            slug,
+            Some("cloud: true\nname: Acme\n"),
+        );
+
+        demote_company_to_local(tmp.path(), slug).unwrap();
+
+        let yaml = read_yaml_value(&yaml_path);
+        assert_eq!(
+            yaml.get("cloud").and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
+    }
+
+    // ── Path A: deleted=true triggers demote, NOT re-provision ──────────────────
+
+    #[tokio::test]
+    async fn config_json_present_and_entity_deleted_demotes_silently() {
+        let tmp = TempDir::new().unwrap();
+        let slug = "tombstoned";
+        let yaml_path = setup_company(
+            tmp.path(),
+            slug,
+            Some("cloud: true\nname: Tomb\n"),
+        );
+        let hq_dir = tmp.path().join("companies").join(slug).join(".hq");
+        std::fs::create_dir_all(&hq_dir).unwrap();
+        let cfg = CompanyConfig {
+            company_uid: "cmp_tomb".to_string(),
+            company_slug: slug.to_string(),
+            bucket_name: "hq-vault-cmp-tomb".to_string(),
+            vault_api_url: VAULT_URL.to_string(),
+        };
+        std::fs::write(
+            hq_dir.join("config.json"),
+            serde_json::to_string_pretty(&cfg).unwrap(),
+        )
+        .unwrap();
+        write_manifest(tmp.path(), slug);
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/entity/by-slug/company/{slug}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&serde_json::json!({
+                "entity": {
+                    "uid": "cmp_tomb", "slug": slug, "type": "company",
+                    "name": "Tomb", "status": "active",
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "deleted": true
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
+            .await
+            .unwrap();
+
+        // Demoted, not re-provisioned: no entries in result, no POST traffic.
+        assert!(result.is_empty(), "deleted company must not be re-provisioned");
+        let reqs = server.received_requests().await.unwrap();
+        assert!(
+            reqs.iter().all(|r| r.method == wiremock::http::Method::GET),
+            "demote path must not POST to /entity or /provision/bucket"
+        );
+
+        // Demote side-effects landed.
+        assert!(!hq_dir.join("config.json").exists());
+        let yaml = read_yaml_value(&yaml_path);
+        assert_eq!(
+            yaml.get("cloud").and_then(serde_yaml::Value::as_bool),
+            Some(false)
+        );
     }
 }

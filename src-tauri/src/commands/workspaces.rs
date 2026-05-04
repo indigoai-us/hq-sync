@@ -965,6 +965,7 @@ mod tests {
             bucket_name: bucket.map(str::to_string),
             status: "active".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
+            deleted: None,
         }
     }
 
@@ -977,6 +978,7 @@ mod tests {
             bucket_name: Some(format!("hq-vault-{}", uid.replace('_', "-"))),
             status: "active".into(),
             created_at: "2026-02-01T00:00:00Z".into(),
+            deleted: None,
         }
     }
 
