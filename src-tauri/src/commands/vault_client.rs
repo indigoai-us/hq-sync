@@ -45,6 +45,13 @@ pub struct EntityInfo {
     pub status: String,
     /// Non-optional: server always writes `createdAt: now` on every createEntity.
     pub created_at: String,
+    /// Soft-tombstone flag set by `DELETE /entity/{uid}`. The vault still
+    /// returns the row from `GET /entity/{uid}` and `GET /membership/person/...`,
+    /// so callers must check this themselves to avoid rendering tombstoned
+    /// companies as live. Defaults to false for forward-compat with older
+    /// vault responses that omit the field.
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -635,6 +642,53 @@ mod tests {
         assert_eq!(info.uid, "cmp_x");
         assert_eq!(info.slug, "acme");
         assert_eq!(info.bucket_name.as_deref(), Some("hq-vault-cmp-x"));
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_uid_carries_deleted_flag() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_tomb"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_tomb", "slug": "deleted-co", "type": "company",
+                    "name": "Deleted Co", "bucketName": "hq-vault-cmp-tomb",
+                    "status": "active", "createdAt": "2026-01-01T00:00:00Z",
+                    "deleted": true
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let info = client(&server.uri())
+            .find_entity_by_uid("cmp_tomb")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(info.deleted);
+    }
+
+    #[tokio::test]
+    async fn find_entity_by_uid_deleted_defaults_false_when_absent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/entity/cmp_live"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "entity": {
+                    "uid": "cmp_live", "slug": "acme", "type": "company",
+                    "name": "Acme", "bucketName": "hq-vault-cmp-live",
+                    "status": "active", "createdAt": "2026-01-01T00:00:00Z"
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let info = client(&server.uri())
+            .find_entity_by_uid("cmp_live")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!info.deleted);
     }
 
     #[tokio::test]

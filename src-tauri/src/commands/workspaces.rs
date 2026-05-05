@@ -488,6 +488,129 @@ pub(crate) fn add_manifest_entry_for_synced_company(
     Ok(())
 }
 
+/// Strip `cloud_uid` + `bucket_name` from a slug's manifest entry. Used when
+/// we detect the cloud entity for that slug has been deleted (manifest had a
+/// cloud_uid, cloud is reachable, no entity matches the slug). The entry stays
+/// in the manifest with its other fields intact; only the cloud pointers are
+/// removed so the workspace falls back to LocalOnly.
+///
+/// Idempotent: missing slug entries or already-clean entries are a no-op. No
+/// write is performed if neither key was present.
+pub(crate) fn strip_manifest_cloud_info(
+    manifest_path: &Path,
+    slug: &str,
+) -> Result<(), String> {
+    let bytes = std::fs::read(manifest_path)
+        .map_err(|e| format!("read manifest: {e}"))?;
+    let mut value: serde_yaml::Value = serde_yaml::from_slice(&bytes)
+        .map_err(|e| format!("parse manifest: {e}"))?;
+
+    let companies_key = serde_yaml::Value::String("companies".to_string());
+    let mapping = value
+        .as_mapping_mut()
+        .ok_or_else(|| "manifest root is not a mapping".to_string())?;
+    let companies = match mapping
+        .get_mut(&companies_key)
+        .and_then(|v| v.as_mapping_mut())
+    {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    let slug_key = serde_yaml::Value::String(slug.to_string());
+    let entry = match companies
+        .get_mut(&slug_key)
+        .and_then(|v| v.as_mapping_mut())
+    {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+
+    let cloud_uid_key = serde_yaml::Value::String("cloud_uid".to_string());
+    let bucket_key = serde_yaml::Value::String("bucket_name".to_string());
+    let removed_uid = entry.remove(&cloud_uid_key).is_some();
+    let removed_bucket = entry.remove(&bucket_key).is_some();
+    if !removed_uid && !removed_bucket {
+        return Ok(());
+    }
+
+    let serialized = serde_yaml::to_string(&value)
+        .map_err(|e| format!("serialize manifest: {e}"))?;
+
+    let tmp = manifest_path.with_extension("yaml.tmp");
+    std::fs::write(&tmp, &serialized).map_err(|e| format!("write tmp manifest: {e}"))?;
+    std::fs::rename(&tmp, manifest_path)
+        .map_err(|e| format!("rename manifest: {e}"))?;
+
+    Ok(())
+}
+
+/// Detect manifest entries whose `cloud_uid` points at an entity that's no
+/// longer in the cloud (deleted from hq-console), and strip the cloud pointers
+/// so the workspace becomes LocalOnly instead of Broken.
+///
+/// Only triggers when:
+///   - cloud is reachable (otherwise we can't tell the entity is gone), AND
+///   - no `EntityInfo` in `company_entities` has a matching slug.
+///
+/// The disagree-on-UID case (cloud has slug but a different UID) is left as
+/// Broken so Connect can repoint the manifest in a single step.
+///
+/// Mutates `local_companies` in place: stripped entries have their
+/// `cloud_uid` / `bucket_name` cleared so the assemble pass produces
+/// LocalOnly. Best-effort: per-entry write failures are logged and the entry
+/// is left untouched (it'll show as Broken until the next pass).
+///
+/// Returns the number of entries successfully stripped.
+pub(crate) fn prune_dangling_cloud_uids(
+    hq_root: &Path,
+    local_companies: &mut [LocalCompanyEntry],
+    company_entities: &BTreeMap<String, EntityInfo>,
+    cloud_reachable: bool,
+) -> usize {
+    if !cloud_reachable {
+        return 0;
+    }
+    let manifest_path = hq_root.join("companies").join("manifest.yaml");
+    if !manifest_path.exists() {
+        return 0;
+    }
+
+    let mut pruned = 0usize;
+    for entry in local_companies.iter_mut() {
+        if entry.cloud_uid.is_none() {
+            continue;
+        }
+        let slug_in_cloud = company_entities
+            .values()
+            .any(|e| e.slug == entry.slug);
+        if slug_in_cloud {
+            continue;
+        }
+        match strip_manifest_cloud_info(&manifest_path, &entry.slug) {
+            Ok(()) => {
+                log(
+                    "workspaces",
+                    &format!(
+                        "prune: stripped manifest cloud_uid for '{}' (cloud entity gone)",
+                        entry.slug
+                    ),
+                );
+                entry.cloud_uid = None;
+                entry.bucket_name = None;
+                pruned += 1;
+            }
+            Err(e) => {
+                log(
+                    "workspaces",
+                    &format!("prune: strip '{}' failed: {e}", entry.slug),
+                );
+            }
+        }
+    }
+    pruned
+}
+
 /// Reconcile the manifest with the local `companies/*/` folder reality after a
 /// sync run. For each on-disk folder NOT in the manifest, look up the cloud
 /// entity by slug and either:
@@ -764,7 +887,7 @@ where
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
     let hq_folder_path = hq_root.to_string_lossy().to_string();
-    let (local_companies, manifest_error) = discover_local_companies(&hq_root);
+    let (mut local_companies, manifest_error) = discover_local_companies(&hq_root);
 
     let cloud_outcome: Result<
         (Option<EntityInfo>, Vec<MembershipInfo>, BTreeMap<String, EntityInfo>),
@@ -799,6 +922,21 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
             }
             match vault.find_entity_by_uid(&mem.company_uid).await {
                 Ok(Some(e)) => {
+                    // Tombstoned (DELETE /entity/{uid} via hq-console) — the
+                    // vault still returns the row but the company is "gone"
+                    // from the user's perspective. Drop it so downstream
+                    // assembly + the prune-dangling-cloud-uids pass treat
+                    // this slug as missing-from-cloud and surface LocalOnly.
+                    if e.deleted {
+                        log(
+                            "workspaces",
+                            &format!(
+                                "drop tombstoned entity {} (slug='{}') from cloud view",
+                                e.uid, e.slug
+                            ),
+                        );
+                        continue;
+                    }
                     entities.insert(mem.company_uid.clone(), e);
                 }
                 Ok(None) => {}
@@ -811,6 +949,14 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
                 }
             }
         }
+
+        // Drop memberships whose entity got filtered out above (tombstoned
+        // or 404). Keeps `assemble_workspaces` invariants clean — every
+        // membership it sees has a live entity in `entities`.
+        let memberships: Vec<MembershipInfo> = memberships
+            .into_iter()
+            .filter(|m| entities.contains_key(&m.company_uid))
+            .collect();
 
         Ok((person, memberships, entities))
     }
@@ -829,6 +975,11 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
             (false, Some(e), None, Vec::new(), BTreeMap::new())
         }
     };
+
+    // Auto-clean manifest entries whose cloud_uid points at a cloud entity
+    // that's no longer there (deleted via hq-console). Stripping the manifest
+    // pointers lets the entry render as LocalOnly instead of Broken.
+    prune_dangling_cloud_uids(&hq_root, &mut local_companies, &entities, cloud_reachable);
 
     let workspaces = assemble_workspaces(
         &hq_root,
@@ -965,6 +1116,7 @@ mod tests {
             bucket_name: bucket.map(str::to_string),
             status: "active".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
+            deleted: false,
         }
     }
 
@@ -977,6 +1129,7 @@ mod tests {
             bucket_name: Some(format!("hq-vault-{}", uid.replace('_', "-"))),
             status: "active".into(),
             created_at: "2026-02-01T00:00:00Z".into(),
+            deleted: false,
         }
     }
 
@@ -1488,6 +1641,137 @@ companies:
         let alpha = entries.iter().find(|e| e.slug == "alpha").unwrap();
         assert_eq!(alpha.cloud_uid.as_deref(), Some("cmp_NEW"));
         assert_eq!(alpha.bucket_name.as_deref(), Some("hq-vault-cmp-NEW"));
+    }
+
+    // ── strip_manifest_cloud_info / prune_dangling_cloud_uids ─────────────
+
+    #[test]
+    fn strip_manifest_cloud_info_removes_keys_keeps_other_fields() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  alpha:
+    name: "Alpha"
+    path: "companies/alpha"
+    cloud_uid: "cmp_GONE"
+    bucket_name: "hq-vault-cmp-gone"
+"#,
+        );
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+        strip_manifest_cloud_info(&manifest_path, "alpha").unwrap();
+
+        let (entries, _) = discover_local_companies(tmp.path());
+        let alpha = entries.iter().find(|e| e.slug == "alpha").unwrap();
+        assert!(alpha.cloud_uid.is_none());
+        assert!(alpha.bucket_name.is_none());
+        assert_eq!(alpha.display_name.as_deref(), Some("Alpha"));
+    }
+
+    #[test]
+    fn strip_manifest_cloud_info_idempotent_when_no_cloud_keys() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            "companies:\n  alpha:\n    name: \"Alpha\"\n    path: \"companies/alpha\"\n",
+        );
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+        strip_manifest_cloud_info(&manifest_path, "alpha").unwrap();
+        strip_manifest_cloud_info(&manifest_path, "missing-slug").unwrap();
+    }
+
+    #[test]
+    fn prune_strips_when_cloud_has_no_entity_for_slug() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  alpha:
+    name: "Alpha"
+    path: "companies/alpha"
+    cloud_uid: "cmp_GONE"
+    bucket_name: "hq-vault-cmp-gone"
+"#,
+        );
+        let mut entries = vec![local_full(
+            "alpha",
+            tmp.path(),
+            true,
+            Some("Alpha"),
+            Some("cmp_GONE"),
+            Some("hq-vault-cmp-gone"),
+        )];
+
+        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &BTreeMap::new(), true);
+        assert_eq!(pruned, 1);
+        assert!(entries[0].cloud_uid.is_none());
+        assert!(entries[0].bucket_name.is_none());
+
+        let (reread, _) = discover_local_companies(tmp.path());
+        let alpha = reread.iter().find(|e| e.slug == "alpha").unwrap();
+        assert!(alpha.cloud_uid.is_none());
+    }
+
+    #[test]
+    fn prune_skips_when_cloud_unreachable() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  alpha:
+    name: "Alpha"
+    path: "companies/alpha"
+    cloud_uid: "cmp_GONE"
+    bucket_name: "hq-vault-cmp-gone"
+"#,
+        );
+        let mut entries = vec![local_full(
+            "alpha",
+            tmp.path(),
+            true,
+            None,
+            Some("cmp_GONE"),
+            Some("hq-vault-cmp-gone"),
+        )];
+        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &BTreeMap::new(), false);
+        assert_eq!(pruned, 0);
+        assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_GONE"));
+    }
+
+    #[test]
+    fn prune_skips_when_cloud_has_slug_with_different_uid() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  alpha:
+    name: "Alpha"
+    path: "companies/alpha"
+    cloud_uid: "cmp_OLD"
+    bucket_name: "hq-vault-cmp-old"
+"#,
+        );
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_NEW".to_string(),
+            company_entity("cmp_NEW", "alpha", Some("Alpha")),
+        );
+        let mut entries = vec![local_full(
+            "alpha",
+            tmp.path(),
+            true,
+            None,
+            Some("cmp_OLD"),
+            Some("hq-vault-cmp-old"),
+        )];
+
+        let pruned = prune_dangling_cloud_uids(tmp.path(), &mut entries, &entities, true);
+        assert_eq!(pruned, 0);
+        assert_eq!(entries[0].cloud_uid.as_deref(), Some("cmp_OLD"));
     }
 
     #[test]
