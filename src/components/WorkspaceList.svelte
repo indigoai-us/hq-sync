@@ -26,7 +26,7 @@
   // string = error message from the last attempt. Reset on next click.
   let connectState = $state<Record<string, true | string>>({});
 
-  function badgeLabel(state: Workspace['state']): string {
+  function badgeAriaLabel(state: Workspace['state']): string {
     switch (state) {
       case 'personal':   return 'Personal';
       case 'synced':     return 'Synced';
@@ -227,8 +227,39 @@
           class:badge-local={w.state === 'local-only'}
           class:badge-broken={w.state === 'broken'}
           title={badgeTooltip(w)}
+          aria-label={badgeAriaLabel(w.state)}
+          role="img"
         >
-          {badgeLabel(w.state)}
+          {#if w.state === 'personal'}
+            <!-- person -->
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <circle cx="8" cy="5.5" r="2.6" stroke="currentColor" stroke-width="1.4" />
+              <path d="M3 13.2c0-2.3 2.2-3.7 5-3.7s5 1.4 5 3.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          {:else if w.state === 'synced'}
+            <!-- check -->
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          {:else if w.state === 'cloud-only'}
+            <!-- cloud -->
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M11.5 12h1a3 3 0 0 0 .3-5.98 4.5 4.5 0 0 0-8.85-.4A3 3 0 0 0 4 12h7.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+            </svg>
+          {:else if w.state === 'local-only'}
+            <!-- laptop -->
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <rect x="3" y="3.5" width="10" height="7" rx="1" stroke="currentColor" stroke-width="1.4" />
+              <path d="M2 12.5h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+            </svg>
+          {:else if w.state === 'broken'}
+            <!-- warning triangle -->
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path d="M8 2.5L14 13H2L8 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+              <path d="M8 6.5v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+              <circle cx="8" cy="11.3" r="0.6" fill="currentColor" />
+            </svg>
+          {/if}
         </span>
       </li>
     {/each}
@@ -457,15 +488,13 @@
     position: relative;
     z-index: 1;
     flex-shrink: 0;
-    padding: 0.125rem 0.4375rem;
-    border-radius: 999px;
-    font-size: 0.5625rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.03em;
-    line-height: 1.4;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
     border: 1px solid transparent;
-    white-space: nowrap;
   }
 
   .badge-personal {
