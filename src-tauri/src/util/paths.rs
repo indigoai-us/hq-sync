@@ -1,6 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Returns the managed HQ toolchain directory installed by hq-installer.
+/// Path mirrors `managed_toolchain_dir_in()` in hq-installer's `deps.rs`.
+fn managed_toolchain_dir(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("Indigo HQ")
+        .join("toolchain")
+}
+
 /// Returns the ~/.hq/ directory path.
 pub fn hq_config_dir() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Cannot determine home directory".to_string())?;
@@ -19,9 +28,11 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 ///
 /// Resolution order:
 /// 1. `$HOME/.npm-global/bin/{name}` — user-level npm prefix (no-sudo installs)
-/// 2. `/opt/homebrew/bin/{name}` — Apple Silicon homebrew
-/// 3. `/usr/local/bin/{name}` — Intel homebrew / system-wide installs
-/// 4. Ask a login shell via `zsh -lc 'command -v {name}'` — respects the
+/// 2. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`)
+///    — node/bin and npm-global/bin directories installed by hq-installer
+/// 3. `/opt/homebrew/bin/{name}` — Apple Silicon homebrew
+/// 4. `/usr/local/bin/{name}` — Intel homebrew / system-wide installs
+/// 5. Ask a login shell via `zsh -lc 'command -v {name}'` — respects the
 ///    user's actual shell config (picks up nvm, volta, asdf, etc.).
 ///
 /// Returns the bare name as a last-ditch fallback — the caller's
@@ -29,15 +40,24 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// surfaces as a sync error the UI can show. We don't invent a path that
 /// doesn't exist.
 pub fn resolve_bin(name: &str) -> String {
-    // 1. User npm prefix
     if let Some(home) = dirs::home_dir() {
+        // 1. User npm prefix
         let candidate = home.join(".npm-global").join("bin").join(name);
         if candidate.exists() {
             return candidate.to_string_lossy().to_string();
         }
+
+        // 2. Managed HQ toolchain (installed by hq-installer)
+        let toolchain = managed_toolchain_dir(&home);
+        for subdir in ["npm-global/bin", "node/bin"] {
+            let candidate = toolchain.join(subdir).join(name);
+            if candidate.exists() {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
     }
 
-    // 2 + 3. Standard install locations
+    // 3 + 4. Standard install locations
     for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
         let candidate = Path::new(prefix).join(name);
         if candidate.exists() {
@@ -45,7 +65,7 @@ pub fn resolve_bin(name: &str) -> String {
         }
     }
 
-    // 4. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
+    // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
     //    the user configured in .zshrc. `-l` makes zsh a login shell so it
     //    sources the full startup chain. `command -v` prints the resolved
     //    path on success, nothing on miss.
@@ -75,12 +95,23 @@ pub fn resolve_bin(name: &str) -> String {
 /// We prepend likely interpreter locations (nvm versions, npm-global,
 /// homebrew) to whatever PATH we have so shebangs resolve cleanly.
 ///
-/// Order: nvm node dirs → `~/.npm-global/bin` → `/opt/homebrew/bin` →
-/// `/usr/local/bin` → system defaults → whatever the parent had.
+/// Order: managed HQ toolchain → nvm node dirs → `~/.npm-global/bin` →
+/// `/opt/homebrew/bin` → `/usr/local/bin` → system defaults → parent PATH.
 pub fn child_path() -> String {
     let mut parts: Vec<String> = Vec::new();
 
     if let Some(home) = dirs::home_dir() {
+        // Managed HQ toolchain (installed by hq-installer) — checked first
+        // so users who only have Node via the installer can resolve `npx`
+        // and node shebangs.
+        let toolchain = managed_toolchain_dir(&home);
+        for subdir in ["npm-global/bin", "node/bin"] {
+            let bin = toolchain.join(subdir);
+            if bin.exists() {
+                parts.push(bin.to_string_lossy().to_string());
+            }
+        }
+
         // nvm: prepend every installed node version's bin dir. Order doesn't
         // matter for correctness (any working `node` resolves `env node`).
         let nvm_versions = home.join(".nvm").join("versions").join("node");
@@ -300,6 +331,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_managed_toolchain_path_matches_installer() {
+        let home = PathBuf::from("/Users/testuser");
+        let toolchain = managed_toolchain_dir(&home);
+        assert_eq!(
+            toolchain,
+            PathBuf::from("/Users/testuser/Library/Application Support/Indigo HQ/toolchain"),
+            "must match hq-installer's managed_toolchain_dir_in()"
+        );
     }
 
     #[test]
