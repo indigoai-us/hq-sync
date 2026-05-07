@@ -426,20 +426,37 @@ pub(crate) fn patch_manifest_with_cloud_info(
     Ok(())
 }
 
-/// Append a brand-new entry to `companies` for `slug` and stamp it with cloud
-/// info. Used when sync downloads a cloud-only company and creates the local
-/// folder as a side effect — the manifest needs to learn about the new folder
-/// so subsequent loads don't miss it.
+/// Append a brand-new entry to `companies` for `slug`, optionally stamping it
+/// with cloud info. Used when sync detects a local folder (or cloud-only
+/// company that was just downloaded) without a manifest entry — the manifest
+/// needs to learn about the folder so subsequent loads don't miss it.
 ///
-/// Idempotent: if `slug` already exists in the manifest, this is a no-op
-/// (caller should use `patch_manifest_with_cloud_info` to update an existing
-/// entry instead).
+/// Schema mirrors the hq-core template's per-company fields so manifests
+/// produced by the installer, by `/newcompany`, and by this reconciler are
+/// shape-compatible:
+///
+/// ```yaml
+/// {slug}:
+///   name: {display_name}
+///   goal: ""
+///   path: companies/{slug}
+///   sources: []
+///   repos: []
+///   knowledge: companies/{slug}/knowledge/
+///   qmd_collections: [{slug}]
+///   # Optional — only written when both Some(...)
+///   cloud_uid: {cloud_uid}
+///   bucket_name: {bucket_name}
+/// ```
+///
+/// Idempotent: if `slug` already exists, this is a no-op (caller should use
+/// `patch_manifest_with_cloud_info` to add cloud info to an existing entry).
 pub(crate) fn add_manifest_entry_for_synced_company(
     manifest_path: &Path,
     slug: &str,
     display_name: &str,
-    cloud_uid: &str,
-    bucket_name: &str,
+    cloud_uid: Option<&str>,
+    bucket_name: Option<&str>,
 ) -> Result<(), String> {
     let bytes = std::fs::read(manifest_path)
         .map_err(|e| format!("read manifest: {e}"))?;
@@ -471,10 +488,19 @@ pub(crate) fn add_manifest_entry_for_synced_company(
     let mut entry = serde_yaml::Mapping::new();
     let s = |v: &str| serde_yaml::Value::String(v.to_string());
     entry.insert(s("name"), s(display_name));
+    entry.insert(s("goal"), s(""));
     entry.insert(s("path"), s(&format!("companies/{slug}")));
+    entry.insert(s("sources"), serde_yaml::Value::Sequence(Vec::new()));
+    entry.insert(s("repos"), serde_yaml::Value::Sequence(Vec::new()));
     entry.insert(s("knowledge"), s(&format!("companies/{slug}/knowledge/")));
-    entry.insert(s("cloud_uid"), s(cloud_uid));
-    entry.insert(s("bucket_name"), s(bucket_name));
+    entry.insert(
+        s("qmd_collections"),
+        serde_yaml::Value::Sequence(vec![s(slug)]),
+    );
+    if let (Some(uid), Some(bucket)) = (cloud_uid, bucket_name) {
+        entry.insert(s("cloud_uid"), s(uid));
+        entry.insert(s("bucket_name"), s(bucket));
+    }
     companies.insert(slug_key, serde_yaml::Value::Mapping(entry));
 
     let serialized = serde_yaml::to_string(&value)
@@ -612,12 +638,16 @@ pub(crate) fn prune_dangling_cloud_uids(
 }
 
 /// Reconcile the manifest with the local `companies/*/` folder reality after a
-/// sync run. For each on-disk folder NOT in the manifest, look up the cloud
-/// entity by slug and either:
-///   - Add a manifest entry stamped with cloud_uid + bucket_name (if cloud has
-///     a matching entity)
-///   - Skip the folder (no cloud match — leave for the user to Connect manually
-///     or for a future repair pass)
+/// sync run. For each on-disk folder NOT in the manifest, add an entry —
+/// stamped with cloud_uid + bucket_name when both are available, otherwise as
+/// a stub that downstream Connect can patch with cloud info later.
+///
+/// Adding a stub entry (even without cloud info) is safer than skipping: a
+/// folder with no manifest entry is invisible to manifest-first lookups and
+/// causes downstream tooling to silently drop the company. The trade-off
+/// (stub entries that need a Connect to gain cloud info) is acceptable
+/// because the entry is self-describing and idempotent — re-running with
+/// real cloud info later is a no-op.
 ///
 /// Best-effort: each per-folder failure is logged but doesn't abort the rest.
 /// Returns the number of entries newly added to the manifest.
@@ -651,45 +681,64 @@ pub(crate) async fn reconcile_manifest_after_sync(
         if known_slugs.contains(&slug) {
             continue; // already in manifest
         }
-        // Look up the cloud entity by slug. If not found, skip — we don't
-        // want to add a `cloud_uid`-less entry from here (Connect handles
-        // that flow with full UI feedback).
-        let entity = match vault.find_entity_by_slug("company", &slug).await {
-            Ok(Some(e)) => e,
+        // Look up the cloud entity. We always add a manifest entry — but if
+        // the cloud has matching slug + bucket, we stamp it with cloud info
+        // so the next sync recognizes it as Synced rather than LocalOnly.
+        let cloud_match = match vault.find_entity_by_slug("company", &slug).await {
+            Ok(Some(e)) => Some(e),
             Ok(None) => {
-                log("workspaces", &format!("reconcile: no cloud entity for slug '{slug}', skipping"));
-                continue;
-            }
-            Err(e) => {
-                log("workspaces", &format!("reconcile: find_by_slug '{slug}' failed: {e}"));
-                continue;
-            }
-        };
-        let bucket = match entity.bucket_name.as_deref() {
-            Some(b) => b.to_string(),
-            None => {
                 log(
                     "workspaces",
-                    &format!("reconcile: cloud entity '{slug}' has no bucket — skipping (Connect to provision)"),
+                    &format!("reconcile: no cloud entity for '{slug}' — adding stub entry"),
                 );
-                continue;
+                None
+            }
+            Err(e) => {
+                log(
+                    "workspaces",
+                    &format!(
+                        "reconcile: find_by_slug '{slug}' failed: {e} — adding stub entry"
+                    ),
+                );
+                None
             }
         };
-        let display_name = entity
-            .name
-            .clone()
-            .unwrap_or_else(|| humanize_slug(&slug));
+
+        let (display_name, cloud_uid, bucket_name) = match cloud_match {
+            Some(entity) => {
+                let name = entity.name.clone().unwrap_or_else(|| humanize_slug(&slug));
+                let uid = entity.uid.clone();
+                let bucket = entity.bucket_name.clone();
+                (name, Some(uid), bucket)
+            }
+            None => (humanize_slug(&slug), None, None),
+        };
+
+        // Only stamp cloud info when both UID and bucket are known. A
+        // half-stamped entry would surface as Broken on the next pass.
+        let (uid_arg, bucket_arg) = match (cloud_uid.as_deref(), bucket_name.as_deref()) {
+            (Some(u), Some(b)) => (Some(u), Some(b)),
+            _ => (None, None),
+        };
+
         if let Err(e) = add_manifest_entry_for_synced_company(
             &manifest_path,
             &slug,
             &display_name,
-            &entity.uid,
-            &bucket,
+            uid_arg,
+            bucket_arg,
         ) {
-            log("workspaces", &format!("reconcile: add manifest entry for '{slug}' failed: {e}"));
+            log(
+                "workspaces",
+                &format!("reconcile: add manifest entry for '{slug}' failed: {e}"),
+            );
             continue;
         }
-        log("workspaces", &format!("reconcile: added manifest entry for '{slug}' (uid={})", entity.uid));
+        let kind = if uid_arg.is_some() { "synced" } else { "stub" };
+        log(
+            "workspaces",
+            &format!("reconcile: added {kind} manifest entry for '{slug}'"),
+        );
         added += 1;
     }
     Ok(added)
@@ -1816,5 +1865,168 @@ companies:
         patch_manifest_with_cloud_info(&manifest_path, "alpha", "cmp_X", "bucket-X").unwrap();
         let tmp_path = manifest_path.with_extension("yaml.tmp");
         assert!(!tmp_path.exists());
+    }
+
+    // ── add_manifest_entry_for_synced_company ─────────────────────────────
+
+    #[test]
+    fn add_manifest_entry_writes_full_template_schema_without_cloud() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "companies:\n  personal:\n    name: Personal\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(&manifest_path, "voyage", "Voyage", None, None)
+            .unwrap();
+
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let entry = parsed
+            .get("companies")
+            .and_then(|c| c.get("voyage"))
+            .and_then(|e| e.as_mapping())
+            .expect("voyage entry must exist");
+
+        assert_eq!(entry.get("name").and_then(|v| v.as_str()), Some("Voyage"));
+        assert_eq!(entry.get("goal").and_then(|v| v.as_str()), Some(""));
+        assert_eq!(
+            entry.get("path").and_then(|v| v.as_str()),
+            Some("companies/voyage")
+        );
+        assert!(
+            entry
+                .get("sources")
+                .and_then(|v| v.as_sequence())
+                .map(|s| s.is_empty())
+                .unwrap_or(false),
+            "sources must be empty list"
+        );
+        assert!(
+            entry
+                .get("repos")
+                .and_then(|v| v.as_sequence())
+                .map(|s| s.is_empty())
+                .unwrap_or(false),
+            "repos must be empty list"
+        );
+        assert_eq!(
+            entry.get("knowledge").and_then(|v| v.as_str()),
+            Some("companies/voyage/knowledge/")
+        );
+        let qmd: Vec<&str> = entry
+            .get("qmd_collections")
+            .and_then(|v| v.as_sequence())
+            .map(|s| s.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(qmd, vec!["voyage"]);
+
+        // Cloud fields must NOT be present when both args are None.
+        assert!(entry.get("cloud_uid").is_none());
+        assert!(entry.get("bucket_name").is_none());
+    }
+
+    #[test]
+    fn add_manifest_entry_includes_cloud_info_when_both_supplied() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "companies:\n  personal:\n    name: Personal\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(
+            &manifest_path,
+            "voyage",
+            "Voyage",
+            Some("cmp_01ABC"),
+            Some("hq-vault-cmp-01abc"),
+        )
+        .unwrap();
+
+        let (entries, _) = discover_local_companies(tmp.path());
+        let voyage = entries
+            .iter()
+            .find(|e| e.slug == "voyage")
+            .expect("voyage must be in manifest");
+        assert_eq!(voyage.cloud_uid.as_deref(), Some("cmp_01ABC"));
+        assert_eq!(voyage.bucket_name.as_deref(), Some("hq-vault-cmp-01abc"));
+        assert_eq!(voyage.display_name.as_deref(), Some("Voyage"));
+    }
+
+    #[test]
+    fn add_manifest_entry_omits_cloud_fields_if_only_one_supplied() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "companies:\n  personal:\n    name: Personal\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        // Only cloud_uid supplied (no bucket) — entry should omit both for safety.
+        add_manifest_entry_for_synced_company(
+            &manifest_path,
+            "voyage",
+            "Voyage",
+            Some("cmp_01ABC"),
+            None,
+        )
+        .unwrap();
+
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let entry = parsed
+            .get("companies")
+            .and_then(|c| c.get("voyage"))
+            .and_then(|e| e.as_mapping())
+            .expect("voyage entry must exist");
+        assert!(entry.get("cloud_uid").is_none());
+        assert!(entry.get("bucket_name").is_none());
+    }
+
+    #[test]
+    fn add_manifest_entry_idempotent_when_slug_exists() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(
+            tmp.path(),
+            r#"
+companies:
+  alpha:
+    name: "Original Alpha"
+    custom_field: "user-edit"
+"#,
+        );
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(
+            &manifest_path,
+            "alpha",
+            "Replacement Alpha",
+            Some("cmp_X"),
+            Some("bucket-X"),
+        )
+        .unwrap();
+
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        let entry = parsed
+            .get("companies")
+            .and_then(|c| c.get("alpha"))
+            .and_then(|e| e.as_mapping())
+            .expect("alpha entry must exist");
+        assert_eq!(
+            entry.get("name").and_then(|v| v.as_str()),
+            Some("Original Alpha")
+        );
+        assert_eq!(
+            entry.get("custom_field").and_then(|v| v.as_str()),
+            Some("user-edit")
+        );
+        assert!(entry.get("cloud_uid").is_none());
+    }
+
+    #[test]
+    fn add_manifest_entry_creates_companies_key_when_absent() {
+        let tmp = TempDir::new().unwrap();
+        write_manifest(tmp.path(), "version: 1\n");
+        let manifest_path = tmp.path().join("companies").join("manifest.yaml");
+
+        add_manifest_entry_for_synced_company(&manifest_path, "fresh", "Fresh", None, None)
+            .unwrap();
+
+        let (entries, _) = discover_local_companies(tmp.path());
+        assert!(entries.iter().any(|e| e.slug == "fresh"));
     }
 }
