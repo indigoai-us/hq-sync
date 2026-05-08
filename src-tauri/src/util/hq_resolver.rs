@@ -111,7 +111,19 @@ pub fn resolve_hq() -> HqInvocation {
     HQ_INVOCATION
         .get_or_init(|| {
             let chosen = probe();
-            log("hq-resolver", &format!("chose invocation: {}", chosen.label()));
+            let label = chosen.label();
+            log("hq-resolver", &format!("chose invocation: {label}"));
+            // Breadcrumb for any subsequent Sentry event in the same scope —
+            // tells us at-a-glance whether the user was on the locally-installed
+            // CLI or the npx self-heal path. Critical when triaging
+            // provision-cli failures: a stale local `hq` and a missing `npx`
+            // produce different stderr signatures.
+            sentry::add_breadcrumb(sentry::Breadcrumb {
+                category: Some("hq-resolver".to_string()),
+                message: Some(format!("chose invocation: {label}")),
+                level: sentry::Level::Info,
+                ..Default::default()
+            });
             chosen
         })
         .clone()
