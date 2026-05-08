@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
+  import * as Sentry from '@sentry/svelte';
   import type { Workspace } from '../lib/workspaces';
 
   interface Props {
@@ -96,6 +97,16 @@
     } catch (err) {
       const msg = String(err);
       console.error('connect_workspace_to_cloud failed:', msg);
+      // Belt-and-suspenders capture: the backend already reports CLI failures
+      // via run_cli_provision::report_provision_error and validation failures
+      // via workspaces::capture_connect_error, but capturing here too means
+      // any frontend-only failure mode (Tauri invoke serialization, IPC
+      // disconnect, plugin error) still reaches Sentry. Tagged distinctly so
+      // we can filter without losing the backend events.
+      Sentry.captureException(err instanceof Error ? err : new Error(msg), {
+        tags: { slug, action: 'connect', source: 'frontend' },
+        extra: { msg },
+      });
       connectState = { ...connectState, [slug]: msg };
     }
   }

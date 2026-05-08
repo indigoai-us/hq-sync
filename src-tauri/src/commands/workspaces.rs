@@ -1049,6 +1049,30 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     })
 }
 
+/// Capture a `connect_workspace_to_cloud` failure to Sentry.
+///
+/// CLI subprocess errors are already captured at the `run_cli_provision` layer
+/// with richer context (exit code, stderr tail, invocation kind) — this helper
+/// is for the local-validation paths that never reach the CLI: missing folder,
+/// unresolved HQ root, empty slug, etc. Keeping the two layers distinct
+/// prevents double-counting in Sentry while ensuring no Connect failure goes
+/// unmonitored.
+fn capture_connect_error(slug: &str, reason: &str, message: &str) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("slug", slug);
+            scope.set_tag("action", "connect");
+            scope.set_tag("connect_reason", reason);
+        },
+        || {
+            sentry::capture_message(
+                &format!("[connect] {reason}: {message}"),
+                sentry::Level::Error,
+            );
+        },
+    );
+}
+
 // ── Tauri command: connect_workspace_to_cloud ─────────────────────────────────
 
 /// Provision a cloud bucket for the given local company `slug` by delegating
@@ -1076,17 +1100,20 @@ pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
 pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
     log("workspaces", &format!("connect: slug='{slug}' start"));
     if slug.is_empty() {
-        return Err("slug is required".to_string());
+        let err = "slug is required".to_string();
+        capture_connect_error(&slug, "empty_slug", &err);
+        return Err(err);
     }
     if slug == "personal" {
-        return Err(
-            "the Personal vault is auto-provisioned — no manual connect needed"
-                .to_string(),
-        );
+        let err = "the Personal vault is auto-provisioned — no manual connect needed"
+            .to_string();
+        capture_connect_error(&slug, "personal_slug", &err);
+        return Err(err);
     }
 
     let hq_root = resolve_hq_folder_path().map_err(|e| {
         log("workspaces", &format!("connect '{slug}': hq_root resolve failed: {e}"));
+        capture_connect_error(&slug, "hq_root_resolve", &e);
         e
     })?;
     log("workspaces", &format!("connect '{slug}': hq_root={}", hq_root.display()));
@@ -1113,6 +1140,7 @@ pub async fn connect_workspace_to_cloud(slug: String) -> Result<(), String> {
             folder.display()
         );
         log("workspaces", &format!("connect '{slug}': {err}"));
+        capture_connect_error(&slug, "folder_missing", &err);
         return Err(err);
     }
 

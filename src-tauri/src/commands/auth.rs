@@ -1,10 +1,34 @@
-use super::cognito::{self, AuthState};
+use super::cognito::{self, AuthState, CognitoTokens};
+
+/// Update Sentry's scoped user context to the Cognito identity carried in
+/// `tokens`. Best-effort: a malformed/missing id_token just clears the user
+/// rather than failing — Sentry stays useful even when claims parsing breaks.
+fn set_sentry_user_from_tokens(tokens: &CognitoTokens) {
+    let claims = tokens
+        .id_token
+        .as_deref()
+        .and_then(|tok| cognito::decode_id_token_claims(tok).ok());
+    sentry::configure_scope(|scope| match claims {
+        Some(c) => scope.set_user(Some(sentry::User {
+            id: c.sub.clone(),
+            email: c.email.clone(),
+            username: Some(c.display_name()),
+            ..Default::default()
+        })),
+        None => scope.set_user(None),
+    });
+}
+
+fn clear_sentry_user() {
+    sentry::configure_scope(|scope| scope.set_user(None));
+}
 
 #[tauri::command]
 pub async fn get_auth_state() -> Result<AuthState, String> {
     let tokens = cognito::get_tokens().await?;
 
     let Some(tokens) = tokens else {
+        clear_sentry_user();
         return Ok(AuthState {
             authenticated: false,
             expires_at: None,
@@ -17,6 +41,7 @@ pub async fn get_auth_state() -> Result<AuthState, String> {
             Ok(new_tokens) => {
                 let iso = cognito::expires_at_iso(&new_tokens);
                 cognito::set_tokens(&new_tokens).await?;
+                set_sentry_user_from_tokens(&new_tokens);
                 Ok(AuthState {
                     authenticated: true,
                     expires_at: Some(iso),
@@ -24,6 +49,7 @@ pub async fn get_auth_state() -> Result<AuthState, String> {
             }
             Err(_) => {
                 // Refresh failed — treat as unauthenticated
+                clear_sentry_user();
                 Ok(AuthState {
                     authenticated: false,
                     expires_at: None,
@@ -31,6 +57,7 @@ pub async fn get_auth_state() -> Result<AuthState, String> {
             }
         }
     } else {
+        set_sentry_user_from_tokens(&tokens);
         Ok(AuthState {
             authenticated: true,
             expires_at: Some(cognito::expires_at_iso(&tokens)),

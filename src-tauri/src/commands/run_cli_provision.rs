@@ -56,8 +56,10 @@
 //! telemetry, STS vending, etc.) — only the cloud-promote callers were
 //! migrated.
 
+use std::collections::VecDeque;
 use std::path::Path;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -65,6 +67,50 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use crate::util::hq_resolver::{self, HqInvocation};
 use crate::util::logfile::log;
 use crate::util::paths;
+
+/// Last N stderr lines kept in memory so we can attach them to Sentry events.
+/// Capped to keep payloads under Sentry's per-event size limits.
+const STDERR_TAIL_CAP: usize = 50;
+
+/// Capture a provision-cli failure to Sentry with full diagnostic context.
+/// Tags carry the slug + CLI invocation kind + exit code so we can slice
+/// failures by stack/version. Extra carries the stderr tail (the most useful
+/// signal — what the CLI was actually doing when it died).
+fn report_provision_error(
+    err: &CliProvisionError,
+    slug: &str,
+    invocation_label: &str,
+    exit_code: Option<i32>,
+    stderr_tail: &[String],
+) {
+    let kind = match err {
+        CliProvisionError::Spawn(_) => "spawn",
+        CliProvisionError::Validation(_) => "validation",
+        CliProvisionError::Network(_) => "network",
+        CliProvisionError::Sync { .. } => "sync",
+        CliProvisionError::Other(_) => "other",
+    };
+    let stderr_blob = stderr_tail.join("\n");
+    let exit_str = exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal/none".to_string());
+
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("slug", slug);
+            scope.set_tag("provision_kind", kind);
+            scope.set_tag("cli_invocation", invocation_label);
+            scope.set_tag("exit_code", &exit_str);
+            scope.set_extra("stderr_tail", stderr_blob.into());
+        },
+        || {
+            sentry::capture_message(
+                &format!("[provision-cli] {err}"),
+                sentry::Level::Error,
+            );
+        },
+    );
+}
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -254,9 +300,12 @@ pub async fn run_cli_provision(
     // leak processes the user has no UI to kill.
     cmd.kill_on_drop(true);
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| CliProvisionError::Spawn(format!("{}: {e}", invocation.label())))?;
+    let invocation_label = invocation.label();
+    let mut child = cmd.spawn().map_err(|e| {
+        let err = CliProvisionError::Spawn(format!("{invocation_label}: {e}"));
+        report_provision_error(&err, slug, &invocation_label, None, &[]);
+        err
+    })?;
 
     let stdout = child
         .stdout
@@ -267,13 +316,23 @@ pub async fn run_cli_provision(
         .take()
         .ok_or_else(|| CliProvisionError::Other("child stderr pipe missing".to_string()))?;
 
-    // Stream stderr line-by-line into the diagnostic log. Concurrent with the
-    // stdout collector below so neither pipe fills its 64 KiB kernel buffer
-    // and deadlocks the child.
+    // Stream stderr line-by-line into the diagnostic log AND a bounded
+    // ring buffer. The ring buffer survives past the subprocess and gets
+    // attached to Sentry events on error so we can see what the CLI was
+    // doing right before it died.
+    let stderr_buffer: Arc<Mutex<VecDeque<String>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_TAIL_CAP)));
+    let stderr_buffer_for_task = Arc::clone(&stderr_buffer);
     let stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             log("provision-cli", &line);
+            if let Ok(mut buf) = stderr_buffer_for_task.lock() {
+                if buf.len() == STDERR_TAIL_CAP {
+                    buf.pop_front();
+                }
+                buf.push_back(line);
+            }
         }
     });
 
@@ -351,7 +410,12 @@ pub async fn run_cli_provision(
         }
     };
 
-    match exit_code {
+    let stderr_tail: Vec<String> = stderr_buffer
+        .lock()
+        .map(|buf| buf.iter().cloned().collect())
+        .unwrap_or_default();
+
+    let result: Result<CliProvisionResult, CliProvisionError> = match exit_code {
         Some(0) => parsed.ok_or_else(exit0_err),
         Some(1) => Err(CliProvisionError::Network(format!(
             "exit 1 (vault) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
@@ -371,7 +435,12 @@ pub async fn run_cli_provision(
         None => Err(CliProvisionError::Other(format!(
             "child terminated by signal (no exit code) for slug={slug}"
         ))),
+    };
+
+    if let Err(ref err) = result {
+        report_provision_error(err, slug, &invocation_label, exit_code, &stderr_tail);
     }
+    result
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
