@@ -231,6 +231,40 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .collect()
 }
 
+/// Returns ASCII-only `(metadata key, value)` pairs to stamp on every
+/// PutObject during personal first-push. Mirrors `buildAuthorMetadata` in
+/// packages/hq-cloud/src/s3.ts and hq-console/src/lib/s3-vault.ts so the
+/// Vault tab's CREATED BY column resolves uniformly across upload paths.
+/// Returns an empty Vec when no Cognito tokens are cached or claims are
+/// unparseable — uploads still succeed, the column just stays "—".
+fn build_personal_author_metadata() -> Vec<(String, String)> {
+    let mut meta = Vec::with_capacity(3);
+    let claims = match crate::commands::cognito::read_tokens_from_file() {
+        Ok(Some(tokens)) => tokens
+            .id_token
+            .as_deref()
+            .and_then(|t| crate::commands::cognito::decode_id_token_claims(t).ok()),
+        _ => None,
+    };
+    if let Some(c) = claims {
+        if let Some(sub) = c.sub.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if sub.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
+                meta.push(("created-by-sub".to_string(), sub.to_string()));
+            }
+        }
+        if let Some(email) = c.email.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if email.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
+                meta.push(("created-by".to_string(), email.to_string()));
+            }
+        }
+    }
+    let created_at = Utc::now().to_rfc3339();
+    if created_at.bytes().all(|b| (0x20..=0x7E).contains(&b)) {
+        meta.push(("created-at".to_string(), created_at));
+    }
+    meta
+}
+
 fn build_s3_client(
     access_key_id: &str,
     secret_access_key: &str,
@@ -586,21 +620,30 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
                 &vend_result.credentials.session_token,
             ));
             let bucket = bucket_name.clone();
+            // Resolve uploader identity from the cached Cognito id token. The
+            // hq-console Vault tab's CREATED BY column reads
+            // S3 user metadata `created-by` / `created-by-sub` set on PutObject;
+            // without these the column reads "—" for every personal-vault row.
+            // ASCII-filter both fields to match `buildAuthorMetadata` in
+            // packages/hq-cloud/src/s3.ts and hq-console/src/lib/s3-vault.ts.
+            let author_meta = build_personal_author_metadata();
             Arc::new(move |key: String, data: Bytes, sha256_hex: String| -> BoxFuture<UploadOutcome> {
                 let s3 = s3.clone();
                 let bucket = bucket.clone();
+                let author_meta = author_meta.clone();
                 Box::pin(async move {
                     let sha256_b64 = base64::engine::general_purpose::STANDARD
                         .encode(hex_to_bytes(&sha256_hex));
-                    match s3
+                    let mut req = s3
                         .put_object()
                         .bucket(&bucket)
                         .key(&key)
                         .body(ByteStream::from(data))
-                        .checksum_sha256(sha256_b64)
-                        .send()
-                        .await
-                    {
+                        .checksum_sha256(sha256_b64);
+                    for (k, v) in author_meta.iter() {
+                        req = req.metadata(k, v);
+                    }
+                    match req.send().await {
                         Ok(_) => UploadOutcome::Ok,
                         Err(e) => {
                             let status = e
