@@ -92,6 +92,7 @@ fn main() {
             commands::oauth::oauth_listen_for_code,
             commands::oauth::oauth_exchange_code,
             commands::auth::get_auth_state,
+            commands::auth::get_user_email,
             commands::auth::has_stored_token,
             commands::auth::refresh_tokens,
             commands::config::get_config,
@@ -137,8 +138,12 @@ fn main() {
             // `commands::prewarm` for the rationale.
             commands::prewarm::spawn_prewarm();
 
-            // Feature-flagged daemon autostart (V2 prep — default OFF)
-            if commands::daemon::is_autostart_enabled() {
+            // Auto-start the watcher when either flag is on:
+            //   - `autostart_daemon` (V2-prep devtools flag, default OFF)
+            //   - `realtime_sync`   (user-facing Auto-sync (Beta) toggle)
+            if commands::daemon::is_autostart_enabled()
+                || commands::daemon::is_realtime_sync_enabled()
+            {
                 std::thread::spawn(|| {
                     // Small delay to let the app fully initialize
                     std::thread::sleep(std::time::Duration::from_secs(2));

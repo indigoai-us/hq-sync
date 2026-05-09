@@ -29,6 +29,12 @@ pub struct MenubarPrefs {
     pub notifications: Option<bool>,
     pub start_at_login: Option<bool>,
     pub autostart_daemon: Option<bool>,
+    /// Auto-sync (Beta): when true, the menubar spawns hq-sync-runner in
+    /// `--watch` mode at startup so local edits push immediately and remote
+    /// changes pull every 10 minutes. Gated client-side to @getindigo.ai
+    /// accounts (see `canEnableRealtimeSync` in src/lib/realtime-sync.ts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub realtime_sync: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
@@ -244,6 +250,56 @@ mod tests {
         assert!(json.contains("\"companySlug\":\"acme\""));
         assert!(json.contains("\"hqFolderPath\":\"/Users/test/HQ\""));
         assert!(json.contains("\"error\":null"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_realtime_sync_field_round_trip_true() {
+        // Failing-test seed for the Auto-sync (Beta) feature: MenubarPrefs must
+        // gain a `realtime_sync: Option<bool>` field that serializes to the
+        // camelCase key `realtimeSync` so it can persist across app restarts
+        // alongside the existing autostart_daemon flag.
+        let json = r#"{
+            "hqPath": "/custom/HQ",
+            "syncOnLaunch": false,
+            "notifications": true,
+            "startAtLogin": true,
+            "autostartDaemon": false,
+            "realtimeSync": true
+        }"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.realtime_sync, Some(true));
+
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(
+            out.contains("\"realtimeSync\":true"),
+            "expected camelCase key 'realtimeSync' in serialized output, got: {out}"
+        );
+        assert!(!out.contains("realtime_sync"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_realtime_sync_absent_deserializes_none() {
+        // Backwards compatibility: existing menubar.json files predate the
+        // field and must continue to load. None is the absent-marker; the
+        // settings command applies a `false` default at the boundary.
+        let json = r#"{
+            "hqPath": "/custom/HQ",
+            "syncOnLaunch": true,
+            "notifications": false,
+            "startAtLogin": true,
+            "autostartDaemon": false
+        }"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.realtime_sync, None);
+    }
+
+    #[test]
+    fn test_menubar_prefs_realtime_sync_false_round_trip() {
+        let json = r#"{"realtimeSync": false}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.realtime_sync, Some(false));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(out.contains("\"realtimeSync\":false"));
     }
 
     #[test]

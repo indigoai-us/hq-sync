@@ -96,37 +96,75 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 // SpawnArgs builders (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build SpawnArgs for `hq sync start` (daemon mode).
-pub fn build_daemon_start_args(hq_folder_path: &str) -> SpawnArgs {
+/// Build SpawnArgs for the Auto-sync (Beta) watcher: hq-sync-runner in watch
+/// mode, fanned out across every membership the caller has.
+///
+/// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
+///   - `--watch` — runner stays alive after the first pass
+///   - `--poll-remote-ms 600000` — pulls remote changes every 10 minutes
+///
+/// Local edits still upload in seconds via the runner's chokidar layer; only
+/// the remote→local pull is on the 10-minute cadence. Conflict policy is
+/// `keep` (skip-and-surface) — local edits win and the conflict store routes
+/// them through the existing modal so auto-pull never clobbers an
+/// in-progress resolution.
+pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
+    use crate::commands::sync::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
+
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
+    // GUI-launched Tauri apps inherit a minimal launchd PATH and otherwise
+    // can't find node/npx. See paths::child_path.
+    env.insert("PATH".to_string(), paths::child_path());
 
-    SpawnArgs {
-        cmd: "hq".to_string(),
-        args: vec![
-            "sync".to_string(),
-            "start".to_string(),
-            "--hq-path".to_string(),
-            hq_folder_path.to_string(),
-        ],
-        cwd: None,
-        env: Some(env),
+    // Dev override: HQ_CLOUD_DEV_POLL_MS lets us tighten the 10-minute
+    // production cadence for hands-on testing. Defaults to 600_000ms.
+    let poll_ms = std::env::var("HQ_CLOUD_DEV_POLL_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(600_000);
+
+    let runner_args = vec![
+        "--companies".to_string(),
+        "--direction".to_string(),
+        "both".to_string(),
+        "--on-conflict".to_string(),
+        "keep".to_string(),
+        "--hq-root".to_string(),
+        hq_folder_path.to_string(),
+        "--watch".to_string(),
+        "--poll-remote-ms".to_string(),
+        poll_ms.to_string(),
+    ];
+
+    // Dev override: HQ_CLOUD_LOCAL_RUNNER points at a built sync-runner.js
+    // (e.g. /…/hq/packages/hq-cloud/dist/bin/sync-runner.js). Lets us
+    // exercise unreleased runner changes before the version is published
+    // to npm; production falls through to the npx-pinned path below.
+    if let Ok(local_runner) = std::env::var("HQ_CLOUD_LOCAL_RUNNER") {
+        if !local_runner.is_empty() {
+            let mut args = vec![local_runner];
+            args.extend(runner_args);
+            return SpawnArgs {
+                cmd: paths::resolve_bin("node"),
+                args,
+                cwd: None,
+                env: Some(env),
+            };
+        }
     }
-}
 
-/// Build SpawnArgs for `hq sync stop`.
-pub fn build_daemon_stop_args(hq_folder_path: &str) -> SpawnArgs {
-    let mut env = HashMap::new();
-    env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
+    let mut args = vec![
+        "-y".to_string(),
+        format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
+        RUNNER_BIN.to_string(),
+    ];
+    args.extend(runner_args);
 
     SpawnArgs {
-        cmd: "hq".to_string(),
-        args: vec![
-            "sync".to_string(),
-            "stop".to_string(),
-            "--hq-path".to_string(),
-            hq_folder_path.to_string(),
-        ],
+        cmd: paths::resolve_bin("npx"),
+        args,
         cwd: None,
         env: Some(env),
     }
@@ -166,6 +204,18 @@ fn read_daemon_json(hq_folder_path: &str) -> Option<DaemonJson> {
 
 /// Check if autostart_daemon flag is enabled in menubar.json.
 pub fn is_autostart_enabled() -> bool {
+    read_menubar_bool(|p| p.autostart_daemon)
+}
+
+/// Check if the user-facing Auto-sync (Beta) flag is enabled in menubar.json.
+/// Both flags trigger the same daemon — `autostart_daemon` is the V2-prep
+/// devtools flag and `realtime_sync` is the user-facing Settings toggle —
+/// but they're kept separate so each can evolve independently.
+pub fn is_realtime_sync_enabled() -> bool {
+    read_menubar_bool(|p| p.realtime_sync)
+}
+
+fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F) -> bool {
     let menubar_path = match paths::menubar_json_path() {
         Ok(p) => p,
         Err(_) => return false,
@@ -176,9 +226,7 @@ pub fn is_autostart_enabled() -> bool {
     let prefs: Option<MenubarPrefs> = std::fs::read_to_string(&menubar_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
-    prefs
-        .and_then(|p| p.autostart_daemon)
-        .unwrap_or(false)
+    prefs.and_then(|p| field(&p)).unwrap_or(false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -220,7 +268,7 @@ pub fn start_daemon() -> Result<String, String> {
         }
     }
 
-    let spawn_args = build_daemon_start_args(&hq_folder_path);
+    let spawn_args = build_watch_runner_args(&hq_folder_path);
 
     thread::spawn(move || {
         let result = run_process_impl(DAEMON_HANDLE, &spawn_args, |event| {
@@ -253,57 +301,34 @@ pub fn start_daemon() -> Result<String, String> {
     Ok(DAEMON_HANDLE.to_string())
 }
 
-/// Stop the sync daemon.
+/// Stop the sync daemon via SIGTERM (graceful) → SIGKILL (timeout fallback).
 ///
-/// First tries `hq sync stop` (graceful). If the daemon handle is still
-/// registered after the stop command, falls back to SIGTERM->SIGKILL.
-///
-/// Returns `true` if a stop was initiated.
+/// Returns `true` if a stop was initiated. The watcher process owns its own
+/// pid-file lifecycle; we don't shell out to a separate stop CLI here.
 #[tauri::command]
 pub fn stop_daemon() -> Result<bool, String> {
     let hq_folder_path = resolve_hq_folder_path()?;
 
-    // Try graceful stop via `hq sync stop`
-    let spawn_args = build_daemon_stop_args(&hq_folder_path);
-    let mut cmd = std::process::Command::new(&spawn_args.cmd);
-    cmd.args(&spawn_args.args);
-    if let Some(env) = &spawn_args.env {
-        for (k, v) in env {
-            cmd.env(k, v);
+    // Cancel via the process registry first — this signals the spawned
+    // runner from `start_daemon` and cleans up the handle.
+    let cancelled = cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
+    if cancelled {
+        return Ok(true);
+    }
+
+    // Daemon from a previous app session — registry has no handle, but the
+    // pid-file may point at a still-alive runner. SIGTERM directly so the
+    // user can re-toggle Auto-sync without a process zombie.
+    if let Some(pid) = read_pid_file(&hq_folder_path) {
+        if is_pid_alive(pid) {
+            use nix::sys::signal::{self, Signal};
+            use nix::unistd::Pid;
+            let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            return Ok(true);
         }
     }
 
-    let result = cmd
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    match result {
-        Ok(status) => {
-            // Also clean up our process registry handle if present
-            let cancelled = cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
-            Ok(status.success() || cancelled)
-        }
-        Err(e) => {
-            // CLI not available — try direct cancellation via process registry
-            let cancelled = cancel_process_impl(DAEMON_HANDLE, SIGKILL_DELAY);
-            if cancelled {
-                return Ok(true);
-            }
-
-            // Last resort: read PID file and signal directly (daemon from previous session)
-            if let Some(pid) = read_pid_file(&hq_folder_path) {
-                if is_pid_alive(pid) {
-                    use nix::sys::signal::{self, Signal};
-                    use nix::unistd::Pid;
-                    let _ = signal::kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
-                    return Ok(true);
-                }
-            }
-
-            Err(format!("Failed to stop daemon: {}", e))
-        }
-    }
+    Ok(false)
 }
 
 /// Get daemon status by reading .hq-sync.pid and .hq-sync-daemon.json.
@@ -355,58 +380,6 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── build_daemon_start_args ──────────────────────────────────────────
-
-    #[test]
-    fn test_build_daemon_start_args_cmd_and_args() {
-        let args = build_daemon_start_args("/Users/test/HQ");
-        assert_eq!(args.cmd, "hq");
-        assert_eq!(
-            args.args,
-            vec!["sync", "start", "--hq-path", "/Users/test/HQ"]
-        );
-    }
-
-    #[test]
-    fn test_build_daemon_start_args_env() {
-        let args = build_daemon_start_args("/Users/test/HQ");
-        let env = args.env.unwrap();
-        assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
-        assert_eq!(env.len(), 1);
-    }
-
-    #[test]
-    fn test_build_daemon_start_args_no_cwd() {
-        let args = build_daemon_start_args("/any/path");
-        assert!(args.cwd.is_none());
-    }
-
-    // ── build_daemon_stop_args ───────────────────────────────────────────
-
-    #[test]
-    fn test_build_daemon_stop_args_cmd_and_args() {
-        let args = build_daemon_stop_args("/Users/test/HQ");
-        assert_eq!(args.cmd, "hq");
-        assert_eq!(
-            args.args,
-            vec!["sync", "stop", "--hq-path", "/Users/test/HQ"]
-        );
-    }
-
-    #[test]
-    fn test_build_daemon_stop_args_env() {
-        let args = build_daemon_stop_args("/Users/test/HQ");
-        let env = args.env.unwrap();
-        assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
-        assert_eq!(env.len(), 1);
-    }
-
-    #[test]
-    fn test_build_daemon_stop_args_no_cwd() {
-        let args = build_daemon_stop_args("/any/path");
-        assert!(args.cwd.is_none());
-    }
 
     // ── DaemonStatus serialization ───────────────────────────────────────
 
@@ -544,5 +517,114 @@ mod tests {
     #[test]
     fn test_sigkill_delay_constant() {
         assert_eq!(SIGKILL_DELAY, Duration::from_secs(5));
+    }
+
+    // ── build_watch_runner_args (Auto-sync Beta) ──────────────────────────
+    //
+    // Auto-sync reuses the same hq-sync-runner binary as the manual Sync Now
+    // button (see commands/sync.rs::build_sync_spawn_args), but adds:
+    //   --watch                  — keep the runner alive after the first pass
+    //   --poll-remote-ms 600000  — pull from S3 every 10 minutes
+    //
+    // Conflict policy stays `keep` (skip-and-surface) — local edits win and
+    // the conflict store routes them through the existing modal. Direction
+    // stays `both`. Companies stays fanned out (`--companies`).
+
+    #[test]
+    fn test_build_watch_runner_args_uses_npx_runner() {
+        let args = build_watch_runner_args("/Users/test/HQ");
+        // Resolved npx path; varies by machine. Asserting it ends with "npx"
+        // avoids hard-coding /opt/homebrew/bin vs ~/.npm-global/bin.
+        assert!(
+            args.cmd.ends_with("npx"),
+            "expected resolved npx path, got: {}",
+            args.cmd
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_pins_hq_cloud_package() {
+        use crate::commands::sync::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION};
+        let args = build_watch_runner_args("/any");
+        let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
+        assert!(
+            args.args.contains(&expected_pin),
+            "expected pinned --package= flag, got: {:?}",
+            args.args
+        );
+        assert!(args.args.contains(&"-y".to_string()));
+        assert!(args.args.contains(&"hq-sync-runner".to_string()));
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_includes_watch_and_poll_interval() {
+        let args = build_watch_runner_args("/any");
+        assert!(args.args.contains(&"--watch".to_string()));
+        let poll_idx = args
+            .args
+            .iter()
+            .position(|a| a == "--poll-remote-ms")
+            .expect("--poll-remote-ms flag missing");
+        assert_eq!(
+            args.args.get(poll_idx + 1).map(|s| s.as_str()),
+            Some("600000"),
+            "expected 10-minute (600000ms) poll interval"
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_fans_out_to_all_companies() {
+        // Auto-sync mirrors the manual Sync Now button: --companies, not a
+        // single --company. Bidirectional, conflict-keep.
+        let args = build_watch_runner_args("/any");
+        assert!(args.args.contains(&"--companies".to_string()));
+        assert!(!args.args.iter().any(|a| a == "--company"));
+
+        let dir_idx = args
+            .args
+            .iter()
+            .position(|a| a == "--direction")
+            .expect("--direction flag missing");
+        assert_eq!(args.args.get(dir_idx + 1).map(|s| s.as_str()), Some("both"));
+
+        let conflict_idx = args
+            .args
+            .iter()
+            .position(|a| a == "--on-conflict")
+            .expect("--on-conflict flag missing");
+        assert_eq!(
+            args.args.get(conflict_idx + 1).map(|s| s.as_str()),
+            Some("keep")
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_passes_hq_root() {
+        let args = build_watch_runner_args("/Users/test/HQ");
+        let root_idx = args
+            .args
+            .iter()
+            .position(|a| a == "--hq-root")
+            .expect("--hq-root flag missing");
+        assert_eq!(
+            args.args.get(root_idx + 1).map(|s| s.as_str()),
+            Some("/Users/test/HQ")
+        );
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_env_carries_hq_root_and_path() {
+        // Mirrors build_sync_spawn_args: HQ_ROOT for defense-in-depth and
+        // PATH so Dock-launched apps can resolve node/npx (see paths::child_path).
+        let args = build_watch_runner_args("/Users/test/HQ");
+        let env = args.env.expect("env should be populated");
+        assert_eq!(
+            env.get("HQ_ROOT").map(String::as_str),
+            Some("/Users/test/HQ")
+        );
+        assert!(
+            env.get("PATH").map(|p| !p.is_empty()).unwrap_or(false),
+            "PATH must be set so Dock-launched Tauri apps can find node/npx"
+        );
     }
 }

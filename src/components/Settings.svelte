@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
+  import { canEnableRealtimeSync } from '../lib/realtime-sync';
 
   interface Props {
     onback: () => void;
@@ -12,9 +13,13 @@
   let syncOnLaunch = $state(false);
   let notifications = $state(true);
   let startAtLogin = $state(true);
+  let realtimeSync = $state(false);
+  let userEmail = $state<string | null>(null);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  let realtimeSyncAvailable = $derived(canEnableRealtimeSync(userEmail));
 
   // Updater UI state. `checking` blocks the button and shows a spinner;
   // `result` is a transient status line ("Up to date" / "v0.1.8 ready").
@@ -35,20 +40,28 @@
 
   async function loadSettings() {
     try {
-      const [settings, autostart] = await Promise.all([
+      const [settings, autostart, email] = await Promise.all([
         invoke<{
           hqPath: string | null;
           syncOnLaunch: boolean | null;
           notifications: boolean | null;
           startAtLogin: boolean | null;
+          realtimeSync: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
+        invoke<string | null>('get_user_email').catch((err) => {
+          // Pre-sign-in or token unreadable — Auto-sync (Beta) row stays hidden.
+          console.warn('get_user_email failed, hiding Auto-sync row:', err);
+          return null;
+        }),
       ]);
 
       hqPath = settings.hqPath;
       syncOnLaunch = settings.syncOnLaunch ?? false;
       notifications = settings.notifications ?? true;
       startAtLogin = settings.startAtLogin ?? autostart;
+      realtimeSync = settings.realtimeSync ?? false;
+      userEmail = email;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -72,6 +85,7 @@
           syncOnLaunch,
           notifications,
           startAtLogin,
+          realtimeSync,
         },
       });
       showSaved();
@@ -100,6 +114,22 @@
   async function handleToggleNotifications() {
     notifications = !notifications;
     await saveAll();
+  }
+
+  async function handleToggleRealtimeSync() {
+    realtimeSync = !realtimeSync;
+    await saveAll();
+    try {
+      if (realtimeSync) {
+        await invoke('start_daemon');
+      } else {
+        await invoke('stop_daemon');
+      }
+    } catch (err) {
+      // Surface in console — the toggle's persisted state is still authoritative,
+      // and main.rs auto-starts the daemon on next launch when the flag is set.
+      console.error('Auto-sync daemon command failed:', err);
+    }
   }
 
   async function handleToggleStartAtLogin() {
@@ -197,6 +227,32 @@
           <span class="toggle-knob"></span>
         </button>
       </div>
+
+      <!-- Auto-sync (Beta) — gated to @getindigo.ai accounts during the
+           internal rollout. The watcher runs hq-sync-runner in --watch mode
+           via the existing daemon Tauri commands, fanning out to every
+           membership the user has (same as the Sync Now button). -->
+      {#if realtimeSyncAvailable}
+        <div class="settings-divider"></div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <label class="setting-label" for="toggle-realtime-sync">Auto-sync (Beta)</label>
+            <span class="setting-desc">Syncs every 10 minutes with no clicks needed</span>
+          </div>
+          <button
+            id="toggle-realtime-sync"
+            class="toggle"
+            class:active={realtimeSync}
+            onclick={handleToggleRealtimeSync}
+            role="switch"
+            aria-checked={realtimeSync}
+            aria-label="Auto-sync (Beta)"
+          >
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+      {/if}
 
       <div class="settings-divider"></div>
 

@@ -14,6 +14,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             notifications: Some(true),
             start_at_login: Some(true),
             autostart_daemon: Some(false),
+            realtime_sync: Some(false),
         });
     }
 
@@ -29,6 +30,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         notifications: Some(prefs.notifications.unwrap_or(true)),
         start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
         autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
+        realtime_sync: Some(prefs.realtime_sync.unwrap_or(false)),
     })
 }
 
@@ -66,6 +68,7 @@ mod tests {
             notifications: None,
             start_at_login: None,
             autostart_daemon: None,
+            realtime_sync: None,
         };
 
         let result = MenubarPrefs {
@@ -74,6 +77,7 @@ mod tests {
             notifications: Some(prefs.notifications.unwrap_or(true)),
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
+            realtime_sync: Some(prefs.realtime_sync.unwrap_or(false)),
         };
 
         assert_eq!(result.hq_path, None);
@@ -90,6 +94,7 @@ mod tests {
             notifications: Some(false),
             start_at_login: Some(false),
             autostart_daemon: Some(true),
+            realtime_sync: Some(true),
         };
 
         let result = MenubarPrefs {
@@ -98,6 +103,7 @@ mod tests {
             notifications: Some(prefs.notifications.unwrap_or(true)),
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
+            realtime_sync: Some(prefs.realtime_sync.unwrap_or(false)),
         };
 
         assert_eq!(result.hq_path, Some("/custom/path".to_string()));
@@ -115,6 +121,7 @@ mod tests {
             notifications: Some(true),
             start_at_login: Some(false),
             autostart_daemon: Some(false),
+            realtime_sync: Some(false),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -137,6 +144,7 @@ mod tests {
             notifications: Some(true),
             start_at_login: Some(true),
             autostart_daemon: Some(false),
+            realtime_sync: Some(false),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -156,6 +164,7 @@ mod tests {
             notifications: Some(true),
             start_at_login: Some(true),
             autostart_daemon: Some(false),
+            realtime_sync: Some(false),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
