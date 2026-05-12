@@ -6,16 +6,21 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
 
 use crate::commands::config::MenubarPrefs;
 use crate::commands::process::{
     cancel_process_impl, deregister_process, run_process_impl, try_register_handle, ProcessEvent,
     SpawnArgs,
 };
+use crate::commands::status::{journal_for_sync_complete, write_journal};
+use crate::commands::sync::RunTotals;
+use crate::events::{SyncEvent, EVENT_SYNC_ALL_COMPLETE};
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -231,6 +236,60 @@ fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F) -> bool
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Watch-mode ndjson handler
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Process a single stdout line from `hq-sync-runner --watch`.
+///
+/// The watcher emits the same ndjson protocol as a manual sync (one full
+/// fanout-plan → plan/progress/complete → all-complete cycle per pass).
+/// `handle_sync_line` in `sync.rs` owns the rich manual-sync handling
+/// (per-file progress events, reconcile, telemetry, sentry captures);
+/// here we only do what the popover needs to surface auto-sync to the
+/// user — keep the conflict tally up-to-date and, on each pass's
+/// AllComplete, write the journal and emit the same `sync:all-complete`
+/// event the frontend already listens for.
+///
+/// Failing to parse a line is non-fatal: blank lines arrive at runner
+/// teardown, and any unknown variant the runner adds in the future
+/// should not kill the watcher.
+fn handle_watch_stdout_line(
+    app: &AppHandle,
+    hq_folder: &str,
+    totals: &Mutex<RunTotals>,
+    line: &str,
+) {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let event: SyncEvent = match serde_json::from_str(trimmed) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    {
+        let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+        t.accumulate(&event);
+    }
+    if let SyncEvent::AllComplete(payload) = &event {
+        let conflicts = {
+            let t = totals.lock().unwrap_or_else(|e| e.into_inner());
+            t.conflicts
+        };
+        let now_iso = chrono::Utc::now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let journal = journal_for_sync_complete(&now_iso, conflicts);
+        if let Err(e) = write_journal(hq_folder, &journal) {
+            log("daemon", &format!("failed to write journal: {e}"));
+        }
+        log("daemon", &format!("all-complete (conflicts={conflicts})"));
+        let _ = app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone());
+        // Reset for the next pass — watch mode loops indefinitely.
+        *totals.lock().unwrap_or_else(|e| e.into_inner()) = RunTotals::default();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -245,7 +304,7 @@ fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F) -> bool
 ///
 /// Returns the handle string on success.
 #[tauri::command]
-pub fn start_daemon() -> Result<String, String> {
+pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     if !try_register_handle(DAEMON_HANDLE) {
         return Err("Daemon is already starting".to_string());
     }
@@ -273,17 +332,24 @@ pub fn start_daemon() -> Result<String, String> {
 
     log("daemon", "spawn: hq-sync-runner --watch");
 
+    // Per-pass totals. Watch mode emits a full Complete/AllComplete cycle on
+    // every chokidar tick + every 10-minute poll, so we reset on each
+    // AllComplete instead of accumulating forever.
+    let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
+    let hq_folder = hq_folder_path.clone();
+
     thread::spawn(move || {
-        let result = run_process_impl(DAEMON_HANDLE, &spawn_args, |event| {
+        let result = run_process_impl(DAEMON_HANDLE, &spawn_args, move |event| {
             // Surface stderr and non-success exits unconditionally — they
             // are the only signals the user has when the watcher dies
             // (e.g. "Unknown argument: --watch" on a stale runner pin).
-            // Stdout stays debug-only since steady-state ndjson would
-            // swamp the log.
+            // Stdout is parsed for ndjson SyncEvents so each watcher pass
+            // updates `.hq-sync-journal.json` and refreshes the popover's
+            // "Last synced" stat — without that, the UI only ever showed
+            // the timestamp of the last manual `Sync Now` click.
             match event {
-                ProcessEvent::Stdout(_line) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[daemon stdout] {}", _line);
+                ProcessEvent::Stdout(line) => {
+                    handle_watch_stdout_line(&app, &hq_folder, &totals, &line);
                 }
                 ProcessEvent::Stderr(line) => {
                     log("daemon.stderr", &line);

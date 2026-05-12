@@ -67,11 +67,27 @@ fn main() {
         scope.set_tag("repo", "hq-sync");
     });
 
+    use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
+
+    // Cmd+Shift+H — global hotkey to summon the popover from anywhere.
+    // Defined up front so the plugin builder and the setup-time `register`
+    // call agree on the exact key combo.
+    let show_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyH);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
+                        tray::show_window_at_tray(app);
+                    }
+                })
+                .build(),
+        )
         .manage(updater::PendingUpdate(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
@@ -131,6 +147,24 @@ fn main() {
 
             tray::setup_tray(&app.handle())?;
             updater::setup_update_checker(&app.handle());
+
+            // Register Cmd+Shift+H globally so the popover can be summoned
+            // from any app. The handler (configured on the plugin builder
+            // above) calls `tray::show_window_at_tray`. Registration can
+            // fail if another app already holds the chord — log and
+            // continue so the rest of the app still launches.
+            {
+                use tauri_plugin_global_shortcut::GlobalShortcutExt;
+                let shortcut =
+                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyH);
+                if let Err(e) = app.global_shortcut().register(shortcut) {
+                    util::logfile::log(
+                        "ui",
+                        &format!("global shortcut Cmd+Shift+H register FAILED: {e}"),
+                    );
+                }
+            }
+
             commands::hq_cli_update::setup_hq_cli_update_checker(&app.handle());
 
             // Fire-and-forget: warm the npx cache for
@@ -146,10 +180,11 @@ fn main() {
             if commands::daemon::is_autostart_enabled()
                 || commands::daemon::is_realtime_sync_enabled()
             {
-                std::thread::spawn(|| {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
                     // Small delay to let the app fully initialize
                     std::thread::sleep(std::time::Duration::from_secs(2));
-                    let _ = commands::daemon::start_daemon();
+                    let _ = commands::daemon::start_daemon(handle);
                 });
             }
 
