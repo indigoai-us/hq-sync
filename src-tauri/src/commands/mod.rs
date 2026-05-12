@@ -8,6 +8,7 @@ pub mod daemon;
 pub mod first_push;
 pub mod folder_picker;
 pub mod hq_cli_update;
+pub mod new_files;
 pub mod oauth;
 pub mod personal;
 pub mod prewarm;

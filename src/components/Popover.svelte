@@ -527,7 +527,7 @@
       {:else}
         <SyncStats bind:this={statsEl} />
         {#if newFilesCount > 0}
-          <NewFilesBadge count={newFilesCount} files={newFilesList} />
+          <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => invoke('open_new_files_detail', { files: newFilesList })} />
         {/if}
       {/if}
 
