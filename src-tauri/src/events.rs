@@ -118,6 +118,27 @@ pub struct SyncPlanEvent {
     pub files_to_conflict: u32,
 }
 
+/// `{type: "new-files", company, files: [{path, bytes, addedBy?}]}`
+/// Emitted once per company after sync completes, listing files that were
+/// newly added to the shared drive since the last sync. `addedBy` is the
+/// email of the person who uploaded the file (null when attribution is
+/// unavailable).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncNewFileEntry {
+    pub path: String,
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub added_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncNewFilesEvent {
+    pub company: String,
+    pub files: Vec<SyncNewFileEntry>,
+}
+
 /// `{type: "all-complete", companiesAttempted, filesDownloaded, bytesDownloaded, errors}`
 /// Terminal event. Emitted exactly once after the fanout loop finishes.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -155,6 +176,7 @@ pub enum SyncEvent {
     Progress(SyncProgressEvent),
     Error(SyncErrorEvent),
     Complete(SyncCompleteEvent),
+    NewFiles(SyncNewFilesEvent),
     AllComplete(SyncAllCompleteEvent),
 }
 
@@ -172,6 +194,7 @@ pub const EVENT_SYNC_PLAN: &str = "sync:plan";
 pub const EVENT_SYNC_PROGRESS: &str = "sync:progress";
 pub const EVENT_SYNC_ERROR: &str = "sync:error";
 pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
+pub const EVENT_SYNC_NEW_FILES: &str = "sync:new-files";
 pub const EVENT_SYNC_ALL_COMPLETE: &str = "sync:all-complete";
 /// Deprecated — kept for frontend shape-compat. Not emitted by the runner.
 pub const EVENT_SYNC_CONFLICT: &str = "sync:conflict";
@@ -477,6 +500,83 @@ mod tests {
             SyncEvent::AllComplete(a) => assert!(a.errors.is_empty()),
             _ => panic!("expected AllComplete"),
         }
+    }
+
+    #[test]
+    fn test_parse_new_files_event() {
+        let json = r#"{"type":"new-files","company":"indigo","files":[{"path":"docs/new.md","bytes":1024,"addedBy":"stefan@example.com"},{"path":"docs/other.md","bytes":512,"addedBy":null}]}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            event,
+            SyncEvent::NewFiles(SyncNewFilesEvent {
+                company: "indigo".to_string(),
+                files: vec![
+                    SyncNewFileEntry {
+                        path: "docs/new.md".to_string(),
+                        bytes: 1024,
+                        added_by: Some("stefan@example.com".to_string()),
+                    },
+                    SyncNewFileEntry {
+                        path: "docs/other.md".to_string(),
+                        bytes: 512,
+                        added_by: None,
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_new_files_event_empty_files() {
+        let json = r#"{"type":"new-files","company":"voyage","files":[]}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::NewFiles(nf) => {
+                assert_eq!(nf.company, "voyage");
+                assert!(nf.files.is_empty());
+            }
+            _ => panic!("expected NewFiles"),
+        }
+    }
+
+    #[test]
+    fn test_parse_new_files_event_without_added_by_key() {
+        // addedBy omitted entirely (not just null) — must default to None.
+        let json = r#"{"type":"new-files","company":"indigo","files":[{"path":"a.txt","bytes":100}]}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::NewFiles(nf) => {
+                assert_eq!(nf.files.len(), 1);
+                assert_eq!(nf.files[0].added_by, None);
+            }
+            _ => panic!("expected NewFiles"),
+        }
+    }
+
+    #[test]
+    fn test_new_files_event_roundtrip() {
+        let event = SyncEvent::NewFiles(SyncNewFilesEvent {
+            company: "indigo".to_string(),
+            files: vec![SyncNewFileEntry {
+                path: "docs/a.md".to_string(),
+                bytes: 42,
+                added_by: Some("user@example.com".to_string()),
+            }],
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: SyncEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_new_file_entry_skips_none_added_by() {
+        let entry = SyncNewFileEntry {
+            path: "a.txt".to_string(),
+            bytes: 10,
+            added_by: None,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        assert!(!json.contains("\"addedBy\""));
     }
 
     #[test]
