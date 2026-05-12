@@ -425,17 +425,6 @@
               >
                 {hqCliUpdateInstalling ? 'Installing…' : 'Update'}
               </button>
-              <CopyPromptButton
-                variant="inline"
-                label="Copy prompt"
-                issue={{
-                  kind: 'hq-cli-update-available',
-                  payload: {
-                    local: hqCliUpdateAvailable.local ?? '',
-                    latest: hqCliUpdateAvailable.latest,
-                  },
-                }}
-              />
             {/if}
           </div>
         </div>
