@@ -46,32 +46,39 @@ pub(crate) enum UploadOutcome {
     Permanent(String),
 }
 
-// ── Personal-vault path allowlist ─────────────────────────────────────────────
+// ── Personal-vault path exclusion list ────────────────────────────────────────
 
-/// The only top-level directories under `hq_root/` that the personal vault
-/// syncs. Everything else (root files, `modules/`, `packages/`, `repos/`,
-/// `scripts/`, `settings/`, `social-content/`, etc.) is skipped to keep the
-/// vault scoped to the user's actual knowledge work + tooling.
+/// Top-level directories under `hq_root/` that the personal vault MUST NOT
+/// sync. Everything else (root files, `.claude/`, `knowledge/`, `modules/`,
+/// hidden dotfile dirs like `.codex/`, etc.) is included subject to the
+/// IgnoreFilter (`.gitignore` + `.hqignore`).
 ///
-/// The conventional `companies/` tree is implicitly excluded because it isn't
-/// in this list — companies sync via the runner's per-membership pass instead.
+/// Rationale per exclusion:
+///   - `companies/`: synced separately by the runner's per-membership fanout;
+///     do not double-write into the personal vault.
+///   - `core/`, `data/`, `personal/`, `workspace/`, `repos/`: per user
+///     directive — heavy local-only content (machine-state, datasets,
+///     cloned remotes) that should not live in the personal vault.
+///   - `.git/`: a git repo's internal state is large, opaque, and useless
+///     after sync — gitignore alone doesn't cover `.git/` because it's the
+///     repo itself, not a tracked path.
 ///
-/// **TODO** (v0.1.26+): the spawned `hq-sync-runner` (Node, in
-/// `@indigoai-us/hq-cloud`) does its own walk and currently uploads
-/// everything under `hq_root` that isn't gitignored. Until the runner accepts
-/// the same allowlist (via a new `--include-paths` CLI arg or a manifest
-/// hint), the runner will still upload root files this list excludes. Mirror
-/// this constant on the Node side when the runner gains the arg.
-pub(crate) const PERSONAL_VAULT_PATHS: &[&str] = &[
-    ".claude",   // skills + commands + settings
-    "knowledge",
-    "policies",
-    "projects",
+/// Mirror this constant in `@indigoai-us/hq-cloud`'s sync-runner so push
+/// behaviour from the Node runner matches the Rust first-push.
+pub(crate) const PERSONAL_VAULT_EXCLUDED_TOP_LEVEL: &[&str] = &[
+    ".git",
+    "companies",
+    "core",
+    "data",
+    "personal",
+    "repos",
+    "workspace",
 ];
 
 /// True when a relative path (relative to hq_root, forward-slash separators)
-/// falls under one of the allowlisted personal-vault top-level dirs.
-/// Empty / single-component paths (root files like `README.md`) return false.
+/// is part of the personal vault — i.e. its top-level segment is NOT in
+/// `PERSONAL_VAULT_EXCLUDED_TOP_LEVEL`. Empty paths return false (no top
+/// segment to check).
 /// "Preparing sync…" pre-pass: walk every push-side target, hash each file,
 /// and compare against the journal to count exactly how many UPLOADS the
 /// runner will emit. The runner only fires `progress` events for actual
@@ -177,7 +184,7 @@ pub(crate) fn is_personal_vault_path(rel: &str) -> bool {
     if top.is_empty() {
         return false;
     }
-    PERSONAL_VAULT_PATHS.contains(&top)
+    !PERSONAL_VAULT_EXCLUDED_TOP_LEVEL.contains(&top)
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -870,26 +877,36 @@ mod tests {
         assert_eq!(upload_counter.load(Ordering::SeqCst), 0, "no uploads from empty hq_root");
     }
 
-    // (c) Personal vault scope is restricted to PERSONAL_VAULT_PATHS.
-    //     docs/, modules/, packages/, root files, companies/ → all excluded.
-    //     .claude/, knowledge/, policies/, projects/ → all included.
+    // (c) Personal vault scope is now defined by exclusion (the inverse of
+    //     the old PERSONAL_VAULT_PATHS allowlist). Everything except
+    //     companies/, .git/, core/, data/, personal/, repos/, workspace/
+    //     is included, subject to .gitignore/.hqignore.
     #[tokio::test]
-    async fn test_personal_vault_path_allowlist() {
+    async fn test_personal_vault_path_exclusion() {
         let tmp_state = TempDir::new().unwrap();
         let tmp_hq = TempDir::new().unwrap();
         let root = tmp_hq.path();
 
-        // Allowlisted (must be uploaded)
+        // Included (must be uploaded)
         write_file(&root.join("knowledge/notes.md"), b"knowledge");
         write_file(&root.join("policies/auto-deploy.md"), b"policy");
         write_file(&root.join("projects/foo/prd.json"), b"prd");
         write_file(&root.join(".claude/skills/foo/SKILL.md"), b"skill");
-        // NOT allowlisted (must be skipped)
         write_file(&root.join("README.md"), b"root readme");
         write_file(&root.join("docs/README.md"), b"docs");
-        write_file(&root.join("modules/modules.yaml"), b"modules");
+        // `modules/modules.yaml` is in DEFAULT_IGNORES (local resolution
+        // state); test a different file under modules/ to validate the
+        // dir itself is now included by the personal-vault rules.
+        write_file(&root.join("modules/somepkg/README.md"), b"modules-content");
         write_file(&root.join("packages/foo/README.md"), b"packages");
+        write_file(&root.join(".codex/state.json"), b"codex");
+        // Excluded (must be skipped)
         write_file(&root.join("companies/acme/file.md"), b"company");
+        write_file(&root.join("core/yaml.yaml"), b"core");
+        write_file(&root.join("data/db.sqlite"), b"data");
+        write_file(&root.join("personal/notes.md"), b"personal-dir");
+        write_file(&root.join("repos/foo/README.md"), b"repos");
+        write_file(&root.join("workspace/threads/T-1.md"), b"workspace");
 
         let calls = Arc::new(Mutex::new(vec![]));
         {
@@ -901,15 +918,15 @@ mod tests {
 
         let captured = calls.lock().unwrap();
 
-        // Allowlisted prefixes must appear.
-        for prefix in [".claude/", "knowledge/", "policies/", "projects/"] {
+        // Included prefixes must appear.
+        for included in [".claude/", "knowledge/", "policies/", "projects/", "docs/", "modules/somepkg/", "packages/", ".codex/", "README.md"] {
             assert!(
-                captured.iter().any(|k| k.starts_with(prefix)),
-                "{prefix} must be uploaded; got: {captured:?}",
+                captured.iter().any(|k| k.starts_with(included) || k.as_str() == included),
+                "{included} must be uploaded; got: {captured:?}",
             );
         }
-        // Non-allowlisted entries must NOT appear.
-        for forbidden in ["README.md", "docs/", "modules/", "packages/", "companies/"] {
+        // Excluded entries must NOT appear.
+        for forbidden in ["companies/", "core/", "data/", "personal/", "repos/", "workspace/"] {
             assert!(
                 !captured.iter().any(|k| k.starts_with(forbidden)),
                 "{forbidden} must be skipped; got: {captured:?}",
@@ -920,23 +937,31 @@ mod tests {
     // ── is_personal_vault_path (pure helper) ─────────────────────────────
 
     #[test]
-    fn test_is_personal_vault_path_allowlist() {
-        // Allowlisted
+    fn test_is_personal_vault_path_exclusion() {
+        // Included — historically allowlisted entries still in.
         assert!(is_personal_vault_path("knowledge/foo.md"));
         assert!(is_personal_vault_path("policies/auto-deploy.md"));
         assert!(is_personal_vault_path("projects/foo/prd.json"));
         assert!(is_personal_vault_path(".claude/skills/foo/SKILL.md"));
         assert!(is_personal_vault_path(".claude/commands/x.md"));
-        // Not allowlisted
-        assert!(!is_personal_vault_path("README.md"), "root files excluded");
-        assert!(!is_personal_vault_path("companies/acme/x.md"), "companies excluded");
-        assert!(!is_personal_vault_path("modules/modules.yaml"));
-        assert!(!is_personal_vault_path("packages/foo/README.md"));
-        assert!(!is_personal_vault_path("scripts/run.sh"));
+        // Included — newly permitted under exclusion semantics.
+        assert!(is_personal_vault_path("README.md"), "root files now included");
+        assert!(is_personal_vault_path("modules/modules.yaml"));
+        assert!(is_personal_vault_path("packages/foo/README.md"));
+        assert!(is_personal_vault_path("scripts/run.sh"));
+        assert!(is_personal_vault_path(".codex/state.json"));
+        assert!(is_personal_vault_path(".agents/runs/x.json"));
+        assert!(is_personal_vault_path("knowledge.md"), "single-segment root file is a top-level itself");
+        // Excluded — top-level dir is in the exclusion list.
+        assert!(!is_personal_vault_path("companies/acme/x.md"), "companies handled by per-membership fanout");
+        assert!(!is_personal_vault_path("core/yaml.yaml"), "core/ is local-only");
+        assert!(!is_personal_vault_path("data/db.sqlite"), "data/ is local-only");
+        assert!(!is_personal_vault_path("personal/notes.md"), "personal/ is a local company dir, not the personal vault");
+        assert!(!is_personal_vault_path("repos/foo/README.md"), "repos/ have their own remotes");
+        assert!(!is_personal_vault_path("workspace/threads/T-1.md"), "workspace/ is local session state");
+        assert!(!is_personal_vault_path(".git/HEAD"), ".git/ is never synced");
+        // Empty input still false (no top segment to evaluate).
         assert!(!is_personal_vault_path(""));
-        // Edge: a top-level entry NAMED knowledge.md (file, not dir) gets the
-        // first segment "knowledge.md" — not "knowledge" — so excluded.
-        assert!(!is_personal_vault_path("knowledge.md"), "string match must be exact segment");
     }
 
     // (d) Re-run with journal populated → zero PutObject calls.
