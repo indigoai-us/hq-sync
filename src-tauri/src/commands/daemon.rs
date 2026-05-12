@@ -16,6 +16,7 @@ use crate::commands::process::{
     cancel_process_impl, deregister_process, run_process_impl, try_register_handle, ProcessEvent,
     SpawnArgs,
 };
+use crate::util::logfile::log;
 use crate::util::paths;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,31 +271,41 @@ pub fn start_daemon() -> Result<String, String> {
 
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
+    log("daemon", "spawn: hq-sync-runner --watch");
+
     thread::spawn(move || {
         let result = run_process_impl(DAEMON_HANDLE, &spawn_args, |event| {
+            // Surface stderr and non-success exits unconditionally — they
+            // are the only signals the user has when the watcher dies
+            // (e.g. "Unknown argument: --watch" on a stale runner pin).
+            // Stdout stays debug-only since steady-state ndjson would
+            // swamp the log.
             match event {
                 ProcessEvent::Stdout(_line) => {
                     #[cfg(debug_assertions)]
                     eprintln!("[daemon stdout] {}", _line);
                 }
-                ProcessEvent::Stderr(_line) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[daemon stderr] {}", _line);
+                ProcessEvent::Stderr(line) => {
+                    log("daemon.stderr", &line);
                 }
                 ProcessEvent::Exit {
                     code,
-                    signal: _,
-                    success: _,
+                    signal,
+                    success,
                 } => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("[daemon] exited with code {:?}", code);
+                    log(
+                        "daemon",
+                        &format!(
+                            "exited: code={:?} signal={:?} success={}",
+                            code, signal, success
+                        ),
+                    );
                 }
             }
         });
 
-        if let Err(_e) = result {
-            #[cfg(debug_assertions)]
-            eprintln!("[daemon] spawn failed: {}", _e);
+        if let Err(e) = result {
+            log("daemon", &format!("spawn failed: {e}"));
         }
     });
 
