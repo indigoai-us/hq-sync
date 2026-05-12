@@ -817,14 +817,13 @@
 
   /* Notice variant — replaces the legacy banner-error red treatment. Visually
      identical to banner-info; the title + body + Copy-prompt button carry
-     the urgency. Same horizontal layout as banner-update so the
-     CopyPromptButton sits flush right. */
+     the urgency. Column layout (inherited from .banner) so long error
+     messages get the full 320px popover width and the action buttons sit
+     on their own row below — fixes the v0.1.69 word-per-line wrap. */
   .banner-notice {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.625rem;
     background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
     border-color: var(--popover-notice-border, rgba(255, 255, 255, 0.16));
+    gap: 0.5rem;
   }
 
   .banner-title {
@@ -842,16 +841,21 @@
     line-height: 1.4;
   }
 
-  /* Update banner: horizontal layout — text on the left, Install on the right */
+  /* Update banner: column layout. Title + body on top (full width), action
+     buttons on the bottom row. Earlier horizontal layout assumed exactly
+     one action button — adding the Copy-prompt button alongside Install
+     squeezed the text column down to ~76px on the 320px window and made
+     each word wrap to its own line (v0.1.69 regression). Column layout
+     fixes that without sacrificing visual hierarchy. */
   .banner-update {
-    flex-direction: row;
-    align-items: center;
-    gap: 0.625rem;
+    gap: 0.5rem;
   }
 
   .banner-update-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
     min-width: 0;
-    flex: 1;
   }
 
   .banner-update-button {
@@ -892,14 +896,17 @@
     color: var(--popover-text-heading, #ffffff);
   }
 
-  /* Container for action buttons stacked or row'd to the right of a banner.
-     Used by update banners (Install + Copy-prompt) and the hq CLI update
-     error variant (Copy command + Copy-prompt). */
+  /* Action buttons row — sits beneath banner text in column-stacked banners.
+     justify-content: flex-end keeps the buttons hugging the right edge so
+     the eye lands on them as the next action. flex-wrap lets the two-button
+     variants (Copy command + Copy prompt) drop the secondary onto a new
+     line on narrow widths instead of overflowing. */
   .banner-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
     gap: 0.375rem;
-    flex-shrink: 0;
   }
 
   /* Live progress — replaces the SyncStats card while actively syncing.
