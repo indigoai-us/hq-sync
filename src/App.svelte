@@ -125,6 +125,13 @@
   // can't auto-install (npm globals require shell access we don't have),
   // so it surfaces a copy-able upgrade command instead.
   let hqCliUpdateAvailable = $state<{ local: string | null; latest: string } | null>(null);
+  // True while `invoke('install_hq_cli_update')` is in flight — disables
+  // the banner button and flips its label to "Installing…".
+  let hqCliUpdateInstalling = $state(false);
+  // Last error returned from `install_hq_cli_update`. When non-null, the
+  // banner switches to its error state and shows a Copy-command fallback
+  // (typical failure: EACCES against a system-prefix npm that needs sudo).
+  let hqCliUpdateError = $state<string | null>(null);
 
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
@@ -238,6 +245,35 @@
 
   function handleDismissConflicts() {
     showConflictModal = false;
+  }
+
+  async function handleInstallHqCliUpdate() {
+    if (hqCliUpdateInstalling) return;
+    hqCliUpdateInstalling = true;
+    hqCliUpdateError = null;
+    try {
+      // Backend spawns `npm install -g @indigoai-us/hq-cli@latest` and
+      // re-checks on success. We clear the banner on success; on failure
+      // we surface the stderr so the banner can fall back to its
+      // copy-the-command affordance. See
+      // src-tauri/src/commands/hq_cli_update.rs:install_hq_cli_update.
+      const info = await invoke<{ local: string | null; latest: string }>(
+        'install_hq_cli_update'
+      );
+      // npm exited 0 but the version might still lag (e.g., npm picked
+      // up a cached resolution). Compare and only clear the banner when
+      // the local version is actually current.
+      if (info.local && info.local === info.latest) {
+        hqCliUpdateAvailable = null;
+      } else {
+        hqCliUpdateAvailable = info;
+      }
+    } catch (err) {
+      console.error('install_hq_cli_update failed:', err);
+      hqCliUpdateError = String(err);
+    } finally {
+      hqCliUpdateInstalling = false;
+    }
   }
 
   async function handleInstallUpdate() {
@@ -539,11 +575,36 @@
     //   hq-cli-update:available — payload { local: string | null, latest: string }
     //     `local` is null when the user doesn't have `hq` on PATH; the
     //     checker doesn't emit in that case, but we type it permissively.
+    //   hq-cli-update:cleared — payload { local, latest } after an in-app
+    //     `npm install -g` finishes successfully. The handler returning
+    //     the same info already clears state, but we also listen here so
+    //     a background tray check that ran in parallel can't re-show the
+    //     banner stale.
     unlisteners.push(
       await listen<{ local: string | null; latest: string }>(
         'hq-cli-update:available',
         (event) => {
+          // A fresh check arrived — discard any stale error from a
+          // previous failed install so the button is clickable again.
+          hqCliUpdateError = null;
           hqCliUpdateAvailable = event.payload;
+        }
+      )
+    );
+    unlisteners.push(
+      await listen<{ local: string | null; latest: string }>(
+        'hq-cli-update:cleared',
+        (event) => {
+          // Backend says install succeeded. Trust the version it
+          // reports — only clear the banner when local actually
+          // matches latest (a re-resolution that lagged the install
+          // would leave local stale).
+          if (event.payload.local && event.payload.local === event.payload.latest) {
+            hqCliUpdateAvailable = null;
+            hqCliUpdateError = null;
+          } else {
+            hqCliUpdateAvailable = event.payload;
+          }
         }
       )
     );
@@ -635,6 +696,8 @@
       {updateAvailable}
       {updateInstalling}
       {hqCliUpdateAvailable}
+      {hqCliUpdateInstalling}
+      {hqCliUpdateError}
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}
@@ -643,6 +706,7 @@
       onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
+      oninstallhqcliupdate={handleInstallHqCliUpdate}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
     />
   {:else}

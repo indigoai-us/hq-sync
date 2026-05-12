@@ -131,6 +131,7 @@ fn main() {
             updater::check_for_updates,
             updater::install_update,
             commands::hq_cli_update::check_hq_cli_update,
+            commands::hq_cli_update::install_hq_cli_update,
         ])
         .setup(|app| {
             // macOS menubar-app activation policy. `Accessory` = no Dock

@@ -79,6 +79,13 @@
     updateInstalling?: boolean;
     /** Non-null when the globally-installed `hq` CLI is behind npm `latest`. */
     hqCliUpdateAvailable?: { local: string | null; latest: string } | null;
+    /** True while the in-app `npm install -g` is running — disables the
+     *  banner button and flips its label to "Installing…". */
+    hqCliUpdateInstalling?: boolean;
+    /** Last error returned from `install_hq_cli_update`. When set, the
+     *  banner shows the message + the copy-the-command fallback (typical
+     *  case: EACCES on a system-prefix npm that needs sudo). */
+    hqCliUpdateError?: string | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
      *  header button doubles as Sync/Stop — only meaningful when
@@ -90,6 +97,9 @@
     onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
     oninstallupdate?: () => void;
+    /** Run `npm install -g @indigoai-us/hq-cli@latest` via the Rust
+     *  backend. App.svelte owns the in-flight + error state. */
+    oninstallhqcliupdate?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -120,6 +130,8 @@
     updateAvailable = null,
     updateInstalling = false,
     hqCliUpdateAvailable = null,
+    hqCliUpdateInstalling = false,
+    hqCliUpdateError = null,
     onsync,
     oncancel,
     onsettings,
@@ -128,6 +140,7 @@
     onopen,
     ondismissconflicts,
     oninstallupdate,
+    oninstallhqcliupdate,
     bindStatsRefresh,
   }: Props = $props();
 
@@ -196,9 +209,11 @@
     performance.mark('popover-mounted');
   });
 
-  // Copy-to-clipboard state for the hq CLI update banner. The button can't
-  // auto-install — npm globals need a shell — so it copies the upgrade
-  // command and briefly flashes "Copied" to confirm. We use the browser
+  // hq CLI update banner — the button runs `npm install -g` directly via
+  // the Rust backend (see install_hq_cli_update). If that fails (typical
+  // case: EACCES against a system-prefix npm that needs sudo) the banner
+  // surfaces the stderr and falls back to a Copy-command affordance so
+  // the user can paste it into their own shell. We use the browser
   // clipboard API rather than the Tauri clipboard plugin (not installed)
   // because Tauri webviews expose it natively over HTTPS-equivalent
   // origins.
@@ -342,31 +357,54 @@
         </div>
       {/if}
 
-      <!-- hq CLI update banner — separate from the app updater. The button
-           copies the upgrade command to the clipboard because npm globals
-           require a real shell; we can't safely `npm install -g` from
-           inside the menubar app. -->
+      <!-- hq CLI update banner — separate from the app updater. The
+           Update button shells out to `npm install -g @indigoai-us/hq-cli@latest`
+           in the Rust backend. If that errors (most commonly EACCES on a
+           system-prefix npm), the banner switches to error state and offers
+           a Copy-command fallback so the user can run it themselves. -->
       {#if hqCliUpdateAvailable}
-        <div class="banner banner-info banner-update">
+        <div
+          class="banner banner-update"
+          class:banner-info={!hqCliUpdateError}
+          class:banner-error={!!hqCliUpdateError}
+        >
           <div class="banner-update-text">
             <p class="banner-title">
               hq CLI update available: v{hqCliUpdateAvailable.latest}
             </p>
-            <p class="banner-body">
-              {#if hqCliUpdateAvailable.local}
-                You're on v{hqCliUpdateAvailable.local}. Run
-              {:else}
-                Run
-              {/if}
-              <code>{HQ_CLI_UPGRADE_CMD}</code> to upgrade.
-            </p>
+            {#if hqCliUpdateError}
+              <p class="banner-body">
+                Update failed: {hqCliUpdateError}
+              </p>
+              <p class="banner-body">
+                Run <code>{HQ_CLI_UPGRADE_CMD}</code> in a terminal to upgrade.
+              </p>
+            {:else if hqCliUpdateAvailable.local}
+              <p class="banner-body">
+                You're on v{hqCliUpdateAvailable.local}. Click Update to install the latest version.
+              </p>
+            {:else}
+              <p class="banner-body">
+                Click Update to install the latest version.
+              </p>
+            {/if}
           </div>
-          <button
-            class="banner-update-button"
-            onclick={copyHqCliUpgrade}
-          >
-            {hqCliCopied ? 'Copied' : 'Copy'}
-          </button>
+          {#if hqCliUpdateError}
+            <button
+              class="banner-update-button"
+              onclick={copyHqCliUpgrade}
+            >
+              {hqCliCopied ? 'Copied' : 'Copy'}
+            </button>
+          {:else}
+            <button
+              class="banner-update-button"
+              onclick={oninstallhqcliupdate}
+              disabled={hqCliUpdateInstalling || !oninstallhqcliupdate}
+            >
+              {hqCliUpdateInstalling ? 'Installing…' : 'Update'}
+            </button>
+          {/if}
         </div>
       {/if}
 
