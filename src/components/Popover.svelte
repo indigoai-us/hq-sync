@@ -84,8 +84,10 @@
      *  banner button and flips its label to "Installing…". */
     hqCliUpdateInstalling?: boolean;
     /** Last error returned from `install_hq_cli_update`. When set, the
-     *  banner shows the message + the copy-the-command fallback (typical
-     *  case: EACCES on a system-prefix npm that needs sudo). */
+     *  banner body reads "Update failed" and the CTA flips to "Fix this
+     *  in HQ", which opens a Claude Code session at the HQ folder with
+     *  the captured stderr pre-filled (typical case: EACCES on a
+     *  system-prefix npm that needs sudo). */
     hqCliUpdateError?: string | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
@@ -213,20 +215,33 @@
   // hq CLI update banner — the button runs `npm install -g` directly via
   // the Rust backend (see install_hq_cli_update). If that fails (typical
   // case: EACCES against a system-prefix npm that needs sudo) the banner
-  // surfaces the stderr and falls back to a Copy-command affordance so
-  // the user can paste it into their own shell. We use the browser
-  // clipboard API rather than the Tauri clipboard plugin (not installed)
-  // because Tauri webviews expose it natively over HTTPS-equivalent
-  // origins.
-  let hqCliCopied = $state(false);
+  // swaps to a "Fix this in HQ" CTA that opens a Claude Code session at
+  // the user's HQ folder via the `claude://code/new` deep link. Claude
+  // Desktop is registered as the system handler for the scheme; the Rust
+  // backend just forwards the URL to macOS `open`. The pre-filled prompt
+  // includes the install command + the raw stderr so Claude has enough
+  // signal to diagnose the actual permission/network failure.
   const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
-  async function copyHqCliUpgrade() {
+  async function fixHqCliUpdateInHq() {
+    const prompt = [
+      'The hq CLI auto-update failed inside the HQ Sync menubar app.',
+      '',
+      `Install command: ${HQ_CLI_UPGRADE_CMD}`,
+      '',
+      'Stderr from the failed run:',
+      hqCliUpdateError ?? '(no error captured)',
+      '',
+      'Please diagnose the root cause (EACCES on a system-prefix npm is the usual suspect) and walk me through fixing it.',
+    ].join('\n');
+
+    const params = new URLSearchParams({ q: prompt });
+    if (config?.hqFolderPath) params.set('folder', config.hqFolderPath);
+    const url = `claude://code/new?${params.toString()}`;
+
     try {
-      await navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD);
-      hqCliCopied = true;
-      setTimeout(() => (hqCliCopied = false), 1500);
+      await invoke('open_claude_code_link', { url });
     } catch (e) {
-      console.error('clipboard write failed:', e);
+      console.error('open_claude_code_link failed:', e);
     }
   }
 
@@ -371,10 +386,11 @@
       <!-- hq CLI update banner — separate from the app updater. The
            Update button shells out to `npm install -g @indigoai-us/hq-cli@latest`
            in the Rust backend. If that errors (most commonly EACCES on a
-           system-prefix npm), the banner switches into a notice variant
-           (no red), surfaces the stderr, and offers two affordances: the
-           legacy Copy-command (raw shell command for a terminal), and a
-           Copy-prompt that hands the failure to an HQ agent. -->
+           system-prefix npm), the banner shows "Update failed" and the
+           CTA flips to "Fix this in HQ", which opens a Claude Code
+           session at the HQ folder via the `claude://code/new` deep
+           link (see fixHqCliUpdateInHq). -->
+
       {#if hqCliUpdateAvailable}
         <div class="banner banner-info banner-update">
           <div class="banner-update-text">
@@ -382,12 +398,7 @@
               hq CLI update available: v{hqCliUpdateAvailable.latest}
             </p>
             {#if hqCliUpdateError}
-              <p class="banner-body">
-                Update failed: {hqCliUpdateError}
-              </p>
-              <p class="banner-body">
-                Run <code>{HQ_CLI_UPGRADE_CMD}</code> in a terminal to upgrade.
-              </p>
+              <p class="banner-body">Update failed</p>
             {:else if hqCliUpdateAvailable.local}
               <p class="banner-body">
                 You're on v{hqCliUpdateAvailable.local}. Click Update to install the latest version.
@@ -401,19 +412,11 @@
           <div class="banner-actions">
             {#if hqCliUpdateError}
               <button
-                class="banner-update-button banner-update-button-secondary"
-                onclick={copyHqCliUpgrade}
+                class="banner-update-button"
+                onclick={fixHqCliUpdateInHq}
               >
-                {hqCliCopied ? 'Copied' : 'Copy command'}
+                Fix this in HQ
               </button>
-              <CopyPromptButton
-                variant="inline"
-                label="Copy prompt"
-                issue={{
-                  kind: 'hq-cli-update-failed',
-                  payload: { error: hqCliUpdateError },
-                }}
-              />
             {:else}
               <button
                 class="banner-update-button"
