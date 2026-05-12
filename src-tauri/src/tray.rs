@@ -265,6 +265,26 @@ fn toggle_window(app: &AppHandle, tray_rect: Option<Rect>) {
     }
 }
 
+/// Pure math: center `win_w`-wide window horizontally under the tray icon,
+/// `gap_px` below it. All inputs in physical pixels.
+fn compute_popover_position(
+    tray_x: f64,
+    tray_y: f64,
+    tray_w: f64,
+    tray_h: f64,
+    win_w: f64,
+    gap_px: f64,
+) -> (i32, i32) {
+    let pop_x = (tray_x + tray_w / 2.0 - win_w / 2.0).round() as i32;
+    let pop_y = (tray_y + tray_h + gap_px).round() as i32;
+    (pop_x, pop_y)
+}
+
+// Small visual gap between the menu bar and the popover top edge.
+// 4 physical px is ~2pt on a 2x retina display — enough to avoid
+// the popover looking glued to the menu bar.
+const POPOVER_GAP_PX: f64 = 4.0;
+
 /// Center the window horizontally under the tray icon, just below it.
 ///
 /// `Rect`'s `position` and `size` are enums (Physical | Logical); we
@@ -288,15 +308,29 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
     };
     let win_w = size.width as f64;
 
-    // Small visual gap between the menu bar and the popover top edge.
-    // 4 physical px is ~2pt on a 2x retina display — enough to avoid
-    // the popover looking glued to the menu bar.
-    const GAP_PX: f64 = 4.0;
-
-    let pop_x = (tray_x + tray_w / 2.0 - win_w / 2.0).round() as i32;
-    let pop_y = (tray_y + tray_h + GAP_PX).round() as i32;
+    let (pop_x, pop_y) =
+        compute_popover_position(tray_x, tray_y, tray_w, tray_h, win_w, POPOVER_GAP_PX);
 
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
+}
+
+/// Show + focus the main window, positioned under the tray icon.
+///
+/// Used by the global keyboard shortcut so the popover can be summoned
+/// from anywhere without clicking the tray icon. If the tray rect isn't
+/// available yet (race during startup) we still show the window — it
+/// will appear at its last position rather than under the icon.
+pub fn show_window_at_tray(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        if let Ok(Some(rect)) = tray.rect() {
+            position_below_tray(&window, rect);
+        }
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -434,6 +468,22 @@ mod tests {
         match state {
             TrayState::Idle | TrayState::Syncing | TrayState::Error | TrayState::Conflict => {}
         }
+    }
+
+    #[test]
+    fn test_compute_popover_position_centers_under_tray() {
+        // tray icon at x=1000, y=0, 24x24px; window 320px wide; 4px gap.
+        let (x, y) = compute_popover_position(1000.0, 0.0, 24.0, 24.0, 320.0, 4.0);
+        assert_eq!(x, 1000 + 12 - 160); // = 852
+        assert_eq!(y, 0 + 24 + 4); //     = 28
+    }
+
+    #[test]
+    fn test_compute_popover_position_handles_off_screen_left() {
+        // Tray near left edge — helper returns raw math, no clamping.
+        // Caller is responsible for keeping the popover on-screen if needed.
+        let (x, _) = compute_popover_position(10.0, 0.0, 24.0, 24.0, 320.0, 4.0);
+        assert_eq!(x, 10 + 12 - 160); // = -138
     }
 
     #[test]

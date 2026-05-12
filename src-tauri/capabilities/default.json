@@ -12,6 +12,7 @@
     "core:path:default",
     "core:event:default",
     "core:app:default",
+    "global-shortcut:default",
     "shell:allow-open",
     {
       "identifier": "http:default",
