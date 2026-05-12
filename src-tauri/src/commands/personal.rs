@@ -56,17 +56,19 @@ pub(crate) enum UploadOutcome {
 /// Rationale per exclusion:
 ///   - `companies/`: synced separately by the runner's per-membership fanout;
 ///     do not double-write into the personal vault.
-///   - `data/`, `personal/`, `workspace/`, `repos/`: per user directive —
-///     heavy local-only content (machine-state, datasets, cloned remotes,
-///     session threads) that should not live in the personal vault.
+///   - `workspace/`, `repos/`: per user directive — heavy local-only content
+///     (cloned remotes, session threads) that should not live in the personal
+///     vault.
 ///   - `.git/`: a git repo's internal state is large, opaque, and useless
 ///     after sync — gitignore alone doesn't cover `.git/` because it's the
 ///     repo itself, not a tracked path.
 ///
-/// Note: `core/` was previously excluded but is now INCLUDED (user
-/// directive 2026-05-13). It ships the hq-core scaffold (policies/,
-/// settings/, skills/, workers/, the rules manifest at core/core.yaml) —
-/// real project content the box needs. The hq-root identity marker
+/// Note: `core/`, `data/`, and `personal/` were previously excluded but are
+/// now INCLUDED (user directive 2026-05-13). `core/` ships the hq-core
+/// scaffold (policies/, settings/, skills/, workers/, the rules manifest at
+/// core/core.yaml) — real project content the box needs. `data/` and
+/// `personal/` carry per-user data and policies/hooks/skills that the user
+/// expects to follow them across machines. The hq-root identity marker
 /// `core.yaml` (distinct from `core/core.yaml`) is filtered separately
 /// downstream by the anchored `/core.yaml` DEFAULT_IGNORES rule in
 /// `@indigoai-us/hq-cloud`.
@@ -76,8 +78,6 @@ pub(crate) enum UploadOutcome {
 pub(crate) const PERSONAL_VAULT_EXCLUDED_TOP_LEVEL: &[&str] = &[
     ".git",
     "companies",
-    "data",
-    "personal",
     "repos",
     "workspace",
 ];
@@ -886,7 +886,8 @@ mod tests {
 
     // (c) Personal vault scope is now defined by exclusion (the inverse of
     //     the old PERSONAL_VAULT_PATHS allowlist). Everything except
-    //     companies/, .git/, core/, data/, personal/, repos/, workspace/
+    //     companies/, .git/, repos/, workspace/ is included (user directive
+    //     2026-05-13: data/ + personal/ also now part of the personal vault).
     //     is included, subject to .gitignore/.hqignore.
     #[tokio::test]
     async fn test_personal_vault_path_exclusion() {
@@ -911,10 +912,12 @@ mod tests {
         // contents under `core/` include policies/, settings/, skills/,
         // workers/, plus the scaffold rules at core/core.yaml.
         write_file(&root.join("core/policies/auto-deploy.md"), b"core-policy");
+        // `data/` and `personal/` are now also part of the personal vault
+        // (user directive 2026-05-13). They were previously local-only.
+        write_file(&root.join("data/repos.yaml"), b"data-content");
+        write_file(&root.join("personal/policies/wait-for-ci.md"), b"personal-policy");
         // Excluded (must be skipped)
         write_file(&root.join("companies/acme/file.md"), b"company");
-        write_file(&root.join("data/db.sqlite"), b"data");
-        write_file(&root.join("personal/notes.md"), b"personal-dir");
         write_file(&root.join("repos/foo/README.md"), b"repos");
         write_file(&root.join("workspace/threads/T-1.md"), b"workspace");
 
@@ -929,14 +932,14 @@ mod tests {
         let captured = calls.lock().unwrap();
 
         // Included prefixes must appear.
-        for included in [".claude/", "knowledge/", "policies/", "projects/", "docs/", "modules/somepkg/", "packages/", ".codex/", "core/policies/", "README.md"] {
+        for included in [".claude/", "knowledge/", "policies/", "projects/", "docs/", "modules/somepkg/", "packages/", ".codex/", "core/policies/", "data/", "personal/", "README.md"] {
             assert!(
                 captured.iter().any(|k| k.starts_with(included) || k.as_str() == included),
                 "{included} must be uploaded; got: {captured:?}",
             );
         }
         // Excluded entries must NOT appear.
-        for forbidden in ["companies/", "data/", "personal/", "repos/", "workspace/"] {
+        for forbidden in ["companies/", "repos/", "workspace/"] {
             assert!(
                 !captured.iter().any(|k| k.starts_with(forbidden)),
                 "{forbidden} must be skipped; got: {captured:?}",
@@ -969,10 +972,12 @@ mod tests {
         // DEFAULT_IGNORES rule in `@indigoai-us/hq-cloud`.
         assert!(is_personal_vault_path("core/policies/foo.md"), "core/ is part of the personal vault");
         assert!(is_personal_vault_path("core/core.yaml"), "core/core.yaml is the scaffold definition (synced)");
+        // `data/` and `personal/` are now part of the personal vault
+        // (user directive 2026-05-13). Were previously excluded.
+        assert!(is_personal_vault_path("data/db.sqlite"), "data/ now in personal vault");
+        assert!(is_personal_vault_path("personal/notes.md"), "personal/ now in personal vault");
         // Excluded — top-level dir is in the exclusion list.
         assert!(!is_personal_vault_path("companies/acme/x.md"), "companies handled by per-membership fanout");
-        assert!(!is_personal_vault_path("data/db.sqlite"), "data/ is local-only");
-        assert!(!is_personal_vault_path("personal/notes.md"), "personal/ is a local company dir, not the personal vault");
         assert!(!is_personal_vault_path("repos/foo/README.md"), "repos/ have their own remotes");
         assert!(!is_personal_vault_path("workspace/threads/T-1.md"), "workspace/ is local session state");
         assert!(!is_personal_vault_path(".git/HEAD"), ".git/ is never synced");

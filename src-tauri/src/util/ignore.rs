@@ -11,10 +11,13 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "node_modules/", "dist/", "build/", ".next/", ".nuxt/",
     ".svelte-kit/", ".turbo/", ".parcel-cache/", ".vite/", "coverage/",
     // Company-local: secrets/config, datasets, prompt libraries — all stay
-    // on-disk and never round-trip through the company vault bucket.
-    "settings/",
-    "data/",
-    "workers/",
+    // on-disk and never round-trip through the company vault bucket. Anchored
+    // to /companies/*/ so hq-root data/, settings/, workers/ remain in-scope
+    // (un-anchored gitignore patterns match at any depth, same root-cause
+    // pattern as Slice 6's core.yaml bug).
+    "/companies/*/settings/",
+    "/companies/*/data/",
+    "/companies/*/workers/",
     // Rust / Tauri
     "target/",
     // Python
@@ -154,6 +157,21 @@ mod tests {
         assert!(!filter.should_sync(&root.join("companies/indigo/settings/aws.json")));
         assert!(!filter.should_sync(&root.join("companies/indigo/data/exports/leads.csv")));
         assert!(!filter.should_sync(&root.join("companies/indigo/workers/cmo/worker.yaml")));
+    }
+
+    #[test]
+    fn hq_root_data_settings_workers_are_synced() {
+        // The company-local exclusions for settings/, data/, workers/ are
+        // anchored to /companies/*/ — hq-root-level data/, settings/, workers/
+        // are in-scope and must sync. Un-anchored gitignore patterns match at
+        // any depth and would silently exclude hq-root data/ (same root-cause
+        // pattern as Slice 6's core.yaml bug).
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(filter.should_sync(&root.join("data/repos.yaml")));
+        assert!(filter.should_sync(&root.join("settings/preferences.json")));
+        assert!(filter.should_sync(&root.join("workers/notes.md")));
     }
 
     #[test]
