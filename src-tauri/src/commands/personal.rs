@@ -50,25 +50,32 @@ pub(crate) enum UploadOutcome {
 
 /// Top-level directories under `hq_root/` that the personal vault MUST NOT
 /// sync. Everything else (root files, `.claude/`, `knowledge/`, `modules/`,
-/// hidden dotfile dirs like `.codex/`, etc.) is included subject to the
-/// IgnoreFilter (`.gitignore` + `.hqignore`).
+/// `core/`, hidden dotfile dirs like `.codex/`, etc.) is included subject
+/// to the IgnoreFilter (`.gitignore` + `.hqignore`).
 ///
 /// Rationale per exclusion:
 ///   - `companies/`: synced separately by the runner's per-membership fanout;
 ///     do not double-write into the personal vault.
-///   - `core/`, `data/`, `personal/`, `workspace/`, `repos/`: per user
-///     directive — heavy local-only content (machine-state, datasets,
-///     cloned remotes) that should not live in the personal vault.
+///   - `data/`, `personal/`, `workspace/`, `repos/`: per user directive —
+///     heavy local-only content (machine-state, datasets, cloned remotes,
+///     session threads) that should not live in the personal vault.
 ///   - `.git/`: a git repo's internal state is large, opaque, and useless
 ///     after sync — gitignore alone doesn't cover `.git/` because it's the
 ///     repo itself, not a tracked path.
+///
+/// Note: `core/` was previously excluded but is now INCLUDED (user
+/// directive 2026-05-13). It ships the hq-core scaffold (policies/,
+/// settings/, skills/, workers/, the rules manifest at core/core.yaml) —
+/// real project content the box needs. The hq-root identity marker
+/// `core.yaml` (distinct from `core/core.yaml`) is filtered separately
+/// downstream by the anchored `/core.yaml` DEFAULT_IGNORES rule in
+/// `@indigoai-us/hq-cloud`.
 ///
 /// Mirror this constant in `@indigoai-us/hq-cloud`'s sync-runner so push
 /// behaviour from the Node runner matches the Rust first-push.
 pub(crate) const PERSONAL_VAULT_EXCLUDED_TOP_LEVEL: &[&str] = &[
     ".git",
     "companies",
-    "core",
     "data",
     "personal",
     "repos",
@@ -900,9 +907,12 @@ mod tests {
         write_file(&root.join("modules/somepkg/README.md"), b"modules-content");
         write_file(&root.join("packages/foo/README.md"), b"packages");
         write_file(&root.join(".codex/state.json"), b"codex");
+        // `core/` is now included (user directive 2026-05-13). Real-world
+        // contents under `core/` include policies/, settings/, skills/,
+        // workers/, plus the scaffold rules at core/core.yaml.
+        write_file(&root.join("core/policies/auto-deploy.md"), b"core-policy");
         // Excluded (must be skipped)
         write_file(&root.join("companies/acme/file.md"), b"company");
-        write_file(&root.join("core/yaml.yaml"), b"core");
         write_file(&root.join("data/db.sqlite"), b"data");
         write_file(&root.join("personal/notes.md"), b"personal-dir");
         write_file(&root.join("repos/foo/README.md"), b"repos");
@@ -919,14 +929,14 @@ mod tests {
         let captured = calls.lock().unwrap();
 
         // Included prefixes must appear.
-        for included in [".claude/", "knowledge/", "policies/", "projects/", "docs/", "modules/somepkg/", "packages/", ".codex/", "README.md"] {
+        for included in [".claude/", "knowledge/", "policies/", "projects/", "docs/", "modules/somepkg/", "packages/", ".codex/", "core/policies/", "README.md"] {
             assert!(
                 captured.iter().any(|k| k.starts_with(included) || k.as_str() == included),
                 "{included} must be uploaded; got: {captured:?}",
             );
         }
         // Excluded entries must NOT appear.
-        for forbidden in ["companies/", "core/", "data/", "personal/", "repos/", "workspace/"] {
+        for forbidden in ["companies/", "data/", "personal/", "repos/", "workspace/"] {
             assert!(
                 !captured.iter().any(|k| k.starts_with(forbidden)),
                 "{forbidden} must be skipped; got: {captured:?}",
@@ -952,9 +962,15 @@ mod tests {
         assert!(is_personal_vault_path(".codex/state.json"));
         assert!(is_personal_vault_path(".agents/runs/x.json"));
         assert!(is_personal_vault_path("knowledge.md"), "single-segment root file is a top-level itself");
+        // `core/` re-included 2026-05-13 — it ships the hq-core scaffold
+        // (policies/, settings/, skills/, workers/, the rules manifest at
+        // core/core.yaml). The hq-root `core.yaml` identity marker is
+        // filtered separately downstream by the anchored `/core.yaml`
+        // DEFAULT_IGNORES rule in `@indigoai-us/hq-cloud`.
+        assert!(is_personal_vault_path("core/policies/foo.md"), "core/ is part of the personal vault");
+        assert!(is_personal_vault_path("core/core.yaml"), "core/core.yaml is the scaffold definition (synced)");
         // Excluded — top-level dir is in the exclusion list.
         assert!(!is_personal_vault_path("companies/acme/x.md"), "companies handled by per-membership fanout");
-        assert!(!is_personal_vault_path("core/yaml.yaml"), "core/ is local-only");
         assert!(!is_personal_vault_path("data/db.sqlite"), "data/ is local-only");
         assert!(!is_personal_vault_path("personal/notes.md"), "personal/ is a local company dir, not the personal vault");
         assert!(!is_personal_vault_path("repos/foo/README.md"), "repos/ have their own remotes");
