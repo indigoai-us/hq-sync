@@ -4,11 +4,11 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 
 ## Architecture
 
-**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23). Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, and Connect diagnostics drawer), `Settings` (preferences + folder re-tether). Conflict resolution via `ConflictModal` + `ConflictRow` components.
+**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23). Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, and Connect diagnostics drawer), `Settings` (preferences + folder re-tether). Conflict resolution via `ConflictModal` + `ConflictRow` components. New-file notification via `NewFilesBadge` (in-popover count) + `NewFilesDetail` (secondary window with file list and attribution).
 
-**Backend:** Tauri 2 Rust commands in `src-tauri/src/commands/`. 27 registered commands in `main.rs`.
+**Backend:** Tauri 2 Rust commands in `src-tauri/src/commands/`. 29 registered commands in `main.rs`.
 
-**State flow:** Svelte frontend calls Tauri commands via `invoke()`. Rust backend emits typed events (`sync:progress`, `sync:conflict`, `sync:error`, `sync:complete`) that Svelte listens to via `listen()`.
+**State flow:** Svelte frontend calls Tauri commands via `invoke()`. Rust backend emits typed events (`sync:progress`, `sync:conflict`, `sync:error`, `sync:complete`, `sync:new-files`) that Svelte listens to via `listen()`.
 
 ## Key Modules
 
@@ -31,6 +31,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `commands/daemon.rs` | Feature-flagged V2 daemon lifecycle (`autostartDaemon` in menubar.json) |
 | `commands/process.rs` | Generic subprocess lifecycle with SIGTERM->SIGKILL |
 | `commands/conflicts.rs` | Conflict resolution + open-in-editor |
+| `commands/new_files.rs` | New files detail window — creates/focuses a secondary Tauri window showing file list with attribution. Uses managed `PendingNewFiles` state + ready handshake pattern |
 | `commands/settings.rs` | Settings persistence |
 | `commands/autostart.rs` | Login-item autostart |
 | `tray.rs` | System tray with 4 visual states (idle/syncing/error/conflict) |
@@ -130,6 +131,7 @@ Both are best-effort and don't block the sync. Failures log to the diagnostic lo
 {"type":"conflict","path":"file.txt","localHash":"aaa","remoteHash":"bbb","canAutoResolve":true}
 {"type":"error","code":"NET_FAIL","message":"Connection reset"}
 {"type":"complete","filesChanged":7,"bytesTransferred":204800,"journalPath":"/tmp/j.log"}
+{"type":"new-files","company":"indigo","files":[{"path":"docs/new.md","bytes":1024,"addedBy":"user@example.com"}]}
 ```
 
 Parsed via `#[serde(tag = "type")]` discriminated union. Unknown types silently skipped.
@@ -180,3 +182,6 @@ Manual testing only in V1 (documented policy deviation). Checklist at `tests/MAN
 - `hq sync --json` double-binds the HQ folder path (both `HQ_ROOT` env var and `--hq-path` CLI flag) for defense-in-depth.
 - Tray icons must be `@2x` PNGs for Retina. `icon_as_template(true)` is required for macOS menu bar dark/light adaptation.
 - `nix::sys::signal::kill(pid, None)` (kill-0) can false-positive on PID reuse -- acceptable for V2 prep scope.
+- **Multi-window ready handshake:** Secondary windows (e.g. `new-files-detail`) use a managed-state + `detail_window_ready` command pattern instead of timed `emit_to` delays. The renderer calls `detail_window_ready` after mounting its `listen()` handler, which emits the data and shows the window. This avoids the race where `emit_to` fires before the webview's JS event listener is registered.
+- `on_window_event` in main.rs is scoped to the `main` window label -- the detail window can close independently without quitting the app.
+- New files state (`newFilesList`) in App.svelte accumulates across companies within a single sync run and resets when a new sync starts.
