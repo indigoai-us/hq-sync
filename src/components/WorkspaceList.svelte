@@ -23,6 +23,20 @@
     onrefresh,
   }: Props = $props();
 
+  // Sort so cloud-backed rows (synced + cloud-only) float above local-only /
+  // broken ones. Personal stays first. Stable within each group so the
+  // backend-supplied ordering (e.g. alphabetical) is preserved.
+  const stateOrder: Record<Workspace['state'], number> = {
+    personal: 0,
+    synced: 1,
+    'cloud-only': 2,
+    broken: 3,
+    'local-only': 4,
+  };
+  const sortedWorkspaces = $derived(
+    [...workspaces].sort((a, b) => stateOrder[a.state] - stateOrder[b.state]),
+  );
+
   // Per-row connect state. Keys are slugs; absent = idle, true = in flight,
   // string = error message from the last attempt. Reset on next click.
   let connectState = $state<Record<string, true | string>>({});
@@ -141,7 +155,7 @@
          company) and target different cloud buckets. Keying by slug alone
          caused Svelte 5 to silently drop the duplicate, hiding the manifest's
          personal company entry from the UI (v0.1.23 regression). -->
-    {#each workspaces as w (`${w.kind}:${w.slug}`)}
+    {#each sortedWorkspaces as w (`${w.kind}:${w.slug}`)}
       <li
         class="workspace-row"
         class:local-only={w.state === 'local-only'}
@@ -185,14 +199,10 @@
             <span class="row-meta">Last sync · {formatLastSynced(w.lastSyncedAt)}</span>
           {:else if w.state === 'cloud-only'}
             <span class="row-meta">Not yet on this machine</span>
-          {:else if w.state === 'local-only'}
-            {#if typeof connectState[w.slug] === 'string'}
-              <span class="row-meta row-meta-error" title={connectState[w.slug] as string}>
-                Connect failed — click to retry
-              </span>
-            {:else}
-              <span class="row-meta">Not connected to cloud</span>
-            {/if}
+          {:else if w.state === 'local-only' && typeof connectState[w.slug] === 'string'}
+            <span class="row-meta row-meta-error" title={connectState[w.slug] as string}>
+              Connect failed — click to retry
+            </span>
           {:else if w.state === 'personal' && !w.cloudUid}
             <span class="row-meta">Cloud unreachable</span>
           {/if}
@@ -230,12 +240,15 @@
           </button>
         {/if}
 
+        <!-- Hide the badge for local-only rows: the Connect button already
+             communicates "needs to be connected", and the yellow laptop badge
+             beside it was redundant noise. -->
+        {#if w.state !== 'local-only'}
         <span
           class="row-badge"
           class:badge-personal={w.state === 'personal'}
           class:badge-synced={w.state === 'synced'}
           class:badge-cloud={w.state === 'cloud-only'}
-          class:badge-local={w.state === 'local-only'}
           class:badge-broken={w.state === 'broken'}
           title={badgeTooltip(w)}
           aria-label={badgeAriaLabel(w.state)}
@@ -257,12 +270,6 @@
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M11.5 12h1a3 3 0 0 0 .3-5.98 4.5 4.5 0 0 0-8.85-.4A3 3 0 0 0 4 12h7.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
             </svg>
-          {:else if w.state === 'local-only'}
-            <!-- laptop -->
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <rect x="3" y="3.5" width="10" height="7" rx="1" stroke="currentColor" stroke-width="1.4" />
-              <path d="M2 12.5h12" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
-            </svg>
           {:else if w.state === 'broken'}
             <!-- warning triangle -->
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -272,6 +279,7 @@
             </svg>
           {/if}
         </span>
+        {/if}
       </li>
     {/each}
   </ul>
@@ -524,12 +532,6 @@
     background: rgba(56, 189, 248, 0.10);
     color: #7dd3fc;
     border-color: rgba(56, 189, 248, 0.28);
-  }
-
-  .badge-local {
-    background: rgba(245, 158, 11, 0.10);
-    color: #fbbf24;
-    border-color: rgba(245, 158, 11, 0.28);
   }
 
   .badge-broken {
