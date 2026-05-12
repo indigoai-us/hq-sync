@@ -14,10 +14,13 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // on-disk and never round-trip through the company vault bucket. Anchored
     // to /companies/*/ so hq-root data/, settings/, workers/ remain in-scope
     // (un-anchored gitignore patterns match at any depth, same root-cause
-    // pattern as Slice 6's core.yaml bug).
-    "/companies/*/settings/",
-    "/companies/*/data/",
-    "/companies/*/workers/",
+    // pattern as Slice 6's core.yaml bug). The `/**` suffix excludes contents
+    // without excluding the directory itself — required so the `!**/.gitkeep`
+    // re-include below can fire (gitignore semantics forbid re-including a
+    // file whose parent dir is excluded as a whole).
+    "/companies/*/settings/**",
+    "/companies/*/data/**",
+    "/companies/*/workers/**",
     // Rust / Tauri
     "target/",
     // Python
@@ -47,6 +50,11 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "repos/",
     // Secrets / env
     ".env", ".env.*",
+    // Re-include .gitkeep placeholders anywhere — even inside the
+    // `/companies/*/{settings,data,workers}/**` exclusions above. Without
+    // this, a freshly-provisioned company's empty scaffold dirs never reach
+    // the bucket and another machine pulling sees a broken layout.
+    "!**/.gitkeep",
 ];
 
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
@@ -156,6 +164,25 @@ mod tests {
         let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("companies/indigo/settings/aws.json")));
         assert!(!filter.should_sync(&root.join("companies/indigo/data/exports/leads.csv")));
+        assert!(!filter.should_sync(&root.join("companies/indigo/workers/cmo/worker.yaml")));
+    }
+
+    #[test]
+    fn gitkeep_files_sync_even_in_excluded_company_dirs() {
+        // .gitkeep placeholders preserve directory structure and must sync
+        // even inside dirs excluded by the company-local filter. Without this,
+        // a freshly-provisioned company's empty settings/, data/, workers/
+        // dirs would never make it to the bucket, and another machine pulling
+        // would see a broken scaffold.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(filter.should_sync(&root.join("companies/indigo/settings/.gitkeep")));
+        assert!(filter.should_sync(&root.join("companies/personal/workers/.gitkeep")));
+        assert!(filter.should_sync(&root.join("companies/foo/data/.gitkeep")));
+        // Real content in those dirs stays excluded.
+        assert!(!filter.should_sync(&root.join("companies/indigo/settings/cognito.json")));
+        assert!(!filter.should_sync(&root.join("companies/indigo/data/leads.csv")));
         assert!(!filter.should_sync(&root.join("companies/indigo/workers/cmo/worker.yaml")));
     }
 
