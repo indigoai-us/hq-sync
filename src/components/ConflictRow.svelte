@@ -106,9 +106,12 @@
     background: rgba(34, 197, 94, 0.06);
   }
 
+  /* Error state: same calm notice treatment as info — no red surface. The
+     row's per-file error message + (when present) Copy-prompt affordance
+     carry the meaning. */
   .conflict-row.error {
-    border-color: rgba(239, 68, 68, 0.2);
-    background: rgba(239, 68, 68, 0.06);
+    border-color: var(--popover-notice-border, rgba(255, 255, 255, 0.18));
+    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
   }
 
   .row-header {
@@ -130,8 +133,10 @@
     flex-shrink: 0;
   }
 
+  /* Friendly notice tone — never amber/red. Same visual weight as other muted
+     metadata in the row. */
   .warning-icon {
-    color: var(--popover-warning, #f59e0b);
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
   }
 
   .resolved-icon {
@@ -139,7 +144,7 @@
   }
 
   .error-icon {
-    color: var(--popover-danger, #ef4444);
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
   }
 
   .file-path {
@@ -193,7 +198,7 @@
 
   .error-message {
     font-size: 0.6875rem;
-    color: var(--popover-danger, #ef4444);
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
     margin: 0;
     padding-left: 1.625rem;
   }
@@ -263,13 +268,17 @@
     background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
+  /* Secondary "Keep Remote" action — calm secondary button. The destructive-
+     looking amber treatment was misleading; both Keep Local and Keep Remote
+     are equally valid choices for the user. */
   .remote-btn {
-    color: var(--popover-warning, #f59e0b);
-    background: rgba(245, 158, 11, 0.12);
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
   }
 
   .remote-btn:hover {
-    background: rgba(245, 158, 11, 0.22);
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text-heading, #ffffff);
   }
 
   .editor-btn {
@@ -295,8 +304,8 @@
     }
 
     .conflict-row.error {
-      background: rgba(239, 68, 68, 0.05);
-      border-color: rgba(239, 68, 68, 0.15);
+      background: var(--popover-notice-bg, rgba(0, 0, 0, 0.04));
+      border-color: var(--popover-notice-border, rgba(0, 0, 0, 0.12));
     }
 
     .hash-value {

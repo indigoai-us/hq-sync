@@ -4,6 +4,7 @@
   import SyncStats from './SyncStats.svelte';
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
+  import CopyPromptButton from './CopyPromptButton.svelte';
   import type { Workspace } from '../lib/workspaces';
   import type { ConflictFile } from '../stores/conflicts';
 
@@ -347,27 +348,35 @@
               <p class="banner-body">{updateAvailable.body}</p>
             {/if}
           </div>
-          <button
-            class="banner-update-button"
-            onclick={oninstallupdate}
-            disabled={updateInstalling || !oninstallupdate}
-          >
-            {updateInstalling ? 'Installing…' : 'Install'}
-          </button>
+          <div class="banner-actions">
+            <button
+              class="banner-update-button"
+              onclick={oninstallupdate}
+              disabled={updateInstalling || !oninstallupdate}
+            >
+              {updateInstalling ? 'Installing…' : 'Install'}
+            </button>
+            <CopyPromptButton
+              variant="inline"
+              label="Copy prompt"
+              issue={{
+                kind: 'app-update-available',
+                payload: { version: updateAvailable.version },
+              }}
+            />
+          </div>
         </div>
       {/if}
 
       <!-- hq CLI update banner — separate from the app updater. The
            Update button shells out to `npm install -g @indigoai-us/hq-cli@latest`
            in the Rust backend. If that errors (most commonly EACCES on a
-           system-prefix npm), the banner switches to error state and offers
-           a Copy-command fallback so the user can run it themselves. -->
+           system-prefix npm), the banner switches into a notice variant
+           (no red), surfaces the stderr, and offers two affordances: the
+           legacy Copy-command (raw shell command for a terminal), and a
+           Copy-prompt that hands the failure to an HQ agent. -->
       {#if hqCliUpdateAvailable}
-        <div
-          class="banner banner-update"
-          class:banner-info={!hqCliUpdateError}
-          class:banner-error={!!hqCliUpdateError}
-        >
+        <div class="banner banner-info banner-update">
           <div class="banner-update-text">
             <p class="banner-title">
               hq CLI update available: v{hqCliUpdateAvailable.latest}
@@ -389,22 +398,43 @@
               </p>
             {/if}
           </div>
-          {#if hqCliUpdateError}
-            <button
-              class="banner-update-button"
-              onclick={copyHqCliUpgrade}
-            >
-              {hqCliCopied ? 'Copied' : 'Copy'}
-            </button>
-          {:else}
-            <button
-              class="banner-update-button"
-              onclick={oninstallhqcliupdate}
-              disabled={hqCliUpdateInstalling || !oninstallhqcliupdate}
-            >
-              {hqCliUpdateInstalling ? 'Installing…' : 'Update'}
-            </button>
-          {/if}
+          <div class="banner-actions">
+            {#if hqCliUpdateError}
+              <button
+                class="banner-update-button banner-update-button-secondary"
+                onclick={copyHqCliUpgrade}
+              >
+                {hqCliCopied ? 'Copied' : 'Copy command'}
+              </button>
+              <CopyPromptButton
+                variant="inline"
+                label="Copy prompt"
+                issue={{
+                  kind: 'hq-cli-update-failed',
+                  payload: { error: hqCliUpdateError },
+                }}
+              />
+            {:else}
+              <button
+                class="banner-update-button"
+                onclick={oninstallhqcliupdate}
+                disabled={hqCliUpdateInstalling || !oninstallhqcliupdate}
+              >
+                {hqCliUpdateInstalling ? 'Installing…' : 'Update'}
+              </button>
+              <CopyPromptButton
+                variant="inline"
+                label="Copy prompt"
+                issue={{
+                  kind: 'hq-cli-update-available',
+                  payload: {
+                    local: hqCliUpdateAvailable.local ?? '',
+                    latest: hqCliUpdateAvailable.latest,
+                  },
+                }}
+              />
+            {/if}
+          </div>
         </div>
       {/if}
 
@@ -415,14 +445,28 @@
            lived here too — replaced by the live "Create a company" / "Join
            via invite" affordances inside WorkspaceList. -->
       {#if syncState === 'auth-error'}
-        <div class="banner banner-error">
-          <p class="banner-title">Session expired</p>
-          <p class="banner-body">{errorMessage || 'Please sign in again to continue syncing.'}</p>
+        <div class="banner banner-notice">
+          <div class="banner-update-text">
+            <p class="banner-title">Session expired</p>
+            <p class="banner-body">{errorMessage || 'Please sign in again to continue syncing.'}</p>
+          </div>
+          <CopyPromptButton
+            variant="inline"
+            label="Copy prompt"
+            issue={{ kind: 'auth-expired', payload: { message: errorMessage } }}
+          />
         </div>
       {:else if syncState === 'error' && errorMessage}
-        <div class="banner banner-error">
-          <p class="banner-title">Sync failed</p>
-          <p class="banner-body">{errorMessage}</p>
+        <div class="banner banner-notice">
+          <div class="banner-update-text">
+            <p class="banner-title">Sync failed</p>
+            <p class="banner-body">{errorMessage}</p>
+          </div>
+          <CopyPromptButton
+            variant="inline"
+            label="Copy prompt"
+            issue={{ kind: 'sync-failed', payload: { message: errorMessage } }}
+          />
         </div>
       {/if}
 
@@ -657,10 +701,13 @@
     cursor: progress;
   }
 
+  /* Error state on the header Sync button: same primary look, with a "Retry"
+     icon + label instead of "Sync". No red — calm visual; the icon/text plus
+     the notice banner below carry the meaning. */
   .header-sync.error {
-    background: var(--popover-danger, #ef4444);
-    color: #ffffff;
-    border-color: rgba(239, 68, 68, 0.6);
+    background: var(--popover-primary, #ffffff);
+    color: var(--popover-primary-text, #111113);
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
   .header-sync-spinner {
@@ -768,9 +815,16 @@
     border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
-  .banner-error {
-    background: rgba(239, 68, 68, 0.08);
-    border-color: rgba(239, 68, 68, 0.25);
+  /* Notice variant — replaces the legacy banner-error red treatment. Visually
+     identical to banner-info; the title + body + Copy-prompt button carry
+     the urgency. Same horizontal layout as banner-update so the
+     CopyPromptButton sits flush right. */
+  .banner-notice {
+    flex-direction: row;
+    align-items: center;
+    gap: 0.625rem;
+    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
+    border-color: var(--popover-notice-border, rgba(255, 255, 255, 0.16));
   }
 
   .banner-title {
@@ -822,6 +876,30 @@
   .banner-update-button:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+
+  /* Secondary variant of the banner button — used for "Copy command" in the
+     hq CLI update-failed state. Same shape, calm grey tone instead of
+     primary white, so the primary Update / Install affordance is preserved
+     when both buttons sit side-by-side. */
+  .banner-update-button-secondary {
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+  }
+
+  .banner-update-button-secondary:hover:not(:disabled) {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text-heading, #ffffff);
+  }
+
+  /* Container for action buttons stacked or row'd to the right of a banner.
+     Used by update banners (Install + Copy-prompt) and the hq CLI update
+     error variant (Copy command + Copy-prompt). */
+  .banner-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-shrink: 0;
   }
 
   /* Live progress — replaces the SyncStats card while actively syncing.

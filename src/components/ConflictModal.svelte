@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ConflictFile } from '../stores/conflicts';
   import ConflictRow from './ConflictRow.svelte';
+  import CopyPromptButton from './CopyPromptButton.svelte';
 
   interface Props {
     conflicts: ConflictFile[];
@@ -41,11 +42,18 @@
       <h2 class="modal-title">Resolve Conflicts</h2>
       <span class="count-badge">{conflicts.length}</span>
     </div>
-    <button class="dismiss-btn" onclick={ondismiss} title="Dismiss" aria-label="Dismiss conflict modal">
+    <div class="header-right">
+      <CopyPromptButton
+        variant="inline"
+        label="Copy prompt"
+        issue={{ kind: 'sync-conflict', payload: { count: conflicts.length } }}
+      />
+      <button class="dismiss-btn" onclick={ondismiss} title="Dismiss" aria-label="Dismiss conflict modal">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
         <path d="M12 4L4 12M4 4l8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
       </svg>
-    </button>
+      </button>
+    </div>
   </div>
 
   {#if resolvedCount > 0 && resolvedCount < conflicts.length}
@@ -111,8 +119,16 @@
     gap: 0.4rem;
   }
 
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  /* Warning icon kept for visual hierarchy, but with the muted notice tone —
+     never amber or red. */
   .warning-icon {
-    color: var(--popover-warning, #f59e0b);
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
     flex-shrink: 0;
   }
 
@@ -134,8 +150,8 @@
     font-size: 0.6875rem;
     font-weight: 600;
     border-radius: 10px;
-    background: rgba(245, 158, 11, 0.15);
-    color: var(--popover-warning, #f59e0b);
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
   }
 
   .dismiss-btn {
@@ -230,14 +246,15 @@
     background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
+  /* Bulk "All → Keep Remote" — secondary action, calm grey treatment. */
   .bulk-remote {
     color: var(--popover-text, #e0e0e0);
-    background: rgba(245, 158, 11, 0.15);
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
   }
 
   .bulk-remote:hover:not(:disabled) {
-    background: rgba(245, 158, 11, 0.25);
-    color: var(--popover-warning, #f59e0b);
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text-heading, #ffffff);
   }
 
   @media (prefers-color-scheme: light) {
@@ -247,12 +264,12 @@
 
     .bulk-remote {
       color: var(--popover-text, #374151);
-      background: rgba(245, 158, 11, 0.1);
+      background: rgba(0, 0, 0, 0.06);
     }
 
     .bulk-remote:hover:not(:disabled) {
-      background: rgba(245, 158, 11, 0.2);
-      color: var(--popover-warning, #d97706);
+      background: rgba(0, 0, 0, 0.1);
+      color: var(--popover-text-heading, #111113);
     }
   }
 </style>
