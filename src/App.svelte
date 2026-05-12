@@ -119,6 +119,13 @@
   // terminates before the promise resolves, so this rarely flips back.
   let updateInstalling = $state(false);
 
+  // hq CLI updater state — populated by `hq-cli-update:available` from the
+  // Rust background checker (launch+15s, then every 6h). Non-null means
+  // the user's globally-installed `hq` is behind npm `latest`. The banner
+  // can't auto-install (npm globals require shell access we don't have),
+  // so it surfaces a copy-able upgrade command instead.
+  let hqCliUpdateAvailable = $state<{ local: string | null; latest: string } | null>(null);
+
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
 
@@ -527,6 +534,20 @@
       )
     );
 
+    // --- hq CLI updater event listener ---
+    // Protocol (see src-tauri/src/commands/hq_cli_update.rs):
+    //   hq-cli-update:available — payload { local: string | null, latest: string }
+    //     `local` is null when the user doesn't have `hq` on PATH; the
+    //     checker doesn't emit in that case, but we type it permissively.
+    unlisteners.push(
+      await listen<{ local: string | null; latest: string }>(
+        'hq-cli-update:available',
+        (event) => {
+          hqCliUpdateAvailable = event.payload;
+        }
+      )
+    );
+
     // Tray menu "Check for Updates" → on-demand check.
     unlisteners.push(
       await listen('tray:check-for-updates', () => {
@@ -613,6 +634,7 @@
       {showConflictModal}
       {updateAvailable}
       {updateInstalling}
+      {hqCliUpdateAvailable}
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}

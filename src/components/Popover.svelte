@@ -77,6 +77,8 @@
     updateAvailable?: { version: string; body?: string; date?: string } | null;
     /** True while `install_update` is in flight — disables the button. */
     updateInstalling?: boolean;
+    /** Non-null when the globally-installed `hq` CLI is behind npm `latest`. */
+    hqCliUpdateAvailable?: { local: string | null; latest: string } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
      *  header button doubles as Sync/Stop — only meaningful when
@@ -117,6 +119,7 @@
     showConflictModal = false,
     updateAvailable = null,
     updateInstalling = false,
+    hqCliUpdateAvailable = null,
     onsync,
     oncancel,
     onsettings,
@@ -192,6 +195,24 @@
     console.log(`[popover] mounted at ${mountTime.toFixed(1)}ms`);
     performance.mark('popover-mounted');
   });
+
+  // Copy-to-clipboard state for the hq CLI update banner. The button can't
+  // auto-install — npm globals need a shell — so it copies the upgrade
+  // command and briefly flashes "Copied" to confirm. We use the browser
+  // clipboard API rather than the Tauri clipboard plugin (not installed)
+  // because Tauri webviews expose it natively over HTTPS-equivalent
+  // origins.
+  let hqCliCopied = $state(false);
+  const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
+  async function copyHqCliUpgrade() {
+    try {
+      await navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD);
+      hqCliCopied = true;
+      setTimeout(() => (hqCliCopied = false), 1500);
+    } catch (e) {
+      console.error('clipboard write failed:', e);
+    }
+  }
 
   async function handleQuit() {
     try {
@@ -317,6 +338,34 @@
             disabled={updateInstalling || !oninstallupdate}
           >
             {updateInstalling ? 'Installing…' : 'Install'}
+          </button>
+        </div>
+      {/if}
+
+      <!-- hq CLI update banner — separate from the app updater. The button
+           copies the upgrade command to the clipboard because npm globals
+           require a real shell; we can't safely `npm install -g` from
+           inside the menubar app. -->
+      {#if hqCliUpdateAvailable}
+        <div class="banner banner-info banner-update">
+          <div class="banner-update-text">
+            <p class="banner-title">
+              hq CLI update available: v{hqCliUpdateAvailable.latest}
+            </p>
+            <p class="banner-body">
+              {#if hqCliUpdateAvailable.local}
+                You're on v{hqCliUpdateAvailable.local}. Run
+              {:else}
+                Run
+              {/if}
+              <code>{HQ_CLI_UPGRADE_CMD}</code> to upgrade.
+            </p>
+          </div>
+          <button
+            class="banner-update-button"
+            onclick={copyHqCliUpgrade}
+          >
+            {hqCliCopied ? 'Copied' : 'Copy'}
           </button>
         </div>
       {/if}

@@ -114,6 +114,7 @@ fn main() {
             tray::set_tray_state,
             updater::check_for_updates,
             updater::install_update,
+            commands::hq_cli_update::check_hq_cli_update,
         ])
         .setup(|app| {
             // macOS menubar-app activation policy. `Accessory` = no Dock
@@ -130,6 +131,7 @@ fn main() {
 
             tray::setup_tray(&app.handle())?;
             updater::setup_update_checker(&app.handle());
+            commands::hq_cli_update::setup_hq_cli_update_checker(&app.handle());
 
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
