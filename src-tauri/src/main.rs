@@ -89,6 +89,7 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate(Mutex::new(None)))
+        .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -138,6 +139,7 @@ fn main() {
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
             commands::new_files::open_new_files_detail,
+            commands::new_files::detail_window_ready,
         ])
         .setup(|app| {
             // macOS menubar-app activation policy. `Accessory` = no Dock

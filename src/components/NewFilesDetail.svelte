@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
   interface NewFile {
@@ -23,6 +24,10 @@
       files = event.payload;
     }).then((fn) => {
       unlisten = fn;
+      // Signal to Rust that the listener is registered — Rust will
+      // emit the pending file list and show/focus the window. This
+      // handshake avoids a race between webview load and data emit.
+      invoke('detail_window_ready');
     });
 
     return () => {
