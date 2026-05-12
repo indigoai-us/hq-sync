@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import CopyPromptButton from './CopyPromptButton.svelte';
 
   interface Props {
     onsuccess?: (auth: { authenticated: boolean; expiresAt: string }) => void;
@@ -145,7 +146,14 @@
     {/if}
 
     {#if error}
-      <p class="error">{error}</p>
+      <div class="error-block">
+        <p class="error">{error}</p>
+        <CopyPromptButton
+          variant="inline"
+          label="Copy prompt"
+          issue={{ kind: 'auth-expired', payload: { message: error } }}
+        />
+      </div>
     {/if}
 
     <p class="footer">Powered by Indigo</p>
@@ -253,10 +261,21 @@
     }
   }
 
+  /* Sign-in failure: neutral grey notice — same rule as the rest of the app.
+     The Copy-prompt button next to the message hands the failure to an HQ
+     agent that can run `/hq-login` or diagnose deeper. */
+  .error-block {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+  }
+
   .error {
     font-size: 0.75rem;
-    color: #ef4444;
-    margin: 0.75rem 0 0 0;
+    color: var(--popover-text-muted, #a0a0b0);
+    margin: 0;
     line-height: 1.4;
   }
 
@@ -296,7 +315,7 @@
     }
 
     .error {
-      color: #dc2626;
+      color: var(--popover-text-muted, rgba(0, 0, 0, 0.48));
     }
   }
 </style>

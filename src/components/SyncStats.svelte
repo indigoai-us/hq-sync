@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { untrack } from 'svelte';
+  import CopyPromptButton from './CopyPromptButton.svelte';
 
   interface SyncStatus {
     lastSyncAt: string | null;
@@ -80,6 +81,11 @@
         </svg>
         <span class="stat-label">Conflicts</span>
         <span class="stat-value">{status.conflicts}</span>
+        <CopyPromptButton
+          variant="compact"
+          label="Copy resolve-conflicts prompt"
+          issue={{ kind: 'sync-conflict', payload: { count: status.conflicts } }}
+        />
       </div>
     {/if}
   {/if}
@@ -160,13 +166,15 @@
     font-weight: 500;
   }
 
-  .stat-row.conflict .stat-icon,
-  .stat-row.conflict .stat-label {
-    color: #f59e0b;
-  }
-
+  /* Conflict row: same calm grey as a normal stat row. The Copy-prompt button
+     to the right of the value carries the affordance; severity colour was
+     removed (per design: errors/warnings of any kind are a grey friendly
+     notice, never yellow or red). */
   .stat-row.conflict .stat-value {
-    color: #f59e0b;
+    /* No margin-left:auto here — the CopyPromptButton takes the right edge
+       slot, and the value sits to its left at the natural flex position.
+       Reapply auto-margin so the count + button hug the right side together. */
+    margin-left: auto;
     font-weight: 600;
   }
 
@@ -190,12 +198,6 @@
 
     .stats-error {
       color: #6b7280;
-    }
-
-    .stat-row.conflict .stat-icon,
-    .stat-row.conflict .stat-label,
-    .stat-row.conflict .stat-value {
-      color: #d97706;
     }
   }
 </style>

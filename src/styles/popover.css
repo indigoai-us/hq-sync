@@ -30,7 +30,19 @@ textarea {
   --popover-primary-active: rgba(255, 255, 255, 0.78);
   --popover-primary-text: #111113;
   --popover-danger: #ef4444;
-  --popover-warning: #f59e0b;
+  /* Notice tokens — replace the legacy yellow/red warning + error palette.
+     "Notice" is the unified visual language for everything that used to be
+     a warning or error: same subtle grey surface as info, slightly stronger
+     border, muted text. No severity colour, no alarm — copy + a Copy-prompt
+     button carry the meaning. */
+  --popover-notice: rgba(255, 255, 255, 0.65);
+  --popover-notice-strong: #ffffff;
+  --popover-notice-bg: rgba(255, 255, 255, 0.05);
+  --popover-notice-border: rgba(255, 255, 255, 0.16);
+  /* Kept for back-compat: any straggler that still references --popover-warning
+     now resolves to the muted notice text rather than amber. Remove once
+     consumers are fully migrated. */
+  --popover-warning: var(--popover-notice);
   --popover-success: #22c55e;
   --popover-divider: rgba(255, 255, 255, 0.11);
   --popover-action-hover: rgba(255, 255, 255, 0.1);
@@ -54,7 +66,11 @@ textarea {
     --popover-primary-active: rgba(17, 17, 19, 0.78);
     --popover-primary-text: #ffffff;
     --popover-danger: #dc2626;
-    --popover-warning: #d97706;
+    --popover-notice: rgba(0, 0, 0, 0.6);
+    --popover-notice-strong: #111113;
+    --popover-notice-bg: rgba(0, 0, 0, 0.04);
+    --popover-notice-border: rgba(0, 0, 0, 0.12);
+    --popover-warning: var(--popover-notice);
     --popover-success: #16a34a;
     --popover-divider: rgba(0, 0, 0, 0.09);
     --popover-action-hover: rgba(0, 0, 0, 0.06);

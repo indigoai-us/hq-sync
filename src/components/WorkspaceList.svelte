@@ -3,6 +3,7 @@
   import { open } from '@tauri-apps/plugin-shell';
   import * as Sentry from '@sentry/svelte';
   import type { Workspace } from '../lib/workspaces';
+  import CopyPromptButton from './CopyPromptButton.svelte';
 
   interface Props {
     workspaces: Workspace[];
@@ -129,13 +130,18 @@
 <div class="workspace-list-wrapper">
   {#if manifestError}
     <!-- Manifest unreadable — workspaces fell back to dir enumeration. Surface
-         the parser error so the user can fix or report it. Distinct from the
-         cloud-warning below (which is about reachability). -->
-    <div class="cloud-warning manifest-warning" title={manifestError}>
-      <span class="cloud-warning-dot manifest-warning-dot" aria-hidden="true"></span>
+         the parser error so the user can fix or report it. Friendly notice
+         treatment (no red, no amber); the Copy-prompt button hands the error
+         to an agent that can patch the YAML. -->
+    <div class="cloud-warning" title={manifestError}>
       <span class="cloud-warning-text">
         companies/manifest.yaml couldn't be read — showing folder list instead
       </span>
+      <CopyPromptButton
+        variant="compact"
+        label="Copy fix-manifest prompt"
+        issue={{ kind: 'manifest-error', payload: { error: manifestError } }}
+      />
     </div>
   {/if}
 
@@ -143,8 +149,12 @@
     <!-- Soft notice: cloud unreachable. We still rendered local data, so this
          is a heads-up rather than a blocker. -->
     <div class="cloud-warning" title={cloudError ?? ''}>
-      <span class="cloud-warning-dot" aria-hidden="true"></span>
       <span class="cloud-warning-text">Cloud unreachable — showing local folders only</span>
+      <CopyPromptButton
+        variant="compact"
+        label="Copy diagnose-cloud prompt"
+        issue={{ kind: 'cloud-unreachable', payload: { error: cloudError ?? '' } }}
+      />
     </div>
   {/if}
 
@@ -185,15 +195,28 @@
             {/if}
           </div>
           {#if w.state === 'broken'}
-            <span
-              class="row-meta row-meta-error"
-              title={w.brokenReason ?? 'Manifest cloud_uid does not match cloud reality'}
-            >
-              {#if typeof connectState[w.slug] === 'string'}
-                Reconnect failed — click to retry
-              {:else}
-                Manifest out of sync — click to reconnect
-              {/if}
+            <span class="row-meta-line">
+              <span
+                class="row-meta row-meta-error"
+                title={w.brokenReason ?? 'Manifest cloud_uid does not match cloud reality'}
+              >
+                {#if typeof connectState[w.slug] === 'string'}
+                  Reconnect failed — click to retry
+                {:else}
+                  Manifest out of sync — click to reconnect
+                {/if}
+              </span>
+              <CopyPromptButton
+                variant="compact"
+                label="Copy repair prompt"
+                issue={{
+                  kind: 'workspace-broken',
+                  payload: {
+                    slug: w.slug,
+                    reason: w.brokenReason ?? '',
+                  },
+                }}
+              />
             </span>
           {:else if w.lastSyncedAt}
             <span class="row-meta">Last sync · {formatLastSynced(w.lastSyncedAt)}</span>
@@ -292,36 +315,22 @@
     gap: 0.625rem;
   }
 
+  /* Soft notice strip — used for cloud-unreachable and manifest-parse-error.
+     Both surfaces share one calm grey treatment; the surface tells you which
+     by its copy + the Copy-prompt button it carries. No severity colour. */
   .cloud-warning {
     display: flex;
     align-items: center;
     gap: 0.4375rem;
     padding: 0.4375rem 0.625rem;
     border-radius: 6px;
-    background: rgba(245, 158, 11, 0.08);
-    border: 1px solid rgba(245, 158, 11, 0.22);
-  }
-
-  /* Manifest-error variant — red instead of amber to distinguish "broken
-     local file" from "transient connectivity". */
-  .manifest-warning {
-    background: rgba(239, 68, 68, 0.08);
-    border-color: rgba(239, 68, 68, 0.22);
-  }
-
-  .cloud-warning-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #f59e0b;
-    flex-shrink: 0;
-  }
-
-  .manifest-warning-dot {
-    background: #ef4444;
+    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
+    border: 1px solid var(--popover-notice-border, rgba(255, 255, 255, 0.16));
   }
 
   .cloud-warning-text {
+    flex: 1;
+    min-width: 0;
     font-size: 0.6875rem;
     color: var(--popover-text-muted, #a0a0b0);
     line-height: 1.3;
@@ -391,13 +400,15 @@
     opacity: 0.92;
   }
 
+  /* Broken rows: same hover treatment as any other row. The visual hierarchy
+     is carried by the "Manifest out of sync — click to reconnect" meta line
+     and the Copy-prompt button, not by colour. */
   .workspace-row.broken {
-    /* Broken rows: faint red wash so the eye lands on them in the list. */
-    background: rgba(239, 68, 68, 0.04);
+    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
   }
 
   .workspace-row.broken:hover {
-    background: rgba(239, 68, 68, 0.08);
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
   }
 
   .row-main {
@@ -438,8 +449,19 @@
     line-height: 1.3;
   }
 
+  /* "Connect failed" / "Manifest out of sync" meta lines — same muted grey
+     as any other row-meta; copy carries the meaning. */
   .row-meta-error {
-    color: #ef4444;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  /* Row-meta line that mixes the message + Copy-prompt button for broken
+     rows. Keeps both inline so the row stays single-line tall. */
+  .row-meta-line {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4375rem;
+    min-width: 0;
   }
 
   .row-action {
@@ -465,16 +487,18 @@
     color: #bae6fd;
   }
 
-  /* Broken-state Connect button: red palette to match the row warning. */
+  /* Broken-state Connect button: same secondary-button treatment as the
+     local-only Connect. Visual hierarchy is carried by the row text +
+     Copy-prompt affordance, not by colour. */
   .row-action-broken {
-    background: rgba(239, 68, 68, 0.10);
-    color: #fca5a5;
-    border-color: rgba(239, 68, 68, 0.32);
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
   .row-action-broken:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.18);
-    color: #fecaca;
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text-heading, #ffffff);
   }
 
   .row-action:disabled {
@@ -534,9 +558,11 @@
     border-color: rgba(56, 189, 248, 0.28);
   }
 
+  /* Broken badge: muted grey, same notice tone. The triangle icon + tooltip
+     ("Manifest is out of sync with cloud") communicate status. */
   .badge-broken {
-    background: rgba(239, 68, 68, 0.12);
-    color: #fca5a5;
-    border-color: rgba(239, 68, 68, 0.36);
+    background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    border-color: var(--popover-notice-border, rgba(255, 255, 255, 0.16));
   }
 </style>
