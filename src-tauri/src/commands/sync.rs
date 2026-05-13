@@ -494,6 +494,10 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                 eprintln!("[sync] failed to write journal: {}", _e);
             }
             log("sync", &format!("all-complete (conflicts={conflicts})"));
+            // Mirror the HQ folder into its own git repo (if any) so the
+            // sync also captures a versioned snapshot. Fire-and-forget;
+            // never blocks the AllComplete handler.
+            crate::commands::git_mirror::spawn_mirror_after_sync(hq_folder);
             let emit_result = app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone());
             let app_clone = app.clone();
             let hq = hq_folder.to_string();

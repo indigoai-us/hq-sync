@@ -287,6 +287,10 @@ fn handle_watch_stdout_line(
             log("daemon", &format!("failed to write journal: {e}"));
         }
         log("daemon", &format!("all-complete (conflicts={conflicts})"));
+        // Mirror to a git repo at the HQ root (if any). Fire-and-forget so
+        // a slow `git push` can't stall the next watch pass; the mirror's
+        // in-flight guard skips overlapping runs.
+        crate::commands::git_mirror::spawn_mirror_after_sync(hq_folder);
         let _ = app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone());
         // Reset for the next pass — watch mode loops indefinitely.
         *totals.lock().unwrap_or_else(|e| e.into_inner()) = RunTotals::default();

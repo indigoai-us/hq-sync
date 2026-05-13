@@ -7,6 +7,7 @@ pub mod conflicts;
 pub mod daemon;
 pub mod first_push;
 pub mod folder_picker;
+pub mod git_mirror;
 pub mod hq_cli_update;
 pub mod new_files;
 pub mod oauth;
