@@ -29,10 +29,10 @@ pub struct MenubarPrefs {
     pub notifications: Option<bool>,
     pub start_at_login: Option<bool>,
     pub autostart_daemon: Option<bool>,
-    /// Auto-sync (Beta): when true, the menubar spawns hq-sync-runner in
-    /// `--watch` mode at startup so local edits push immediately and remote
-    /// changes pull every 10 minutes. Gated client-side to @getindigo.ai
-    /// accounts (see `canEnableRealtimeSync` in src/lib/realtime-sync.ts).
+    /// Auto-sync: when true, the menubar spawns hq-sync-runner in `--watch`
+    /// mode at startup so local edits push immediately and remote changes
+    /// pull every 10 minutes. Defaults to true when the field is missing
+    /// (see `is_realtime_sync_enabled` and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realtime_sync: Option<bool>,
 }
@@ -254,10 +254,9 @@ mod tests {
 
     #[test]
     fn test_menubar_prefs_realtime_sync_field_round_trip_true() {
-        // Failing-test seed for the Auto-sync (Beta) feature: MenubarPrefs must
-        // gain a `realtime_sync: Option<bool>` field that serializes to the
-        // camelCase key `realtimeSync` so it can persist across app restarts
-        // alongside the existing autostart_daemon flag.
+        // MenubarPrefs has a `realtime_sync: Option<bool>` field that
+        // serializes to the camelCase key `realtimeSync` so the Auto-sync
+        // setting persists across app restarts alongside `autostart_daemon`.
         let json = r#"{
             "hqPath": "/custom/HQ",
             "syncOnLaunch": false,

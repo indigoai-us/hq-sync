@@ -102,8 +102,8 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 // SpawnArgs builders (testable)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Build SpawnArgs for the Auto-sync (Beta) watcher: hq-sync-runner in watch
-/// mode, fanned out across every membership the caller has.
+/// Build SpawnArgs for the Auto-sync watcher: hq-sync-runner in watch mode,
+/// fanned out across every membership the caller has.
 ///
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
@@ -210,29 +210,33 @@ fn read_daemon_json(hq_folder_path: &str) -> Option<DaemonJson> {
 
 /// Check if autostart_daemon flag is enabled in menubar.json.
 pub fn is_autostart_enabled() -> bool {
-    read_menubar_bool(|p| p.autostart_daemon)
+    read_menubar_bool(|p| p.autostart_daemon, false)
 }
 
-/// Check if the user-facing Auto-sync (Beta) flag is enabled in menubar.json.
+/// Check if the user-facing Auto-sync flag is enabled in menubar.json.
 /// Both flags trigger the same daemon — `autostart_daemon` is the V2-prep
 /// devtools flag and `realtime_sync` is the user-facing Settings toggle —
 /// but they're kept separate so each can evolve independently.
+///
+/// Defaults to true when the field is missing so fresh installs auto-sync
+/// without the user having to discover the Settings toggle. An explicit
+/// `false` written by `save_settings` still wins.
 pub fn is_realtime_sync_enabled() -> bool {
-    read_menubar_bool(|p| p.realtime_sync)
+    read_menubar_bool(|p| p.realtime_sync, true)
 }
 
-fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F) -> bool {
+fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F, default: bool) -> bool {
     let menubar_path = match paths::menubar_json_path() {
         Ok(p) => p,
-        Err(_) => return false,
+        Err(_) => return default,
     };
     if !menubar_path.exists() {
-        return false;
+        return default;
     }
     let prefs: Option<MenubarPrefs> = std::fs::read_to_string(&menubar_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok());
-    prefs.and_then(|p| field(&p)).unwrap_or(false)
+    prefs.and_then(|p| field(&p)).unwrap_or(default)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -596,7 +600,7 @@ mod tests {
         assert_eq!(SIGKILL_DELAY, Duration::from_secs(5));
     }
 
-    // ── build_watch_runner_args (Auto-sync Beta) ──────────────────────────
+    // ── build_watch_runner_args (Auto-sync) ───────────────────────────────
     //
     // Auto-sync reuses the same hq-sync-runner binary as the manual Sync Now
     // button (see commands/sync.rs::build_sync_spawn_args), but adds:

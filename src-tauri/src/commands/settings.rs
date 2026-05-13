@@ -14,7 +14,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             notifications: Some(true),
             start_at_login: Some(true),
             autostart_daemon: Some(false),
-            realtime_sync: Some(false),
+            realtime_sync: Some(true),
         });
     }
 
@@ -23,14 +23,16 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
     let prefs: MenubarPrefs = serde_json::from_str(&contents)
         .map_err(|e| format!("Failed to parse menubar.json: {}", e))?;
 
-    // Apply defaults for missing fields
+    // Apply defaults for missing fields. `realtime_sync` defaults ON — it
+    // mirrors `is_realtime_sync_enabled` in daemon.rs so the Settings toggle
+    // and the auto-start logic agree on a fresh install.
     Ok(MenubarPrefs {
         hq_path: prefs.hq_path,
         sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(false)),
         notifications: Some(prefs.notifications.unwrap_or(true)),
         start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
         autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
-        realtime_sync: Some(prefs.realtime_sync.unwrap_or(false)),
+        realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
     })
 }
 
@@ -77,13 +79,40 @@ mod tests {
             notifications: Some(prefs.notifications.unwrap_or(true)),
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
-            realtime_sync: Some(prefs.realtime_sync.unwrap_or(false)),
+            realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, None);
         assert_eq!(result.sync_on_launch, Some(false));
         assert_eq!(result.notifications, Some(true));
         assert_eq!(result.start_at_login, Some(true));
+        assert_eq!(result.realtime_sync, Some(true));
+    }
+
+    #[test]
+    fn test_explicit_realtime_sync_false_preserved() {
+        // A user who explicitly toggled Auto-sync off must NOT be flipped back
+        // on by the new default. The `unwrap_or(true)` only fires when the
+        // field is absent from menubar.json.
+        let prefs = MenubarPrefs {
+            hq_path: None,
+            sync_on_launch: None,
+            notifications: None,
+            start_at_login: None,
+            autostart_daemon: None,
+            realtime_sync: Some(false),
+        };
+
+        let result = MenubarPrefs {
+            hq_path: prefs.hq_path,
+            sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(false)),
+            notifications: Some(prefs.notifications.unwrap_or(true)),
+            start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
+            autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
+            realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+        };
+
+        assert_eq!(result.realtime_sync, Some(false));
     }
 
     #[test]
@@ -103,7 +132,7 @@ mod tests {
             notifications: Some(prefs.notifications.unwrap_or(true)),
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
-            realtime_sync: Some(prefs.realtime_sync.unwrap_or(false)),
+            realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, Some("/custom/path".to_string()));
