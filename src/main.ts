@@ -1,6 +1,8 @@
 import * as Sentry from "@sentry/svelte";
 import App from './App.svelte';
+import NewFilesDetail from './components/NewFilesDetail.svelte';
 import { mount } from 'svelte';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { beforeSend } from "./sentry-before-send";
 
 Sentry.init({
@@ -10,6 +12,9 @@ Sentry.init({
   beforeSend,
 });
 
-const app = mount(App, { target: document.getElementById('app')! });
+const windowLabel = getCurrentWindow().label;
+const Component = windowLabel === 'new-files-detail' ? NewFilesDetail : App;
+
+const app = mount(Component, { target: document.getElementById('app')! });
 
 export default app;

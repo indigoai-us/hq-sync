@@ -48,8 +48,8 @@ use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
     SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent,
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
-    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_PLAN,
-    EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
+    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES,
+    EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -107,7 +107,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// `commands::prewarm` task fires this same fetch on app startup so the
 /// fetch happens in the background rather than during the user's first
 /// click of "Sync Now".
-pub const HQ_CLOUD_VERSION: &str = "5.14.0";
+pub const HQ_CLOUD_VERSION: &str = "5.15.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -481,6 +481,7 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             }
         }
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),
+        SyncEvent::NewFiles(payload) => app.emit(EVENT_SYNC_NEW_FILES, payload.clone()),
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
@@ -1227,6 +1228,25 @@ mod tests {
                 assert!(a.errors.is_empty());
             }
             _ => panic!("Expected AllComplete event"),
+        }
+    }
+
+    #[test]
+    fn test_parse_new_files_ndjson() {
+        let line = r#"{"type":"new-files","company":"indigo","files":[{"path":"docs/new.md","bytes":1024,"addedBy":"stefan@example.com"},{"path":"docs/other.md","bytes":512}]}"#;
+        let event: SyncEvent = serde_json::from_str(line).unwrap();
+        match event {
+            SyncEvent::NewFiles(nf) => {
+                assert_eq!(nf.company, "indigo");
+                assert_eq!(nf.files.len(), 2);
+                assert_eq!(nf.files[0].path, "docs/new.md");
+                assert_eq!(nf.files[0].bytes, 1024);
+                assert_eq!(nf.files[0].added_by, Some("stefan@example.com".to_string()));
+                assert_eq!(nf.files[1].path, "docs/other.md");
+                assert_eq!(nf.files[1].bytes, 512);
+                assert_eq!(nf.files[1].added_by, None);
+            }
+            _ => panic!("Expected NewFiles event"),
         }
     }
 

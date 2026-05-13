@@ -5,6 +5,7 @@
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
+  import NewFilesBadge from './NewFilesBadge.svelte';
   import type { Workspace } from '../lib/workspaces';
   import type { ConflictFile } from '../stores/conflicts';
 
@@ -72,6 +73,12 @@
       filesSkipped: number;
     } | null;
     errorMessage?: string;
+    /** Number of new files detected in the last sync run (accumulated from
+     *  one or more `sync:new-files` events). 0 = no badge shown. */
+    newFilesCount?: number;
+    /** Flat list of new files across all companies — passed through to the
+     *  NewFilesBadge component for future detail-view use (US-006). */
+    newFilesList?: Array<{ path: string; bytes: number; addedBy: string | null }>;
     conflicts?: ConflictFile[];
     showConflictModal?: boolean;
     /** Non-null when the Tauri updater has found a newer release. */
@@ -128,6 +135,8 @@
     onworkspacesrefresh,
     lastSummary = null,
     errorMessage = '',
+    newFilesCount = 0,
+    newFilesList = [],
     conflicts = [],
     showConflictModal = false,
     updateAvailable = null,
@@ -517,6 +526,9 @@
         </div>
       {:else}
         <SyncStats bind:this={statsEl} />
+        {#if newFilesCount > 0}
+          <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => invoke('open_new_files_detail', { files: newFilesList })} />
+        {/if}
       {/if}
 
       <!-- Workspaces (Personal + companies) — the steady-state list.

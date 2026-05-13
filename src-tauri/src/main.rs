@@ -89,6 +89,7 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate(Mutex::new(None)))
+        .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -96,8 +97,12 @@ fn main() {
         // native Cocoa NSStatusItem apps like Bartender, Rectangle, Raycast.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                // Only hide the main popover window — let other windows
+                // (e.g. new-files-detail) close normally.
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -133,6 +138,8 @@ fn main() {
             updater::install_update,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
+            commands::new_files::open_new_files_detail,
+            commands::new_files::detail_window_ready,
         ])
         .setup(|app| {
             // macOS menubar-app activation policy. `Accessory` = no Dock
