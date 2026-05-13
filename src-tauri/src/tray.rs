@@ -153,6 +153,8 @@ const TRAY_ID: &str = "hq-sync-tray";
 ///
 /// Call this from `tauri::Builder::default().setup(...)`.
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::util::logfile::log;
+
     // Build context menu. The version row is a disabled item — it renders
     // like a macOS "About" label (dimmed, unclickable). Sourced from the
     // bundled `Cargo.toml` / `tauri.conf.json` via `package_info()` so it
@@ -175,7 +177,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // Build tray icon
-    let _tray = TrayIconBuilder::with_id(TRAY_ID)
+    let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon_for_state(TrayState::Idle))
         .icon_as_template(true)
         .tooltip("HQ Sync — Idle")
@@ -215,6 +217,14 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         })
         .build(app)?;
 
+    log("tray", "tray icon built");
+
+    // macOS Tahoe/Sequoia: SystemUIServer can silently fail to render a
+    // newly-registered NSStatusItem — especially after app updates.
+    // Toggling visibility forces re-registration with the system process.
+    tray.set_visible(false).ok();
+    tray.set_visible(true).ok();
+
     // Hide the popover when the user clicks away. `window.hide()` preserves
     // the renderer state (DOM, Svelte stores, listeners), so re-showing is
     // instant. Only wired on macOS where the menubar popover pattern
@@ -233,6 +243,21 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     let _ = win_clone.hide();
                 }
             }
+        });
+    }
+
+    // Delayed re-assertion: at 3s and 10s post-launch, toggle the tray
+    // icon to force SystemUIServer re-registration. Covers cases where
+    // the initial toggle wasn't processed (macOS Tahoe/Sequoia bug
+    // affecting many menubar apps: Tauri #13770, Electron #44817, etc.).
+    #[cfg(target_os = "macos")]
+    {
+        let handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            reassert_tray(&handle);
+            std::thread::sleep(std::time::Duration::from_secs(7));
+            reassert_tray(&handle);
         });
     }
 
@@ -355,6 +380,38 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
 #[allow(dead_code)]
 pub fn get_current_state() -> TrayState {
     current_state().lock().map(|s| *s).unwrap_or(TrayState::Idle)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// macOS tray re-assertion (Tahoe/Sequoia workaround)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Force the tray icon to re-register with macOS SystemUIServer.
+///
+/// macOS Tahoe (26.x) and Sequoia (15.x) can silently prevent
+/// NSStatusItem rendering after app updates or preference corruption.
+/// This is a widespread OS-level regression affecting Tauri (#13770),
+/// Electron (#44817), Maccy, BetterDisplay, and other menubar apps.
+///
+/// Dispatches to the main thread via `run_on_main_thread` since
+/// NSStatusItem is an AppKit object.
+#[cfg(target_os = "macos")]
+fn reassert_tray(app: &AppHandle) {
+    use crate::util::logfile::log;
+
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = handle.tray_by_id(TRAY_ID) {
+            let _ = tray.set_visible(false);
+            let _ = tray.set_visible(true);
+            let state = get_current_state();
+            let _ = tray.set_icon(Some(icon_for_state(state)));
+            let _ = tray.set_tooltip(Some(state.tooltip()));
+            log("tray", "reassert_tray: completed");
+        } else {
+            log("tray", "reassert_tray: tray not found");
+        }
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
