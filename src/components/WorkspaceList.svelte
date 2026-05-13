@@ -270,7 +270,7 @@
                 <OpenInClaudeCodeButton
                   variant="compact"
                   label="Fix in Claude Code"
-                  cwd={hqFolderPath}
+                  folder={hqFolderPath}
                   issue={{
                     kind: 'local-env-failure',
                     payload: {

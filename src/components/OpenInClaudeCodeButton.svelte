@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { open } from '@tauri-apps/plugin-shell';
+  import { invoke } from '@tauri-apps/api/core';
   import { buildPrompt, type Issue } from '../lib/copy-prompts';
   import { buildClaudeCodeUrl } from '../lib/claude-code-link';
 
@@ -7,10 +7,11 @@
     /** Issue descriptor — the same shape `CopyPromptButton` accepts. The
      *  prompt template per kind lives in `lib/copy-prompts.ts`. */
     issue: Issue;
-    /** Absolute path the Claude Code session should `cwd` into. Caller passes
-     *  `config.hqFolderPath` so the agent starts inside the user's HQ root
-     *  with full repo context. */
-    cwd: string;
+    /** Absolute path the Claude Code session should open as its working
+     *  folder. Caller passes `config.hqFolderPath` so the agent starts
+     *  inside the user's HQ root with full repo context. Empty = the
+     *  caller is responsible for suppressing the button. */
+    folder: string;
     /** Layout variant. `inline` matches the row-meta error line. `compact`
      *  hides the label until hover for dense surfaces. Mirrors the variants
      *  on `CopyPromptButton` so the two buttons can sit side-by-side without
@@ -22,7 +23,7 @@
 
   let {
     issue,
-    cwd,
+    folder,
     variant = 'inline',
     label = 'Fix in Claude Code',
   }: Props = $props();
@@ -33,25 +34,30 @@
 
   async function dispatch() {
     const prompt = buildPrompt(issue);
-    const url = buildClaudeCodeUrl({ cwd, prompt });
+    const url = buildClaudeCodeUrl({ folder, prompt });
     dispatchError = null;
     copiedFallback = false;
     try {
-      // tauri-plugin-shell `open()` routes through macOS's LSOpen, which
-      // resolves `claude://` to the Claude Code desktop app if it's
-      // registered. If the scheme has no handler, `open()` rejects — we
-      // fall through to the clipboard so the user can still paste the
-      // prompt into a manually-launched session.
-      await open(url);
+      // Dispatch via the `open_claude_code_link` Tauri command — same path
+      // `Popover::fixHqCliUpdateInHq` uses for the hq-cli "Fix this in HQ"
+      // CTA. The dedicated command (src-tauri/src/commands/app.rs) rejects
+      // any URL that isn't `claude://*` and shells out to macOS `open`,
+      // which routes to the Claude Code desktop app if installed.
+      //
+      // We deliberately do NOT use `@tauri-apps/plugin-shell::open()` here
+      // — that would require widening `shell:allow-open` to handle
+      // arbitrary schemes, which is a much larger attack surface than the
+      // single-purpose Rust command.
+      await invoke('open_claude_code_link', { url });
       dispatched = true;
       setTimeout(() => (dispatched = false), 1800);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.error('OpenInClaudeCodeButton dispatch failed:', e);
       // Fallback: copy the prompt to the clipboard so the user still has
-      // the templated remediation in hand. Notice the *kind* of failure in
-      // the tooltip so a missing Claude install reads as a clear next step
-      // rather than a generic error.
+      // the templated remediation in hand. Tooltip flips to a clear "not
+      // installed" hint so the user knows the next step rather than just
+      // seeing a generic error.
       try {
         await navigator.clipboard.writeText(prompt);
         copiedFallback = true;
