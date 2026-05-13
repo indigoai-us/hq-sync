@@ -540,6 +540,7 @@
           {cloudReachable}
           {cloudError}
           {manifestError}
+          hqFolderPath={config?.hqFolderPath ?? ''}
           onrefresh={onworkspacesrefresh}
         />
       {/if}

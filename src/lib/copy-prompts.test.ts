@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildPrompt, type Issue, type IssueKind } from './copy-prompts';
+import {
+  buildPrompt,
+  parseLocalEnvFailure,
+  type Issue,
+  type IssueKind,
+} from './copy-prompts';
 
 const ALL_KINDS: IssueKind[] = [
   'sync-conflict',
@@ -13,6 +18,7 @@ const ALL_KINDS: IssueKind[] = [
   'workspace-needs-connect',
   'workspace-broken',
   'repair-company',
+  'local-env-failure',
 ];
 
 describe('buildPrompt', () => {
@@ -96,5 +102,126 @@ describe('buildPrompt', () => {
     expect(buildPrompt({ kind: 'sync-conflict' })).toContain('/resolve-conflicts');
     expect(buildPrompt({ kind: 'auth-expired' })).toContain('/hq-login');
     expect(buildPrompt({ kind: 'sync-failed' })).toMatch(/\/diagnose|\/investigate/);
+  });
+
+  describe('local-env-failure prompts', () => {
+    // The local-env-failure prompts are "attempt the fix" by design — the
+    // popover button on `LocalEnv` errors wires to action, not just diagnose.
+    // Guard the action-oriented language so a future refactor can't quietly
+    // downgrade them to "please investigate" copy.
+
+    it('npm-cache-permission instructs the agent to run chown', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: {
+          slug: 'new-co',
+          kind: 'npm-cache-permission',
+          detail: 'npm error path /Users/foo/.npm/_cacache/x',
+        },
+      });
+      expect(out).toContain('npm-cache-permission');
+      expect(out).toContain('chown -R');
+      expect(out).toContain('~/.npm');
+      // Action-language guard.
+      expect(out).toMatch(/attempt the fix/i);
+      // The detail string should be threaded into the prompt so the agent
+      // can see the offending path.
+      expect(out).toContain('/Users/foo/.npm/_cacache/x');
+    });
+
+    it('disk-full instructs the agent to free space, not auto-delete', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'disk-full', detail: 'ENOSPC' },
+      });
+      expect(out).toContain('disk-full');
+      expect(out).toMatch(/df -h|free space|reclaim/i);
+      // Critical safety guardrail: never auto-delete in disk-full prompts.
+      expect(out).toMatch(/don.?t auto-delete|recommend.*don.?t|with my confirmation/i);
+    });
+
+    it('npm-registry-unreachable proposes a registry config check', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'npm-registry-unreachable', detail: 'ENOTFOUND' },
+      });
+      expect(out).toContain('npm-registry-unreachable');
+      expect(out).toMatch(/npm config get registry/);
+    });
+
+    it('npm-registry-timeout points at proxy + status page', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'npm-registry-timeout', detail: 'ETIMEDOUT' },
+      });
+      expect(out).toContain('npm-registry-timeout');
+      expect(out).toMatch(/status\.npmjs\.org|proxy/);
+    });
+
+    it('falls back gracefully when kind is unknown', () => {
+      const out = buildPrompt({
+        kind: 'local-env-failure',
+        payload: { slug: 'x', kind: 'some-future-kind', detail: 'whatever' },
+      });
+      // Must still be useful — points at the diagnostic log + no `sudo`
+      // without confirmation. Don't crash, don't silent-fall-through.
+      expect(out).toMatch(/~\/.hq\/logs|hq-sync\.log/);
+      expect(out).toMatch(/sudo.*confirm|don.?t.*sudo/i);
+    });
+  });
+});
+
+describe('parseLocalEnvFailure (IPC contract)', () => {
+  // This regex is the wire format between Rust and the popover — if Rust's
+  // `CliProvisionError::LocalEnv` Display impl is reworded, both sides need
+  // to update. The Rust side has `local_env_display_contract_is_parseable`
+  // covering the same boundary; this is the TS half.
+
+  it('extracts kind + detail from the canonical Display string', () => {
+    const parsed = parseLocalEnvFailure(
+      'local environment failure (npm-cache-permission): npm error path /Users/foo/.npm/_cacache/x',
+    );
+    expect(parsed).toEqual({
+      kind: 'npm-cache-permission',
+      detail: 'npm error path /Users/foo/.npm/_cacache/x',
+    });
+  });
+
+  it('handles every known kind', () => {
+    const kinds = [
+      'npm-cache-permission',
+      'disk-full',
+      'npm-registry-unreachable',
+      'npm-registry-timeout',
+    ];
+    for (const k of kinds) {
+      const parsed = parseLocalEnvFailure(`local environment failure (${k}): detail text`);
+      expect(parsed).not.toBeNull();
+      expect(parsed?.kind).toBe(k);
+      expect(parsed?.detail).toBe('detail text');
+    }
+  });
+
+  it('returns null for vault errors so they route to the generic branch', () => {
+    expect(
+      parseLocalEnvFailure(
+        'vault/network error from `hq cloud provision`: exit 1 (vault) — see ~/.hq/logs/hq-sync.log',
+      ),
+    ).toBeNull();
+  });
+
+  it('returns null for unknown kinds (defensive against wire drift)', () => {
+    // If Rust ships a new kind before TS knows about it, we must not render
+    // a "Fix in Claude Code" button for it — better to fall through to the
+    // existing generic-error retry treatment.
+    expect(
+      parseLocalEnvFailure('local environment failure (mystery-kind): something'),
+    ).toBeNull();
+  });
+
+  it('returns null for empty / malformed input', () => {
+    expect(parseLocalEnvFailure('')).toBeNull();
+    expect(parseLocalEnvFailure('not a local env failure at all')).toBeNull();
+    expect(parseLocalEnvFailure('local environment failure: no kind')).toBeNull();
   });
 });

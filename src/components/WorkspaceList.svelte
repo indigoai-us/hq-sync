@@ -3,7 +3,9 @@
   import { open } from '@tauri-apps/plugin-shell';
   import * as Sentry from '@sentry/svelte';
   import type { Workspace } from '../lib/workspaces';
+  import { parseLocalEnvFailure } from '../lib/copy-prompts';
   import CopyPromptButton from './CopyPromptButton.svelte';
+  import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
 
   interface Props {
     workspaces: Workspace[];
@@ -12,6 +14,11 @@
     /** Top-level manifest parse error. Non-null = soft warning notice
      *  rendered above the list; workspaces fell back to folder enumeration. */
     manifestError?: string | null;
+    /** Absolute path to the HQ root folder on this machine. Passed through
+     *  from `Popover` (`config.hqFolderPath`) so the "Fix in Claude Code"
+     *  button can launch a Claude session in the right cwd. Optional — when
+     *  empty (config not yet loaded) the button is suppressed gracefully. */
+    hqFolderPath?: string;
     /** Called after a successful Connect so the parent re-fetches workspaces. */
     onrefresh?: () => void;
   }
@@ -21,6 +28,7 @@
     cloudReachable,
     cloudError = null,
     manifestError = null,
+    hqFolderPath = '',
     onrefresh,
   }: Props = $props();
 
@@ -41,6 +49,26 @@
   // Per-row connect state. Keys are slugs; absent = idle, true = in flight,
   // string = error message from the last attempt. Reset on next click.
   let connectState = $state<Record<string, true | string>>({});
+
+  /**
+   * Short, human-readable label per local-env failure kind. Kept in this
+   * component (not `copy-prompts.ts`) because it's UI copy, not prompt
+   * copy. Update both when adding a new `LocalEnvKind`.
+   */
+  function localEnvLabel(kind: string): string {
+    switch (kind) {
+      case 'npm-cache-permission':
+        return 'npm cache locked (root-owned)';
+      case 'disk-full':
+        return 'Disk full';
+      case 'npm-registry-unreachable':
+        return 'npm registry unreachable';
+      case 'npm-registry-timeout':
+        return 'npm registry timed out';
+      default:
+        return 'Local environment failure';
+    }
+  }
 
   function badgeAriaLabel(state: Workspace['state']): string {
     switch (state) {
@@ -223,8 +251,36 @@
           {:else if w.state === 'cloud-only'}
             <span class="row-meta">Not yet on this machine</span>
           {:else if w.state === 'local-only' && typeof connectState[w.slug] === 'string'}
-            <span class="row-meta row-meta-error" title={connectState[w.slug] as string}>
-              Connect failed — click to retry
+            {@const errMsg = connectState[w.slug] as string}
+            {@const localEnv = parseLocalEnvFailure(errMsg)}
+            <span class="row-meta-line">
+              <span class="row-meta row-meta-error" title={errMsg}>
+                {#if localEnv}
+                  {localEnvLabel(localEnv.kind)} — click "Fix in Claude Code"
+                {:else}
+                  Connect failed — click to retry
+                {/if}
+              </span>
+              {#if localEnv && hqFolderPath}
+                <!-- Action-button row for local-environment failures: the
+                     issue isn't a vault outage but a fixable user-laptop
+                     problem (npm cache EACCES is the canonical case). Open
+                     a prefilled Claude Code session and let the agent walk
+                     the user through `chown` / disk / registry remediation. -->
+                <OpenInClaudeCodeButton
+                  variant="compact"
+                  label="Fix in Claude Code"
+                  cwd={hqFolderPath}
+                  issue={{
+                    kind: 'local-env-failure',
+                    payload: {
+                      slug: w.slug,
+                      kind: localEnv.kind,
+                      detail: localEnv.detail,
+                    },
+                  }}
+                />
+              {/if}
             </span>
           {:else if w.state === 'personal' && !w.cloudUid}
             <span class="row-meta">Cloud unreachable</span>
