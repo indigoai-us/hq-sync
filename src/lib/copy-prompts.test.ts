@@ -53,6 +53,23 @@ describe('buildPrompt', () => {
     expect(out).toContain('NET_FAIL: connection reset');
   });
 
+  it('points at the current log + per-slug journal paths in sync-failed', () => {
+    // ADR-0001 Phase 5 moved the diagnostic log to ~/.hq/logs/hq-sync.log and
+    // split the sync journal per-slug — guard against the prompt drifting back
+    // to the legacy paths.
+    const withCompany = buildPrompt({
+      kind: 'sync-failed',
+      payload: { company: 'indigo' },
+    });
+    expect(withCompany).toContain('~/.hq/logs/hq-sync.log');
+    expect(withCompany).toContain('~/.hq/sync-journal.indigo.json');
+    expect(withCompany).not.toContain('~/.hq/sync-debug.log');
+    expect(withCompany).not.toMatch(/sync-journal\.log\b/);
+
+    const noCompany = buildPrompt({ kind: 'sync-failed' });
+    expect(noCompany).toContain('~/.hq/sync-journal.<slug>.json');
+  });
+
   it('embeds the version in app-update-available', () => {
     const out = buildPrompt({
       kind: 'app-update-available',

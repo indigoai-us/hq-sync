@@ -76,7 +76,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       '',
       msg ? `Error: ${msg}` : 'No error message was surfaced in the UI.',
       '',
-      'Please investigate using `/diagnose` if the error is non-deterministic, or `/investigate` for a reproducible failure. Start by reading `~/.hq/sync-debug.log` (last 200 lines) and `~/.hq/sync-journal.log` to see what the runner attempted. Then propose a fix or a retry strategy before re-running `hq sync`.',
+      `Please investigate using \`/diagnose\` if the error is non-deterministic, or \`/investigate\` for a reproducible failure. Start by reading \`~/.hq/logs/hq-sync.log\` (last 200 lines) and \`~/.hq/sync-journal.${company || '<slug>'}.json\` to see what the runner attempted. Then propose a fix or a retry strategy before re-running \`hq sync\`.`,
     ].join('\n');
   },
 
