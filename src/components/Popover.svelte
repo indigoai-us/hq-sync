@@ -73,6 +73,11 @@
       filesSkipped: number;
     } | null;
     errorMessage?: string;
+    /** Company slug attached to the last `sync:error` event. Threaded into
+     *  the `sync-failed` Copy-Prompt so it can render the per-slug journal
+     *  path. Empty string when the failure isn't company-scoped (auth,
+     *  discovery-phase, local catch-block). */
+    errorCompany?: string;
     /** Number of new files detected in the last sync run (accumulated from
      *  one or more `sync:new-files` events). 0 = no badge shown. */
     newFilesCount?: number;
@@ -135,6 +140,7 @@
     onworkspacesrefresh,
     lastSummary = null,
     errorMessage = '',
+    errorCompany = '',
     newFilesCount = 0,
     newFilesList = [],
     conflicts = [],
@@ -466,7 +472,7 @@
           <CopyPromptButton
             variant="inline"
             label="Copy prompt"
-            issue={{ kind: 'sync-failed', payload: { message: errorMessage } }}
+            issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
           />
         </div>
       {/if}

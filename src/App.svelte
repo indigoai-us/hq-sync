@@ -82,6 +82,11 @@
     filesSkipped: number;
   } | null>(null);
   let syncErrorMessage = $state(''); // Last auth-error or error message
+  // Company slug attached to the last `sync:error` event, threaded into the
+  // sync-failed Copy-Prompt so it can render `~/.hq/sync-journal.{slug}.json`
+  // as a concrete path. Empty for auth errors / discovery-phase failures /
+  // local catch-block failures where the slug isn't known.
+  let syncErrorCompany = $state('');
 
   // New-files state — accumulated from `sync:new-files` events (one per
   // company). Cleared when a new sync starts. The badge in Popover renders
@@ -190,6 +195,7 @@
     syncPlanTotalFiles = 0;
     syncLastSummary = null;
     syncErrorMessage = '';
+    syncErrorCompany = '';
     newFilesList = [];
     await invoke('set_tray_state', { state: 'syncing' });
     try {
@@ -198,6 +204,7 @@
       console.error('start_sync failed:', err);
       syncState = 'error';
       syncErrorMessage = String(err);
+      syncErrorCompany = '';
       await invoke('set_tray_state', { state: 'error' });
     }
   }
@@ -370,6 +377,7 @@
         syncState = 'auth-error';
         syncProgress = null;
         syncErrorMessage = event.payload.message;
+        syncErrorCompany = '';
         await invoke('set_tray_state', { state: 'error' });
       })
     );
@@ -558,6 +566,7 @@
           syncState = 'error';
           syncProgress = null;
           syncErrorMessage = event.payload.message;
+          syncErrorCompany = event.payload.company ?? '';
           await invoke('set_tray_state', { state: 'error' });
         }
       )
@@ -716,6 +725,7 @@
       onworkspacesrefresh={loadWorkspaces}
       lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
+      errorCompany={syncErrorCompany}
       {newFilesCount}
       {newFilesList}
       {conflicts}
