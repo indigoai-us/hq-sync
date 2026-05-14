@@ -107,7 +107,16 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// `commands::prewarm` task fires this same fetch on app startup so the
 /// fetch happens in the background rather than during the user's first
 /// click of "Sync Now".
-pub const HQ_CLOUD_VERSION: &str = "5.15.0";
+///
+/// 5.17.0 ships the journal-direction + ignore-filter guard on
+/// `propagateDeletes` (defaults to `"owned-only"`). The earlier 5.15.0
+/// pin still followed the legacy "delete every journal entry whose
+/// local file is missing" semantics, which would erase peer uploads when
+/// the first menubar sync ran on a behind machine and would erase
+/// legacy/filtered paths when the local hqRoot's ignore filter rejected
+/// them. See indigoai-us/hq#142 + the 2026-05-14 incident report for the
+/// failure modes this version closes.
+pub const HQ_CLOUD_VERSION: &str = "5.17.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
