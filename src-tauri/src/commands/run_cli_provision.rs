@@ -76,6 +76,12 @@ const STDERR_TAIL_CAP: usize = 50;
 /// Tags carry the slug + CLI invocation kind + exit code so we can slice
 /// failures by stack/version. Extra carries the stderr tail (the most useful
 /// signal — what the CLI was actually doing when it died).
+///
+/// `local-env` failures (npm cache permission, disk full, npm registry
+/// unreachable / timeout) carry an additional `local_env_kind` tag so the
+/// existing `provision_kind=network` vault-incident alert rule can be
+/// tightened to exclude them — these are user-laptop problems, not platform
+/// incidents.
 fn report_provision_error(
     err: &CliProvisionError,
     slug: &str,
@@ -87,8 +93,13 @@ fn report_provision_error(
         CliProvisionError::Spawn(_) => "spawn",
         CliProvisionError::Validation(_) => "validation",
         CliProvisionError::Network(_) => "network",
+        CliProvisionError::LocalEnv { .. } => "local-env",
         CliProvisionError::Sync { .. } => "sync",
         CliProvisionError::Other(_) => "other",
+    };
+    let local_env_kind: Option<&str> = match err {
+        CliProvisionError::LocalEnv { kind, .. } => Some(kind),
+        _ => None,
     };
     let stderr_blob = stderr_tail.join("\n");
     let exit_str = exit_code
@@ -99,6 +110,9 @@ fn report_provision_error(
         |scope| {
             scope.set_tag("slug", slug);
             scope.set_tag("provision_kind", kind);
+            if let Some(k) = local_env_kind {
+                scope.set_tag("local_env_kind", k);
+            }
             scope.set_tag("cli_invocation", invocation_label);
             scope.set_tag("exit_code", &exit_str);
             scope.set_extra("stderr_tail", stderr_blob.into());
@@ -110,6 +124,89 @@ fn report_provision_error(
             );
         },
     );
+}
+
+/// Inspect the captured stderr tail for unambiguous local-environment
+/// failures and classify them. Returns `(kind, detail)` if matched.
+///
+/// `kind` is a stable identifier the frontend uses to render a kind-specific
+/// "Fix in Claude Code" deep link (see `src/lib/copy-prompts.ts`). The
+/// frontend parses the `Display` string
+/// (`"local environment failure (<kind>): <detail>"`) to extract this, so
+/// adding a new kind requires no IPC schema changes — just a new match arm
+/// here and a new builder branch on the frontend side.
+///
+/// The patterns are deliberately narrow — they target failures that happen
+/// *before* the CLI is loaded (most commonly when the resolver routes through
+/// `npx -y --package=@indigoai-us/hq-cli@<range> hq`), where `npx` returns
+/// exit code 1 for reasons that have nothing to do with vault. Mis-bucketing
+/// these as `CliProvisionError::Network` produces false-positive
+/// `provision_kind=network` Sentry alerts in `#hq-liveops` that look like
+/// platform outages but are user-laptop fixes.
+fn classify_local_env_failure(stderr_tail: &[String]) -> Option<(&'static str, String)> {
+    let blob = stderr_tail.join("\n");
+
+    // npm cache permission — `~/.npm/_cacache/...` owned by root from a prior
+    // `sudo npm` run. Remedy is `sudo chown -R $(id -u):$(id -g) ~/.npm`.
+    if blob.contains("npm error code EACCES")
+        || blob.contains("npm ERR! code EACCES")
+        || blob.contains("EACCES: permission denied")
+    {
+        let detail = first_matching_line(&blob, &["npm error path", "npm ERR! path", "EACCES"])
+            .unwrap_or_else(|| "~/.npm cache contains root-owned files".to_string());
+        return Some(("npm-cache-permission", detail));
+    }
+
+    // Disk full during package extraction.
+    if blob.contains("npm error code ENOSPC")
+        || blob.contains("npm ERR! code ENOSPC")
+        || blob.contains("ENOSPC: no space left")
+    {
+        return Some((
+            "disk-full",
+            "no space left on device during npm package install".to_string(),
+        ));
+    }
+
+    // npm registry DNS failure — captive portal, offline, custom-registry typo.
+    if blob.contains("npm error code ENOTFOUND")
+        || blob.contains("npm ERR! code ENOTFOUND")
+        || blob.contains("getaddrinfo ENOTFOUND")
+    {
+        let detail = first_matching_line(&blob, &["ENOTFOUND", "getaddrinfo"])
+            .unwrap_or_else(|| "could not resolve npm registry host".to_string());
+        return Some(("npm-registry-unreachable", detail));
+    }
+
+    // npm registry TCP timeout — proxy / slow link / npmjs.org incident.
+    if blob.contains("npm error code ETIMEDOUT")
+        || blob.contains("npm ERR! code ETIMEDOUT")
+        || blob.contains("connect ETIMEDOUT")
+        || blob.contains("ESOCKETTIMEDOUT")
+    {
+        return Some((
+            "npm-registry-timeout",
+            "npm request to registry timed out".to_string(),
+        ));
+    }
+
+    None
+}
+
+/// Helper for `classify_local_env_failure` — pull a line of the blob that
+/// contains one of the needles, trimmed. Needles are tried in order, so the
+/// caller can express priority by ordering: e.g. `["npm error path", "EACCES"]`
+/// prefers the path line over the bare error-code line. Returns None when no
+/// needle matches so the caller can fall back to a generic detail string.
+fn first_matching_line(blob: &str, needles: &[&str]) -> Option<String> {
+    for n in needles {
+        for line in blob.lines() {
+            if line.contains(n) {
+                return Some(line.trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -175,6 +272,18 @@ pub enum CliProvisionError {
     Validation(String),
     /// Exit code 1 — vault HTTP / network / auth failure. Retryable.
     Network(String),
+    /// Exit code 1 *before* the CLI even started — `npx` / `npm` failed
+    /// during the pre-launch package fetch. These look identical to vault
+    /// failures from the exit code alone, but the captured `stderr_tail`
+    /// carries an unambiguous npm-error blob. Surfaced as a distinct variant
+    /// so Sentry routing + the popover can offer kind-specific remediation
+    /// instead of a generic "vault error" message.
+    ///
+    /// `kind` is one of: `"npm-cache-permission"`, `"disk-full"`,
+    /// `"npm-registry-unreachable"`, `"npm-registry-timeout"` — and these
+    /// strings are part of the IPC contract with the frontend's
+    /// `OpenInClaudeCodeButton` / `copy-prompts.ts` registry.
+    LocalEnv { kind: &'static str, detail: String },
     /// Exit code 3 — entity created, manifest patched, config written, but
     /// the initial `share()` upload failed. The CLI's stdout still emits a
     /// `CliProvisionResult` with `cloud_uid` populated, so callers can
@@ -194,6 +303,14 @@ impl std::fmt::Display for CliProvisionError {
             Self::Spawn(m) => write!(f, "spawn `hq` failed: {m}"),
             Self::Validation(m) => write!(f, "validation error from `hq cloud provision`: {m}"),
             Self::Network(m) => write!(f, "vault/network error from `hq cloud provision`: {m}"),
+            // The exact prefix `"local environment failure (<kind>): "` is
+            // part of the IPC contract — the frontend regex-parses the kind
+            // out of this string to render the right "Fix in Claude Code"
+            // button. Don't reword it without updating
+            // `src/lib/copy-prompts.ts::parseLocalEnvFailure`.
+            Self::LocalEnv { kind, detail } => {
+                write!(f, "local environment failure ({kind}): {detail}")
+            }
             Self::Sync { message, .. } => {
                 write!(f, "initial sync failed after entity provisioned: {message}")
             }
@@ -417,9 +534,21 @@ pub async fn run_cli_provision(
 
     let result: Result<CliProvisionResult, CliProvisionError> = match exit_code {
         Some(0) => parsed.ok_or_else(exit0_err),
-        Some(1) => Err(CliProvisionError::Network(format!(
-            "exit 1 (vault) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
-        ))),
+        // Exit 1 is overloaded: the CLI documents it as "vault auth/network",
+        // but `npx` (the pre-launch wrapper from `hq_resolver` when the user
+        // has no local `hq` or a stale one) also returns 1 for npm cache
+        // EACCES, ENOSPC, ENOTFOUND, ETIMEDOUT — failures that happen before
+        // the CLI is even loaded. Run the local-env classifier on the stderr
+        // tail first; only fall through to `Network` if nothing matched.
+        Some(1) => match classify_local_env_failure(&stderr_tail) {
+            Some((env_kind, detail)) => Err(CliProvisionError::LocalEnv {
+                kind: env_kind,
+                detail,
+            }),
+            None => Err(CliProvisionError::Network(format!(
+                "exit 1 (vault) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
+            ))),
+        },
         Some(2) => Err(CliProvisionError::Validation(format!(
             "exit 2 (validation) — see ~/.hq/logs/hq-sync.log [provision-cli] for slug={slug}"
         ))),
@@ -569,6 +698,110 @@ mod tests {
             partial: None,
         };
         assert!(e.to_string().contains("initial sync"));
+    }
+
+    /// The Display string for `LocalEnv` is part of the IPC contract — the
+    /// Svelte frontend parses `local environment failure (<kind>): <detail>`
+    /// to extract `kind` for the `OpenInClaudeCodeButton`. Locking the prefix
+    /// here so a casual reword can't silently break the popover.
+    #[test]
+    fn local_env_display_contract_is_parseable() {
+        let e = CliProvisionError::LocalEnv {
+            kind: "npm-cache-permission",
+            detail: "~/.npm cache contains root-owned files".to_string(),
+        };
+        let s = e.to_string();
+        assert!(
+            s.starts_with("local environment failure ("),
+            "Display must start with the parseable prefix; got {s:?}",
+        );
+        assert!(s.contains("(npm-cache-permission)"));
+        assert!(s.contains("root-owned"));
+    }
+
+    /// Classifier: npm cache EACCES (the canonical example from the
+    /// HQ-SYNC-WEB-E Sentry alert that motivated this code). Must classify
+    /// regardless of which npm flavour text is in stderr (modern "npm error"
+    /// vs. legacy "npm ERR!" prefix) and must surface the cache path detail
+    /// when present so the popover prompt names the right directory.
+    #[test]
+    fn classify_npm_eacces_modern() {
+        let tail: Vec<String> = vec![
+            "npm error code EACCES".to_string(),
+            "npm error syscall open".to_string(),
+            "npm error path /Users/alice/.npm/_cacache/index-v5/aa/bb/foo".to_string(),
+            "npm error errno EACCES".to_string(),
+        ];
+        let (kind, detail) = classify_local_env_failure(&tail).expect("must classify");
+        assert_eq!(kind, "npm-cache-permission");
+        assert!(
+            detail.contains("/Users/alice/.npm"),
+            "detail should carry the offending cache path; got {detail:?}",
+        );
+    }
+
+    #[test]
+    fn classify_npm_eacces_legacy() {
+        let tail: Vec<String> = vec![
+            "npm ERR! code EACCES".to_string(),
+            "npm ERR! path /Users/bob/.npm/_cacache/x".to_string(),
+        ];
+        let (kind, _detail) = classify_local_env_failure(&tail).expect("must classify");
+        assert_eq!(kind, "npm-cache-permission");
+    }
+
+    #[test]
+    fn classify_disk_full() {
+        let tail: Vec<String> = vec![
+            "npm error code ENOSPC".to_string(),
+            "ENOSPC: no space left on device, write".to_string(),
+        ];
+        let (kind, _detail) = classify_local_env_failure(&tail).expect("must classify");
+        assert_eq!(kind, "disk-full");
+    }
+
+    #[test]
+    fn classify_registry_unreachable() {
+        let tail: Vec<String> = vec![
+            "npm error code ENOTFOUND".to_string(),
+            "npm error errno ENOTFOUND".to_string(),
+            "npm error network getaddrinfo ENOTFOUND registry.npmjs.org".to_string(),
+        ];
+        let (kind, detail) = classify_local_env_failure(&tail).expect("must classify");
+        assert_eq!(kind, "npm-registry-unreachable");
+        assert!(detail.contains("registry.npmjs.org") || detail.contains("ENOTFOUND"));
+    }
+
+    #[test]
+    fn classify_registry_timeout() {
+        let tail: Vec<String> = vec![
+            "npm error code ETIMEDOUT".to_string(),
+            "connect ETIMEDOUT 104.16.0.0:443".to_string(),
+        ];
+        let (kind, _detail) = classify_local_env_failure(&tail).expect("must classify");
+        assert_eq!(kind, "npm-registry-timeout");
+    }
+
+    /// Vault-flavoured stderr (genuine CLI 5xx) must NOT classify as
+    /// local-env — otherwise the alert routing flips the wrong way and real
+    /// vault incidents go quiet. This is the inverse of the original bug.
+    #[test]
+    fn classify_vault_error_returns_none() {
+        let tail: Vec<String> = vec![
+            "[hq cloud provision] vault POST /v1/entity returned 503".to_string(),
+            "Error: vault unreachable after 3 retries".to_string(),
+        ];
+        assert!(classify_local_env_failure(&tail).is_none());
+    }
+
+    /// Empty stderr — defensive: the classifier must never panic on a tail
+    /// that's empty or carries only whitespace. Returning None lets the
+    /// caller fall back to the generic Network mapping.
+    #[test]
+    fn classify_empty_stderr_returns_none() {
+        assert!(classify_local_env_failure(&[]).is_none());
+        let tail: Vec<String> = vec!["".to_string(), "  ".to_string()];
+        assert!(classify_local_env_failure(&tail).is_none());
     }
 
     /// `From<CliProvisionError> for String` lets callers `?`-propagate into
