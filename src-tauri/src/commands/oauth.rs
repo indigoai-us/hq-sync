@@ -309,7 +309,7 @@ pub async fn oauth_exchange_code(code: String) -> Result<AuthState, String> {
             .ok_or_else(|| "No PKCE verifier found — was start_oauth_login called?".to_string())?
     };
 
-    let client = reqwest::Client::new();
+    let client = crate::util::client_info::build_client();
 
     let params = [
         ("grant_type", "authorization_code"),

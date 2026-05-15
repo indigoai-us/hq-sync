@@ -340,7 +340,7 @@ struct AuthenticationResult {
 }
 
 pub async fn refresh_access_token(refresh_token: &str) -> Result<CognitoTokens, String> {
-    let client = reqwest::Client::new();
+    let client = crate::util::client_info::build_client();
 
     let body = serde_json::json!({
         "AuthFlow": "REFRESH_TOKEN_AUTH",

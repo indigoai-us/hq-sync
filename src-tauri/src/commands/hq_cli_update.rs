@@ -138,7 +138,11 @@ pub fn get_local_version() -> Option<String> {
 }
 
 async fn fetch_latest() -> Result<String, String> {
+    // npm registry doesn't require a User-Agent but accepts one for telemetry —
+    // we still want consistent client attribution across our outbound HTTP, so
+    // we layer the timeout on top of the standard client-attribution headers.
     let client = reqwest::Client::builder()
+        .default_headers(crate::util::client_info::client_headers())
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|e| format!("build client: {e}"))?;

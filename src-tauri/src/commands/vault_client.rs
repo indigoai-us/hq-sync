@@ -1,6 +1,8 @@
 use reqwest::Client;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use crate::util::client_info::build_client;
+
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -203,7 +205,7 @@ impl VaultClient {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             auth_token: auth_token.into(),
-            client: Client::new(),
+            client: build_client(),
         }
     }
 
