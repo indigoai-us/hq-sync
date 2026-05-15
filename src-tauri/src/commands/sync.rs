@@ -24,11 +24,15 @@
 //! install. Putting the dependency at the spawn site (this file) means
 //! there's no separate list to forget. See PRs #9 / #15 in hq-installer.
 //!
-//! **Version pinning:** `HQ_CLOUD_VERSION` below is authoritative. Bumping
-//! it ships a new runner to users on their next sync (npx sees a new
-//! cache key, downloads once, caches for steady state). See
-//! `commands::prewarm` for the on-startup background fetch that keeps the
-//! user's first-click-Sync-Now latency near zero after a version bump.
+//! **Version selection:** `HQ_CLOUD_VERSION` below is authoritative. It is
+//! a tilde-prefixed semver range (`~MAJOR.MINOR.0`) — npx resolves it to
+//! the newest published patch in that minor line at spawn time. So
+//! patch-only bug fixes ship to users on their next sync without a Rust
+//! rebuild, while bumping the minor line (e.g. `~5.17.0` → `~5.18.0`) is
+//! the deliberate "ship a new behavior set" lever and still requires an
+//! HQ Sync release. See `commands::prewarm` for the on-startup background
+//! fetch that keeps first-click-Sync-Now latency near zero after either
+//! kind of bump.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -100,23 +104,32 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(3600);
 /// SIGKILL delay after SIGTERM on cancel.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 
-/// Pinned version of `@indigoai-us/hq-cloud` that ships `hq-sync-runner`.
+/// Semver range for `@indigoai-us/hq-cloud` that ships `hq-sync-runner`.
 ///
-/// Bumping this cuts a new npx cache key, so every user's next sync
-/// fetches the new runner once, then reuses the cache. The
-/// `commands::prewarm` task fires this same fetch on app startup so the
-/// fetch happens in the background rather than during the user's first
-/// click of "Sync Now".
+/// Format is npm's `package-spec` — a tilde-prefixed minor floor
+/// (`~MAJOR.MINOR.0`) selects the *minor line* but lets patches flow
+/// automatically: `~5.17.0` resolves to the newest published `5.17.x` at
+/// spawn time. Bumping the minor (e.g. to `~5.18.0`) is the deliberate
+/// "select a new line" lever; patch-only fixes (5.17.1, 5.17.2, …) ship
+/// to users automatically on their next sync without a Rust rebuild.
 ///
-/// 5.17.0 ships the journal-direction + ignore-filter guard on
-/// `propagateDeletes` (defaults to `"owned-only"`). The earlier 5.15.0
-/// pin still followed the legacy "delete every journal entry whose
+/// npx resolves the range at each spawn (the resolved version becomes
+/// the on-disk cache key under `~/.npm/_npx/`), so a freshly published
+/// patch causes a single re-fetch then steady-state cache reuse — same
+/// shape as an exact-version bump, just driven by the registry instead
+/// of source. The `commands::prewarm` task fires this same fetch on app
+/// startup so the cost lands in the background rather than during the
+/// user's first click of "Sync Now".
+///
+/// 5.17.x ships the journal-direction + ignore-filter guard on
+/// `propagateDeletes` (defaults to `"owned-only"`). The earlier 5.15.x
+/// line still followed the legacy "delete every journal entry whose
 /// local file is missing" semantics, which would erase peer uploads when
 /// the first menubar sync ran on a behind machine and would erase
 /// legacy/filtered paths when the local hqRoot's ignore filter rejected
 /// them. See indigoai-us/hq#142 + the 2026-05-14 incident report for the
-/// failure modes this version closes.
-pub const HQ_CLOUD_VERSION: &str = "5.17.0";
+/// failure modes this minor line closes.
+pub const HQ_CLOUD_VERSION: &str = "~5.17.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -307,7 +320,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@5.1.11 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@~5.17.0 hq-sync-runner \
 ///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
@@ -1299,9 +1312,12 @@ mod tests {
         assert_eq!(HQ_CLOUD_PACKAGE, "@indigoai-us/hq-cloud");
     }
 
-    /// Belt-and-braces: fail loudly if someone pastes a non-semver string
-    /// into the version const. npx tolerates a lot, but "latest" / "*" /
-    /// empty would defeat the whole point of cache pinning and make first
+    /// Belt-and-braces: fail loudly if someone pastes an unbounded range
+    /// into the version const. The canonical shape is `~MAJOR.MINOR.PATCH`
+    /// (tilde-prefixed minor floor — auto-applies patches, not minors).
+    /// A bare `MAJOR.MINOR.PATCH` is grandfathered in for callers that
+    /// genuinely want an exact pin. `latest` / `*` / empty are rejected:
+    /// they defeat the deliberate minor-line selection and make first
     /// sync a roulette wheel.
     #[test]
     fn test_hq_cloud_version_is_pinned_semver() {
@@ -1311,24 +1327,57 @@ mod tests {
         );
         assert_ne!(
             HQ_CLOUD_VERSION, "latest",
-            "HQ_CLOUD_VERSION must be a pinned semver, not `latest`"
+            "HQ_CLOUD_VERSION must select a minor line, not `latest`"
         );
+        assert_ne!(
+            HQ_CLOUD_VERSION, "*",
+            "HQ_CLOUD_VERSION must select a minor line, not `*`"
+        );
+
+        // Strip a leading semver-range prefix (`~` for patch-float, `^`
+        // for minor-float) before validating the M.m.p shape. Anything
+        // else in the prefix slot fails fast.
+        let core = match HQ_CLOUD_VERSION.as_bytes().first() {
+            Some(b'~') | Some(b'^') => &HQ_CLOUD_VERSION[1..],
+            Some(b) if b.is_ascii_digit() => HQ_CLOUD_VERSION,
+            _ => panic!(
+                "HQ_CLOUD_VERSION must start with `~`, `^`, or a digit — got `{}`",
+                HQ_CLOUD_VERSION
+            ),
+        };
+
         // Rough semver shape: three dot-separated numeric segments.
-        let parts: Vec<&str> = HQ_CLOUD_VERSION.split('.').collect();
+        let parts: Vec<&str> = core.split('.').collect();
         assert_eq!(
             parts.len(),
             3,
-            "HQ_CLOUD_VERSION should look like MAJOR.MINOR.PATCH, got `{}`",
+            "HQ_CLOUD_VERSION core should look like MAJOR.MINOR.PATCH, got `{}` (full `{}`)",
+            core,
             HQ_CLOUD_VERSION
         );
         for part in &parts {
             assert!(
-                part.chars().all(|c| c.is_ascii_digit()),
+                !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()),
                 "HQ_CLOUD_VERSION segment `{}` is not a number — got `{}`",
                 part,
                 HQ_CLOUD_VERSION
             );
         }
+    }
+
+    /// Positive coverage for the tilde-range pattern that ships patch
+    /// fixes automatically. If the const ever drifts off this shape,
+    /// callers reading `HQ_CLOUD_VERSION` as a "semver range" string
+    /// (e.g. the docs, the prewarm log lines) will go stale silently.
+    #[test]
+    fn test_hq_cloud_version_floats_patch_within_minor() {
+        assert!(
+            HQ_CLOUD_VERSION.starts_with('~'),
+            "HQ_CLOUD_VERSION should be a tilde range so patches auto-apply, \
+             got `{}`. Use `~MAJOR.MINOR.0` (e.g. `~5.17.0`). If you genuinely \
+             need an exact pin, also update this test.",
+            HQ_CLOUD_VERSION
+        );
     }
 
     // ── RunTotals ────────────────────────────────────────────────────────
