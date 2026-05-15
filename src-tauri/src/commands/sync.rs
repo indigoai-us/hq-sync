@@ -28,7 +28,7 @@
 //! a tilde-prefixed semver range (`~MAJOR.MINOR.0`) — npx resolves it to
 //! the newest published patch in that minor line at spawn time. So
 //! patch-only bug fixes ship to users on their next sync without a Rust
-//! rebuild, while bumping the minor line (e.g. `~5.18.0` → `~5.19.0`) is
+//! rebuild, while bumping the minor line (e.g. `~5.19.0` → `~5.20.0`) is
 //! the deliberate "ship a new behavior set" lever and still requires an
 //! HQ Sync release. See `commands::prewarm` for the on-startup background
 //! fetch that keeps first-click-Sync-Now latency near zero after either
@@ -108,8 +108,8 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 ///
 /// Format is npm's `package-spec` — a tilde-prefixed minor floor
 /// (`~MAJOR.MINOR.0`) selects the *minor line* but lets patches flow
-/// automatically: `~5.18.0` resolves to the newest published `5.18.x` at
-/// spawn time. Bumping the minor (e.g. to `~5.19.0`) is the deliberate
+/// automatically: `~5.19.0` resolves to the newest published `5.19.x` at
+/// spawn time. Bumping the minor (e.g. to `~5.20.0`) is the deliberate
 /// "select a new line" lever; patch-only fixes (5.18.1, 5.18.2, …) ship
 /// to users automatically on their next sync without a Rust rebuild.
 ///
@@ -120,6 +120,18 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// of source. The `commands::prewarm` task fires this same fetch on app
 /// startup so the cost lands in the background rather than during the
 /// user's first click of "Sync Now".
+///
+/// 5.19.x switches the sync runner's slug resolution to the per-user
+/// namespace endpoint (`/entity/check-slug/me` → `entity.get(uid)`).
+/// On 2026-05-15 hq-pro#67 went live and flipped the legacy global
+/// `/entity/by-slug/{type}/{slug}` to `requireUnique: true` semantics:
+/// any slug shared across tenants now returns HTTP 409
+/// `SlugNotUniqueError` instead of silently resolving to the caller's
+/// own entity. The 5.18.x runner still calls the global endpoint, so
+/// `~5.18.0` clients keep working only until the first cross-tenant
+/// slug collision in prod — `~5.19.0` is the minimum pin that stays
+/// correct under the new server semantics. See indigoai-us/hq-cloud#3
+/// + indigoai-us/hq-pro#67.
 ///
 /// 5.18.x adds two corrections downstream of the 5.17.x reconciliation
 /// fixes. 5.18.0 made symlinks round-trip as first-class entries (zero-
@@ -141,7 +153,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// first menubar sync ran on a behind machine and would erase legacy/
 /// filtered paths when the local hqRoot's ignore filter rejected them.
 /// See indigoai-us/hq#142 + the 2026-05-14 incident report.
-pub const HQ_CLOUD_VERSION: &str = "~5.18.0";
+pub const HQ_CLOUD_VERSION: &str = "~5.19.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -332,7 +344,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@~5.18.0 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@~5.19.0 hq-sync-runner \
 ///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
@@ -1386,7 +1398,7 @@ mod tests {
         assert!(
             HQ_CLOUD_VERSION.starts_with('~'),
             "HQ_CLOUD_VERSION should be a tilde range so patches auto-apply, \
-             got `{}`. Use `~MAJOR.MINOR.0` (e.g. `~5.18.0`). If you genuinely \
+             got `{}`. Use `~MAJOR.MINOR.0` (e.g. `~5.19.0`). If you genuinely \
              need an exact pin, also update this test.",
             HQ_CLOUD_VERSION
         );
