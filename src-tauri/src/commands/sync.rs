@@ -28,7 +28,7 @@
 //! a tilde-prefixed semver range (`~MAJOR.MINOR.0`) — npx resolves it to
 //! the newest published patch in that minor line at spawn time. So
 //! patch-only bug fixes ship to users on their next sync without a Rust
-//! rebuild, while bumping the minor line (e.g. `~5.17.0` → `~5.18.0`) is
+//! rebuild, while bumping the minor line (e.g. `~5.18.0` → `~5.19.0`) is
 //! the deliberate "ship a new behavior set" lever and still requires an
 //! HQ Sync release. See `commands::prewarm` for the on-startup background
 //! fetch that keeps first-click-Sync-Now latency near zero after either
@@ -108,9 +108,9 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 ///
 /// Format is npm's `package-spec` — a tilde-prefixed minor floor
 /// (`~MAJOR.MINOR.0`) selects the *minor line* but lets patches flow
-/// automatically: `~5.17.0` resolves to the newest published `5.17.x` at
-/// spawn time. Bumping the minor (e.g. to `~5.18.0`) is the deliberate
-/// "select a new line" lever; patch-only fixes (5.17.1, 5.17.2, …) ship
+/// automatically: `~5.18.0` resolves to the newest published `5.18.x` at
+/// spawn time. Bumping the minor (e.g. to `~5.19.0`) is the deliberate
+/// "select a new line" lever; patch-only fixes (5.18.1, 5.18.2, …) ship
 /// to users automatically on their next sync without a Rust rebuild.
 ///
 /// npx resolves the range at each spawn (the resolved version becomes
@@ -121,15 +121,27 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// startup so the cost lands in the background rather than during the
 /// user's first click of "Sync Now".
 ///
-/// 5.17.x ships the journal-direction + ignore-filter guard on
-/// `propagateDeletes` (defaults to `"owned-only"`). The earlier 5.15.x
-/// line still followed the legacy "delete every journal entry whose
-/// local file is missing" semantics, which would erase peer uploads when
-/// the first menubar sync ran on a behind machine and would erase
-/// legacy/filtered paths when the local hqRoot's ignore filter rejected
-/// them. See indigoai-us/hq#142 + the 2026-05-14 incident report for the
-/// failure modes this minor line closes.
-pub const HQ_CLOUD_VERSION: &str = "~5.17.0";
+/// 5.18.x adds two corrections downstream of the 5.17.x reconciliation
+/// fixes. 5.18.0 made symlinks round-trip as first-class entries (zero-
+/// knowledge target, ETag-distinguishable from same-content regular
+/// files), instead of silently dereferencing top-level symlinks or
+/// dropping nested ones during walk. 5.18.1 filters S3 directory-marker
+/// objects (0-byte, key ends in `/`) at `listRemoteFiles` so neither
+/// the pull-planner (`hashFile` on existing local dir → EISDIR "read")
+/// nor `downloadFile` (`writeFileSync` on trailing-slash path → EISDIR
+/// "open") ever sees them — closes the regression introduced in 5.13.0
+/// when the 0-byte filter was widened to admit legitimate `.gitkeep`
+/// placeholders. See indigoai-us/hq-cloud#2 (5.18.0) + #4 (5.18.1) for
+/// the wire-format details.
+///
+/// 5.17.x earlier shipped the journal-direction + ignore-filter guard
+/// on `propagateDeletes` (defaults to `"owned-only"`). The 5.15.x line
+/// still followed the legacy "delete every journal entry whose local
+/// file is missing" semantics, which would erase peer uploads when the
+/// first menubar sync ran on a behind machine and would erase legacy/
+/// filtered paths when the local hqRoot's ignore filter rejected them.
+/// See indigoai-us/hq#142 + the 2026-05-14 incident report.
+pub const HQ_CLOUD_VERSION: &str = "~5.18.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -320,7 +332,7 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// The command line we spawn looks like:
 /// ```text
-/// npx -y --package=@indigoai-us/hq-cloud@~5.17.0 hq-sync-runner \
+/// npx -y --package=@indigoai-us/hq-cloud@~5.18.0 hq-sync-runner \
 ///   --companies --direction both --on-conflict keep --hq-root <path>
 /// ```
 ///
@@ -1374,7 +1386,7 @@ mod tests {
         assert!(
             HQ_CLOUD_VERSION.starts_with('~'),
             "HQ_CLOUD_VERSION should be a tilde range so patches auto-apply, \
-             got `{}`. Use `~MAJOR.MINOR.0` (e.g. `~5.17.0`). If you genuinely \
+             got `{}`. Use `~MAJOR.MINOR.0` (e.g. `~5.18.0`). If you genuinely \
              need an exact pin, also update this test.",
             HQ_CLOUD_VERSION
         );
