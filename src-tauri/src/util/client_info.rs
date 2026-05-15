@@ -4,15 +4,18 @@
 //! still useful for User-Agent attribution), and `hq_cli_update` (GitHub
 //! releases — GitHub *requires* a User-Agent for anonymous API access).
 //!
-//! Values come from `env!("CARGO_PKG_NAME")` + `env!("CARGO_PKG_VERSION")` so
-//! they're baked into the binary at compile time — no runtime
-//! manifest reads, and the version can't drift from the actual build.
+//! `CLIENT_VERSION` comes from the shipped npm/tauri.conf.json version (emitted
+//! by `build.rs` as `APP_VERSION`), NOT `env!("CARGO_PKG_VERSION")`. The two
+//! version numbers are deliberately decoupled — the Rust crate version is
+//! internal bookkeeping, and the npm package.json version is what users see
+//! in About dialogs and DMG names. Stamping the wrong one defeats the
+//! attribution/rollout telemetry this helper is here to provide.
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
 
-pub const CLIENT_NAME: &str = env!("CARGO_PKG_NAME");
-pub const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const CLIENT_NAME: &str = "hq-sync";
+pub const CLIENT_VERSION: &str = env!("APP_VERSION");
 
 /// Build a HeaderMap with our standard client-attribution headers.
 ///
