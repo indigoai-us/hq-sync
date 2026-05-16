@@ -30,11 +30,14 @@
 //! manifest patch, config write, and initial sync all happen behind one
 //! canonical implementation.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::commands::run_cli_provision::{run_cli_provision, CliProvisionError};
+use crate::commands::run_cli_provision::{
+    run_cli_provision, CliProvisionError, CliProvisionResult,
+};
 use crate::commands::vault_client::VaultClient;
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -97,11 +100,47 @@ fn write_company_config(config_path: &Path, config: &CompanyConfig) -> Result<()
 /// companies, provision them, and return the list of newly-provisioned entries.
 ///
 /// `vault_api_url` is written verbatim into each company's `.hq/config.json`.
+///
+/// Production wrapper: delegates Path C to the canonical `hq cloud provision`
+/// CLI subprocess via [`run_cli_provision`]. Tests use
+/// [`provision_missing_companies_with_provisioner`] with a mock to exercise the
+/// Rust-level dispatch logic without spawning the real binary.
 pub async fn provision_missing_companies(
     hq_root: &Path,
     vault: &VaultClient,
     vault_api_url: &str,
 ) -> Result<Vec<ProvisionedCompany>, String> {
+    provision_missing_companies_with_provisioner(
+        hq_root,
+        vault,
+        vault_api_url,
+        |slug, name, root| async move { run_cli_provision(&slug, name.as_deref(), &root).await },
+    )
+    .await
+}
+
+/// Test seam for [`provision_missing_companies`].
+///
+/// `provisioner` is the Path C dispatch — in production it wraps
+/// [`run_cli_provision`], which shells out to `hq cloud provision company`.
+/// Tests pass closures that return canned [`CliProvisionResult`] values so the
+/// Rust dispatch logic (Path A/B/C selection, error propagation, partial-result
+/// handling on `CliProvisionError::Sync`) can be exercised without spawning the
+/// real CLI binary.
+///
+/// Arguments are owned (`String`, `PathBuf`) so the closure's returned future
+/// can be `'static` — keeps lifetimes simple at the cost of a few cheap clones
+/// per provisioned company (sync is not a hot path).
+pub async fn provision_missing_companies_with_provisioner<F, Fut>(
+    hq_root: &Path,
+    vault: &VaultClient,
+    vault_api_url: &str,
+    provisioner: F,
+) -> Result<Vec<ProvisionedCompany>, String>
+where
+    F: Fn(String, Option<String>, PathBuf) -> Fut,
+    Fut: Future<Output = Result<CliProvisionResult, CliProvisionError>>,
+{
     let companies_dir = hq_root.join("companies");
     if !companies_dir.exists() {
         return Ok(vec![]);
@@ -216,7 +255,13 @@ pub async fn provision_missing_companies(
         // this refactor exists to eliminate (see
         // workspace/reports/cloud-promote-architecture-2026-04-27.md).
         let display_name = company_yaml.name.as_deref();
-        match run_cli_provision(&folder_name, display_name, hq_root).await {
+        match provisioner(
+            folder_name.clone(),
+            display_name.map(String::from),
+            hq_root.to_path_buf(),
+        )
+        .await
+        {
             Ok(cli_result) => {
                 result.push(ProvisionedCompany {
                     slug: folder_name,
@@ -257,7 +302,9 @@ pub async fn provision_missing_companies(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::run_cli_provision::CliInitialSync;
     use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -267,6 +314,30 @@ mod tests {
     }
 
     const VAULT_URL: &str = "https://vault.test.getindigo.ai";
+
+    /// Build a mock `CliProvisionResult` that mimics the AppBar happy path —
+    /// always `--skip-initial-sync`, so `initial_sync.ok` is None and `skipped`
+    /// is Some(true). See `CliInitialSync` doc for why every field is Optional.
+    fn mock_cli_result(slug: &str, uid: &str, bucket: &str) -> CliProvisionResult {
+        CliProvisionResult {
+            ok: true,
+            company_slug: slug.to_string(),
+            cloud_uid: uid.to_string(),
+            bucket_name: bucket.to_string(),
+            vault_api_url: VAULT_URL.to_string(),
+            kms_key_id: None,
+            created_entity: true,
+            manifest_patched: true,
+            config_written: true,
+            initial_sync: CliInitialSync {
+                ok: None,
+                files_uploaded: None,
+                bytes_uploaded: None,
+                error: None,
+                skipped: Some(true),
+            },
+        }
+    }
 
     /// Create a company directory with an optional company.yaml and return the
     /// yaml path (if created).
@@ -482,7 +553,11 @@ mod tests {
         assert!(!written.bucket_name.is_empty(), "bucket_name must not be empty");
     }
 
-    // (e) new folder → create + provision + write config.json; YAML unchanged
+    // (e) new folder + no legacy uid → Path C dispatches to provisioner; result
+    // recorded verbatim; YAML untouched. (Pre-C3 this test also asserted on the
+    // shape of config.json, but Path C no longer writes config.json from Rust —
+    // that work moved into the `hq cloud provision` CLI subprocess. The mock
+    // provisioner here stands in for that subprocess.)
     #[tokio::test]
     async fn test_new_folder_provisioned_yaml_unchanged() {
         let tmp = TempDir::new().unwrap();
@@ -492,58 +567,37 @@ mod tests {
         let sha_before = sha256_file(&yaml_path);
 
         let server = MockServer::start().await;
-        // find_by_slug → 404 (not found)
-        Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
-            .respond_with(ResponseTemplate::new(404).set_body_json(&serde_json::json!({
-                "message": "not found"
-            })))
-            .mount(&server)
-            .await;
-        // create_entity → new uid
-        Mock::given(method("POST"))
-            .and(path("/entity"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&entity_json("cmp_new", slug, None)),
-            )
-            .mount(&server)
-            .await;
-        // provision_bucket → bucket
-        Mock::given(method("POST"))
-            .and(path("/provision/bucket"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&bucket_json("hq-vault-cmp-new")),
-            )
-            .mount(&server)
-            .await;
+        let provisioner = |s: String, _name: Option<String>, _root: PathBuf| async move {
+            Ok(mock_cli_result(&s, "cmp_new", "hq-vault-cmp-new"))
+        };
 
-        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
-            .await
-            .unwrap();
+        let result = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.len(), 1);
+        assert_eq!(result[0].slug, slug);
         assert_eq!(result[0].uid, "cmp_new");
         assert_eq!(result[0].bucket_name, "hq-vault-cmp-new");
 
-        let config_path = tmp
-            .path()
-            .join("companies")
-            .join(slug)
-            .join(".hq")
-            .join("config.json");
-        let written: CompanyConfig =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(written.company_uid, "cmp_new");
-
-        // YAML byte-for-byte unchanged
+        // company.yaml is read-only from this module — see module-level doc
         let sha_after = sha256_file(&yaml_path);
         assert_eq!(sha_before, sha_after, "company.yaml was modified");
+
+        // Path C has no Rust-side vault traffic; everything goes through the
+        // CLI subprocess (mocked away here)
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
-    // (f) find_by_slug returns existing UID → create_entity NEVER called;
-    //     provision_bucket("cmp_preexisting") called; config.json has "cmp_preexisting"
+    // (f) provisioner returns a pre-existing uid → Rust trusts it verbatim and
+    // does NOT second-guess by recomputing. Pre-C3 the Rust code itself decided
+    // find-vs-create; post-C3 that decision lives in the CLI and Rust just
+    // forwards whatever uid comes back. This test pins the trust contract.
     #[tokio::test]
     async fn test_find_by_slug_reuses_uid_no_create() {
         let tmp = TempDir::new().unwrap();
@@ -551,69 +605,48 @@ mod tests {
         setup_company(tmp.path(), slug, Some("cloud: true\nname: Pre Co\n"));
 
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(&entity_json(
+        let recorded_slugs: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded_slugs_clone = Arc::clone(&recorded_slugs);
+        let provisioner = move |s: String, _name: Option<String>, _root: PathBuf| {
+            let recorded = Arc::clone(&recorded_slugs_clone);
+            async move {
+                recorded.lock().unwrap().push(s.clone());
+                Ok(mock_cli_result(
+                    &s,
                     "cmp_preexisting",
-                    slug,
-                    None,
-                )),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/provision/bucket"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&bucket_json("hq-vault-cmp-preexisting")),
-            )
-            .mount(&server)
-            .await;
+                    "hq-vault-cmp-preexisting",
+                ))
+            }
+        };
 
-        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
-            .await
-            .unwrap();
+        let result = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].uid, "cmp_preexisting");
+        assert_eq!(result[0].bucket_name, "hq-vault-cmp-preexisting");
 
-        // Verify create_entity was NEVER called
-        let reqs = server.received_requests().await.unwrap();
-        let create_calls: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/entity")
-            .collect();
-        assert!(
-            create_calls.is_empty(),
-            "create_entity must not be called when find_by_slug returns an entity: {:?}",
-            create_calls
+        // Provisioner invoked exactly once with the folder slug
+        assert_eq!(
+            *recorded_slugs.lock().unwrap(),
+            vec![slug.to_string()],
+            "provisioner must be called exactly once with the folder slug",
         );
 
-        // Verify provision_bucket was called (with cmp_preexisting in body)
-        let bucket_calls: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.url.path() == "/provision/bucket")
-            .collect();
-        assert_eq!(bucket_calls.len(), 1, "provision_bucket must be called once");
-        let body: serde_json::Value =
-            serde_json::from_slice(&bucket_calls[0].body).unwrap();
-        assert_eq!(body["companyUid"], "cmp_preexisting");
-
-        // config.json must use cmp_preexisting
-        let config_path = tmp
-            .path()
-            .join("companies")
-            .join(slug)
-            .join(".hq")
-            .join("config.json");
-        let written: CompanyConfig =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(written.company_uid, "cmp_preexisting");
+        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
-    // (g) find_by_slug returns null → create_entity called exactly once;
-    //     config.json uses the new UID
+    // (g) provisioner returns a freshly created uid → Rust records it once; the
+    // display_name from company.yaml is forwarded so the CLI can stamp the
+    // entity's friendly name. Pre-C3 this test asserted on POST /entity; post-C3
+    // those POSTs happen inside the CLI subprocess and aren't visible from here.
     #[tokio::test]
     async fn test_find_by_slug_null_creates_entity_once() {
         let tmp = TempDir::new().unwrap();
@@ -621,55 +654,44 @@ mod tests {
         setup_company(tmp.path(), slug, Some("cloud: true\nname: Brand New\n"));
 
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(format!("/entity/by-slug/company/{slug}")))
-            .respond_with(
-                ResponseTemplate::new(404)
-                    .set_body_json(&serde_json::json!({ "message": "not found" })),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/entity"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&entity_json("cmp_created", slug, None)),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/provision/bucket"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_json(&bucket_json("hq-vault-cmp-created")),
-            )
-            .mount(&server)
-            .await;
+        let call_count: Arc<Mutex<u32>> = Arc::new(Mutex::new(0));
+        let forwarded_name: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let call_count_clone = Arc::clone(&call_count);
+        let forwarded_name_clone = Arc::clone(&forwarded_name);
+        let provisioner = move |s: String, name: Option<String>, _root: PathBuf| {
+            let calls = Arc::clone(&call_count_clone);
+            let name_sink = Arc::clone(&forwarded_name_clone);
+            async move {
+                *calls.lock().unwrap() += 1;
+                *name_sink.lock().unwrap() = name;
+                Ok(mock_cli_result(&s, "cmp_created", "hq-vault-cmp-created"))
+            }
+        };
 
-        let result = provision_missing_companies(tmp.path(), &vault(&server), VAULT_URL)
-            .await
-            .unwrap();
+        let result = provision_missing_companies_with_provisioner(
+            tmp.path(),
+            &vault(&server),
+            VAULT_URL,
+            provisioner,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].uid, "cmp_created");
 
-        // create_entity called exactly once
-        let reqs = server.received_requests().await.unwrap();
-        let create_calls: Vec<_> = reqs
-            .iter()
-            .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == "/entity")
-            .collect();
-        assert_eq!(create_calls.len(), 1, "create_entity must be called exactly once");
+        assert_eq!(
+            *call_count.lock().unwrap(),
+            1,
+            "provisioner must be called exactly once",
+        );
+        assert_eq!(
+            forwarded_name.lock().unwrap().as_deref(),
+            Some("Brand New"),
+            "display_name from company.yaml must be forwarded to the provisioner",
+        );
 
-        // config.json uses the created UID
-        let config_path = tmp
-            .path()
-            .join("companies")
-            .join(slug)
-            .join(".hq")
-            .join("config.json");
-        let written: CompanyConfig =
-            serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
-        assert_eq!(written.company_uid, "cmp_created");
+        // No Rust-side vault HTTP — Path C is owned by the CLI subprocess
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }
