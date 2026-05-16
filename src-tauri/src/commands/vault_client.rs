@@ -133,6 +133,12 @@ pub struct MembershipInfo {
     /// returned by the live vault; absent in some test fixtures.
     #[serde(default)]
     pub membership_key: Option<String>,
+    /// Human-readable company name. Returned by `GET /membership/me` (the
+    /// vault enriches each row with the company entity's `name` field).
+    /// Absent on legacy `/membership/person/{uid}` responses — defaulted to
+    /// `None` so existing callers keep working.
+    #[serde(default)]
+    pub company_name: Option<String>,
 }
 
 impl MembershipInfo {
@@ -304,6 +310,24 @@ impl VaultClient {
                 "{}/membership/person/{}",
                 self.base_url, person_uid
             ))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        let wrapper: serde_json::Value = self.handle_response(resp).await?;
+        serde_json::from_value(wrapper["memberships"].clone())
+            .map_err(|e| VaultClientError::Json(e.to_string()))
+    }
+
+    /// `GET /membership/me` — caller's memberships across every person they
+    /// own, enriched server-side with `companyName` + `companySlug`. Use this
+    /// when you need human-readable company names; `list_memberships` (above)
+    /// returns the same data without the enrichment.
+    pub async fn list_my_memberships(
+        &self,
+    ) -> Result<Vec<MembershipInfo>, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!("{}/membership/me", self.base_url))
             .bearer_auth(&self.auth_token)
             .send()
             .await?;

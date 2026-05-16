@@ -6,6 +6,7 @@
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import NewFilesBadge from './NewFilesBadge.svelte';
+  import MeetingIcon from './MeetingIcon.svelte';
   import type { Workspace } from '../lib/workspaces';
   import type { ConflictFile } from '../stores/conflicts';
 
@@ -119,6 +120,12 @@
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
     bindStatsRefresh?: (fn: () => void) => void;
+    /** Whether the discreet meeting-invite icon should render in the header.
+     *  Driven by `meetings_feature_enabled` (currently @getindigo.ai). */
+    meetingsEnabled?: boolean;
+    /** Click handler for the meeting icon — toggles the modal open state
+     *  in App.svelte (where the modal itself is rendered). */
+    onmeetingsclick?: () => void;
   }
 
   let {
@@ -160,6 +167,8 @@
     oninstallupdate,
     oninstallhqcliupdate,
     bindStatsRefresh,
+    meetingsEnabled = false,
+    onmeetingsclick,
   }: Props = $props();
 
   // Instance ref for SyncStats so parent can trigger refresh
@@ -298,6 +307,13 @@
       <h1>{companyDisplay}</h1>
       <p class="header-path">{folderDisplay}</p>
     </div>
+
+    {#if meetingsEnabled && onmeetingsclick}
+      <!-- Discreet meeting-invite icon, sits just left of Sync. Gated to
+           @getindigo.ai via `meetings_feature_enabled` (SYNC-1) so this
+           branch is dead code for non-Indigo users. -->
+      <MeetingIcon onclick={onmeetingsclick} />
+    {/if}
 
     <!-- Sync button — right-aligned in the header so it's always visible
          regardless of how long the workspaces list grows. Same visual

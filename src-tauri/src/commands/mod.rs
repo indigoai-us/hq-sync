@@ -9,6 +9,7 @@ pub mod first_push;
 pub mod folder_picker;
 pub mod git_mirror;
 pub mod hq_cli_update;
+pub mod meetings;
 pub mod new_files;
 pub mod oauth;
 pub mod personal;

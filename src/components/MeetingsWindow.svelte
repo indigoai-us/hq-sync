@@ -1,0 +1,853 @@
+<script lang="ts">
+  /**
+   * Upcoming Meetings — standalone Tauri window (label: `meetings-window`).
+   * Mirrors the new-files-detail pattern: own window, decorated, resizable.
+   * Self-fetches via the meetings_* Tauri commands; no main-window handshake.
+   *
+   * Routed by main.ts based on `getCurrentWindow().label`.
+   */
+
+  import { invoke } from '@tauri-apps/api/core';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
+
+  interface MeetingEvent {
+    id: string;
+    summary?: string;
+    start: { dateTime?: string; date?: string; timeZone?: string };
+    end: { dateTime?: string; date?: string; timeZone?: string };
+    status: string;
+    hangoutLink?: string;
+    /** Server-extracted meeting URL (BE-5) — picks across hangoutLink,
+     *  conferenceData entry points, and Zoom/Teams in description. Prefer
+     *  this over hangoutLink when deciding "can I invite a bot to this?" */
+    meetingUrl?: string | null;
+    sourceCalendarId?: string;
+    sourceCompanyUid?: string;
+  }
+
+  /**
+   * hq-pro `BotStatus`:
+   *   scheduled  — bot created but not yet joined
+   *   joining    — bot connecting to the meeting
+   *   recording  — bot in call + actively recording (the "live" state)
+   *   processing — meeting ended, transcript pipeline running
+   *   completed  — done, transcript stored
+   *   failed     — error or cancelled-by-user
+   */
+  interface ScheduledBot {
+    botId: string;
+    meetingUrl: string;
+    platform: string;
+    status: string;
+    calendarEventId?: string | null;
+    meetingTitle?: string | null;
+    scheduledStartTime?: string | null;
+    autoScheduled: boolean;
+    errorMessage?: string | null;
+  }
+
+  interface CompanyMembership {
+    companyUid: string;
+    companyName?: string | null;
+    role?: string | null;
+    status: string;
+  }
+
+  let events = $state<MeetingEvent[]>([]);
+  let botsByEventId = $state<Map<string, ScheduledBot>>(new Map());
+  let companyNamesByUid = $state<Map<string, string>>(new Map());
+  let loading = $state(false);
+  let listError = $state<string | null>(null);
+  let toast = $state<{ kind: 'info' | 'error'; text: string } | null>(null);
+
+  let urlInput = $state('');
+  let urlInviting = $state(false);
+
+  let rowPending = $state<Set<string>>(new Set());
+
+  $effect(() => {
+    void refresh();
+
+    // Poll every 30s while the window is open. Bots transition states
+    // server-side (scheduled → joining → recording → processing) and the
+    // auto-schedule cron creates new bots on a 10-min rhythm, so without
+    // polling the window can render stale "Invite" affordances for events
+    // that already have a bot scheduled. 30s is a sweet spot: fast enough
+    // for the user to see joining/recording flips within a meeting, slow
+    // enough that the upstream API isn't hit on every redraw.
+    const pollId = window.setInterval(() => {
+      void refresh();
+    }, 30_000);
+
+    // Esc closes the window — feels native on macOS where ⌘W is the
+    // standard but Esc is the common expectation for a detached panel.
+    const onkeydown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        void getCurrentWindow().close();
+      }
+    };
+    window.addEventListener('keydown', onkeydown);
+    return () => {
+      window.clearInterval(pollId);
+      window.removeEventListener('keydown', onkeydown);
+    };
+  });
+
+  async function refresh() {
+    loading = true;
+    listError = null;
+    try {
+      const [evts, bots, memberships] = await Promise.all([
+        invoke<MeetingEvent[]>('meetings_list_upcoming'),
+        invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+          calendarEventIds: null,
+        }),
+        // Memberships are tiny + rarely change — fetched on every open is
+        // cheap and avoids stale company-name display after the user joins
+        // a new company elsewhere.
+        invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => [] as CompanyMembership[]),
+      ]);
+      events = evts ?? [];
+      botsByEventId = buildBotMap(bots ?? []);
+      companyNamesByUid = buildCompanyNameMap(memberships ?? []);
+    } catch (err) {
+      listError = String(err);
+    } finally {
+      loading = false;
+    }
+  }
+
+  function buildBotMap(bots: ScheduledBot[]): Map<string, ScheduledBot> {
+    const m = new Map<string, ScheduledBot>();
+    for (const b of bots) {
+      if (b.calendarEventId && isActiveStatus(b.status)) {
+        m.set(b.calendarEventId, b);
+      }
+    }
+    return m;
+  }
+
+  function buildCompanyNameMap(memberships: CompanyMembership[]): Map<string, string> {
+    const m = new Map<string, string>();
+    for (const row of memberships) {
+      if (row.companyName) m.set(row.companyUid, row.companyName);
+    }
+    return m;
+  }
+
+  /**
+   * Bot statuses we still consider "live" for the row UI. Matches the
+   * hq-pro BotStatus enum — used to keep the bot visible on its row until
+   * the meeting fully concludes. `processing` stays in this set so the
+   * row shows "Processing…" instead of flipping back to "Invite" the
+   * moment the meeting ends but before the transcript lands.
+   */
+  function isActiveStatus(s: string): boolean {
+    return (
+      s === 'scheduled' ||
+      s === 'joining' ||
+      s === 'recording' ||
+      s === 'processing'
+    );
+  }
+
+  async function onInvite(evt: MeetingEvent) {
+    const url = eventMeetingUrl(evt);
+    if (!url) {
+      flashToast('error', 'No meeting URL on this event.');
+      return;
+    }
+    const key = evt.id;
+    if (rowPending.has(key)) return;
+    rowPending = new Set(rowPending).add(key);
+    try {
+      await invoke<ScheduledBot>('meetings_invite_bot', {
+        meetingUrl: url,
+        calendarEventId: evt.id,
+        companyId: evt.sourceCompanyUid ?? null,
+      });
+      flashToast('info', 'Bot invited.');
+      await refresh();
+    } catch (err) {
+      // 409 "bot-already-scheduled" is benign and (usually) means the row
+      // was stale — e.g. the auto-schedule cron picked up the event between
+      // window-open and this click, or a separate hq-sync instance got
+      // there first. Refresh + tell the user it's invited rather than
+      // showing a scary failure toast.
+      const msg = String(err);
+      if (msg.includes('409') || msg.includes('bot-already-scheduled')) {
+        flashToast('info', 'Already invited — refreshing.');
+        await refresh();
+      } else {
+        flashToast('error', `Invite failed: ${err}`);
+      }
+    } finally {
+      const next = new Set(rowPending);
+      next.delete(key);
+      rowPending = next;
+    }
+  }
+
+  async function onUninvite(evt: MeetingEvent) {
+    const bot = botsByEventId.get(evt.id);
+    if (!bot) return;
+    const key = evt.id;
+    if (rowPending.has(key)) return;
+    rowPending = new Set(rowPending).add(key);
+    try {
+      await invoke('meetings_cancel_bot', { botId: bot.botId });
+      flashToast('info', 'Bot uninvited.');
+      await refresh();
+    } catch (err) {
+      flashToast('error', `Uninvite failed: ${err}`);
+    } finally {
+      const next = new Set(rowPending);
+      next.delete(key);
+      rowPending = next;
+    }
+  }
+
+  async function onUrlInvite() {
+    const url = urlInput.trim();
+    if (!isPlausibleMeetingUrl(url)) return;
+    urlInviting = true;
+    try {
+      await invoke<ScheduledBot>('meetings_invite_bot', {
+        meetingUrl: url,
+        calendarEventId: null,
+        companyId: null,
+      });
+      urlInput = '';
+      flashToast(
+        'info',
+        'Bot invited — meeting will save to Personal. You can move it after sync.',
+      );
+      await refresh();
+    } catch (err) {
+      flashToast('error', `Invite failed: ${err}`);
+    } finally {
+      urlInviting = false;
+    }
+  }
+
+  function isPlausibleMeetingUrl(url: string): boolean {
+    if (!url) return false;
+    return (
+      /^https:\/\/[^\s/]*\.zoom\.us\/j\/[^\s]+/i.test(url) ||
+      /^https:\/\/meet\.google\.com\/[a-z-]+/i.test(url) ||
+      /^https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s]+/i.test(url) ||
+      /^https:\/\/[^\s/]*\.webex\.com\/[^\s]+/i.test(url)
+    );
+  }
+
+  function flashToast(kind: 'info' | 'error', text: string) {
+    toast = { kind, text };
+    setTimeout(() => {
+      if (toast && toast.text === text) toast = null;
+    }, 4000);
+  }
+
+  interface DayGroup {
+    label: string;
+    events: MeetingEvent[];
+  }
+
+  const groupedEvents = $derived<DayGroup[]>(groupByDay(events));
+
+  function groupByDay(list: MeetingEvent[]): DayGroup[] {
+    const out: DayGroup[] = [];
+    const byLabel = new Map<string, MeetingEvent[]>();
+    for (const e of list) {
+      const t = eventStart(e);
+      if (!t) continue;
+      const label = dayLabel(t);
+      let bucket = byLabel.get(label);
+      if (!bucket) {
+        bucket = [];
+        byLabel.set(label, bucket);
+      }
+      bucket.push(e);
+    }
+    for (const [label, eventsInDay] of byLabel) {
+      out.push({ label, events: eventsInDay });
+    }
+    return out;
+  }
+
+  function eventStart(e: MeetingEvent): Date | null {
+    const raw = e.start.dateTime ?? e.start.date;
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function dayLabel(d: Date): string {
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const eventDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    if (eventDay.getTime() === today.getTime()) return 'Today';
+    if (eventDay.getTime() === tomorrow.getTime()) return 'Tomorrow';
+    return d.toLocaleDateString(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+  }
+
+  function timeLabel(e: MeetingEvent): string {
+    const d = eventStart(e);
+    if (!d) return '';
+    return d.toLocaleTimeString(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  }
+
+  function companyLabel(e: MeetingEvent): string {
+    if (!e.sourceCompanyUid) return 'Personal';
+    // Prefer the human-readable name from /membership/me. Fall back to
+    // a UID prefix only when the membership map didn't include this
+    // company (rare: should only happen if the user lost membership
+    // between the calendar mapping save and now).
+    const name = companyNamesByUid.get(e.sourceCompanyUid);
+    if (name) return name;
+    const short = e.sourceCompanyUid.slice(0, 12);
+    return short.length === 12 ? `${short}…` : short;
+  }
+
+  function eventMeetingUrl(e: MeetingEvent): string | null {
+    // Server-side BE-5 extracts from hangoutLink/conferenceData/description.
+    // Fall back to raw hangoutLink for events served by a pre-BE-5 backend.
+    return e.meetingUrl ?? e.hangoutLink ?? null;
+  }
+
+  function platformLabel(e: MeetingEvent): string {
+    const url = eventMeetingUrl(e) ?? '';
+    if (url.includes('meet.google.com')) return 'Google Meet';
+    if (url.includes('zoom.us')) return 'Zoom';
+    if (url.includes('teams.microsoft.com')) return 'Teams';
+    if (url.includes('webex.com')) return 'Webex';
+    return '';
+  }
+
+  /**
+   * Three-state button per row, driven by `bot.status`:
+   *
+   *   no bot              → kind="invite"     (CTA — solid)
+   *   scheduled           → kind="invited"    (muted, click to cancel)
+   *   joining             → kind="joining"    (transient)
+   *   recording           → kind="in-call"    (live red-dot indicator)
+   *   processing          → kind="processing" (non-cancellable, transient)
+   *
+   * The user explicitly asked for "in call" visibility while a meeting is
+   * live. We surface `recording` as a distinct state with a pulsing dot so
+   * it reads at a glance.
+   */
+  type RowButtonKind =
+    | 'invite'
+    | 'invited'
+    | 'joining'
+    | 'in-call'
+    | 'processing';
+
+  function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
+    if (!bot) return 'invite';
+    switch (bot.status) {
+      case 'scheduled':
+        return 'invited';
+      case 'joining':
+        return 'joining';
+      case 'recording':
+        return 'in-call';
+      case 'processing':
+        return 'processing';
+      default:
+        // Defensive fallback — completed/failed shouldn't reach here because
+        // buildBotMap filters them out, but if somehow they do, show Invite.
+        return 'invite';
+    }
+  }
+
+  function rowButtonLabel(kind: RowButtonKind, pending: boolean): string {
+    if (pending) return '…';
+    switch (kind) {
+      case 'invite':
+        return 'Invite';
+      case 'invited':
+        return 'Invited';
+      case 'joining':
+        return 'Joining…';
+      case 'in-call':
+        return 'In Call';
+      case 'processing':
+        return 'Processing';
+    }
+  }
+</script>
+
+<div class="meetings-page">
+  <header class="meetings-header">
+    <h1>Upcoming Meetings</h1>
+    <button
+      type="button"
+      class="meetings-refresh"
+      onclick={refresh}
+      disabled={loading}
+      title="Refresh"
+      aria-label="Refresh meetings"
+    >
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+  </header>
+
+  <div class="url-invite-row">
+    <input
+      type="url"
+      inputmode="url"
+      autocomplete="off"
+      spellcheck="false"
+      placeholder="Paste a Zoom or Google Meet URL"
+      bind:value={urlInput}
+      disabled={urlInviting}
+      class="url-input"
+      onkeydown={(e) => {
+        if (e.key === 'Enter' && isPlausibleMeetingUrl(urlInput.trim())) {
+          e.preventDefault();
+          void onUrlInvite();
+        }
+      }}
+    />
+    <button
+      type="button"
+      class="url-invite-btn"
+      disabled={urlInviting || !isPlausibleMeetingUrl(urlInput.trim())}
+      onclick={onUrlInvite}
+    >
+      {urlInviting ? 'Inviting…' : 'Invite'}
+    </button>
+  </div>
+  {#if urlInput.trim() && !isPlausibleMeetingUrl(urlInput.trim())}
+    <p class="url-hint">Enter a Zoom, Google Meet, Teams, or Webex URL.</p>
+  {/if}
+
+  {#if toast}
+    <p class="toast" class:toast-error={toast.kind === 'error'}>
+      {toast.text}
+    </p>
+  {/if}
+
+  <section class="meetings-body">
+    {#if loading && events.length === 0}
+      <p class="meetings-placeholder">Loading…</p>
+    {:else if listError}
+      <p class="meetings-error">{listError}</p>
+    {:else if events.length === 0}
+      <p class="meetings-placeholder">
+        No upcoming meetings in your connected calendars.
+      </p>
+    {:else}
+      {#each groupedEvents as group (group.label)}
+        <h3 class="day-heading">{group.label}</h3>
+        <ul class="event-list">
+          {#each group.events as evt (evt.id)}
+            {@const bot = botsByEventId.get(evt.id)}
+            {@const pending = rowPending.has(evt.id)}
+            {@const kind = rowButtonKind(bot)}
+            {@const url = eventMeetingUrl(evt)}
+            <li class="event-row">
+              <div class="event-meta">
+                <span class="event-time">{timeLabel(evt)}</span>
+                <span class="event-title" title={evt.summary ?? ''}>
+                  {evt.summary ?? '(no title)'}
+                </span>
+                <span class="event-badges">
+                  <span class="badge badge-company">{companyLabel(evt)}</span>
+                  {#if platformLabel(evt)}
+                    <span class="badge badge-platform">{platformLabel(evt)}</span>
+                  {/if}
+                  {#if kind === 'in-call'}
+                    <span class="badge badge-live"
+                      ><span class="live-dot"></span>Live</span
+                    >
+                  {/if}
+                </span>
+              </div>
+              {#if !url}
+                <span class="row-disabled" title="No meeting URL on this event"
+                  >—</span
+                >
+              {:else if kind === 'invite'}
+                <button
+                  type="button"
+                  class="row-btn row-btn-invite"
+                  disabled={pending}
+                  onclick={() => onInvite(evt)}
+                >
+                  {rowButtonLabel(kind, pending)}
+                </button>
+              {:else if kind === 'invited'}
+                <button
+                  type="button"
+                  class="row-btn row-btn-invited"
+                  disabled={pending}
+                  title="Click to uninvite the bot"
+                  onclick={() => onUninvite(evt)}
+                >
+                  {rowButtonLabel(kind, pending)}
+                </button>
+              {:else if kind === 'in-call'}
+                <button
+                  type="button"
+                  class="row-btn row-btn-incall"
+                  disabled={pending}
+                  title="Bot is in the meeting — click to remove it"
+                  onclick={() => onUninvite(evt)}
+                >
+                  {rowButtonLabel(kind, pending)}
+                </button>
+              {:else if kind === 'joining'}
+                <button
+                  type="button"
+                  class="row-btn row-btn-joining"
+                  disabled={pending}
+                  title="Bot is joining — click to cancel"
+                  onclick={() => onUninvite(evt)}
+                >
+                  {rowButtonLabel(kind, pending)}
+                </button>
+              {:else}
+                <!-- processing: meeting ended, transcript pipeline running.
+                     Not cancellable — the bot isn't holding a Recall slot. -->
+                <span class="row-disabled row-disabled-processing">
+                  {rowButtonLabel(kind, pending)}
+                </span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/each}
+    {/if}
+  </section>
+</div>
+
+<style>
+  :global(html),
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    background: #18181b;
+    color: #f4f4f5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 13px;
+    overflow: hidden;
+  }
+  :global(#app) {
+    height: 100vh;
+  }
+
+  .meetings-page {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: #18181b;
+    color: #f4f4f5;
+  }
+
+  .meetings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .meetings-header h1 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .meetings-refresh {
+    width: 28px;
+    height: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.04);
+    color: #d4d4d8;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .meetings-refresh:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    color: #f4f4f5;
+  }
+  .meetings-refresh:disabled {
+    opacity: 0.5;
+    cursor: wait;
+  }
+
+  .url-invite-row {
+    display: flex;
+    gap: 8px;
+    padding: 12px 18px 6px;
+  }
+  .url-input {
+    flex: 1 1 auto;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    color: #f4f4f5;
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 12px;
+    outline: none;
+  }
+  .url-input:focus {
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+  .url-input:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+  .url-invite-btn {
+    background: rgba(255, 255, 255, 0.12);
+    color: #f4f4f5;
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .url-invite-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.18);
+  }
+  .url-invite-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .url-hint {
+    margin: 0 18px;
+    font-size: 10px;
+    color: #a1a1aa;
+  }
+
+  .toast {
+    margin: 8px 18px 0;
+    padding: 7px 10px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    color: #f4f4f5;
+    font-size: 11px;
+  }
+  .toast-error {
+    background: rgba(220, 38, 38, 0.10);
+    border-color: rgba(220, 38, 38, 0.40);
+    color: #fca5a5;
+  }
+
+  .meetings-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 8px 18px 16px;
+  }
+  .meetings-placeholder,
+  .meetings-error {
+    margin: 0;
+    color: #a1a1aa;
+    font-size: 12px;
+    text-align: center;
+    padding: 20px 0;
+  }
+  .meetings-error {
+    color: #fca5a5;
+  }
+
+  .day-heading {
+    margin: 14px 0 6px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #a1a1aa;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .day-heading:first-of-type {
+    margin-top: 6px;
+  }
+  .event-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+  }
+  .event-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 4px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  .event-row:last-child {
+    border-bottom: 0;
+  }
+  .event-meta {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .event-time {
+    font-size: 10px;
+    color: #a1a1aa;
+  }
+  .event-title {
+    font-size: 13px;
+    color: #f4f4f5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .event-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 2px;
+  }
+  .badge {
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    color: #a1a1aa;
+  }
+  .badge-company {
+    background: rgba(255, 255, 255, 0.04);
+  }
+  .badge-platform {
+    background: transparent;
+  }
+  /* "Live" badge: red dot + label, only shown while bot.status === 'recording'.
+     The pulsing animation is what carries the at-a-glance "something is
+     happening right now" cue — without it, a static red dot reads as a
+     static indicator rather than a live one. */
+  .badge-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #fca5a5;
+    border-color: rgba(220, 38, 38, 0.50);
+    background: rgba(220, 38, 38, 0.12);
+  }
+  .live-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ef4444;
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
+    animation: live-pulse 1.6s ease-out infinite;
+  }
+  @keyframes live-pulse {
+    0% {
+      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55);
+    }
+    70% {
+      box-shadow: 0 0 0 6px rgba(239, 68, 68, 0);
+    }
+    100% {
+      box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+    }
+  }
+
+  /* Row button — base style. Per-state modifiers below override the look
+     while preserving the layout (flex item, no shrink). */
+  .row-btn {
+    flex: 0 0 auto;
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 11px;
+    cursor: pointer;
+    background: rgba(255, 255, 255, 0.06);
+    color: #f4f4f5;
+    min-width: 78px;
+    text-align: center;
+  }
+  .row-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+  }
+  .row-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+  /* CTA — solid-ish, brighter border to read as the actionable state. */
+  .row-btn-invite {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.28);
+  }
+  .row-btn-invite:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.20);
+  }
+  /* Confirmed state — muted; hover hints that clicking will uninvite. */
+  .row-btn-invited {
+    color: #a1a1aa;
+    background: rgba(255, 255, 255, 0.03);
+    border-color: rgba(255, 255, 255, 0.10);
+  }
+  .row-btn-invited:hover:not(:disabled) {
+    color: #fca5a5;
+    background: rgba(220, 38, 38, 0.10);
+    border-color: rgba(220, 38, 38, 0.40);
+  }
+  /* In-call — distinct red tint so the row reads "live" even without the
+     badge. Hovering reveals the uninvite affordance. */
+  .row-btn-incall {
+    color: #fca5a5;
+    background: rgba(220, 38, 38, 0.12);
+    border-color: rgba(220, 38, 38, 0.40);
+  }
+  .row-btn-incall:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.22);
+  }
+  /* Joining — transient. Subtle amber to differentiate from steady states. */
+  .row-btn-joining {
+    color: #fcd34d;
+    background: rgba(202, 138, 4, 0.10);
+    border-color: rgba(202, 138, 4, 0.40);
+  }
+  .row-btn-joining:hover:not(:disabled) {
+    background: rgba(202, 138, 4, 0.18);
+  }
+
+  .row-disabled {
+    flex: 0 0 auto;
+    color: #71717a;
+    font-size: 12px;
+    padding: 0 8px;
+    min-width: 78px;
+    text-align: center;
+  }
+  /* Processing — meeting ended, transcript pipeline running. Not
+     clickable because the bot isn't holding a Recall slot anymore;
+     muted blue tint reads as "doing background work, hands off". */
+  .row-disabled-processing {
+    color: #93c5fd;
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.30);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 11px;
+  }
+</style>

@@ -108,6 +108,13 @@
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
+  // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
+  // decodes the cached Cognito id_token and checks @getindigo.ai). The icon
+  // doesn't render at all when this is false. Click opens the standalone
+  // `meetings-window` (mirrors the `new-files-detail` window pattern) — the
+  // earlier modal-on-popover UX was too cramped.
+  let meetingsEnabled = $state(false);
+
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -659,6 +666,15 @@
     loadConfig();
     loadWorkspaces();
     setupTrayListeners();
+    // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
+    // so subsequent reads are O(1). Errors silently treated as not-enabled.
+    invoke<boolean>('meetings_feature_enabled')
+      .then((v) => {
+        meetingsEnabled = v;
+      })
+      .catch(() => {
+        meetingsEnabled = false;
+      });
 
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
@@ -745,6 +761,15 @@
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
+      {meetingsEnabled}
+      onmeetingsclick={() => {
+        // Spawn the detached Upcoming Meetings window (label: meetings-window).
+        // Fire-and-forget — the Rust handler focuses an existing window if
+        // already open, otherwise creates a fresh one. Errors are swallowed
+        // since they'd be infra-level (Tauri failure) and there's nothing
+        // useful to show inline.
+        invoke('open_meetings_window').catch(() => {});
+      }}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />
