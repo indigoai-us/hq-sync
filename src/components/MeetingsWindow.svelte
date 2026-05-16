@@ -67,6 +67,18 @@
 
   $effect(() => {
     void refresh();
+
+    // Poll every 30s while the window is open. Bots transition states
+    // server-side (scheduled → joining → recording → processing) and the
+    // auto-schedule cron creates new bots on a 10-min rhythm, so without
+    // polling the window can render stale "Invite" affordances for events
+    // that already have a bot scheduled. 30s is a sweet spot: fast enough
+    // for the user to see joining/recording flips within a meeting, slow
+    // enough that the upstream API isn't hit on every redraw.
+    const pollId = window.setInterval(() => {
+      void refresh();
+    }, 30_000);
+
     // Esc closes the window — feels native on macOS where ⌘W is the
     // standard but Esc is the common expectation for a detached panel.
     const onkeydown = (e: KeyboardEvent) => {
@@ -76,7 +88,10 @@
       }
     };
     window.addEventListener('keydown', onkeydown);
-    return () => window.removeEventListener('keydown', onkeydown);
+    return () => {
+      window.clearInterval(pollId);
+      window.removeEventListener('keydown', onkeydown);
+    };
   });
 
   async function refresh() {
@@ -155,7 +170,18 @@
       flashToast('info', 'Bot invited.');
       await refresh();
     } catch (err) {
-      flashToast('error', `Invite failed: ${err}`);
+      // 409 "bot-already-scheduled" is benign and (usually) means the row
+      // was stale — e.g. the auto-schedule cron picked up the event between
+      // window-open and this click, or a separate hq-sync instance got
+      // there first. Refresh + tell the user it's invited rather than
+      // showing a scary failure toast.
+      const msg = String(err);
+      if (msg.includes('409') || msg.includes('bot-already-scheduled')) {
+        flashToast('info', 'Already invited — refreshing.');
+        await refresh();
+      } else {
+        flashToast('error', `Invite failed: ${err}`);
+      }
     } finally {
       const next = new Set(rowPending);
       next.delete(key);
