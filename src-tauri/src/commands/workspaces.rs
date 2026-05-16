@@ -200,7 +200,7 @@ pub(crate) enum ManifestLoad {
 ///   - `Present(entries)`  — manifest parsed cleanly
 ///   - `Absent`            — file doesn't exist; caller falls back to dir enumeration
 ///   - `Failed(reason)`    — file exists but unreadable/unparseable; caller
-///                           surfaces the error AND still falls back to dir enumeration
+///     surfaces the error AND still falls back to dir enumeration
 pub(crate) fn read_manifest(hq_root: &Path) -> ManifestLoad {
     let manifest_path = hq_root.join("companies").join("manifest.yaml");
     let bytes = match std::fs::read(&manifest_path) {
@@ -379,6 +379,7 @@ fn humanize_slug(slug: &str) -> String {
 /// NOT preserve YAML comments. The HQ-side `/newcompany` script writes a
 /// header comment we'll lose on first patch — acceptable trade-off given the
 /// alternative (manual text patching) is fragile across formatting variants.
+#[cfg_attr(not(test), allow(dead_code))] // Only used by tests; production was C3-migrated to the CLI
 pub(crate) fn patch_manifest_with_cloud_info(
     manifest_path: &Path,
     slug: &str,
@@ -932,16 +933,20 @@ where
 
 // ── Tauri command: list_syncable_workspaces ───────────────────────────────────
 
+/// The three things `list_syncable_workspaces` fetches from vault in parallel:
+/// `(self_person, memberships, company_entities_by_uid)`. Wrapped in `Result`
+/// so a partial vault outage degrades gracefully (the local-disk view still
+/// renders) — see the `Err(_)` branch below.
+type CloudOutcome =
+    Result<(Option<EntityInfo>, Vec<MembershipInfo>, BTreeMap<String, EntityInfo>), String>;
+
 #[tauri::command]
 pub async fn list_syncable_workspaces() -> Result<WorkspacesResult, String> {
     let hq_root = resolve_hq_folder_path()?;
     let hq_folder_path = hq_root.to_string_lossy().to_string();
     let (mut local_companies, manifest_error) = discover_local_companies(&hq_root);
 
-    let cloud_outcome: Result<
-        (Option<EntityInfo>, Vec<MembershipInfo>, BTreeMap<String, EntityInfo>),
-        String,
-    > = async {
+    let cloud_outcome: CloudOutcome = async {
         let vault_url = resolve_vault_api_url()?;
         let jwt = resolve_jwt().await?;
         let vault = VaultClient::new(&vault_url, &jwt);

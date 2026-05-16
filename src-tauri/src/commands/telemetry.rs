@@ -244,10 +244,8 @@ pub async fn send_telemetry_if_opted_in<R: tauri::Runtime>(
             Ok(f) => f,
             Err(_) => continue,
         };
-        if offset > 0 {
-            if file.seek(SeekFrom::Start(offset)).is_err() {
-                continue;
-            }
+        if offset > 0 && file.seek(SeekFrom::Start(offset)).is_err() {
+            continue;
         }
         let mut content = String::new();
         if file.read_to_string(&mut content).is_err() {

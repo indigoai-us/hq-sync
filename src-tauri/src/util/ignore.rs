@@ -100,7 +100,7 @@ impl IgnoreFilter {
     }
 
     pub fn within_size_limit(abs_path: &Path) -> bool {
-        std::fs::metadata(abs_path).map_or(false, |m| m.len() <= MAX_FILE_BYTES)
+        std::fs::metadata(abs_path).is_ok_and(|m| m.len() <= MAX_FILE_BYTES)
     }
 }
 

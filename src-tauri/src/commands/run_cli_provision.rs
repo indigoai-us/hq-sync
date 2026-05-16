@@ -33,8 +33,8 @@
 //!   * `1` — vault auth/network/API error (no entity provisioned)
 //!   * `2` — validation error (bad slug, manifest missing, dir missing, etc.)
 //!   * `3` — entity provisioned + manifest patched + config written, but the
-//!           initial sync failed. The JSON line on stdout still carries the
-//!           `cloud_uid` so retries can resume.
+//!     initial sync failed. The JSON line on stdout still carries the
+//!     `cloud_uid` so retries can resume.
 //!
 //! ## Why a fresh subprocess and not a library call
 //!
