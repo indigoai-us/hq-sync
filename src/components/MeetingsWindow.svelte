@@ -9,6 +9,7 @@
 
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
 
   interface MeetingEvent {
     id: string;
@@ -480,6 +481,43 @@
                   {/if}
                 </span>
               </div>
+              {#if url}
+                <!-- Join link — opens the meeting URL in the OS default
+                     browser (which then hands off to Zoom/Meet/Teams app
+                     if installed). Renders whenever a URL exists, including
+                     while the bot is in-call, so users can hop in
+                     themselves at any time. Discreet styling so it doesn't
+                     compete with the primary status button. -->
+                <button
+                  type="button"
+                  class="row-btn-join"
+                  title="Open meeting in browser"
+                  aria-label="Join meeting"
+                  onclick={() => {
+                    openExternal(url).catch((err) => {
+                      flashToast('error', `Couldn't open meeting: ${err}`);
+                    });
+                  }}
+                >
+                  Join
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6"
+                      stroke="currentColor"
+                      stroke-width="1.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </button>
+              {/if}
               {#if !url}
                 <span class="row-disabled" title="No meeting URL on this event"
                   >—</span
@@ -769,6 +807,34 @@
     100% {
       box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
     }
+  }
+
+  /* Join link — opens the meeting URL in the OS default browser. Smaller
+     and lower-contrast than the primary status button so the eye lands
+     on Invite/Invited first. The external-link glyph signals "this
+     leaves the app". */
+  .row-btn-join {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: transparent;
+    color: #a1a1aa;
+    border-radius: 5px;
+    padding: 5px 10px;
+    font-size: 10px;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .row-btn-join:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: #f4f4f5;
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+  .row-btn-join:focus-visible {
+    outline: 2px solid rgba(180, 180, 255, 0.7);
+    outline-offset: 1px;
   }
 
   /* Row button — base style. Per-state modifiers below override the look
