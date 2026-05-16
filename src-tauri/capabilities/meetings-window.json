@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "meetings-window",
+  "description": "Capability set for the Upcoming Meetings detail window. Needs to invoke meetings_* commands directly (self-fetches data, no main-window handshake).",
+  "windows": ["meetings-window"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
+}

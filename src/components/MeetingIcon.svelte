@@ -2,14 +2,14 @@
   /**
    * Meeting-invite icon in the Popover header.
    *
-   * Discreet calendar/video glyph; click opens the upcoming-meetings modal
-   * (rendered by the parent based on its own state). The parent gates
-   * rendering on `meetings_feature_enabled` so this component is only ever
-   * mounted for users on the @getindigo.ai allowlist.
+   * Calendar/dot glyph; click opens the standalone `meetings-window` (via
+   * `invoke('open_meetings_window')`). Parent gates rendering on the
+   * `meetings_feature_enabled` check so this component is only mounted for
+   * users on the @getindigo.ai allowlist.
    */
   interface Props {
     onclick: () => void;
-    /** Optional badge — e.g. number of upcoming meetings (SYNC-3+). */
+    /** Optional badge — e.g. number of upcoming meetings. Future use. */
     count?: number;
   }
   let { onclick, count }: Props = $props();
@@ -23,31 +23,30 @@
   aria-label="Open meetings"
 >
   <svg
-    width="14"
-    height="14"
+    width="16"
+    height="16"
     viewBox="0 0 16 16"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
     aria-hidden="true"
   >
-    <!-- Calendar outline with a small dot in the corner — reads as "agenda"
-         + "live indicator", distinct from the sync/refresh glyph -->
+    <!-- Calendar with a small filled dot — reads as "agenda + live indicator". -->
     <rect
-      x="1.75"
-      y="2.75"
-      width="12.5"
-      height="11.5"
-      rx="1.75"
+      x="1.5"
+      y="2.5"
+      width="13"
+      height="12"
+      rx="2"
       stroke="currentColor"
-      stroke-width="1.5"
+      stroke-width="1.6"
     />
     <path
-      d="M5 1.5v2.5M11 1.5v2.5M1.75 6.25h12.5"
+      d="M4.5 1v3M11.5 1v3M1.5 6h13"
       stroke="currentColor"
-      stroke-width="1.5"
+      stroke-width="1.6"
       stroke-linecap="round"
     />
-    <circle cx="11.5" cy="10.5" r="1.25" fill="currentColor" />
+    <circle cx="11.5" cy="10.75" r="1.5" fill="currentColor" />
   </svg>
   {#if count !== undefined && count > 0}
     <span class="meeting-icon-badge">{count > 9 ? '9+' : count}</span>
@@ -60,23 +59,27 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.08));
-    background: var(--popover-surface-soft, rgba(255, 255, 255, 0.04));
-    color: var(--popover-primary-text, #f4f4f5);
+    width: 30px;
+    height: 30px;
+    border-radius: 7px;
+    /* Stronger border + slightly brighter background than the prior version,
+       so the glyph reads against the Liquid Glass header background. */
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    background: rgba(255, 255, 255, 0.10);
+    /* High-contrast glyph color — was inheriting the muted popover text;
+       now uses a near-white so the calendar reads at a glance. */
+    color: #f4f4f5;
     cursor: pointer;
     transition: background 120ms ease, border-color 120ms ease;
     padding: 0;
-    margin-right: 6px;
+    margin-right: 8px;
   }
   .meeting-icon-btn:hover {
-    background: var(--popover-surface-hover, rgba(255, 255, 255, 0.08));
-    border-color: var(--popover-border-strong, rgba(255, 255, 255, 0.16));
+    background: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.32);
   }
   .meeting-icon-btn:focus-visible {
-    outline: 2px solid var(--popover-focus, rgba(180, 180, 255, 0.7));
+    outline: 2px solid rgba(180, 180, 255, 0.7);
     outline-offset: 1px;
   }
   .meeting-icon-badge {
@@ -87,7 +90,7 @@
     height: 14px;
     padding: 0 3px;
     border-radius: 7px;
-    background: var(--popover-badge, #ff4d4f);
+    background: #ff4d4f;
     color: white;
     font-size: 9px;
     font-weight: 600;

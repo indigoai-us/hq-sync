@@ -6,7 +6,6 @@
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
-  import MeetingsModal from './components/MeetingsModal.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
@@ -111,10 +110,10 @@
 
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
   // decodes the cached Cognito id_token and checks @getindigo.ai). The icon
-  // doesn't render at all when this is false. SYNC-3+ fills in the modal
-  // body; SYNC-2 only wires the open/close state.
+  // doesn't render at all when this is false. Click opens the standalone
+  // `meetings-window` (mirrors the `new-files-detail` window pattern) — the
+  // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
-  let showMeetingsModal = $state(false);
 
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
@@ -763,11 +762,14 @@
       oninstallhqcliupdate={handleInstallHqCliUpdate}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
-      onmeetingsclick={() => (showMeetingsModal = true)}
-    />
-    <MeetingsModal
-      open={showMeetingsModal}
-      onclose={() => (showMeetingsModal = false)}
+      onmeetingsclick={() => {
+        // Spawn the detached Upcoming Meetings window (label: meetings-window).
+        // Fire-and-forget — the Rust handler focuses an existing window if
+        // already open, otherwise creates a fresh one. Errors are swallowed
+        // since they'd be infra-level (Tauri failure) and there's nothing
+        // useful to show inline.
+        invoke('open_meetings_window').catch(() => {});
+      }}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />

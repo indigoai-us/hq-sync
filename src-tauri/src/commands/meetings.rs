@@ -24,6 +24,7 @@
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -108,6 +109,12 @@ pub struct MeetingEvent {
     /// → meeting lands in personal.
     #[serde(default, rename = "sourceCompanyUid")]
     pub source_company_uid: Option<String>,
+    /// Server-extracted meeting URL (BE-5). Picks the right URL across
+    /// hangoutLink, conferenceData entry points, and Zoom/Teams links in
+    /// the description. Prefer this over `hangout_link` for the "should I
+    /// show an Invite button" check.
+    #[serde(default, rename = "meetingUrl")]
+    pub meeting_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +151,43 @@ struct InviteBotBody {
     meeting_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     calendar_event_id: Option<String>,
+}
+
+// ── Detail window (Upcoming Meetings) ────────────────────────────────────────
+
+/// Open or focus the standalone Upcoming Meetings window. Mirrors the
+/// `new-files-detail` pattern — the modal-on-popover UX squeezed the existing
+/// sync UI and made the list cramped. The detached window can grow, decorations
+/// give the user a proper close affordance, and the popover stays untouched.
+///
+/// Unlike `open_new_files_detail`, there's no payload handshake — the window
+/// fetches its own data via `meetings_list_upcoming` + `meetings_list_scheduled_bots`
+/// directly on mount.
+#[tauri::command]
+pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
+    const LABEL: &str = "meetings-window";
+
+    if let Some(window) = app.get_webview_window(LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Upcoming Meetings")
+    .inner_size(460.0, 600.0)
+    .min_inner_size(380.0, 400.0)
+    .resizable(true)
+    .decorations(true)
+    .visible(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 // ── HTTP wrappers ─────────────────────────────────────────────────────────────
@@ -261,6 +305,44 @@ pub async fn meetings_invite_bot(
         return Err(format!("bot/invite HTTP {status}: {text}"));
     }
     serde_json::from_str(&text).map_err(|e| format!("bot/invite parse: {e} — body: {text}"))
+}
+
+/// `GET /membership/me` — caller's memberships, enriched with `companyName`.
+/// Used by the modal to render human-readable company badges instead of
+/// raw `cmp_…` UIDs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyMembership {
+    pub company_uid: String,
+    #[serde(default)]
+    pub company_name: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
+    pub status: String,
+}
+
+#[tauri::command]
+pub async fn meetings_list_memberships() -> Result<Vec<CompanyMembership>, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    // Strip the "Bearer " prefix to match VaultClient's expected token format.
+    let token = auth.strip_prefix("Bearer ").unwrap_or(&auth);
+    let client = crate::commands::vault_client::VaultClient::new(&base, token);
+    let memberships = client
+        .list_my_memberships()
+        .await
+        .map_err(|e| format!("memberships fetch: {e}"))?;
+    // Project down to the fields the modal needs — keeps the JSON wire
+    // payload tight and decouples the UI from the internal vault type.
+    Ok(memberships
+        .into_iter()
+        .map(|m| CompanyMembership {
+            company_uid: m.company_uid,
+            company_name: m.company_name,
+            role: m.role,
+            status: m.status,
+        })
+        .collect())
 }
 
 /// `POST /v1/bot/{botId}/cancel` — uninvite a scheduled bot. hq-pro validates
