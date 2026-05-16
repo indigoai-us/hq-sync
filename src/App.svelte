@@ -6,6 +6,7 @@
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
+  import MeetingsModal from './components/MeetingsModal.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
@@ -107,6 +108,13 @@
   let conflicts = $state<ConflictFile[]>([]);
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
+
+  // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
+  // decodes the cached Cognito id_token and checks @getindigo.ai). The icon
+  // doesn't render at all when this is false. SYNC-3+ fills in the modal
+  // body; SYNC-2 only wires the open/close state.
+  let meetingsEnabled = $state(false);
+  let showMeetingsModal = $state(false);
 
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
@@ -659,6 +667,15 @@
     loadConfig();
     loadWorkspaces();
     setupTrayListeners();
+    // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
+    // so subsequent reads are O(1). Errors silently treated as not-enabled.
+    invoke<boolean>('meetings_feature_enabled')
+      .then((v) => {
+        meetingsEnabled = v;
+      })
+      .catch(() => {
+        meetingsEnabled = false;
+      });
 
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
@@ -745,6 +762,12 @@
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
+      {meetingsEnabled}
+      onmeetingsclick={() => (showMeetingsModal = true)}
+    />
+    <MeetingsModal
+      open={showMeetingsModal}
+      onclose={() => (showMeetingsModal = false)}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />
