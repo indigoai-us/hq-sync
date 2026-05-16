@@ -85,7 +85,9 @@ pub fn is_allowed_email(email: Option<&str>) -> bool {
 
 /// Google calendar event as returned by hq-pro `GET /v1/calendar/events`.
 /// Only the fields we render in the modal — the full shape lives in hq-pro's
-/// CalendarEvent type.
+/// CalendarEvent type. `sourceCalendarId` + `sourceCompanyUid` are added by
+/// hq-pro at flatten-time (BE-4) so the modal can render the right company
+/// badge per row and pass the right companyId on invite.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeetingEvent {
     pub id: String,
@@ -97,6 +99,15 @@ pub struct MeetingEvent {
     pub status: String,
     #[serde(default, rename = "hangoutLink")]
     pub hangout_link: Option<String>,
+    /// Calendar this event came from. Set by hq-pro BE-4.
+    #[serde(default, rename = "sourceCalendarId")]
+    pub source_calendar_id: Option<String>,
+    /// Company UID this calendar is mapped to (if any). Set by hq-pro BE-4.
+    /// When present, pass as `company_id` on `meetings_invite_bot` so the
+    /// transcript lands in the company's vault. When absent, omit on invite
+    /// → meeting lands in personal.
+    #[serde(default, rename = "sourceCompanyUid")]
+    pub source_company_uid: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +382,34 @@ mod tests {
         assert_eq!(evt.status, "confirmed");
         assert!(evt.summary.is_none());
         assert!(evt.hangout_link.is_none());
+        assert!(evt.source_calendar_id.is_none());
+        assert!(evt.source_company_uid.is_none());
         assert_eq!(evt.start.date_time.as_deref(), Some("2026-05-15T14:00:00Z"));
+    }
+
+    /// BE-4 enhancement — events tagged with source calendar + company.
+    #[test]
+    fn meeting_event_includes_source_calendar_tagging() {
+        let json = r#"{
+            "id": "evt-1",
+            "summary": "Sync w/ Spencer",
+            "start": {"dateTime": "2026-05-15T14:00:00Z"},
+            "end": {"dateTime": "2026-05-15T15:00:00Z"},
+            "status": "confirmed",
+            "hangoutLink": "https://meet.google.com/abc-defg-hij",
+            "sourceCalendarId": "stefan@getindigo.ai",
+            "sourceCompanyUid": "cmp_indigo"
+        }"#;
+        let evt: MeetingEvent = serde_json::from_str(json).expect("parse");
+        assert_eq!(evt.summary.as_deref(), Some("Sync w/ Spencer"));
+        assert_eq!(
+            evt.source_calendar_id.as_deref(),
+            Some("stefan@getindigo.ai"),
+        );
+        assert_eq!(evt.source_company_uid.as_deref(), Some("cmp_indigo"));
+        assert_eq!(
+            evt.hangout_link.as_deref(),
+            Some("https://meet.google.com/abc-defg-hij"),
+        );
     }
 }
