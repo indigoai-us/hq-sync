@@ -76,6 +76,7 @@ pub struct SyncErrorEvent {
 /// `complete.aborted` and `complete.conflicts > 0`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Legacy no-op stub retained for frontend compatibility — see module doc
 pub struct SyncConflictEvent {
     pub path: String,
     pub local_hash: String,

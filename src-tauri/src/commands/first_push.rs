@@ -4,8 +4,8 @@
 //! ## Why a subprocess and not direct S3 calls
 //!
 //! Before Option C3 of the cloud-promote consolidation, this file held a
-//! 719-line independent S3 upload implementation (WalkDir + journal + retry
-//! + per-file PUT). That duplicated `share()` from `@indigoai-us/hq-cloud`
+//! 719-line independent S3 upload implementation (WalkDir, journal, retry,
+//! per-file PUT). That duplicated `share()` from `@indigoai-us/hq-cloud`
 //! line-for-line — every bug fix had to land in both places, and the two
 //! implementations had subtly different ignore rules and conflict semantics.
 //!

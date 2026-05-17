@@ -54,8 +54,8 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
             // this line. restart() is retained as a safety net for platforms where it returns.
             app.restart();
         }
-        Ok(None) => return Err("No update available".to_string()),
-        Err(e) => return Err(e.to_string()),
+        Ok(None) => Err("No update available".to_string()),
+        Err(e) => Err(e.to_string()),
     }
 }
 

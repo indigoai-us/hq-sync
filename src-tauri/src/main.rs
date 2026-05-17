@@ -160,8 +160,8 @@ fn main() {
                 apply_liquid_glass(&window);
             }
 
-            tray::setup_tray(&app.handle())?;
-            updater::setup_update_checker(&app.handle());
+            tray::setup_tray(app.handle())?;
+            updater::setup_update_checker(app.handle());
 
             // Register Cmd+Shift+H globally so the popover can be summoned
             // from any app. The handler (configured on the plugin builder
@@ -180,7 +180,7 @@ fn main() {
                 }
             }
 
-            commands::hq_cli_update::setup_hq_cli_update_checker(&app.handle());
+            commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
