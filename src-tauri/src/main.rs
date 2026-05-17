@@ -32,6 +32,59 @@ fn apply_liquid_glass(window: &tauri::WebviewWindow) {
     }
 }
 
+/// Set the macOS application icon image at runtime.
+///
+/// We need this because the app's activation policy is `Accessory` (no Dock
+/// icon, tray-only). When a detached window like the Meetings window is
+/// open, macOS still shows the app in Mission Control and the window
+/// switcher — but with NO bundled `.app` icon registered at runtime, the
+/// representation is a generic folder/document. Setting
+/// `NSApp.applicationIconImage` programmatically gives those surfaces an
+/// HQ icon to render even though there's no Dock badge.
+///
+/// `cargo tauri dev` doesn't build a proper `.app` bundle either, so this
+/// is the same fix in both dev and production.
+///
+/// Uses raw objc2 messaging so we don't pull in objc2-app-kit /
+/// objc2-foundation just for one call. The image is leaked intentionally
+/// — it's set once at startup and held by NSApplication for the lifetime
+/// of the process, so manual release would be a use-after-free.
+#[cfg(target_os = "macos")]
+fn set_app_icon_from_bytes(bytes: &'static [u8]) {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    use util::logfile::log;
+
+    unsafe {
+        let data_cls = class!(NSData);
+        let data: *mut AnyObject = msg_send![
+            data_cls,
+            dataWithBytes: bytes.as_ptr() as *const std::ffi::c_void,
+            length: bytes.len()
+        ];
+        if data.is_null() {
+            log("ui", "set_app_icon: NSData::dataWithBytes returned nil");
+            return;
+        }
+
+        let image_cls = class!(NSImage);
+        let image_alloc: *mut AnyObject = msg_send![image_cls, alloc];
+        let image: *mut AnyObject = msg_send![image_alloc, initWithData: data];
+        if image.is_null() {
+            log("ui", "set_app_icon: NSImage::initWithData returned nil");
+            return;
+        }
+
+        let app_cls = class!(NSApplication);
+        let app: *mut AnyObject = msg_send![app_cls, sharedApplication];
+        if app.is_null() {
+            log("ui", "set_app_icon: NSApplication::sharedApplication returned nil");
+            return;
+        }
+        let _: () = msg_send![app, setApplicationIconImage: image];
+        log("ui", "set_app_icon: applied HQ icon to NSApp");
+    }
+}
+
 fn main() {
     use sentry::ClientOptions;
     use sentry_scrub::before_send;
@@ -156,6 +209,19 @@ fn main() {
             // appears in the Dock whenever the window is shown.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Brand the app's runtime icon image. With Accessory activation
+            // policy there's no Dock icon, but the meetings window (and any
+            // future detached windows) still show up in Mission Control /
+            // Cmd-Tab — by default with a generic folder icon because no
+            // .app bundle icon is registered at runtime. Setting
+            // NSApp.applicationIconImage gives those surfaces the HQ mark
+            // to render even though the Dock stays empty.
+            #[cfg(target_os = "macos")]
+            {
+                const HQ_ICON_PNG: &[u8] = include_bytes!("../icons/128x128@2x.png");
+                set_app_icon_from_bytes(HQ_ICON_PNG);
+            }
 
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
