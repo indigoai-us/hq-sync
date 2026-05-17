@@ -775,9 +775,6 @@
       {urlInviting ? 'Inviting…' : 'Invite'}
     </button>
   </div>
-  {#if urlInput.trim() && !isPlausibleMeetingUrl(urlInput.trim())}
-    <p class="url-hint">Enter a Zoom, Google Meet, Teams, or Webex URL.</p>
-  {/if}
 
   {#if toast}
     <p class="toast" class:toast-error={toast.kind === 'error'}>
@@ -1111,11 +1108,6 @@
   .url-invite-btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
-  }
-  .url-hint {
-    margin: 0 18px;
-    font-size: 10px;
-    color: #a1a1aa;
   }
 
   .toast {
