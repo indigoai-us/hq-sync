@@ -762,25 +762,6 @@
 </script>
 
 <div class="meetings-page">
-  <header class="meetings-header">
-    <h1>Upcoming Meetings</h1>
-    <button
-      type="button"
-      class="meetings-refresh"
-      onclick={refresh}
-      disabled={loading}
-      title="Refresh"
-      aria-label="Refresh meetings"
-    >
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-    </button>
-  </header>
-
   <div class="url-invite-row">
     <input
       type="url"
@@ -832,23 +813,44 @@
     </p>
   {/if}
 
-  {#if accounts.length > 1 || allCalKeys.length > 0}
-    <!-- Multi-account calendar filter. Only render when there's something
-         to filter — single-account users get the cleaner pre-multi-account
-         UI by default. -->
-    <div class="filter-row" bind:this={filterRowEl}>
-      <button
-        type="button"
-        class="filter-trigger"
-        aria-haspopup="listbox"
-        aria-expanded={filterOpen}
-        onclick={() => (filterOpen = !filterOpen)}
-      >
-        <span>{filterButtonLabel}</span>
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
+  <!-- Controls row — always present below the URL input. Hosts the
+       refresh button (right) and, when the user has more than one
+       connected account / any enabled calendars, the multi-account
+       filter dropdown trigger (left). Single-account users still see
+       a working refresh; the filter trigger just sits hidden until
+       there's something to filter by. -->
+  <div class="controls-row" bind:this={filterRowEl}>
+    <div class="controls-row-left">
+      {#if accounts.length > 1 || allCalKeys.length > 0}
+        <button
+          type="button"
+          class="filter-trigger"
+          aria-haspopup="listbox"
+          aria-expanded={filterOpen}
+          onclick={() => (filterOpen = !filterOpen)}
+        >
+          <span>{filterButtonLabel}</span>
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M2 3.5L5 6.5L8 3.5" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      {/if}
+    </div>
+    <button
+      type="button"
+      class="controls-refresh"
+      onclick={refresh}
+      disabled={loading}
+      title="Refresh"
+      aria-label="Refresh meetings"
+    >
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
       {#if filterOpen}
         <div class="filter-menu" role="listbox" aria-label="Filter by calendar">
           <div class="filter-actions">
@@ -888,8 +890,7 @@
           {/each}
         </div>
       {/if}
-    </div>
-  {/if}
+  </div>
 
   <section class="meetings-body">
     {#if loading && events.length === 0}
@@ -1092,45 +1093,10 @@
     color: #f4f4f5;
   }
 
-  .meetings-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 18px 10px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  }
-  .meetings-header h1 {
-    margin: 0;
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
-  .meetings-refresh {
-    width: 28px;
-    height: 28px;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    background: rgba(255, 255, 255, 0.04);
-    color: #d4d4d8;
-    border-radius: 6px;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-  }
-  .meetings-refresh:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.08);
-    color: #f4f4f5;
-  }
-  .meetings-refresh:disabled {
-    opacity: 0.5;
-    cursor: wait;
-  }
-
   .url-invite-row {
     display: flex;
     gap: 8px;
-    padding: 12px 18px 6px;
+    padding: 14px 18px 6px;
   }
   .url-input {
     flex: 1 1 auto;
@@ -1318,11 +1284,47 @@
     color: #bfdbfe;
   }
 
-  /* ── Calendar filter dropdown ──────────────────────────────────────── */
-  .filter-row {
+  /* ── Controls row (filter + refresh) ───────────────────────────────── */
+  .controls-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
     position: relative;
-    padding: 6px 12px 0;
+    /* Right padding matches `.url-invite-row` (18px) so the refresh
+       button's right edge lines up with the Invite button above it.
+       Off-by-6px alignment reads as broken even though it's tiny. */
+    padding: 6px 18px 0;
   }
+  .controls-row-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 24px;
+  }
+  .controls-refresh {
+    width: 24px;
+    height: 24px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.03);
+    color: #d4d4d8;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .controls-refresh:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.08);
+    color: #f4f4f5;
+  }
+  .controls-refresh:disabled {
+    opacity: 0.5;
+    cursor: wait;
+  }
+
+  /* ── Calendar filter dropdown ──────────────────────────────────────── */
   .filter-trigger {
     display: inline-flex;
     align-items: center;
@@ -1341,7 +1343,7 @@
   .filter-menu {
     position: absolute;
     top: calc(100% + 4px);
-    left: 12px;
+    left: 18px;
     z-index: 20;
     min-width: 280px;
     max-height: 320px;
