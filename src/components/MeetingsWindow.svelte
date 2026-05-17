@@ -103,6 +103,12 @@
 
   let urlInput = $state('');
   let urlInviting = $state(false);
+  /** Company to route the URL-input bot to. `null` = Personal (the
+   *  default). When a user picks a company from the dropdown, the
+   *  resolved companyUid lives here and gets passed to
+   *  `meetings_invite_bot`. Resets on successful invite so the next
+   *  paste starts fresh on Personal. */
+  let urlInputCompanyId = $state<string | null>(null);
 
   let rowPending = $state<Set<string>>(new Set());
 
@@ -362,17 +368,23 @@
     const url = urlInput.trim();
     if (!isPlausibleMeetingUrl(url)) return;
     urlInviting = true;
+    const submittedCompanyId = urlInputCompanyId;
     try {
       await invoke<ScheduledBot>('meetings_invite_bot', {
         meetingUrl: url,
         calendarEventId: null,
-        companyId: null,
+        companyId: submittedCompanyId,
       });
+      // Clear the row on success — input AND the company pick — so the
+      // next paste starts fresh on Personal. We snapshot the chosen id
+      // BEFORE the invoke so a slow request that completes after the
+      // user re-types doesn't drop their next selection.
       urlInput = '';
-      flashToast(
-        'info',
-        'Bot invited — meeting will save to Personal. You can move it after sync.',
-      );
+      urlInputCompanyId = null;
+      const destLabel = submittedCompanyId
+        ? (companyNamesByUid.get(submittedCompanyId) ?? 'company')
+        : 'Personal';
+      flashToast('info', `Bot invited — meeting will save to ${destLabel}.`);
       await refresh();
     } catch (err) {
       flashToast('error', `Invite failed: ${err}`);
@@ -736,6 +748,24 @@
         }
       }}
     />
+    {#if urlInput.trim().length > 0}
+      <!-- Destination picker. Only renders once the user starts typing
+           a URL — keeps the idle UI clean. `null` value means Personal
+           (the default). Memberships come from /v1/users/me/memberships
+           via meetings_list_memberships; users with no company
+           memberships still see Personal as the only option. -->
+      <select
+        class="url-invite-company"
+        aria-label="Save bot to"
+        bind:value={urlInputCompanyId}
+        disabled={urlInviting}
+      >
+        <option value={null}>Personal</option>
+        {#each [...companyNamesByUid.entries()] as [uid, name] (uid)}
+          <option value={uid}>{name}</option>
+        {/each}
+      </select>
+    {/if}
     <button
       type="button"
       class="url-invite-btn"
@@ -1042,6 +1072,27 @@
     border-color: rgba(255, 255, 255, 0.24);
   }
   .url-input:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+  /* Destination picker — visually paired with the input so it reads as a
+     single composite control. Renders only while a URL is being typed. */
+  .url-invite-company {
+    flex: 0 0 auto;
+    max-width: 140px;
+    background: rgba(255, 255, 255, 0.04);
+    color: #f4f4f5;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    padding: 7px 8px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .url-invite-company:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+  .url-invite-company:disabled {
     opacity: 0.6;
     cursor: wait;
   }
