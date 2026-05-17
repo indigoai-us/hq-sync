@@ -99,7 +99,44 @@
   let companyNamesByUid = $state<Map<string, string>>(new Map());
   let loading = $state(false);
   let listError = $state<string | null>(null);
-  let toast = $state<{ kind: 'info' | 'error'; text: string } | null>(null);
+  let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
+
+  /**
+   * Distill an upstream error (Tauri command Result::Err string, fetch
+   * failure, or a thrown Error) into a single readable sentence.
+   *
+   * Tauri error strings look like `bot/invite HTTP 409: {"error":"A bot is
+   * already scheduled","code":"bot-already-scheduled"}`. The raw JSON is
+   * noise in a toast — parse it out, prefer the `error` field, and fall
+   * back to a friendly per-status message so we never surface a blob of
+   * JSON or a stack trace to the user. Matches the policy of avoiding
+   * red error states for recoverable user-facing failures.
+   */
+  function friendlyError(err: unknown, fallback: string): string {
+    const raw = String(err ?? '').trim();
+    const jsonStart = raw.indexOf('{');
+    if (jsonStart >= 0) {
+      try {
+        const parsed = JSON.parse(raw.slice(jsonStart)) as {
+          error?: string;
+          message?: string;
+        };
+        if (typeof parsed.error === 'string' && parsed.error.length > 0) {
+          return parsed.error;
+        }
+        if (typeof parsed.message === 'string' && parsed.message.length > 0) {
+          return parsed.message;
+        }
+      } catch {
+        // Not JSON — fall through to HTTP-status heuristics below.
+      }
+    }
+    if (/\b409\b/.test(raw)) return 'A bot is already scheduled for this meeting.';
+    if (/\b401\b/.test(raw)) return 'You need to sign in again.';
+    if (/\b403\b/.test(raw)) return "You don't have permission for that.";
+    if (/\b5\d{2}\b/.test(raw)) return 'Server hiccup — try again in a moment.';
+    return fallback;
+  }
 
   let urlInput = $state('');
   let urlInviting = $state(false);
@@ -300,18 +337,25 @@
    * moment the meeting ends but before the transcript lands.
    */
   function isActiveStatus(s: string): boolean {
+    // `completed` stays in the map so a meeting whose transcript+notes
+    // have landed renders a "Done" affordance on its row instead of
+    // disappearing back to an "Invite" CTA — the user wants confirmation
+    // that the bot attended AND finished its job. Past events drop out
+    // of `events` itself on the next 30s poll, so the "Done" row clears
+    // naturally without us having to remember to forget it.
     return (
       s === 'scheduled' ||
       s === 'joining' ||
       s === 'recording' ||
-      s === 'processing'
+      s === 'processing' ||
+      s === 'completed'
     );
   }
 
   async function onInvite(evt: MeetingEvent) {
     const url = eventMeetingUrl(evt);
     if (!url) {
-      flashToast('error', 'No meeting URL on this event.');
+      flashToast('warn', 'No meeting URL on this event.');
       return;
     }
     const key = evt.id;
@@ -336,7 +380,7 @@
         flashToast('info', 'Already invited — refreshing.');
         await refresh();
       } else {
-        flashToast('error', `Invite failed: ${err}`);
+        flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
       }
     } finally {
       const next = new Set(rowPending);
@@ -356,7 +400,7 @@
       flashToast('info', 'Bot uninvited.');
       await refresh();
     } catch (err) {
-      flashToast('error', `Uninvite failed: ${err}`);
+      flashToast('warn', friendlyError(err, "Couldn't remove the bot."));
     } finally {
       const next = new Set(rowPending);
       next.delete(key);
@@ -387,7 +431,7 @@
       flashToast('info', `Bot invited — meeting will save to ${destLabel}.`);
       await refresh();
     } catch (err) {
-      flashToast('error', `Invite failed: ${err}`);
+      flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
     } finally {
       urlInviting = false;
     }
@@ -403,7 +447,7 @@
     );
   }
 
-  function flashToast(kind: 'info' | 'error', text: string) {
+  function flashToast(kind: 'info' | 'warn', text: string) {
     toast = { kind, text };
     setTimeout(() => {
       if (toast && toast.text === text) toast = null;
@@ -674,7 +718,8 @@
     | 'invited'
     | 'joining'
     | 'in-call'
-    | 'processing';
+    | 'processing'
+    | 'done';
 
   function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
     if (!bot) return 'invite';
@@ -687,9 +732,12 @@
         return 'in-call';
       case 'processing':
         return 'processing';
+      case 'completed':
+        return 'done';
       default:
-        // Defensive fallback — completed/failed shouldn't reach here because
-        // buildBotMap filters them out, but if somehow they do, show Invite.
+        // Defensive fallback — failed bots aren't in the active map, so
+        // hitting here means an unknown status. Render as Invite so the
+        // user can recover by re-scheduling.
         return 'invite';
     }
   }
@@ -707,6 +755,8 @@
         return 'In Call';
       case 'processing':
         return 'Processing';
+      case 'done':
+        return 'Done';
     }
   }
 </script>
@@ -777,7 +827,7 @@
   </div>
 
   {#if toast}
-    <p class="toast" class:toast-error={toast.kind === 'error'}>
+    <p class="toast" class:toast-warn={toast.kind === 'warn'}>
       {toast.text}
     </p>
   {/if}
@@ -910,7 +960,7 @@
                   aria-label="Join meeting"
                   onclick={() => {
                     openExternal(url).catch((err) => {
-                      flashToast('error', `Couldn't open meeting: ${err}`);
+                      flashToast('warn', friendlyError(err, "Couldn't open the meeting."));
                     });
                   }}
                 >
@@ -976,10 +1026,37 @@
                 >
                   {rowButtonLabel(kind, pending)}
                 </button>
-              {:else}
-                <!-- processing: meeting ended, transcript pipeline running.
-                     Not cancellable — the bot isn't holding a Recall slot. -->
+              {:else if kind === 'processing'}
+                <!-- Meeting ended, transcript pipeline running. Not
+                     cancellable — the bot isn't holding a Recall slot
+                     anymore. Muted blue tint reads as "doing background
+                     work, hands off". -->
                 <span class="row-disabled row-disabled-processing">
+                  {rowButtonLabel(kind, pending)}
+                </span>
+              {:else}
+                <!-- done: pipeline finished, transcript + notes stored.
+                     Non-interactive green-tinted pill so the row clearly
+                     reads as a completed task instead of an actionable
+                     CTA. Past events fall out of `events` on the next
+                     30s poll, so this pill clears naturally. -->
+                <span class="row-disabled row-disabled-done">
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M2.5 6.5L5 9L9.5 3.5"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
                   {rowButtonLabel(kind, pending)}
                 </span>
               {/if}
@@ -1119,10 +1196,14 @@
     color: #f4f4f5;
     font-size: 11px;
   }
-  .toast-error {
-    background: rgba(220, 38, 38, 0.10);
-    border-color: rgba(220, 38, 38, 0.40);
-    color: #fca5a5;
+  /* Warn — yellow, used for recoverable user-facing failures (per HQ
+     policy: avoid red error states for things the user can retry). Same
+     amber palette as the cross-account conflict warning in hq-console
+     for a consistent failure-vocabulary across the suite. */
+  .toast-warn {
+    background: rgba(202, 138, 4, 0.10);
+    border-color: rgba(202, 138, 4, 0.40);
+    color: #fcd34d;
   }
 
   .meetings-body {
@@ -1490,5 +1571,22 @@
     border-radius: 6px;
     padding: 6px 14px;
     font-size: 11px;
+  }
+  /* Done — pipeline finished, transcript + notes stored. Muted green
+     reads as "task completed" without screaming for attention. Same
+     visual weight as `processing` so the row layout doesn't jump when
+     a meeting transitions from processing → done. Min-width matches
+     the rest of the row buttons so the trailing column stays aligned. */
+  .row-disabled-done {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #86efac;
+    background: rgba(34, 197, 94, 0.08);
+    border: 1px solid rgba(34, 197, 94, 0.30);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 11px;
+    justify-content: center;
   }
 </style>
