@@ -128,6 +128,44 @@
   let calendarSummaryByKey = $state<Map<CalendarKey, string>>(new Map());
   let selectedCalKeys = $state<Set<CalendarKey> | null>(null);
   let filterOpen = $state(false);
+  /** Bound to the filter-row container so the outside-click effect can
+   *  tell whether a click landed inside the dropdown's box (keep open)
+   *  or outside it (close). */
+  let filterRowEl = $state<HTMLDivElement | null>(null);
+
+  /**
+   * Close the filter on any click outside the filter-row (trigger +
+   * dropdown). Standard dropdown behaviour — without it the user can
+   * click off and the open menu sits there blocking event rows.
+   *
+   * Capture-phase listener so we react before downstream handlers; only
+   * mounted while the menu is open so we don't pay for a document
+   * listener at idle. Escape key also closes for keyboard parity.
+   */
+  $effect(() => {
+    if (!filterOpen) return;
+    const onPointerDown = (ev: MouseEvent) => {
+      const target = ev.target as Node | null;
+      if (filterRowEl && target && filterRowEl.contains(target)) return;
+      filterOpen = false;
+    };
+    // Escape closes the filter only — without stopPropagation the
+    // window-level Escape listener (which closes the whole Meetings
+    // window) would also fire. Capture-phase keeps us ahead of it.
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key !== 'Escape') return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      filterOpen = false;
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('keydown', onKeyDown, true);
+    };
+  });
 
   $effect(() => {
     void refresh();
@@ -721,7 +759,7 @@
     <!-- Multi-account calendar filter. Only render when there's something
          to filter — single-account users get the cleaner pre-multi-account
          UI by default. -->
-    <div class="filter-row">
+    <div class="filter-row" bind:this={filterRowEl}>
       <button
         type="button"
         class="filter-trigger"
