@@ -109,6 +109,13 @@ pub struct MeetingEvent {
     /// → meeting lands in personal.
     #[serde(default, rename = "sourceCompanyUid")]
     pub source_company_uid: Option<String>,
+    /// Per-account ULID identifying which connected Google account this
+    /// event was fetched from. Set by hq-pro BE-4 fan-out so the UI can
+    /// render a per-account badge + drive a per-calendar filter (a person
+    /// with two connected accounts wants to see events from both, tagged
+    /// by source).
+    #[serde(default, rename = "sourceAccountId")]
+    pub source_account_id: Option<String>,
     /// Server-extracted meeting URL (BE-5). Picks the right URL across
     /// hangoutLink, conferenceData entry points, and Zoom/Teams links in
     /// the description. Prefer this over `hangout_link` for the "should I
@@ -173,6 +180,24 @@ pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    // Use the bundled HQ app icon for this window's macOS dock / Cmd-Tab /
+    // window-switcher representation. Without an explicit `.icon(...)` the
+    // detached webview window falls back to the generic file-folder icon,
+    // which reads as "some random app's window" in the switcher. The PNG
+    // is baked into the binary at compile time so we don't depend on any
+    // runtime filesystem path being correct.
+    //
+    // Future polish: composite a small calendar badge in the lower-right
+    // corner so this window's icon is distinguishable from the main HQ
+    // Sync window at a glance. Skipped here because (a) it requires an
+    // image-processing step in the build pipeline and (b) the window-
+    // switcher icon is rendered very small, so the badge would likely be
+    // illegible at that scale anyway.
+    const HQ_ICON_PNG: &[u8] =
+        include_bytes!("../../icons/128x128@2x.png");
+    let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
+        .map_err(|e| format!("load window icon: {e}"))?;
+
     tauri::WebviewWindowBuilder::new(
         &app,
         LABEL,
@@ -183,6 +208,8 @@ pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
     .min_inner_size(380.0, 400.0)
     .resizable(true)
     .decorations(true)
+    .icon(icon)
+    .map_err(|e| format!("attach window icon: {e}"))?
     .visible(true)
     .build()
     .map_err(|e| e.to_string())?;
@@ -230,6 +257,153 @@ pub async fn meetings_list_upcoming() -> Result<Vec<MeetingEvent>, String> {
 struct EventsResponse {
     #[serde(default)]
     events: Vec<MeetingEvent>,
+}
+
+// ── Per-account calendar lookup (multi-account filter UX) ─────────────────────
+
+/// One connected Google account on the signed-in person. Mirrors hq-pro's
+/// `GET /v1/google/accounts` row shape (BE-3). The UI uses `email` as the
+/// display label in the multi-account calendar filter dropdown — accountId
+/// remains the stable identifier across email changes (BE-1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleAccount {
+    #[serde(rename = "accountId")]
+    pub account_id: String,
+    pub email: Option<String>,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default, rename = "connectedAt")]
+    pub connected_at: Option<String>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+/// One calendar from `GET /v1/calendar/calendars?accountId=…` (BE-4).
+/// Only the subset of fields the multi-account filter dropdown needs —
+/// `summary` is what we render to the user, `id` is what we match events
+/// against (via event.sourceCalendarId).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GoogleCalendar {
+    pub id: String,
+    pub summary: String,
+    #[serde(default)]
+    pub primary: bool,
+    #[serde(default, rename = "accessRole")]
+    pub access_role: Option<String>,
+}
+
+/// `GET /v1/google/accounts` — list every connected Google account on the
+/// signed-in person. Returns empty vec when the user has no connections
+/// (e.g. fresh install). The frontend uses this to label events with the
+/// source account email and to drive the calendar-filter dropdown.
+#[tauri::command]
+pub async fn meetings_list_accounts() -> Result<Vec<GoogleAccount>, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let res = build_client()
+        .get(format!("{base}/v1/google/accounts"))
+        .header("authorization", &auth)
+        .send()
+        .await
+        .map_err(|e| format!("accounts fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("accounts read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("accounts HTTP {status}: {text}"));
+    }
+    let parsed: AccountsResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("accounts parse: {e} — body: {text}"))?;
+    Ok(parsed.accounts)
+}
+
+#[derive(Deserialize)]
+struct AccountsResponse {
+    #[serde(default)]
+    accounts: Vec<GoogleAccount>,
+}
+
+/// Combined response from `meetings_list_calendars_for_account` — every
+/// calendar visible to the account, PLUS the user's currently-enabled
+/// selection for that account. The frontend uses `selected_calendar_ids`
+/// to filter the upcoming-meetings calendar-filter dropdown down to
+/// calendars the user has actually opted into in hq-console (otherwise
+/// the dropdown lists calendars that hq-pro doesn't fan out against,
+/// creating a "I checked the box but no events appeared" confusion).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountCalendars {
+    pub calendars: Vec<GoogleCalendar>,
+    /// Calendar IDs in this account's per-account
+    /// `preferences.selectedCalendars[]` — i.e. the ones the user has
+    /// toggled ON in hq-console's Manage panel. The filter dropdown
+    /// should narrow to this subset only.
+    pub selected_calendar_ids: Vec<String>,
+}
+
+/// `GET /v1/calendar/calendars?accountId=…` — list every calendar visible
+/// to one connected account AND surface that account's currently-enabled
+/// selection. The frontend calls this once per account (in parallel) so
+/// the multi-account filter dropdown can render calendar names grouped
+/// by account, scoped to what's actually being fanned-out against by
+/// hq-pro.
+#[tauri::command]
+pub async fn meetings_list_calendars_for_account(
+    account_id: String,
+) -> Result<AccountCalendars, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    // accountId is an `acct_{ulid}` (Crockford base32 + ASCII underscore) —
+    // URL-safe by construction, no encoding needed. We still guard the
+    // shape so a malformed value from the renderer surfaces as a clean
+    // 400 from hq-pro rather than a malformed URL.
+    if !account_id.starts_with("acct_") {
+        return Err(format!("invalid accountId: {account_id}"));
+    }
+    let url = format!("{base}/v1/calendar/calendars?accountId={account_id}");
+    let res = build_client()
+        .get(url)
+        .header("authorization", &auth)
+        .send()
+        .await
+        .map_err(|e| format!("calendars fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("calendars read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("calendars HTTP {status}: {text}"));
+    }
+    let parsed: CalendarsResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("calendars parse: {e} — body: {text}"))?;
+    Ok(AccountCalendars {
+        calendars: parsed.calendars,
+        selected_calendar_ids: parsed
+            .selected_calendars
+            .into_iter()
+            .map(|s| s.id)
+            .collect(),
+    })
+}
+
+#[derive(Deserialize)]
+struct CalendarsResponse {
+    #[serde(default)]
+    calendars: Vec<GoogleCalendar>,
+    /// Per-account selectedCalendars entries from hq-pro's BE-4 response.
+    /// We only need the `id` to filter the dropdown, but defer-parsing the
+    /// full shape keeps us forward-compatible with any new fields hq-pro
+    /// adds (e.g. companyUid which we don't use here).
+    #[serde(default, rename = "selectedCalendars")]
+    selected_calendars: Vec<SelectedCalendarRef>,
+}
+
+#[derive(Deserialize)]
+struct SelectedCalendarRef {
+    id: String,
 }
 
 /// `GET /v1/bot/list` (optionally `?calendarEventIds=a,b,c`) — bots for the
