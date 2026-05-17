@@ -143,6 +143,8 @@ fn main() {
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,
+            commands::meetings::meetings_list_accounts,
+            commands::meetings::meetings_list_calendars_for_account,
             commands::meetings::meetings_invite_bot,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
