@@ -72,19 +72,11 @@ pub struct HqCoreUpdateInfo {
     /// GitHub release `tag_name`, with any leading `v` stripped so it
     /// compares cleanly against the YAML's bare semver string.
     pub latest: String,
-    /// `html_url` from the GitHub release — the user's "Open release
-    /// notes" CTA navigates here in their default browser.
-    pub release_url: String,
-    /// Release body / changelog (markdown, may be long). Truncated by
-    /// the frontend if needed; we pass through verbatim.
-    pub body: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     tag_name: String,
-    html_url: String,
-    body: Option<String>,
 }
 
 /// Resolve the locally-installed hq-core version by reading `hqVersion`
@@ -151,7 +143,7 @@ fn strip_v_prefix(s: &str) -> &str {
     s.strip_prefix('v').unwrap_or(s)
 }
 
-async fn fetch_latest() -> Result<(String, String, Option<String>), String> {
+async fn fetch_latest() -> Result<String, String> {
     // GitHub returns 403 with the message "Request forbidden by
     // administrative rules" when User-Agent is missing. The client_info
     // headers include a UA already; layer the timeout on top so a
@@ -174,15 +166,14 @@ async fn fetch_latest() -> Result<(String, String, Option<String>), String> {
         .json()
         .await
         .map_err(|e| format!("parse GitHub release JSON: {e}"))?;
-    let version = strip_v_prefix(parsed.tag_name.trim()).to_string();
-    Ok((version, parsed.html_url, parsed.body))
+    Ok(strip_v_prefix(parsed.tag_name.trim()).to_string())
 }
 
 /// Perform one check. Returns `Some(info)` when an upgrade is available,
 /// `None` when the user is already on the latest (or `core.yaml` isn't
 /// readable — we don't pester users without a working HQ install).
 pub async fn check_once(app: &AppHandle) -> Result<Option<HqCoreUpdateInfo>, String> {
-    let (latest, release_url, body) = fetch_latest().await?;
+    let latest = fetch_latest().await?;
     let local = get_local_version();
     let update_available = match local.as_deref() {
         Some(l) => cmp_semver(l, &latest) == std::cmp::Ordering::Less,
@@ -198,12 +189,7 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<HqCoreUpdateInfo>, Str
     if !update_available {
         return Ok(None);
     }
-    let info = HqCoreUpdateInfo {
-        local,
-        latest,
-        release_url,
-        body,
-    };
+    let info = HqCoreUpdateInfo { local, latest };
     let _ = app.emit("hq-core-update:available", &info);
     Ok(Some(info))
 }

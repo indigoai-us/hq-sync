@@ -1,7 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { open as openInBrowser } from '@tauri-apps/plugin-shell';
   import SyncStats from './SyncStats.svelte';
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
@@ -105,13 +104,12 @@
     hqCliUpdateError?: string | null;
     /** Non-null when the user's local hq-core (read from core.yaml's
      *  `hqVersion`) is behind the latest GitHub release of
-     *  indigoai-us/hq-core. Info-only — there's no in-app install path;
-     *  the banner CTA opens the release notes in the user's browser. */
+     *  indigoai-us/hq-core. The banner CTA launches Claude Code at the
+     *  HQ folder with `/update-hq` pre-filled in the prompt — same
+     *  `claude://code/new` deep-link mechanism as `fixHqCliUpdateInHq`. */
     hqCoreUpdateAvailable?: {
       local: string | null;
       latest: string;
-      release_url: string;
-      body: string | null;
     } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
@@ -281,17 +279,24 @@
     }
   }
 
-  // Open the hq-core release notes (GitHub html_url) in the user's
-  // default browser. Uses @tauri-apps/plugin-shell's `open()` rather
-  // than a custom Rust command — the existing `shell:allow-open`
-  // capability already permits http(s) URLs. The hq-core banner is
-  // info-only (no in-app install path — updating hq-core means running
-  // the /update-hq Claude-Code skill), so this is the only CTA.
-  async function openHqCoreReleaseNotes(url: string) {
+  // Kick off an hq-core update by opening Claude Code at the user's
+  // HQ folder with the `/update-hq` slash command pre-filled in the
+  // prompt. Claude Desktop is registered as the system handler for
+  // `claude://` on macOS, so the OS routes the URL to a fresh Claude
+  // Code session; the renderer just builds the URL and hands it to
+  // the existing `open_claude_code_link` Rust command (which validates
+  // the scheme and shells out to `open`). Same mechanism as
+  // `fixHqCliUpdateInHq` above — different prompt, different intent
+  // (here it's the success path, not an error-recovery fallback).
+  async function updateHqCoreInClaudeCode() {
+    const params = new URLSearchParams({ q: '/update-hq' });
+    if (config?.hqFolderPath) params.set('folder', config.hqFolderPath);
+    const url = `claude://code/new?${params.toString()}`;
+
     try {
-      await openInBrowser(url);
+      await invoke('open_claude_code_link', { url });
     } catch (e) {
-      console.error('open hq-core release notes failed:', e);
+      console.error('open_claude_code_link failed:', e);
     }
   }
 
@@ -487,15 +492,16 @@
         </div>
       {/if}
 
-      <!-- hq-core release banner — info-only. Updating hq-core (the user's
-           HQ folder scaffold) means running the /update-hq Claude-Code
-           skill, which is a much heavier interactive flow than the CLI
-           nag's one-shot `npm install -g`. So this banner has no in-app
-           install — its CTA opens the GitHub release notes in the user's
-           default browser via @tauri-apps/plugin-shell's `open()`
-           (allowed by the existing `shell:allow-open` capability). The
-           banner clears naturally on the next 6h background check once
-           the user has run /update-hq and core.yaml's hqVersion advances. -->
+      <!-- hq-core release banner. Updating hq-core (the user's HQ folder
+           scaffold) means running the /update-hq Claude-Code skill — a
+           heavier interactive flow than the CLI nag's one-shot
+           `npm install -g`, so we can't run it in-process. The Update
+           button instead opens a Claude Code session at the HQ folder
+           with `/update-hq` pre-filled in the prompt (same
+           `claude://code/new` deep-link mechanism as
+           `fixHqCliUpdateInHq`); the user just hits Enter and the skill
+           runs. The banner clears naturally on the next 6h background
+           check once core.yaml's hqVersion has advanced. -->
 
       {#if hqCoreUpdateAvailable}
         <div class="banner banner-info banner-update">
@@ -505,20 +511,20 @@
             </p>
             {#if hqCoreUpdateAvailable.local}
               <p class="banner-body">
-                You're on v{hqCoreUpdateAvailable.local}. Run <code>/update-hq</code> in your HQ folder to update.
+                You're on v{hqCoreUpdateAvailable.local}. Click Update to run <code>/update-hq</code> in Claude Code.
               </p>
             {:else}
               <p class="banner-body">
-                Run <code>/update-hq</code> in your HQ folder to update.
+                Click Update to run <code>/update-hq</code> in Claude Code.
               </p>
             {/if}
           </div>
           <div class="banner-actions">
             <button
               class="banner-update-button"
-              onclick={() => openHqCoreReleaseNotes(hqCoreUpdateAvailable!.release_url)}
+              onclick={updateHqCoreInClaudeCode}
             >
-              Release notes
+              Update
             </button>
           </div>
         </div>
