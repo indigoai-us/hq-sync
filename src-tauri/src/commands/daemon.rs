@@ -75,13 +75,15 @@ fn resolve_hq_folder_path() -> Result<String, String> {
         None
     };
 
+    // Lenient: legacy stub / partial JSON in ~/.hq/config.json is treated
+    // as "no path override" so we fall through to menubar.json + the 4-tier
+    // resolver. See commands::config::read_hq_config_lenient for the full
+    // rationale; we match its policy here to keep the parse-failure surface
+    // uniform across the 4 resolve_hq_folder_path duplicates.
     let config: Option<crate::commands::config::HqConfig> = if config_path.exists() {
-        let contents = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config.json: {}", e))?;
-        Some(
-            serde_json::from_str(&contents)
-                .map_err(|e| format!("Failed to parse config.json: {}", e))?,
-        )
+        std::fs::read_to_string(&config_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
     } else {
         None
     };
