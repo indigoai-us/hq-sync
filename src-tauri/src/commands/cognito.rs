@@ -242,6 +242,37 @@ pub fn expires_at_iso(tokens: &CognitoTokens) -> String {
     format_unix_ms_as_iso(tokens.expires_at.max(0))
 }
 
+/// Get a non-expired access token, refreshing + persisting if needed.
+///
+/// Centralises the "read tokens → check expiry → refresh + persist"
+/// pattern that `auth.rs::get_auth_state` implements inline so other
+/// callers (meetings commands, any future vault wrapper) don't each
+/// re-derive it and silently skip the refresh — which is the bug that
+/// caused the meetings window to "lose auth" after the 1-hour Cognito
+/// access-token TTL: its old `auth_header()` used the stored token
+/// verbatim, with no expiry check.
+///
+/// Returns `Err` when the user isn't signed in (no tokens on disk) or
+/// when the refresh itself fails — callers should treat both as
+/// "need to re-auth".
+///
+/// Not race-safe across concurrent callers: two concurrent expired
+/// calls may both hit Cognito's refresh endpoint with the same
+/// refresh_token. Cognito tolerates this (REFRESH_TOKEN_AUTH is
+/// idempotent on its side) and the token file is last-write-wins —
+/// one extra Cognito round-trip in the worst case, no auth corruption.
+pub async fn get_valid_access_token() -> Result<String, String> {
+    let tokens = get_tokens()
+        .await?
+        .ok_or_else(|| "Not signed in".to_string())?;
+    if !is_expired(&tokens) {
+        return Ok(tokens.access_token);
+    }
+    let refreshed = refresh_access_token(&tokens.refresh_token).await?;
+    set_tokens(&refreshed).await?;
+    Ok(refreshed.access_token)
+}
+
 /// Subset of Cognito ID-token claims we actually use. The token is signed
 /// by Cognito and already-validated when it was minted; we don't re-verify
 /// the signature here (the API endpoints will reject anything that fails

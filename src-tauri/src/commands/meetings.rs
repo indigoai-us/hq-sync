@@ -220,11 +220,15 @@ pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
 // ── HTTP wrappers ─────────────────────────────────────────────────────────────
 
 async fn auth_header() -> Result<String, String> {
-    let tokens = cognito::get_tokens()
+    // Use the centralised valid-token helper so an expired access token
+    // refreshes + persists transparently. The old version read the raw
+    // stored access_token, which silently broke every meetings call
+    // once the 1h Cognito TTL elapsed (popover sync runs `get_auth_state`
+    // periodically and refreshed there, hiding the bug from the main UI).
+    let token = cognito::get_valid_access_token()
         .await
         .map_err(|e| format!("auth: {e}"))?;
-    let tokens = tokens.ok_or_else(|| "auth: not signed in".to_string())?;
-    Ok(format!("Bearer {}", tokens.access_token))
+    Ok(format!("Bearer {token}"))
 }
 
 async fn vault_base() -> Result<String, String> {
