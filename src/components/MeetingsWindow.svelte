@@ -1070,8 +1070,12 @@
 </div>
 
 <style>
-  :global(html),
-  :global(body) {
+  /* Scoped via `data-window` (set in main.ts) so this opaque body bg
+     can't bleed into the main popover, which needs transparency for
+     vibrancy to show through. Same rule for #app — was unscoped
+     before and would have applied to every window's mount point. */
+  :global(html[data-window='meetings-window']),
+  :global(html[data-window='meetings-window'] body) {
     margin: 0;
     padding: 0;
     height: 100vh;
@@ -1081,7 +1085,7 @@
     font-size: 13px;
     overflow: hidden;
   }
-  :global(#app) {
+  :global(html[data-window='meetings-window'] #app) {
     height: 100vh;
   }
 
