@@ -14,6 +14,14 @@ Sentry.init({
 });
 
 const windowLabel = getCurrentWindow().label;
+// Tag the document so per-window `:global(html, body)` rules can scope
+// themselves with `[data-window="…"]` and stop bleeding across windows.
+// Without this, whichever component's CSS gets bundled last wins the
+// body background — most visibly turning the transparent popover into
+// a solid black rectangle when MeetingsWindow's #18181b body bg
+// overrode App.svelte's `background: transparent`.
+document.documentElement.dataset.window = windowLabel;
+
 let Component: typeof App;
 if (windowLabel === 'new-files-detail') {
   Component = NewFilesDetail as unknown as typeof App;

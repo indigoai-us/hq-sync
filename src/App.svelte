@@ -812,8 +812,11 @@
 </main>
 
 <style>
-  :global(html),
-  :global(body) {
+  /* Scoped to the main popover window via `data-window` (set in main.ts)
+     so MeetingsWindow's opaque #18181b body bg can't bleed across CSS
+     bundle order and turn the transparent popover into a black box. */
+  :global(html[data-window='main']),
+  :global(html[data-window='main'] body) {
     margin: 0;
     padding: 0;
     width: 100vw;
