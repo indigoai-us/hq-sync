@@ -177,8 +177,10 @@ pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
 /// 2. config_path (from config.json hqFolderPath)
 /// 3. Discovery: scan likely locations for a folder containing a valid
 ///    `core.yaml` (the canonical hq-core marker — version + hqVersion fields).
-///    First match wins. This is the safety net for installs that didn't
-///    write the path back to menubar.json (older installer flows).
+///    Both v14+ (`core/core.yaml`) and legacy (`core.yaml` at root) layouts
+///    are accepted; see `is_valid_hq_root`. First match wins. This is the
+///    safety net for installs that didn't write the path back to menubar.json
+///    (older installer flows).
 /// 4. ~/HQ default
 pub fn resolve_hq_folder(
     config_path: Option<&str>,
@@ -227,15 +229,30 @@ fn hq_discovery_candidates() -> Vec<PathBuf> {
     ]
 }
 
-/// True iff `path/core.yaml` exists, parses as YAML, and has the canonical
-/// hq-core schema fields (`version` + `hqVersion`). Validates beyond mere
-/// presence so a random folder named `core.yaml` (config file from another
-/// tool, abandoned scratch) won't false-match.
+/// True iff the candidate folder contains a `core.yaml` (canonical or
+/// legacy location) that parses as YAML and has the canonical hq-core
+/// schema fields (`version` + `hqVersion`). Validates beyond mere presence
+/// so a random folder named `core.yaml` (config file from another tool,
+/// abandoned scratch) won't false-match.
+///
+/// File location is layout-aware:
+///   * **canonical (v14+):** `<path>/core/core.yaml`
+///   * **legacy (pre-v14):** `<path>/core.yaml`
+///
+/// The v14 hq-core release moved `core.yaml` one level deeper (see
+/// `apps/hq-core/MIGRATION.md` — "Root core.yaml; canonical location is
+/// core/core.yaml"). Before that fix, Priority 3 discovery silently
+/// rejected every v14+ HQ folder and fell through to the `~/HQ` default.
 pub fn is_valid_hq_root(path: &Path) -> bool {
-    let core_yaml = path.join("core.yaml");
-    if !core_yaml.is_file() {
+    let canonical = path.join("core").join("core.yaml");
+    let legacy = path.join("core.yaml");
+    let core_yaml = if canonical.is_file() {
+        canonical
+    } else if legacy.is_file() {
+        legacy
+    } else {
         return false;
-    }
+    };
     let bytes = match std::fs::read(&core_yaml) {
         Ok(b) => b,
         Err(_) => return false,
@@ -245,7 +262,7 @@ pub fn is_valid_hq_root(path: &Path) -> bool {
         Err(_) => return false,
     };
     // Both fields must be present per the hq-core schema (see
-    // indigoai-us/hq-core core.yaml). `version` is the schema version,
+    // indigoai-us/hq-core core/core.yaml). `version` is the schema version,
     // `hqVersion` is the template version. Random YAML files won't have both.
     parsed.get("version").is_some() && parsed.get("hqVersion").is_some()
 }

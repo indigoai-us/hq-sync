@@ -88,7 +88,17 @@ struct GithubRelease {
 }
 
 /// Resolve the locally-installed hq-core version by reading `hqVersion`
-/// from `core.yaml` at the root of the user's HQ folder.
+/// from `core.yaml` inside the user's HQ folder.
+///
+/// File location is layout-aware:
+///   * **canonical (v14+):** `<HQ folder>/core/core.yaml`
+///   * **legacy (pre-v14):** `<HQ folder>/core.yaml`
+///
+/// The v14 hq-core release moved `core.yaml` one level deeper (see
+/// `apps/hq-core/MIGRATION.md` in this monorepo — "Root core.yaml;
+/// canonical location is core/core.yaml"). We check the canonical
+/// location first and fall back to the legacy root for any HQ folder
+/// that hasn't migrated yet.
 ///
 /// Resolution order for the HQ folder mirrors what `conflicts.rs` and
 /// `daemon.rs` do: menubar.json `hqPath` → config.json `hqFolderPath` →
@@ -96,7 +106,7 @@ struct GithubRelease {
 ///
 /// Returns `None` when:
 ///   * the HQ folder can't be located,
-///   * `core.yaml` doesn't exist at that path,
+///   * neither canonical nor legacy `core.yaml` exists,
 ///   * `core.yaml` is unparseable as YAML,
 ///   * `core.yaml` has no `hqVersion` field.
 ///
@@ -117,7 +127,13 @@ pub fn get_local_version() -> Option<String> {
         menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
     );
 
-    let core_yaml = hq_folder.join("core.yaml");
+    // Canonical first (v14+), legacy fallback (pre-v14). Two stat
+    // syscalls in the miss path is fine — this runs every 6h, not on
+    // a hot loop.
+    let canonical = hq_folder.join("core").join("core.yaml");
+    let legacy = hq_folder.join("core.yaml");
+    let core_yaml = if canonical.is_file() { canonical } else { legacy };
+
     let bytes = std::fs::read(&core_yaml).ok()?;
     let parsed: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
     let s = parsed.get("hqVersion")?.as_str()?.trim();
