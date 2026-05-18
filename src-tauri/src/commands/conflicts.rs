@@ -3,7 +3,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use crate::commands::config::{HqConfig, MenubarPrefs};
+use crate::commands::config::MenubarPrefs;
 use crate::util::paths;
 
 /// CLI command timeout (10 seconds).
@@ -18,7 +18,6 @@ const VALID_STRATEGIES: &[&str] = &["keep-local", "keep-remote"];
 
 /// Resolve the HQ folder path by reading config.json and menubar.json directly.
 fn resolve_hq_folder_path() -> Result<String, String> {
-    let config_path = paths::config_json_path()?;
     let menubar_path = paths::menubar_json_path()?;
 
     let menubar_prefs: Option<MenubarPrefs> = if menubar_path.exists() {
@@ -29,16 +28,10 @@ fn resolve_hq_folder_path() -> Result<String, String> {
         None
     };
 
-    // Lenient: legacy stub / partial JSON in ~/.hq/config.json is treated
-    // as "no path override" so we fall through to menubar.json + the 4-tier
-    // resolver. Matches commands::config::read_hq_config_lenient policy.
-    let config: Option<HqConfig> = if config_path.exists() {
-        std::fs::read_to_string(&config_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-    } else {
-        None
-    };
+    // Shared lenient reader: parse failures fall through to menubar/discovery,
+    // but real IO errors still propagate as Err. Uniform across all four
+    // `resolve_hq_folder_path` duplicates.
+    let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
         config

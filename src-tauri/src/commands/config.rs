@@ -180,26 +180,40 @@ pub fn migrate_legacy_config_stub() {
     }
 
     let lifted_anything = lifted_default_org.is_some() || lifted_pref.is_some();
-    if lifted_anything {
-        if let Err(e) =
-            write_deploy_prefs(lifted_default_org.as_deref(), lifted_pref.as_deref())
-        {
-            log("config-migration", &format!("write deploy-prefs failed: {e}"));
-            // Don't strip from config.json if we couldn't persist forward —
-            // leave the file as-is so /deploy's own backwards-compat read
-            // still finds the slug.
-            return;
-        }
-        log(
-            "config-migration",
-            &format!(
-                "lifted deploy keys from ~/.hq/config.json (defaultOrg={}, preference={})",
-                lifted_default_org.is_some(),
-                lifted_pref.is_some()
-            ),
-        );
+
+    // GATE: do nothing destructive unless we positively identified the file
+    // as a legacy /deploy stub (i.e. we actually lifted `defaultOrg` or
+    // `deploy.preference`). Without this guard, a partially-corrupted but
+    // unrelated config (e.g. a company HqConfig missing one new field after
+    // a schema bump) would be silently overwritten with a personal-vault
+    // config, which is data loss. If nothing was lifted, leave the file
+    // alone — the lenient reader/get_config will surface SetupNeeded and
+    // the user can repair via hq-installer.
+    if !lifted_anything {
+        return;
     }
 
+    if let Err(e) =
+        write_deploy_prefs(lifted_default_org.as_deref(), lifted_pref.as_deref())
+    {
+        log("config-migration", &format!("write deploy-prefs failed: {e}"));
+        // Don't strip from config.json if we couldn't persist forward —
+        // leave the file as-is so /deploy's own backwards-compat read
+        // still finds the slug.
+        return;
+    }
+    log(
+        "config-migration",
+        &format!(
+            "lifted deploy keys from ~/.hq/config.json (defaultOrg={}, preference={})",
+            lifted_default_org.is_some(),
+            lifted_pref.is_some()
+        ),
+    );
+
+    // Reconstruction only fires for files we've already identified as
+    // legacy stubs (see GATE above). For personal vaults, this puts the
+    // user back on a working sync without re-onboarding.
     if let Some(reconstructed) = reconstruct_personal_hq_config() {
         match write_hq_config(&reconstructed) {
             Ok(()) => {
@@ -216,20 +230,20 @@ pub fn migrate_legacy_config_stub() {
         }
     }
 
+    // No reconstruction available. If the stripped object is empty, delete
+    // the file so the next read surfaces SetupNeeded cleanly. Otherwise
+    // atomically write the stripped version back (still safe to modify
+    // since we positively identified the file as a legacy stub above).
     if obj.is_empty() {
-        if lifted_anything {
-            let _ = std::fs::remove_file(&config_path);
-            log(
-                "config-migration",
-                "removed empty stub at ~/.hq/config.json",
-            );
-        }
+        let _ = std::fs::remove_file(&config_path);
+        log(
+            "config-migration",
+            "removed empty stub at ~/.hq/config.json",
+        );
         return;
     }
-    if lifted_anything {
-        if let Err(e) = atomic_write_json(&config_path, &Value::Object(obj.clone())) {
-            log("config-migration", &format!("strip-rewrite failed: {e}"));
-        }
+    if let Err(e) = atomic_write_json(&config_path, &Value::Object(obj.clone())) {
+        log("config-migration", &format!("strip-rewrite failed: {e}"));
     }
 }
 
@@ -871,6 +885,37 @@ mod lenient_reader_and_migration_tests {
         .unwrap();
         assert_eq!(prefs["deploy"]["preference"], "vercel");
         assert!(!tmp.path().join(".hq/config.json").exists());
+    }
+
+    // (j) migration: foreign content without deploy keys is NOT overwritten,
+    // even when person-entity.json is present. Prevents data loss when a
+    // partially-corrupted but unrelated config file ends up at ~/.hq/config.json.
+    // This is the Codex P2 #2 case.
+    #[test]
+    fn migration_does_not_overwrite_unrelated_foreign_content() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = fresh_home();
+        std::env::set_var("HOME", tmp.path());
+        // Looks like a partial company-config — valid JSON, parses as object,
+        // but doesn't deserialize as HqConfig (missing several required fields)
+        // and has none of the legacy /deploy keys.
+        let foreign = r#"{"companyUid":"co-1","companySlug":"acme"}"#;
+        write(tmp.path().join(".hq/config.json"), foreign);
+        // person-entity.json present — under the old code this would trigger
+        // a personal-vault reconstruction that overwrites the foreign content.
+        write(
+            tmp.path().join(".hq/person-entity.json"),
+            r#"{"personUid":"prs_x","bucketName":"hq-vault-prs-x","createdAt":"2026-01-01T00:00:00Z"}"#,
+        );
+
+        migrate_legacy_config_stub();
+
+        let after = fs::read_to_string(tmp.path().join(".hq/config.json")).unwrap();
+        assert_eq!(after, foreign, "foreign config.json must NOT be overwritten when no deploy keys are present");
+        assert!(
+            !tmp.path().join(".hq/deploy-prefs.json").exists(),
+            "deploy-prefs.json must NOT be created from a non-stub file"
+        );
     }
 
     // (i) migration: idempotent — running twice is a no-op after the first pass.
