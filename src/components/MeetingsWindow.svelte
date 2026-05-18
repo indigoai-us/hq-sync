@@ -615,24 +615,108 @@
     }
   });
 
+  /** Default ON — most users open the window to invite a bot, and a
+   *  link-less event is non-actionable. Toggle off via the link chip in
+   *  the controls row to also surface meetings without a join URL. */
+  let showOnlyWithUrl = $state(true);
+
+  /** Fixed colour palette assigned to calendars in stable sorted order.
+   *  Chosen for legibility on the `#18181b` background — saturated enough
+   *  to scan-distinguish, muted enough not to vibrate. Repeats once the
+   *  user has >12 enabled calendars, which is rare and acceptable since
+   *  the dropdown still labels each one. */
+  const CAL_PALETTE = [
+    '#60a5fa', // blue
+    '#f87171', // red
+    '#34d399', // green
+    '#fbbf24', // amber
+    '#a78bfa', // purple
+    '#f472b6', // pink
+    '#2dd4bf', // teal
+    '#fb923c', // orange
+    '#93c5fd', // sky
+    '#c084fc', // violet
+    '#fcd34d', // yellow
+    '#4ade80', // lime
+  ] as const;
+
+  /** Stable colour-per-calendar map. Sorted by key so a calendar keeps
+   *  the same colour across refreshes (and across days within a
+   *  session). When the enabled-calendar set changes, the assignment
+   *  re-derives — which can shuffle colours if a calendar is
+   *  added/removed in the middle of the list. Acceptable trade-off:
+   *  the dropdown also re-renders with the new swatches in lockstep. */
+  const calendarColors = $derived<Map<CalendarKey, string>>(
+    buildCalendarColors(allCalKeys),
+  );
+
+  function buildCalendarColors(
+    keys: Array<{ key: CalendarKey }>,
+  ): Map<CalendarKey, string> {
+    const sorted = [...keys].sort((a, b) => (a.key < b.key ? -1 : 1));
+    const out = new Map<CalendarKey, string>();
+    sorted.forEach((c, i) => {
+      out.set(c.key, CAL_PALETTE[i % CAL_PALETTE.length]);
+    });
+    return out;
+  }
+
+  /** Colour for an event's source calendar. Returns a neutral gray when
+   *  the event predates BE-4 (no sourceAccountId/sourceCalendarId) or
+   *  references a calendar the user has since disabled. */
+  function eventCalColor(e: MeetingEvent): string {
+    if (!e.sourceAccountId || !e.sourceCalendarId) return '#3f3f46';
+    return calendarColors.get(calKey(e.sourceAccountId, e.sourceCalendarId)) ?? '#3f3f46';
+  }
+
+  /** Composite tooltip for the title — surfaces what the now-removed
+   *  badges used to show (calendar/account/company/platform), so users
+   *  who need that context can still hover for it without us spending
+   *  vertical real-estate on chips. */
+  function eventRowTooltip(e: MeetingEvent): string {
+    const lines: string[] = [];
+    if (e.summary) lines.push(e.summary);
+    const src = sourceLabel(e);
+    if (src && src !== 'Calendar') lines.push(`Source: ${src}`);
+    const co = companyLabel(e);
+    if (co) lines.push(`Company: ${co}`);
+    const plat = platformLabel(e);
+    if (plat) lines.push(`Platform: ${plat}`);
+    return lines.join('\n');
+  }
+
   /**
-   * Events filtered by the user's current selection. `null` selectedCalKeys
-   * means "show all" — the default. Switching to a Set (even empty) is the
-   * filter active state.
+   * Events filtered by the user's current selection AND the link-only
+   * toggle. `null` selectedCalKeys means "show all calendars" — the
+   * default. Switching to a Set (even empty) is the filter active state.
    */
   const filteredEvents = $derived<MeetingEvent[]>(
-    filterEvents(events, selectedCalKeys),
+    filterEvents(events, selectedCalKeys, showOnlyWithUrl),
+  );
+
+  /** Count of events the link-only filter is currently hiding. Drives
+   *  the "X hidden — show all" recovery affordance so the user doesn't
+   *  hit an empty list and assume the calendar is broken. */
+  const hiddenByUrlFilter = $derived(
+    showOnlyWithUrl ? events.filter((e) => eventMeetingUrl(e) === null).length : 0,
   );
 
   function filterEvents(
     list: MeetingEvent[],
     selection: Set<CalendarKey> | null,
+    onlyWithUrl: boolean,
   ): MeetingEvent[] {
-    if (selection === null) return list;
-    return list.filter((e) => {
-      if (!e.sourceAccountId || !e.sourceCalendarId) return false;
-      return selection.has(calKey(e.sourceAccountId, e.sourceCalendarId));
-    });
+    let out = list;
+    if (selection !== null) {
+      out = out.filter((e) => {
+        if (!e.sourceAccountId || !e.sourceCalendarId) return false;
+        return selection.has(calKey(e.sourceAccountId, e.sourceCalendarId));
+      });
+    }
+    if (onlyWithUrl) {
+      out = out.filter((e) => eventMeetingUrl(e) !== null);
+    }
+    return out;
   }
 
   function toggleCalKey(key: CalendarKey) {
@@ -835,6 +919,31 @@
           </svg>
         </button>
       {/if}
+      <!-- Link-only filter chip. Default ON so the list focuses on
+           actionable meetings; click to also surface link-less events
+           (one-on-one calendar holds, all-day blocks, focus time). -->
+      <button
+        type="button"
+        class="filter-trigger filter-link"
+        class:filter-link-active={showOnlyWithUrl}
+        aria-pressed={showOnlyWithUrl}
+        title={showOnlyWithUrl
+          ? 'Showing meetings with join links — click to show all'
+          : 'Showing all meetings — click to filter to those with join links'}
+        onclick={() => (showOnlyWithUrl = !showOnlyWithUrl)}
+      >
+        <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            d="M6.5 9.5l-2 2a2.5 2.5 0 1 1-3.5-3.5l3-3a2.5 2.5 0 0 1 3.5 0M9.5 6.5l2-2a2.5 2.5 0 1 1 3.5 3.5l-3 3a2.5 2.5 0 0 1-3.5 0"
+            stroke="currentColor"
+            stroke-width="1.4"
+            fill="none"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <span>{showOnlyWithUrl ? 'With link' : 'All'}</span>
+      </button>
     </div>
     <button
       type="button"
@@ -879,6 +988,14 @@
                       checked={isCalKeySelected(key)}
                       onchange={() => toggleCalKey(key)}
                     />
+                    <!-- Colour swatch matches the row's left bar so users
+                         can map "this blue line in the list" back to
+                         "this calendar" without reading the label. -->
+                    <span
+                      class="filter-swatch"
+                      style="background:{calendarColors.get(key) ?? '#3f3f46'}"
+                      aria-hidden="true"
+                    ></span>
                     <span class="filter-option-label">
                       {cal.summary}
                       {#if cal.primary}<span class="filter-primary">primary</span>{/if}
@@ -903,14 +1020,36 @@
       </p>
     {:else if filteredEvents.length === 0}
       <p class="meetings-placeholder">
-        No meetings match the current calendar filter.
-        <button
-          type="button"
-          class="meetings-inline-link"
-          onclick={selectAllCalKeys}
-        >
-          Show all calendars
-        </button>
+        {#if showOnlyWithUrl && hiddenByUrlFilter === events.length}
+          No upcoming meetings have a join link.
+          <button
+            type="button"
+            class="meetings-inline-link"
+            onclick={() => (showOnlyWithUrl = false)}
+          >
+            Show all
+          </button>
+        {:else}
+          No meetings match the current filters.
+          {#if selectedCalKeys !== null}
+            <button
+              type="button"
+              class="meetings-inline-link"
+              onclick={selectAllCalKeys}
+            >
+              Show all calendars
+            </button>
+          {/if}
+          {#if showOnlyWithUrl && hiddenByUrlFilter > 0}
+            <button
+              type="button"
+              class="meetings-inline-link"
+              onclick={() => (showOnlyWithUrl = false)}
+            >
+              Show {hiddenByUrlFilter} without link
+            </button>
+          {/if}
+        {/if}
       </p>
     {:else}
       {#each groupedEvents as group (group.label)}
@@ -922,145 +1061,123 @@
             {@const kind = rowButtonKind(bot)}
             {@const url = eventMeetingUrl(evt)}
             <li class="event-row">
+              <!-- Calendar colour bar — encodes which (account, calendar)
+                   the event came from. Replaces the multi-row badge
+                   block; the same colour shows next to the matching
+                   calendar in the filter dropdown so the mapping is
+                   self-explanatory. -->
+              <span class="event-cal-bar" style="background:{eventCalColor(evt)}" aria-hidden="true"></span>
               <div class="event-meta">
                 <span class="event-time">{timeLabel(evt)}</span>
-                <span class="event-title" title={evt.summary ?? ''}>
+                <span class="event-title" title={eventRowTooltip(evt)}>
                   {evt.summary ?? '(no title)'}
                 </span>
-                <span class="event-badges">
-                  <span class="badge badge-company">{companyLabel(evt)}</span>
-                  {#if accounts.length > 1}
-                    <!-- Per-account source badge — only render when the
-                         person has more than one connected account, so a
-                         single-account user doesn't see redundant noise. -->
-                    <span class="badge badge-source" title={sourceLabel(evt)}>
-                      {sourceLabel(evt)}
-                    </span>
-                  {/if}
-                  {#if platformLabel(evt)}
-                    <span class="badge badge-platform">{platformLabel(evt)}</span>
-                  {/if}
-                  {#if kind === 'in-call'}
-                    <span class="badge badge-live"
-                      ><span class="live-dot"></span>Live</span
-                    >
-                  {/if}
-                </span>
               </div>
-              {#if url}
-                <!-- Join link — opens the meeting URL in the OS default
-                     browser (which then hands off to Zoom/Meet/Teams app
-                     if installed). Renders whenever a URL exists, including
-                     while the bot is in-call, so users can hop in
-                     themselves at any time. Discreet styling so it doesn't
-                     compete with the primary status button. -->
-                <button
-                  type="button"
-                  class="row-btn-join"
-                  title="Open meeting in browser"
-                  aria-label="Join meeting"
-                  onclick={() => {
-                    openExternal(url).catch((err) => {
-                      flashToast('warn', friendlyError(err, "Couldn't open the meeting."));
-                    });
-                  }}
-                >
-                  Join
-                  <svg
-                    width="10"
-                    height="10"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    aria-hidden="true"
+              <!-- Action cluster: Join (open URL) + per-state bot button.
+                   Both icon-only — the rich state lives in colour + tooltip
+                   so the row stays dense. Tooltips carry the meaning so an
+                   icon-only design doesn't sacrifice accessibility. -->
+              <div class="row-actions">
+                {#if url}
+                  <button
+                    type="button"
+                    class="row-icon-btn row-icon-join"
+                    title="Open meeting in browser"
+                    aria-label="Open meeting in browser"
+                    onclick={() => {
+                      openExternal(url).catch((err) => {
+                        flashToast('warn', friendlyError(err, "Couldn't open the meeting."));
+                      });
+                    }}
                   >
-                    <path
-                      d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6"
-                      stroke="currentColor"
-                      stroke-width="1.4"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                </button>
-              {/if}
-              {#if !url}
-                <span class="row-disabled" title="No meeting URL on this event"
-                  >—</span
-                >
-              {:else if kind === 'invite'}
-                <button
-                  type="button"
-                  class="row-btn row-btn-invite"
-                  disabled={pending}
-                  onclick={() => onInvite(evt)}
-                >
-                  {rowButtonLabel(kind, pending)}
-                </button>
-              {:else if kind === 'invited'}
-                <button
-                  type="button"
-                  class="row-btn row-btn-invited"
-                  disabled={pending}
-                  title="Click to uninvite the bot"
-                  onclick={() => onUninvite(evt)}
-                >
-                  {rowButtonLabel(kind, pending)}
-                </button>
-              {:else if kind === 'in-call'}
-                <button
-                  type="button"
-                  class="row-btn row-btn-incall"
-                  disabled={pending}
-                  title="Bot is in the meeting — click to remove it"
-                  onclick={() => onUninvite(evt)}
-                >
-                  {rowButtonLabel(kind, pending)}
-                </button>
-              {:else if kind === 'joining'}
-                <button
-                  type="button"
-                  class="row-btn row-btn-joining"
-                  disabled={pending}
-                  title="Bot is joining — click to cancel"
-                  onclick={() => onUninvite(evt)}
-                >
-                  {rowButtonLabel(kind, pending)}
-                </button>
-              {:else if kind === 'processing'}
-                <!-- Meeting ended, transcript pipeline running. Not
-                     cancellable — the bot isn't holding a Recall slot
-                     anymore. Muted blue tint reads as "doing background
-                     work, hands off". -->
-                <span class="row-disabled row-disabled-processing">
-                  {rowButtonLabel(kind, pending)}
-                </span>
-              {:else}
-                <!-- done: pipeline finished, transcript + notes stored.
-                     Non-interactive green-tinted pill so the row clearly
-                     reads as a completed task instead of an actionable
-                     CTA. Past events fall out of `events` on the next
-                     30s poll, so this pill clears naturally. -->
-                <span class="row-disabled row-disabled-done">
-                  <svg
-                    width="10"
-                    height="10"
-                    viewBox="0 0 12 12"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    aria-hidden="true"
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <path d="M4 2h6v6M10 2L4.5 7.5M2 4v6h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </button>
+                {/if}
+                {#if !url}
+                  <span class="row-icon-btn row-icon-empty" title="No meeting URL on this event">—</span>
+                {:else if kind === 'invite'}
+                  <button
+                    type="button"
+                    class="row-icon-btn row-icon-invite"
+                    disabled={pending}
+                    title={pending ? 'Inviting…' : 'Invite bot to this meeting'}
+                    aria-label="Invite bot"
+                    onclick={() => onInvite(evt)}
                   >
-                    <path
-                      d="M2.5 6.5L5 9L9.5 3.5"
-                      stroke="currentColor"
-                      stroke-width="1.6"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                  {rowButtonLabel(kind, pending)}
-                </span>
-              {/if}
+                    {#if pending}
+                      <span class="row-icon-spinner" aria-hidden="true"></span>
+                    {:else}
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+                      </svg>
+                    {/if}
+                  </button>
+                {:else if kind === 'invited'}
+                  <button
+                    type="button"
+                    class="row-icon-btn row-icon-invited"
+                    disabled={pending}
+                    title={pending ? 'Cancelling…' : 'Bot scheduled — click to uninvite'}
+                    aria-label="Uninvite bot"
+                    onclick={() => onUninvite(evt)}
+                  >
+                    {#if pending}
+                      <span class="row-icon-spinner" aria-hidden="true"></span>
+                    {:else}
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    {/if}
+                  </button>
+                {:else if kind === 'in-call'}
+                  <button
+                    type="button"
+                    class="row-icon-btn row-icon-incall"
+                    disabled={pending}
+                    title={pending ? 'Removing bot…' : 'Bot is in the meeting — click to remove'}
+                    aria-label="Remove bot from meeting"
+                    onclick={() => onUninvite(evt)}
+                  >
+                    {#if pending}
+                      <span class="row-icon-spinner" aria-hidden="true"></span>
+                    {:else}
+                      <span class="live-dot" aria-hidden="true"></span>
+                    {/if}
+                  </button>
+                {:else if kind === 'joining'}
+                  <button
+                    type="button"
+                    class="row-icon-btn row-icon-joining"
+                    disabled={pending}
+                    title={pending ? 'Cancelling…' : 'Bot is joining — click to cancel'}
+                    aria-label="Cancel bot join"
+                    onclick={() => onUninvite(evt)}
+                  >
+                    <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
+                  </button>
+                {:else if kind === 'processing'}
+                  <!-- Meeting ended, transcript pipeline running. Not
+                       cancellable — bot isn't holding a Recall slot
+                       anymore. Muted blue tint, ellipsis glyph. -->
+                  <span class="row-icon-btn row-icon-processing" title="Processing transcript">
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+                      <circle cx="2.5" cy="6" r="1" />
+                      <circle cx="6" cy="6" r="1" />
+                      <circle cx="9.5" cy="6" r="1" />
+                    </svg>
+                  </span>
+                {:else}
+                  <!-- done: pipeline finished, transcript + notes stored.
+                       Past events fall out on the next 30s poll. -->
+                  <span class="row-icon-btn row-icon-done" title="Done — transcript saved">
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                      <path d="M2.5 6.5L5 9L9.5 3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </span>
+                {/if}
+              </div>
             </li>
           {/each}
         </ul>
@@ -1211,11 +1328,13 @@
     display: flex;
     flex-direction: column;
   }
+  /* Compacted row — was 10px vertical, now 6px. Gap from meta to
+     action cluster tightened to match the smaller icon buttons. */
   .event-row {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 4px;
+    gap: 6px;
+    padding: 6px 4px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
   }
   .event-row:last-child {
@@ -1226,49 +1345,34 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 1px;
   }
   .event-time {
     font-size: 10px;
     color: #a1a1aa;
+    line-height: 1.2;
   }
   .event-title {
-    font-size: 13px;
+    font-size: 12px;
     color: #f4f4f5;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    line-height: 1.3;
   }
-  .event-badges {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    margin-top: 2px;
-  }
-  .badge {
-    font-size: 9px;
-    padding: 2px 6px;
-    border-radius: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    color: #a1a1aa;
-  }
-  .badge-company {
-    background: rgba(255, 255, 255, 0.04);
-  }
-  .badge-platform {
-    background: transparent;
-  }
-  /* Per-account source badge — renders only when accounts.length > 1. The
-     muted blue-ish tint distinguishes it from the company badge (which is
-     about where data ends up) vs source (where data came from). */
-  .badge-source {
-    background: rgba(96, 165, 250, 0.10);
-    border-color: rgba(96, 165, 250, 0.30);
-    color: #bfdbfe;
-    max-width: 200px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  /* Per-calendar colour bar at the row's left edge. Replaces the
+     calendar/account/company/platform text chips that used to occupy
+     a second row inside .event-meta. Same colour is drawn next to the
+     calendar in the filter dropdown (.filter-swatch) so the encoding
+     is discoverable. */
+  .event-cal-bar {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: 3px;
+    border-radius: 2px;
+    /* Small inset so the bar reads as a coloured marker rather than
+       filling the row's full vertical padding region. */
+    margin: 2px 0;
   }
 
   /* Inline-link inside the meetings-placeholder copy — used by the
@@ -1438,18 +1542,20 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
-  /* "Live" badge: red dot + label, only shown while bot.status === 'recording'.
-     The pulsing animation is what carries the at-a-glance "something is
-     happening right now" cue — without it, a static red dot reads as a
-     static indicator rather than a live one. */
-  .badge-live {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: #fca5a5;
-    border-color: rgba(220, 38, 38, 0.50);
-    background: rgba(220, 38, 38, 0.12);
+  /* Colour swatch in the filter dropdown — matches the per-row left bar
+     so users can map "the blue line over there" to "this calendar"
+     without reading the label. 10x10 keeps it visible next to the
+     checkbox without crowding the calendar name. */
+  .filter-swatch {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 2px;
   }
+  /* live-dot: still used inside the in-call row icon button to pulse a
+     red marker while the bot is recording. The "Live" text badge that
+     also referenced this was retired with the rest of the chips. */
   .live-dot {
     display: inline-block;
     width: 6px;
@@ -1471,128 +1577,145 @@
     }
   }
 
-  /* Join link — opens the meeting URL in the OS default browser. Smaller
-     and lower-contrast than the primary status button so the eye lands
-     on Invite/Invited first. The external-link glyph signals "this
-     leaves the app". */
-  .row-btn-join {
+  /* ── Compact icon-button row actions ─────────────────────────────────
+     Replaced the prior text-pill buttons (~78px wide each) with 24x24
+     icon buttons. The status colour vocabulary is preserved (muted /
+     red live / amber joining / blue processing / green done) but each
+     state collapses to a single glyph. Tooltips carry the meaning so
+     accessibility doesn't degrade. */
+  .row-actions {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: transparent;
-    color: #a1a1aa;
+  }
+  .row-icon-btn {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 5px;
-    padding: 5px 10px;
-    font-size: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    background: rgba(255, 255, 255, 0.03);
+    color: #d4d4d8;
     cursor: pointer;
+    padding: 0;
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
-  .row-btn-join:hover {
-    background: rgba(255, 255, 255, 0.06);
+  .row-icon-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.10);
     color: #f4f4f5;
-    border-color: rgba(255, 255, 255, 0.18);
+    border-color: rgba(255, 255, 255, 0.20);
   }
-  .row-btn-join:focus-visible {
+  .row-icon-btn:focus-visible {
     outline: 2px solid rgba(180, 180, 255, 0.7);
     outline-offset: 1px;
   }
-
-  /* Row button — base style. Per-state modifiers below override the look
-     while preserving the layout (flex item, no shrink). */
-  .row-btn {
-    flex: 0 0 auto;
-    border: 1px solid rgba(255, 255, 255, 0.20);
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 11px;
-    cursor: pointer;
-    background: rgba(255, 255, 255, 0.06);
-    color: #f4f4f5;
-    min-width: 78px;
-    text-align: center;
-  }
-  .row-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.14);
-  }
-  .row-btn:disabled {
+  .row-icon-btn:disabled {
     opacity: 0.6;
     cursor: wait;
   }
-  /* CTA — solid-ish, brighter border to read as the actionable state. */
-  .row-btn-invite {
+  /* Empty placeholder — renders when there's no URL. Inert; same square
+     so the trailing column stays aligned with rows that do have a URL. */
+  .row-icon-empty {
+    color: #52525b;
+    cursor: default;
+    background: transparent;
+    border-color: transparent;
+    font-size: 12px;
+  }
+  /* Open-in-browser — discreet so the eye lands on the primary state
+     button first. Identical box size, just lower base contrast. */
+  .row-icon-join {
+    color: #a1a1aa;
+    background: transparent;
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+  /* Invite CTA — brighter border + fill so it reads as actionable. */
+  .row-icon-invite {
+    color: #f4f4f5;
     background: rgba(255, 255, 255, 0.12);
     border-color: rgba(255, 255, 255, 0.28);
   }
-  .row-btn-invite:hover:not(:disabled) {
+  .row-icon-invite:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.20);
   }
-  /* Confirmed state — muted; hover hints that clicking will uninvite. */
-  .row-btn-invited {
+  /* Invited — muted check; hover hints at the uninvite affordance. */
+  .row-icon-invited {
     color: #a1a1aa;
-    background: rgba(255, 255, 255, 0.03);
-    border-color: rgba(255, 255, 255, 0.10);
   }
-  .row-btn-invited:hover:not(:disabled) {
-    color: #fca5a5;
-    background: rgba(220, 38, 38, 0.10);
-    border-color: rgba(220, 38, 38, 0.40);
-  }
-  /* In-call — distinct red tint so the row reads "live" even without the
-     badge. Hovering reveals the uninvite affordance. */
-  .row-btn-incall {
+  .row-icon-invited:hover:not(:disabled) {
     color: #fca5a5;
     background: rgba(220, 38, 38, 0.12);
     border-color: rgba(220, 38, 38, 0.40);
   }
-  .row-btn-incall:hover:not(:disabled) {
+  /* In-call — red tint to broadcast "live" at a glance. The live-dot
+     animation does the pulsing. */
+  .row-icon-incall {
+    color: #fca5a5;
+    background: rgba(220, 38, 38, 0.12);
+    border-color: rgba(220, 38, 38, 0.40);
+  }
+  .row-icon-incall:hover:not(:disabled) {
     background: rgba(220, 38, 38, 0.22);
   }
-  /* Joining — transient. Subtle amber to differentiate from steady states. */
-  .row-btn-joining {
+  /* Joining — amber spinner; transient state. */
+  .row-icon-joining {
     color: #fcd34d;
     background: rgba(202, 138, 4, 0.10);
     border-color: rgba(202, 138, 4, 0.40);
   }
-  .row-btn-joining:hover:not(:disabled) {
-    background: rgba(202, 138, 4, 0.18);
-  }
-
-  .row-disabled {
-    flex: 0 0 auto;
-    color: #71717a;
-    font-size: 12px;
-    padding: 0 8px;
-    min-width: 78px;
-    text-align: center;
-  }
-  /* Processing — meeting ended, transcript pipeline running. Not
-     clickable because the bot isn't holding a Recall slot anymore;
-     muted blue tint reads as "doing background work, hands off". */
-  .row-disabled-processing {
+  /* Processing — blue muted; non-interactive (no hover lift). */
+  .row-icon-processing {
     color: #93c5fd;
     background: rgba(59, 130, 246, 0.08);
-    border: 1px solid rgba(59, 130, 246, 0.30);
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 11px;
+    border-color: rgba(59, 130, 246, 0.30);
+    cursor: default;
   }
-  /* Done — pipeline finished, transcript + notes stored. Muted green
-     reads as "task completed" without screaming for attention. Same
-     visual weight as `processing` so the row layout doesn't jump when
-     a meeting transitions from processing → done. Min-width matches
-     the rest of the row buttons so the trailing column stays aligned. */
-  .row-disabled-done {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
+  /* Done — green muted; non-interactive. */
+  .row-icon-done {
     color: #86efac;
     background: rgba(34, 197, 94, 0.08);
-    border: 1px solid rgba(34, 197, 94, 0.30);
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 11px;
-    justify-content: center;
+    border-color: rgba(34, 197, 94, 0.30);
+    cursor: default;
+  }
+
+  /* Inline spinner — used inside row-icon-btn while a request is pending.
+     12px box matches the SVG icons it replaces so the button doesn't
+     resize when state flips between idle and pending. */
+  .row-icon-spinner {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    border-right-color: transparent;
+    animation: row-icon-spin 0.7s linear infinite;
+    opacity: 0.85;
+  }
+  .row-icon-spinner-amber {
+    color: #fcd34d;
+  }
+  @keyframes row-icon-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /* ── Link-only filter chip ───────────────────────────────────────────
+     Sits next to the calendar filter trigger. Default ON — visual is
+     "filled" when active so the user sees at a glance that the list is
+     filtered. Click toggles, tooltip explains. */
+  .filter-link {
+    /* Inherits .filter-trigger layout; only colour state diverges. */
+  }
+  .filter-link-active {
+    color: #bfdbfe;
+    background: rgba(96, 165, 250, 0.12);
+    border-color: rgba(96, 165, 250, 0.35);
+  }
+  .filter-link-active:hover {
+    background: rgba(96, 165, 250, 0.20);
   }
 </style>
