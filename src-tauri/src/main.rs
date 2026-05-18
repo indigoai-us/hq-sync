@@ -203,6 +203,15 @@ fn main() {
             commands::meetings::open_meetings_window,
         ])
         .setup(|app| {
+            // One-shot migration of any legacy `/deploy`-skill stub at
+            // ~/.hq/config.json. Runs first so subsequent prewarm /
+            // daemon / sync calls see a clean HqConfig (when a personal
+            // person-entity.json is on disk) or a missing config that
+            // surfaces SetupNeeded cleanly (when reconstruction isn't
+            // possible). Best-effort and idempotent — failures log to the
+            // diagnostic file and don't abort launch.
+            commands::config::migrate_legacy_config_stub();
+
             // macOS menubar-app activation policy. `Accessory` = no Dock
             // icon, no entry in CMD-Tab, no top-of-screen app menu bar.
             // The tray icon is the only surface. Without this the app

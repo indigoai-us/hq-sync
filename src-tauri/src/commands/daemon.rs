@@ -64,7 +64,6 @@ pub struct DaemonJson {
 
 /// Resolve the HQ folder path by reading config.json and menubar.json directly.
 fn resolve_hq_folder_path() -> Result<String, String> {
-    let config_path = paths::config_json_path()?;
     let menubar_path = paths::menubar_json_path()?;
 
     let menubar_prefs: Option<MenubarPrefs> = if menubar_path.exists() {
@@ -75,16 +74,14 @@ fn resolve_hq_folder_path() -> Result<String, String> {
         None
     };
 
-    let config: Option<crate::commands::config::HqConfig> = if config_path.exists() {
-        let contents = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config.json: {}", e))?;
-        Some(
-            serde_json::from_str(&contents)
-                .map_err(|e| format!("Failed to parse config.json: {}", e))?,
-        )
-    } else {
-        None
-    };
+    // Use the shared lenient reader so the policy is uniform across all
+    // four `resolve_hq_folder_path` duplicates: parse failures fall
+    // through to menubar.json + the 4-tier resolver, but real IO errors
+    // (permission denied, transient FS failure) still propagate as Err.
+    // Without this, silently swallowing read errors could route sync at
+    // the wrong HQ folder when config.json is the only source of
+    // `hqFolderPath`.
+    let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
         config

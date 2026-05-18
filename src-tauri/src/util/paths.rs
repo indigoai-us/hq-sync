@@ -162,6 +162,16 @@ pub fn menubar_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("menubar.json"))
 }
 
+/// Returns the path to ~/.hq/deploy-prefs.json.
+///
+/// This file is owned exclusively by hq-core's `/deploy` skill — it persists
+/// `defaultOrg` and `deploy.preference`. hq-sync only touches it during the
+/// one-shot legacy stub migration (see
+/// `commands::config::migrate_legacy_config_stub`).
+pub fn deploy_prefs_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("deploy-prefs.json"))
+}
+
 /// Resolve the HQ folder path with priority:
 /// 1. menubar_override (from menubar.json hqPath)
 /// 2. config_path (from config.json hqFolderPath)

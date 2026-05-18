@@ -236,7 +236,6 @@ fn report_sync_error(app: &AppHandle, payload: SyncErrorEvent) -> tauri::Result<
 
 /// Resolve the HQ folder path by reading config.json and menubar.json directly.
 fn resolve_hq_folder_path() -> Result<String, String> {
-    let config_path = paths::config_json_path()?;
     let menubar_path = paths::menubar_json_path()?;
 
     let menubar_prefs: Option<MenubarPrefs> = if menubar_path.exists() {
@@ -247,16 +246,10 @@ fn resolve_hq_folder_path() -> Result<String, String> {
         None
     };
 
-    let config: Option<HqConfig> = if config_path.exists() {
-        let contents = std::fs::read_to_string(&config_path)
-            .map_err(|e| format!("Failed to read config.json: {}", e))?;
-        Some(
-            serde_json::from_str(&contents)
-                .map_err(|e| format!("Failed to parse config.json: {}", e))?,
-        )
-    } else {
-        None
-    };
+    // Shared lenient reader: parse failures fall through to menubar/discovery,
+    // but real IO errors still propagate as Err. Uniform across all four
+    // `resolve_hq_folder_path` duplicates.
+    let config = crate::commands::config::read_hq_config_lenient()?;
 
     let hq_folder = paths::resolve_hq_folder(
         config
