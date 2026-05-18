@@ -151,6 +151,19 @@
   // (typical failure: EACCES against a system-prefix npm that needs sudo).
   let hqCliUpdateError = $state<string | null>(null);
 
+  // hq-core release notifier state — populated by `hq-core-update:available`
+  // from the Rust background checker (launch+20s, then every 6h). Non-null
+  // means the user's `core.yaml` `hqVersion` lags the latest GitHub release
+  // of indigoai-us/hq-core. Unlike the CLI nag, there is no in-app install
+  // path — the banner CTA opens the release notes in the user's browser
+  // via @tauri-apps/plugin-shell (allowed by shell:allow-open).
+  let hqCoreUpdateAvailable = $state<{
+    local: string | null;
+    latest: string;
+    release_url: string;
+    body: string | null;
+  } | null>(null);
+
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
 
@@ -632,6 +645,27 @@
       )
     );
 
+    // --- hq-core release notifier event listener ---
+    // Protocol (see src-tauri/src/commands/hq_core_update.rs):
+    //   hq-core-update:available — payload
+    //     { local: string | null, latest: string, release_url: string, body: string | null }
+    //     `local` is null when core.yaml is missing/unparseable; the
+    //     checker doesn't emit in that case, but we type it permissively.
+    //   No `:cleared` event — there's no in-app install path, so the
+    //     banner clears naturally on the next background check after the
+    //     user has run /update-hq in their HQ folder and core.yaml's
+    //     hqVersion has advanced.
+    unlisteners.push(
+      await listen<{
+        local: string | null;
+        latest: string;
+        release_url: string;
+        body: string | null;
+      }>('hq-core-update:available', (event) => {
+        hqCoreUpdateAvailable = event.payload;
+      })
+    );
+
     // Tray menu "Check for Updates" → on-demand check.
     unlisteners.push(
       await listen('tray:check-for-updates', () => {
@@ -751,6 +785,7 @@
       {hqCliUpdateAvailable}
       {hqCliUpdateInstalling}
       {hqCliUpdateError}
+      {hqCoreUpdateAvailable}
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { open as openInBrowser } from '@tauri-apps/plugin-shell';
   import SyncStats from './SyncStats.svelte';
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
@@ -102,6 +103,16 @@
      *  the captured stderr pre-filled (typical case: EACCES on a
      *  system-prefix npm that needs sudo). */
     hqCliUpdateError?: string | null;
+    /** Non-null when the user's local hq-core (read from core.yaml's
+     *  `hqVersion`) is behind the latest GitHub release of
+     *  indigoai-us/hq-core. Info-only — there's no in-app install path;
+     *  the banner CTA opens the release notes in the user's browser. */
+    hqCoreUpdateAvailable?: {
+      local: string | null;
+      latest: string;
+      release_url: string;
+      body: string | null;
+    } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
      *  header button doubles as Sync/Stop — only meaningful when
@@ -157,6 +168,7 @@
     hqCliUpdateAvailable = null,
     hqCliUpdateInstalling = false,
     hqCliUpdateError = null,
+    hqCoreUpdateAvailable = null,
     onsync,
     oncancel,
     onsettings,
@@ -266,6 +278,20 @@
       await invoke('open_claude_code_link', { url });
     } catch (e) {
       console.error('open_claude_code_link failed:', e);
+    }
+  }
+
+  // Open the hq-core release notes (GitHub html_url) in the user's
+  // default browser. Uses @tauri-apps/plugin-shell's `open()` rather
+  // than a custom Rust command — the existing `shell:allow-open`
+  // capability already permits http(s) URLs. The hq-core banner is
+  // info-only (no in-app install path — updating hq-core means running
+  // the /update-hq Claude-Code skill), so this is the only CTA.
+  async function openHqCoreReleaseNotes(url: string) {
+    try {
+      await openInBrowser(url);
+    } catch (e) {
+      console.error('open hq-core release notes failed:', e);
     }
   }
 
@@ -457,6 +483,43 @@
                 {hqCliUpdateInstalling ? 'Installing…' : 'Update'}
               </button>
             {/if}
+          </div>
+        </div>
+      {/if}
+
+      <!-- hq-core release banner — info-only. Updating hq-core (the user's
+           HQ folder scaffold) means running the /update-hq Claude-Code
+           skill, which is a much heavier interactive flow than the CLI
+           nag's one-shot `npm install -g`. So this banner has no in-app
+           install — its CTA opens the GitHub release notes in the user's
+           default browser via @tauri-apps/plugin-shell's `open()`
+           (allowed by the existing `shell:allow-open` capability). The
+           banner clears naturally on the next 6h background check once
+           the user has run /update-hq and core.yaml's hqVersion advances. -->
+
+      {#if hqCoreUpdateAvailable}
+        <div class="banner banner-info banner-update">
+          <div class="banner-update-text">
+            <p class="banner-title">
+              hq-core update available: v{hqCoreUpdateAvailable.latest}
+            </p>
+            {#if hqCoreUpdateAvailable.local}
+              <p class="banner-body">
+                You're on v{hqCoreUpdateAvailable.local}. Run <code>/update-hq</code> in your HQ folder to update.
+              </p>
+            {:else}
+              <p class="banner-body">
+                Run <code>/update-hq</code> in your HQ folder to update.
+              </p>
+            {/if}
+          </div>
+          <div class="banner-actions">
+            <button
+              class="banner-update-button"
+              onclick={() => openHqCoreReleaseNotes(hqCoreUpdateAvailable!.release_url)}
+            >
+              Release notes
+            </button>
           </div>
         </div>
       {/if}

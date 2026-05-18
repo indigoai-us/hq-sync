@@ -190,6 +190,7 @@ fn main() {
             updater::install_update,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
+            commands::hq_core_update::check_hq_core_update,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
             commands::meetings::meetings_feature_enabled,
@@ -258,6 +259,7 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
+            commands::hq_core_update::setup_hq_core_update_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's
