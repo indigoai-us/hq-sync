@@ -1227,6 +1227,7 @@ mod tests {
             // returns membership_key instead. Synthesize one here so the
             // struct literal is complete.
             membership_key: Some(format!("{person_uid}#{company_uid}")),
+            company_name: None,
         }
     }
 

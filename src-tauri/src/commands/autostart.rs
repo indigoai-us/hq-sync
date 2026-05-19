@@ -1,3 +1,6 @@
+use crate::commands::config::MenubarPrefs;
+use crate::util::logfile::log;
+use crate::util::paths;
 use std::path::PathBuf;
 
 const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
@@ -97,10 +100,110 @@ pub async fn set_autostart_enabled(enabled: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve the effective `startAtLogin` preference.
+///
+/// Defaults to `true` when menubar.json is absent or the field is missing —
+/// matching the Settings UI default (`settings.rs`) and the `realtime_sync`
+/// default-on convention in `daemon.rs`. Only an explicit
+/// `"startAtLogin": false` opts out. Kept pure (takes parsed prefs) so the
+/// default semantics are unit-testable without touching the real home dir.
+fn effective_start_at_login(prefs: Option<&MenubarPrefs>) -> bool {
+    prefs.and_then(|p| p.start_at_login).unwrap_or(true)
+}
+
+/// Read `startAtLogin` from ~/.hq/menubar.json (best-effort), applying the
+/// default-on semantics of `effective_start_at_login`.
+fn start_at_login_pref() -> bool {
+    let path = match paths::menubar_json_path() {
+        Ok(p) => p,
+        Err(_) => return true,
+    };
+    let prefs: Option<MenubarPrefs> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    effective_start_at_login(prefs.as_ref())
+}
+
+/// Idempotent launch-time autostart reconciliation.
+///
+/// Called from `main.rs` `.setup()`. Ensures the LaunchAgent plist matches
+/// the effective `startAtLogin` preference so a fresh install autostarts by
+/// default without the user having to open Settings — while still honouring
+/// an explicit `"startAtLogin": false` opt-out (in which case a stale plist
+/// is removed). Best-effort: every IO error is logged and swallowed so a
+/// failure here can never abort app launch.
+pub fn ensure_autostart_on_launch() {
+    let enabled = start_at_login_pref();
+    let path = match plist_path() {
+        Ok(p) => p,
+        Err(e) => {
+            log("autostart", &format!("ensure: cannot resolve plist path: {e}"));
+            return;
+        }
+    };
+    let exists = path.exists();
+
+    if enabled && !exists {
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log("autostart", &format!("ensure: mkdir LaunchAgents failed: {e}"));
+                return;
+            }
+        }
+        let plist = generate_plist(&resolve_app_path());
+        match std::fs::write(&path, plist) {
+            Ok(()) => log("autostart", "ensure: created LaunchAgent plist (default-on)"),
+            Err(e) => log("autostart", &format!("ensure: write plist failed: {e}")),
+        }
+    } else if !enabled && exists {
+        match std::fs::remove_file(&path) {
+            Ok(()) => log("autostart", "ensure: removed LaunchAgent plist (explicit opt-out)"),
+            Err(e) => log("autostart", &format!("ensure: remove plist failed: {e}")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn prefs_with_start(start: Option<bool>) -> MenubarPrefs {
+        MenubarPrefs {
+            hq_path: None,
+            sync_on_launch: None,
+            notifications: None,
+            start_at_login: start,
+            autostart_daemon: None,
+            realtime_sync: None,
+        }
+    }
+
+    #[test]
+    fn test_effective_start_at_login_defaults_on_when_absent() {
+        // No menubar.json at all -> autostart on by default.
+        assert!(effective_start_at_login(None));
+    }
+
+    #[test]
+    fn test_effective_start_at_login_defaults_on_when_field_missing() {
+        // menubar.json exists but startAtLogin not set -> default on.
+        let p = prefs_with_start(None);
+        assert!(effective_start_at_login(Some(&p)));
+    }
+
+    #[test]
+    fn test_effective_start_at_login_explicit_true() {
+        let p = prefs_with_start(Some(true));
+        assert!(effective_start_at_login(Some(&p)));
+    }
+
+    #[test]
+    fn test_effective_start_at_login_explicit_false_opts_out() {
+        // The one case that disables autostart: explicit opt-out.
+        let p = prefs_with_start(Some(false));
+        assert!(!effective_start_at_login(Some(&p)));
+    }
 
     #[test]
     fn test_plist_path_format() {
