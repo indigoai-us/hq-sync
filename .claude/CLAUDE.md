@@ -33,7 +33,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `commands/conflicts.rs` | Conflict resolution + open-in-editor |
 | `commands/new_files.rs` | New files detail window — creates/focuses a secondary Tauri window showing file list with attribution. Uses managed `PendingNewFiles` state + ready handshake pattern |
 | `commands/settings.rs` | Settings persistence |
-| `commands/autostart.rs` | Login-item autostart |
+| `commands/autostart.rs` | Login-item autostart. `ensure_autostart_on_launch()` (called from `main.rs` `.setup()`, macOS-gated) idempotently reconciles the LaunchAgent plist with the effective `startAtLogin` pref on every launch — **default-on** (a fresh install autostarts without opening Settings), honouring an explicit `"startAtLogin": false` opt-out (stale plist removed). Mirrors the `daemon.rs` `realtime_sync` default-on convention |
 | `tray.rs` | System tray with 4 visual states (idle/syncing/error/conflict) |
 | `updater.rs` | Auto-update checker (10s delay, then every 6h) |
 | `events.rs` | Typed sync event structs (ndjson discriminated union) |
