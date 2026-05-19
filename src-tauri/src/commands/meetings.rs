@@ -554,6 +554,44 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// `POST /v1/bot/{botId}/join-now` — force a scheduled bot to deploy
+/// immediately. Used when a meeting starts earlier than its calendar
+/// `start` time and the user wants the pre-scheduled bot in the room now.
+///
+/// hq-pro PATCHes the Recall.ai bot to clear `join_at`. Returns `Ok(())`
+/// on success; the frontend's periodic refresh picks up the new status
+/// once Recall fires the `joining_call` webhook. Mirrors `meetings_cancel_bot`
+/// — no response parsing, the bot list is the source of truth for status.
+///
+/// hq-pro returns HTTP 409 with `code: "bot-not-scheduled"` when the bot
+/// has already moved past `scheduled` (joining / recording / done). Treat
+/// that as a benign "already on its way" outcome; the frontend surfaces
+/// it as an info toast and refreshes.
+#[tauri::command]
+pub async fn meetings_bot_join_now(bot_id: String) -> Result<(), String> {
+    if bot_id.is_empty() {
+        return Err("bot_id is required".to_string());
+    }
+    if !is_url_safe_id(&bot_id) {
+        return Err(format!("bot_id has invalid characters: {bot_id:?}"));
+    }
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let url = format!("{base}/v1/bot/{bot_id}/join-now");
+    let res = build_client()
+        .post(url)
+        .header("authorization", &auth)
+        .send()
+        .await
+        .map_err(|e| format!("bot/join-now fetch: {e}"))?;
+    let status = res.status();
+    if !status.is_success() {
+        let text = res.text().await.unwrap_or_default();
+        return Err(format!("bot/join-now HTTP {status}: {text}"));
+    }
+    Ok(())
+}
+
 /// Allows only `[a-zA-Z0-9._-]+` — matches Recall.ai bot id shape (UUID with
 /// optional underscores) and avoids the need for percent-encoding.
 fn is_url_safe_id(s: &str) -> bool {

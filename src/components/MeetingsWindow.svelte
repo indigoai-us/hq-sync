@@ -100,6 +100,10 @@
   let loading = $state(false);
   let listError = $state<string | null>(null);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
+  // Wall-clock tick (epoch ms) advanced once per minute — drives
+  // time-relative UI affordances (Join Now eligibility window) without
+  // forcing a full meeting-list refresh on the same cadence.
+  let nowTick = $state(Date.now());
 
   /**
    * Distill an upstream error (Tauri command Result::Err string, fetch
@@ -224,6 +228,15 @@
       void refresh();
     }, 30_000);
 
+    // Tick wall-clock once per minute so time-relative affordances
+    // (e.g. "Join Now" eligibility) update without waiting on the 30s
+    // network poll's response landing. 60s is fine-grained enough for
+    // a ±15min eligibility window; finer ticks would just churn the
+    // reactivity graph for no UX gain.
+    const tickId = window.setInterval(() => {
+      nowTick = Date.now();
+    }, 60_000);
+
     // Esc closes the window — feels native on macOS where ⌘W is the
     // standard but Esc is the common expectation for a detached panel.
     const onkeydown = (e: KeyboardEvent) => {
@@ -235,6 +248,7 @@
     window.addEventListener('keydown', onkeydown);
     return () => {
       window.clearInterval(pollId);
+      window.clearInterval(tickId);
       window.removeEventListener('keydown', onkeydown);
     };
   });
@@ -408,6 +422,41 @@
     }
   }
 
+  /**
+   * Force a scheduled bot to deploy immediately — used when the meeting
+   * started earlier than its calendar `start` and the user wants the
+   * pre-scheduled bot in the room now (instead of waiting for its
+   * original `join_at` hold to elapse).
+   *
+   * 409 / `bot-not-scheduled` from hq-pro means Recall already started
+   * the join transition between the click and the network round-trip;
+   * surface as info and refresh.
+   */
+  async function onJoinNow(evt: MeetingEvent) {
+    const bot = botsByEventId.get(evt.id);
+    if (!bot || bot.status !== 'scheduled') return;
+    const key = evt.id;
+    if (rowPending.has(key)) return;
+    rowPending = new Set(rowPending).add(key);
+    try {
+      await invoke('meetings_bot_join_now', { botId: bot.botId });
+      flashToast('info', 'Bot deploying now.');
+      await refresh();
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      if (raw.includes('bot-not-scheduled') || /\b409\b/.test(raw)) {
+        flashToast('info', 'Bot already on its way — refreshing.');
+        await refresh();
+      } else {
+        flashToast('warn', friendlyError(err, "Couldn't deploy the bot."));
+      }
+    } finally {
+      const next = new Set(rowPending);
+      next.delete(key);
+      rowPending = next;
+    }
+  }
+
   async function onUrlInvite() {
     const url = urlInput.trim();
     if (!isPlausibleMeetingUrl(url)) return;
@@ -486,6 +535,40 @@
     if (!raw) return null;
     const d = new Date(raw);
     return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  function eventEnd(e: MeetingEvent): Date | null {
+    const raw = e.end?.dateTime ?? e.end?.date;
+    if (!raw) return null;
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  /**
+   * "Join Now" rescue eligibility — true when the scheduled bot is
+   * sitting in its pre-join hold window AND the meeting is plausibly
+   * about-to-start / already-started.
+   *
+   * Window: from 15 min before start through end of scheduled meeting
+   * (or 60 min past start if no end time). Outside that window the
+   * affordance is hidden — too early = noise; too late = the user
+   * should be uninviting and re-scheduling fresh, not rescuing the
+   * stale hold.
+   *
+   * Driven by `nowTick` (1 min cadence) so the affordance materialises
+   * for events as their start time approaches without needing a full
+   * meeting-list refresh.
+   */
+  function canJoinNow(evt: MeetingEvent, bot: ScheduledBot | undefined): boolean {
+    if (!bot || bot.status !== 'scheduled') return false;
+    const start = eventStart(evt);
+    if (!start) return false;
+    const now = nowTick;
+    const ms = now - start.getTime();
+    if (ms < -15 * 60_000) return false;
+    const end = eventEnd(evt);
+    const ceiling = end ? end.getTime() - now : 60 * 60_000 - ms;
+    return ceiling > 0;
   }
 
   function dayLabel(d: Date): string {
@@ -1115,6 +1198,30 @@
                     {/if}
                   </button>
                 {:else if kind === 'invited'}
+                  {#if canJoinNow(evt, bot)}
+                    <!-- Rescue path: meeting started early (or is about
+                         to) and the bot is still holding for its
+                         original `join_at`. Lightning glyph nudges
+                         "deploy now". Sits LEFT of the scheduled
+                         checkmark so the destructive uninvite stays in
+                         its usual rightmost slot. -->
+                    <button
+                      type="button"
+                      class="row-icon-btn row-icon-join-now"
+                      disabled={pending}
+                      title={pending ? 'Deploying…' : 'Meeting started? Click to deploy bot now'}
+                      aria-label="Deploy bot now"
+                      onclick={() => onJoinNow(evt)}
+                    >
+                      {#if pending}
+                        <span class="row-icon-spinner" aria-hidden="true"></span>
+                      {:else}
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                          <path d="M7 1L2 7h3l-1 4 5-6H6l1-4z" fill="currentColor" />
+                        </svg>
+                      {/if}
+                    </button>
+                  {/if}
                   <button
                     type="button"
                     class="row-icon-btn row-icon-invited"
@@ -1660,6 +1767,18 @@
   }
   .row-icon-incall:hover:not(:disabled) {
     background: rgba(220, 38, 38, 0.22);
+  }
+  /* Join Now — amber lightning; only visible inside the eligibility
+     window. Sits LEFT of the scheduled checkmark so the destructive
+     uninvite stays where the user expects. */
+  .row-icon-join-now {
+    color: #fcd34d;
+    background: rgba(202, 138, 4, 0.10);
+    border-color: rgba(202, 138, 4, 0.40);
+  }
+  .row-icon-join-now:hover:not(:disabled) {
+    background: rgba(202, 138, 4, 0.22);
+    color: #fde68a;
   }
   /* Joining — amber spinner; transient state. */
   .row-icon-joining {

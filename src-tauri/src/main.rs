@@ -201,6 +201,7 @@ fn main() {
             commands::meetings::meetings_list_calendars_for_account,
             commands::meetings::meetings_invite_bot,
             commands::meetings::meetings_cancel_bot,
+            commands::meetings::meetings_bot_join_now,
             commands::meetings::open_meetings_window,
         ])
         .setup(|app| {

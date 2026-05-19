@@ -1227,6 +1227,11 @@ mod tests {
             // returns membership_key instead. Synthesize one here so the
             // struct literal is complete.
             membership_key: Some(format!("{person_uid}#{company_uid}")),
+            // `company_name` was added to the live API but the helper
+            // wasn't updated — left as None here since the existing tests
+            // exercise membership-status / role logic, not the display
+            // name join.
+            company_name: None,
         }
     }
 
