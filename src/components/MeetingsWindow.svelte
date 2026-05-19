@@ -1014,6 +1014,24 @@
       <p class="meetings-placeholder">Loading…</p>
     {:else if listError}
       <p class="meetings-error">{listError}</p>
+    {:else if accounts.length === 0}
+      <div class="meetings-empty">
+        <p class="meetings-empty-title">No calendars connected yet</p>
+        <p class="meetings-empty-copy">
+          Connect a Google Calendar in HQ Console to start capturing meetings here.
+        </p>
+        <button
+          type="button"
+          class="meetings-empty-btn"
+          onclick={() => {
+            openExternal('https://hq.getindigo.ai/integrations').catch((err) => {
+              flashToast('warn', friendlyError(err, "Couldn't open HQ Console."));
+            });
+          }}
+        >
+          Open HQ Console Integrations
+        </button>
+      </div>
     {:else if events.length === 0}
       <p class="meetings-placeholder">
         No upcoming meetings in your connected calendars.
@@ -1390,6 +1408,51 @@
   }
   .meetings-inline-link:hover {
     color: #bfdbfe;
+  }
+
+  /* Empty-state CTA shown when the user has zero connected calendar
+     accounts. Distinct from `.meetings-placeholder` because we want a
+     button-affordance, not just gray copy. Distinct from the
+     "no events match the filter" case (which uses an inline link) —
+     this is a first-run handoff to HQ Console where the actual
+     calendar OAuth lives. */
+  .meetings-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 28px 18px 12px;
+    text-align: center;
+  }
+  .meetings-empty-title {
+    margin: 0;
+    color: #f4f4f5;
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .meetings-empty-copy {
+    margin: 0;
+    color: #a1a1aa;
+    font-size: 12px;
+    max-width: 280px;
+    line-height: 1.4;
+  }
+  .meetings-empty-btn {
+    margin-top: 6px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #f4f4f5;
+    border: 1px solid rgba(255, 255, 255, 0.20);
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .meetings-empty-btn:hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+  .meetings-empty-btn:focus-visible {
+    outline: 2px solid #93c5fd;
+    outline-offset: 2px;
   }
 
   /* ── Controls row (filter + refresh) ───────────────────────────────── */
