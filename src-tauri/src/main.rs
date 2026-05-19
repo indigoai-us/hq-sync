@@ -213,6 +213,14 @@ fn main() {
             // diagnostic file and don't abort launch.
             commands::config::migrate_legacy_config_stub();
 
+            // Default-on autostart: ensure the LaunchAgent plist matches the
+            // effective `startAtLogin` pref (default true) so a fresh install
+            // opens HQ Sync at login without the user opening Settings first.
+            // Honours an explicit `"startAtLogin": false` opt-out. Best-effort
+            // and idempotent — never aborts launch.
+            #[cfg(target_os = "macos")]
+            commands::autostart::ensure_autostart_on_launch();
+
             // macOS menubar-app activation policy. `Accessory` = no Dock
             // icon, no entry in CMD-Tab, no top-of-screen app menu bar.
             // The tray icon is the only surface. Without this the app
