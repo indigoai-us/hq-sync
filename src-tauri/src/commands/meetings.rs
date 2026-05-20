@@ -152,12 +152,83 @@ pub struct ScheduledBot {
     pub error_message: Option<String>,
 }
 
+/// Mirrors hq-pro's `OntologyParticipant` — resolved participant from the
+/// ontology endpoint attached to the invite payload before the bot is created.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OntologyParticipant {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    pub canonical_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    /// "invitee" | "organizer" | "ontology" | "historical" | "recall"
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InviteBotBody {
     meeting_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     calendar_event_id: Option<String>,
+    /// Ontology-resolved participants (US-005). Absent when fetch timed out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    participants: Vec<OntologyParticipant>,
+}
+
+/// Fetch ontology-resolved participants for a meeting, with a hard 2-second
+/// timeout. Returns an empty vec on any error (timeout, network, non-200) so
+/// the bot invite is never blocked. Called just before `POST /v1/bot/invite`.
+async fn fetch_participants_best_effort(
+    base: &str,
+    auth: &str,
+    meeting_url: &str,
+    event_id: Option<&str>,
+) -> Vec<OntologyParticipant> {
+    let mut req = build_client()
+        .get(format!("{base}/v1/ontology/participants"))
+        .header("authorization", auth)
+        .query(&[("meetingUrl", meeting_url)]);
+    if let Some(id) = event_id.filter(|s| !s.is_empty()) {
+        req = req.query(&[("eventId", id)]);
+    }
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        req.send(),
+    )
+    .await;
+    let res = match result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            crate::util::logfile::log(
+                "meetings",
+                &format!("participants fetch error: {e}"),
+            );
+            return vec![];
+        }
+        Err(_elapsed) => {
+            crate::util::logfile::log("meetings", "participants fetch timed out (2s)");
+            return vec![];
+        }
+    };
+    if !res.status().is_success() {
+        return vec![];
+    }
+    let text = match res.text().await {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    #[derive(Deserialize)]
+    struct ParticipantsResponse {
+        #[serde(default)]
+        participants: Vec<OntologyParticipant>,
+    }
+    serde_json::from_str::<ParticipantsResponse>(&text)
+        .map(|r| r.participants)
+        .unwrap_or_default()
 }
 
 // ── Detail window (Upcoming Meetings) ────────────────────────────────────────
@@ -465,9 +536,20 @@ pub async fn meetings_invite_bot(
             url.push_str(&format!("?companyId={cid}"));
         }
     }
+    // Fetch ontology-resolved participants best-effort (US-005).
+    // 2-second deadline; empty vec on any failure so the invite always fires.
+    let participants = fetch_participants_best_effort(
+        &base,
+        &auth,
+        &meeting_url,
+        calendar_event_id.as_deref(),
+    )
+    .await;
+
     let body = InviteBotBody {
         meeting_url,
         calendar_event_id,
+        participants,
     };
     let res = build_client()
         .post(url)
