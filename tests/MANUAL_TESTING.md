@@ -415,6 +415,87 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] Click tray icon -> popover opens
 - [ ] Right-click tray icon -> context menu shows: Sync Now, Settings, Quit
 
+### Meeting detect-notify (US-001, US-004, US-005, US-006, US-007)
+
+> These steps require the Recall Desktop SDK to be installed and the user to be signed into Recall.
+> Run after building with `npm run tauri dev` or from a packaged `.app`.
+
+#### MDN-001: Recall SDK sidecar starts on launch
+
+- [ ] Launch HQ Sync.app
+- [ ] Verify `~/.hq/sync-debug.log` does NOT contain `RECALL_SDK_UNAVAILABLE`
+- [ ] With the SDK binary absent: rename it, relaunch → verify `RECALL_SDK_UNAVAILABLE` is written to the log and the app continues running (no crash, tray icon appears)
+- [ ] Restore the binary and relaunch → verify the error disappears
+
+#### MDN-002: Synthetic detected event surfaces a macOS notification
+
+- [ ] Inject a synthetic `meeting:detected` Tauri event for a Zoom URL (via `__TAURI_INVOKE__` in devtools or a test harness):
+  ```js
+  window.__TAURI__.event.emit('meeting:detected', {
+    detectionId: 'test-1',
+    meetingUrl: 'https://zoom.us/j/999000111',
+    platform: 'zoom',
+    detectedAt: new Date().toISOString(),
+    source: 'sdk-active-app'
+  })
+  ```
+- [ ] Verify a macOS notification appears with title `Meeting detected` and body containing `zoom`
+- [ ] Verify the tray icon gains a badge dot (Prompt state)
+- [ ] Click the tray icon → open MeetingsWindow → verify the badge dot clears
+
+#### MDN-003: Dedup against an existing bot suppresses the notification
+
+- [ ] Start a bot for the test Zoom URL (via MeetingsWindow or curl `POST /v1/bot/invite`)
+- [ ] Inject the same `meeting:detected` event for that URL
+- [ ] Verify **no** new macOS notification fires
+- [ ] Verify the tray badge does **not** appear (or does not increment if already showing)
+- [ ] Verify `sync-debug.log` contains a `dedup-hit` or suppression log line
+
+#### MDN-004: Record action wires through bot invite with ontology participants
+
+- [ ] Inject a `meeting:detected` event for a URL with no existing bot
+- [ ] From the resulting notification (or MeetingsWindow row), click **Record**
+- [ ] Verify a bot invite is sent (`POST /v1/bot/invite` in network tab or DDB record created)
+- [ ] If the company has ontology person entities, verify `metadata.participants` is non-empty on the bot record in DynamoDB
+
+#### MDN-005: Ledger deduplication persists across restarts
+
+- [ ] Inject a `meeting:detected` event → notification fires
+- [ ] Quit HQ Sync.app
+- [ ] Verify `~/.hq/meeting-notify-ledger.json` contains an entry for the test URL with `action: "notified"`
+- [ ] Relaunch HQ Sync.app
+- [ ] Inject the same `meeting:detected` event within 6 hours of the first
+- [ ] Verify **no** duplicate notification fires (ledger suppressed it)
+- [ ] Manually edit the `notifiedAt` timestamp in the ledger to be >6 hours ago
+- [ ] Inject the event again → verify the notification fires (suppression window expired)
+
+#### MDN-006: Per-platform disable suppresses events for that platform
+
+- [ ] Open Settings → Meeting detection section
+- [ ] Uncheck `Zoom` while leaving others checked
+- [ ] Inject a `meeting:detected` event with `platform: 'zoom'`
+- [ ] Verify **no** notification fires
+- [ ] Inject a `meeting:detected` event with `platform: 'meet'`
+- [ ] Verify a notification **does** fire (Google Meet is still enabled)
+- [ ] Re-enable Zoom in Settings — verify subsequent Zoom events surface again (no restart required)
+
+#### MDN-007: Global detection toggle off suppresses all events
+
+- [ ] Open Settings → Meeting detection → toggle `Detect upcoming meetings` to OFF
+- [ ] Inject `meeting:detected` events for zoom, meet, teams
+- [ ] Verify **no** notifications fire and tray badge does not appear
+- [ ] Toggle back ON → verify next event surfaces immediately (no restart)
+
+#### MDN-008: notifications:false in menubar.json suppresses everything
+
+- [ ] Quit HQ Sync.app
+- [ ] Edit `~/.hq/menubar.json` to set `"notifications": false`
+- [ ] Relaunch HQ Sync.app
+- [ ] Inject a `meeting:detected` event with no existing bot
+- [ ] Verify **no** macOS notification fires and **no** tray badge appears
+
+---
+
 ### US-015: Code Signing + Notarization CI
 
 - [ ] Push a git tag `v0.x.x` -> GitHub Actions workflow triggers
