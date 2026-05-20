@@ -25,6 +25,11 @@ pub enum TrayState {
     Syncing,
     Error,
     Conflict,
+    /// A meeting was detected and the user has not yet acted on it.
+    /// Shown as a badge dot overlaid on the current sync state icon.
+    /// Uses the idle icon bytes as a placeholder; a designer badge
+    /// composite can replace this later without an API change.
+    Prompt,
 }
 
 impl TrayState {
@@ -35,6 +40,7 @@ impl TrayState {
             "syncing" => Some(Self::Syncing),
             "error" => Some(Self::Error),
             "conflict" => Some(Self::Conflict),
+            "prompt" => Some(Self::Prompt),
             _ => None,
         }
     }
@@ -46,6 +52,7 @@ impl TrayState {
             Self::Syncing => "HQ Sync — Syncing…",
             Self::Error => "HQ Sync — Error",
             Self::Conflict => "HQ Sync — Conflict",
+            Self::Prompt => "HQ Sync — Meeting Detected",
         }
     }
 }
@@ -72,6 +79,11 @@ fn current_state() -> &'static Arc<Mutex<TrayState>> {
 /// (and dropping its guard). With a bool, that drop would clobber the
 /// new call's flag to false while its own panel is still opening.
 static MODAL_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Count of pending meeting detections awaiting user action.
+/// When > 0, the tray shows the `Prompt` state. Decrements when the
+/// user opens MeetingsWindow or acts on a notification.
+static PROMPT_PENDING: AtomicUsize = AtomicUsize::new(0);
 
 /// Whether at least one native modal is currently open.
 pub fn is_modal_open() -> bool {
@@ -104,6 +116,38 @@ impl Drop for ModalGuard {
     }
 }
 
+/// Set the meeting-prompt badge count.
+///
+/// When `count > 0`, overrides the tray icon to `Prompt` state.
+/// When `count == 0`, restores the current base sync state icon so
+/// a cleared badge doesn't get stuck showing "Meeting Detected".
+pub fn set_prompt_badge(app: &AppHandle, count: usize) {
+    PROMPT_PENDING.store(count, Ordering::SeqCst);
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        if count > 0 {
+            let _ = tray.set_icon(Some(icon_for_state(TrayState::Prompt)));
+            let _ = tray.set_tooltip(Some(TrayState::Prompt.tooltip()));
+        } else {
+            let state = current_state().lock().map(|s| *s).unwrap_or(TrayState::Idle);
+            let _ = tray.set_icon(Some(icon_for_state(state)));
+            let _ = tray.set_tooltip(Some(state.tooltip()));
+        }
+    }
+}
+
+/// Return the current pending-meeting count (for tests and badge logic).
+pub fn get_prompt_pending() -> usize {
+    PROMPT_PENDING.load(Ordering::SeqCst)
+}
+
+/// Tauri command: set or clear the meeting-prompt tray badge.
+///
+/// `count > 0` → Prompt icon; `count == 0` → restore base state icon.
+#[tauri::command]
+pub fn meetings_set_prompt_badge(app: AppHandle, count: usize) {
+    set_prompt_badge(&app, count);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Icon loading
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +155,10 @@ impl Drop for ModalGuard {
 /// Load the embedded icon bytes for a given tray state.
 /// We use `include_bytes!` so the PNGs are baked into the binary.
 /// Icons are cached after first decode via `OnceLock` to avoid repeated PNG parsing.
+///
+/// `Prompt` reuses the idle icon bytes as a placeholder. The visual
+/// differentiation between Idle and Prompt comes from the tooltip text
+/// ("Meeting Detected") until a designer badge composite is created.
 fn icon_for_state(state: TrayState) -> Image<'static> {
     static ICON_IDLE: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_SYNCING: OnceLock<Image<'static>> = OnceLock::new();
@@ -126,6 +174,8 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
         TrayState::Syncing => ICON_SYNCING.get_or_init(|| decode(include_bytes!("../icons/tray-syncing@2x.png"))),
         TrayState::Error => ICON_ERROR.get_or_init(|| decode(include_bytes!("../icons/tray-error@2x.png"))),
         TrayState::Conflict => ICON_CONFLICT.get_or_init(|| decode(include_bytes!("../icons/tray-conflict@2x.png"))),
+        // Reuse idle icon; designer badge composite is a follow-up.
+        TrayState::Prompt => ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png"))),
     }
     .clone()
 }
@@ -453,7 +503,7 @@ fn setup_sync_listeners(app: &AppHandle) {
 #[tauri::command]
 pub fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
     let tray_state = TrayState::from_str_loose(&state)
-        .ok_or_else(|| format!("Invalid tray state: '{}'. Expected: idle, syncing, error, conflict", state))?;
+        .ok_or_else(|| format!("Invalid tray state: '{}'. Expected: idle, syncing, error, conflict, prompt", state))?;
     update_tray_icon(&app, tray_state);
     Ok(())
 }
@@ -472,6 +522,8 @@ mod tests {
         assert_eq!(TrayState::from_str_loose("SYNCING"), Some(TrayState::Syncing));
         assert_eq!(TrayState::from_str_loose("Error"), Some(TrayState::Error));
         assert_eq!(TrayState::from_str_loose("conflict"), Some(TrayState::Conflict));
+        assert_eq!(TrayState::from_str_loose("prompt"), Some(TrayState::Prompt));
+        assert_eq!(TrayState::from_str_loose("PROMPT"), Some(TrayState::Prompt));
         assert_eq!(TrayState::from_str_loose("unknown"), None);
         assert_eq!(TrayState::from_str_loose(""), None);
     }
@@ -482,6 +534,7 @@ mod tests {
         assert_eq!(TrayState::Syncing.tooltip(), "HQ Sync — Syncing…");
         assert_eq!(TrayState::Error.tooltip(), "HQ Sync — Error");
         assert_eq!(TrayState::Conflict.tooltip(), "HQ Sync — Conflict");
+        assert_eq!(TrayState::Prompt.tooltip(), "HQ Sync — Meeting Detected");
     }
 
     #[test]
@@ -491,7 +544,7 @@ mod tests {
 
         for state in &[TrayState::Idle, TrayState::Syncing, TrayState::Error, TrayState::Conflict] {
             let bytes: &[u8] = match state {
-                TrayState::Idle => include_bytes!("../icons/tray-idle@2x.png"),
+                TrayState::Idle | TrayState::Prompt => include_bytes!("../icons/tray-idle@2x.png"),
                 TrayState::Syncing => include_bytes!("../icons/tray-syncing@2x.png"),
                 TrayState::Error => include_bytes!("../icons/tray-error@2x.png"),
                 TrayState::Conflict => include_bytes!("../icons/tray-conflict@2x.png"),
@@ -523,7 +576,11 @@ mod tests {
         // so we just assert the value is a valid variant (exhaustive match).
         let state = get_current_state();
         match state {
-            TrayState::Idle | TrayState::Syncing | TrayState::Error | TrayState::Conflict => {}
+            TrayState::Idle
+            | TrayState::Syncing
+            | TrayState::Error
+            | TrayState::Conflict
+            | TrayState::Prompt => {}
         }
     }
 

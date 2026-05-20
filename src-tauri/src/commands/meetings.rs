@@ -554,6 +554,167 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── Detection-triggered notification commands ─────────────────────────────────
+
+/// Payload for [`meetings_notify_detected`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyDetectedPayload {
+    /// The detected meeting URL (primary stable key for dedup).
+    pub meeting_url: Option<String>,
+    /// Platform string from the SDK (e.g. "zoom", "meet").
+    pub platform: Option<String>,
+    /// Meeting title or calendar event summary, if known.
+    pub summary: Option<String>,
+    /// SDK source event id — fallback stable key when `meeting_url` is absent.
+    pub source_event_id: Option<String>,
+}
+
+/// Check whether an active bot already exists for the given meeting URL.
+///
+/// Returns `Some(bot)` when a bot with an active status (`scheduled`,
+/// `joining_call`, `in_call_recording`, `in_call_not_recording`) is found.
+/// The Svelte handler calls this before `meetings_notify_detected`; a bot
+/// already in the room means we should skip the notification.
+///
+/// Query: `GET /v1/bot/list?meetingUrl=<url>[&eventId=<id>]`
+#[tauri::command]
+pub async fn meetings_check_bot_for_url(
+    meeting_url: String,
+    event_id: Option<String>,
+) -> Result<Option<ScheduledBot>, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let mut req = build_client()
+        .get(format!("{base}/v1/bot/list"))
+        .header("authorization", &auth)
+        .query(&[("meetingUrl", meeting_url.as_str())]);
+    if let Some(id) = event_id.as_deref().filter(|s| !s.is_empty()) {
+        req = req.query(&[("eventId", id)]);
+    }
+    let res = req.send().await.map_err(|e| format!("bot/list check: {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| format!("bot/list check read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("bot/list check HTTP {status}: {text}"));
+    }
+    let parsed: BotsResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("bot/list check parse: {e} — body: {text}"))?;
+    let active = parsed.bots.into_iter().find(|b| {
+        matches!(
+            b.status.as_str(),
+            "scheduled" | "joining_call" | "in_call_recording" | "in_call_not_recording"
+        )
+    });
+    Ok(active)
+}
+
+/// Fire a macOS notification for a detected meeting, gated on:
+///
+/// 1. `notifications` pref in `~/.hq/menubar.json` (read fresh on each call
+///    so pref changes take effect without restart — US-007 requirement)
+/// 2. `meetingDetectNotify.enabled` and the per-platform allow-list
+/// 3. Meeting-notify ledger dedup (suppress if already notified within 6 h)
+///
+/// Returns `true` when the notification was fired, `false` if suppressed.
+/// Also increments the tray `Prompt` badge on a successful fire.
+#[tauri::command]
+pub async fn meetings_notify_detected(
+    app: AppHandle,
+    payload: NotifyDetectedPayload,
+) -> Result<bool, String> {
+    use crate::commands::settings::get_settings;
+    use crate::tray::{get_prompt_pending, set_prompt_badge};
+    use crate::util::meeting_ledger::{
+        mark, read_ledger, should_suppress, stable_key, write_ledger, LedgerAction,
+    };
+    use chrono::Utc;
+    use tauri_plugin_notification::NotificationExt;
+
+    // 1. Top-level notifications pref.
+    let settings = get_settings().await?;
+    if !settings.notifications.unwrap_or(true) {
+        return Ok(false);
+    }
+
+    // 2. Meeting-detect-notify sub-pref + per-platform filter.
+    let mdn = settings.meeting_detect_notify.as_ref();
+    if !mdn.and_then(|m| m.enabled).unwrap_or(true) {
+        return Ok(false);
+    }
+    let platform_lc = payload
+        .platform
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !platform_lc.is_empty() {
+        if let Some(allowed) = mdn.and_then(|m| m.platforms.as_ref()) {
+            if !allowed.is_empty()
+                && !allowed.iter().any(|p| p.to_ascii_lowercase() == platform_lc)
+            {
+                return Ok(false);
+            }
+        }
+    }
+
+    // 3. Dedup via ledger.
+    let key = match stable_key(
+        payload.meeting_url.as_deref(),
+        payload.source_event_id.as_deref(),
+    ) {
+        Some(k) => k,
+        None => return Ok(false),
+    };
+    let mut ledger = read_ledger().unwrap_or_default();
+    let now = Utc::now();
+    if should_suppress(&ledger, &key, now) {
+        return Ok(false);
+    }
+
+    // 4. Build notification body: "<Platform>: <summary or url>".
+    let display = {
+        let mut p = if platform_lc.is_empty() {
+            "Meeting".to_string()
+        } else {
+            platform_lc.clone()
+        };
+        if let Some(c) = p.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        p
+    };
+    let body = match payload.summary.as_deref().filter(|s| !s.is_empty()) {
+        Some(s) => format!("{display}: {s}"),
+        None => match payload.meeting_url.as_deref().filter(|s| !s.is_empty()) {
+            Some(u) => format!("{display}: {u}"),
+            None => display,
+        },
+    };
+
+    // 5. Fire the notification. Permission denial is logged but not an error.
+    if let Err(e) = app.notification().builder().title("Meeting detected").body(&body).show() {
+        crate::util::logfile::log("meetings", &format!("notification send failed: {e}"));
+        return Ok(false);
+    }
+
+    // 6. Mark ledger + bump tray badge.
+    mark(&mut ledger, key, LedgerAction::Notified, now);
+    let _ = write_ledger(&ledger);
+    set_prompt_badge(&app, get_prompt_pending() + 1);
+
+    Ok(true)
+}
+
+/// Decrement the meeting-prompt tray badge by one (saturating).
+///
+/// Call when the user opens MeetingsWindow or acts on a notification.
+/// Saturating so a double-call doesn't underflow to `usize::MAX`.
+#[tauri::command]
+pub async fn meetings_clear_prompt_badge(app: AppHandle) {
+    use crate::tray::{get_prompt_pending, set_prompt_badge};
+    set_prompt_badge(&app, get_prompt_pending().saturating_sub(1));
+}
+
 /// Allows only `[a-zA-Z0-9._-]+` — matches Recall.ai bot id shape (UUID with
 /// optional underscores) and avoids the need for percent-encoding.
 fn is_url_safe_id(s: &str) -> bool {

@@ -686,6 +686,43 @@
         }
       )
     );
+
+    // --- Meeting-detection listener ---
+    // Fired by the Recall Desktop SDK sidecar when a supported video-call app
+    // becomes active. Flow:
+    //   1. Check hq-pro for an already-active bot (dedup signal)
+    //   2. If no bot, fire a macOS notification + bump the tray Prompt badge
+    //      (both handled inside `meetings_notify_detected` which also gates on
+    //      the user's notification prefs + the per-meeting ledger)
+    unlisteners.push(
+      await listen<{
+        meetingUrl?: string;
+        platform?: string;
+        summary?: string;
+        sourceEventId?: string;
+      }>('meeting:detected', async (event) => {
+        const { meetingUrl, platform, summary, sourceEventId } = event.payload;
+        try {
+          if (meetingUrl) {
+            const bot = await invoke<{ botId: string } | null>('meetings_check_bot_for_url', {
+              meetingUrl,
+              eventId: sourceEventId ?? null,
+            });
+            if (bot) return;
+          }
+          await invoke('meetings_notify_detected', {
+            payload: {
+              meetingUrl: meetingUrl ?? null,
+              platform: platform ?? null,
+              summary: summary ?? null,
+              sourceEventId: sourceEventId ?? null,
+            },
+          });
+        } catch (err) {
+          console.error('meeting:detected handler error:', err);
+        }
+      })
+    );
   }
 
   $effect(() => {
@@ -800,7 +837,10 @@
         // already open, otherwise creates a fresh one. Errors are swallowed
         // since they'd be infra-level (Tauri failure) and there's nothing
         // useful to show inline.
+        // Also clear the tray Prompt badge — the user is now acting on any
+        // pending meeting detections.
         invoke('open_meetings_window').catch(() => {});
+        invoke('meetings_clear_prompt_badge').catch(() => {});
       }}
     />
   {:else}

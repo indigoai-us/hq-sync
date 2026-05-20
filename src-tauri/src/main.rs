@@ -131,6 +131,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -202,6 +203,10 @@ fn main() {
             commands::meetings::meetings_invite_bot,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
+            commands::meetings::meetings_check_bot_for_url,
+            commands::meetings::meetings_notify_detected,
+            commands::meetings::meetings_clear_prompt_badge,
+            tray::meetings_set_prompt_badge,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
