@@ -8,11 +8,16 @@
 
   let { onback }: Props = $props();
 
+  const ALL_PLATFORMS = ['zoom', 'meet', 'teams', 'slack', 'webex'] as const;
+  type Platform = (typeof ALL_PLATFORMS)[number];
+
   let hqPath = $state<string | null>(null);
   let syncOnLaunch = $state(false);
   let notifications = $state(true);
   let startAtLogin = $state(true);
   let realtimeSync = $state(true);
+  let meetingDetectEnabled = $state(true);
+  let meetingDetectPlatforms = $state<string[]>([...ALL_PLATFORMS]);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -43,6 +48,10 @@
           notifications: boolean | null;
           startAtLogin: boolean | null;
           realtimeSync: boolean | null;
+          meetingDetectNotify?: {
+            enabled: boolean | null;
+            platforms: string[] | null;
+          } | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
       ]);
@@ -52,6 +61,8 @@
       notifications = settings.notifications ?? true;
       startAtLogin = settings.startAtLogin ?? autostart;
       realtimeSync = settings.realtimeSync ?? true;
+      meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
+      meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...ALL_PLATFORMS];
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -76,6 +87,10 @@
           notifications,
           startAtLogin,
           realtimeSync,
+          meetingDetectNotify: {
+            enabled: meetingDetectEnabled,
+            platforms: meetingDetectPlatforms,
+          },
         },
       });
       showSaved();
@@ -128,6 +143,20 @@
       await invoke('set_autostart_enabled', { enabled: startAtLogin });
     } catch (err) {
       console.error('Failed to set autostart:', err);
+    }
+    await saveAll();
+  }
+
+  async function handleToggleMeetingDetect() {
+    meetingDetectEnabled = !meetingDetectEnabled;
+    await saveAll();
+  }
+
+  async function handleTogglePlatform(platform: Platform) {
+    if (meetingDetectPlatforms.includes(platform)) {
+      meetingDetectPlatforms = meetingDetectPlatforms.filter((p) => p !== platform);
+    } else {
+      meetingDetectPlatforms = [...meetingDetectPlatforms, platform];
     }
     await saveAll();
   }
@@ -261,6 +290,56 @@
           <span class="toggle-knob"></span>
         </button>
       </div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Meeting Detection -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
+          <span class="setting-desc">Notify when a new meeting is detected</span>
+        </div>
+        <button
+          id="toggle-meeting-detect"
+          class="toggle"
+          class:active={meetingDetectEnabled}
+          onclick={handleToggleMeetingDetect}
+          role="switch"
+          aria-checked={meetingDetectEnabled}
+          aria-label="Detect upcoming meetings"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+
+      {#if meetingDetectEnabled}
+        <div class="platform-rows">
+          {#each ALL_PLATFORMS as platform}
+            {@const checked = meetingDetectPlatforms.includes(platform)}
+            <div class="platform-row">
+              <label class="platform-label" for="platform-{platform}">{platform}</label>
+              <button
+                id="platform-{platform}"
+                class="platform-check"
+                class:checked
+                onclick={() => handleTogglePlatform(platform)}
+                role="checkbox"
+                aria-checked={checked}
+                aria-label="Enable {platform} meeting detection"
+              >
+                {#if checked}
+                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                    <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                {/if}
+              </button>
+            </div>
+          {/each}
+          <div class="ledger-path-row">
+            <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
+          </div>
+        </div>
+      {/if}
 
       <div class="settings-divider"></div>
 
@@ -526,5 +605,52 @@
        the pill. Flip the knob to the inverted contrast color when active so
        it stays visible against the filled pill. */
     background: var(--popover-primary-text, #111113);
+  }
+
+  /* Platform sub-rows (shown when meeting detection is enabled) */
+  .platform-rows {
+    display: flex;
+    flex-direction: column;
+    padding: 0 1rem 0.25rem 1.75rem;
+    gap: 0.125rem;
+  }
+
+  .platform-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.2rem 0;
+  }
+
+  .platform-label {
+    font-size: 0.75rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    text-transform: capitalize;
+    cursor: default;
+  }
+
+  .platform-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.12));
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--popover-primary-text, #111113);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .platform-check.checked {
+    background: var(--popover-primary, #ffffff);
+    border-color: var(--popover-primary, #ffffff);
+  }
+
+  .ledger-path-row {
+    padding-top: 0.375rem;
   }
 </style>

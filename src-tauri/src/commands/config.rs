@@ -24,6 +24,26 @@ pub struct HqConfig {
     pub hq_folder_path: Option<String>,
 }
 
+/// Meeting-detection notification preferences, nested under
+/// `meetingDetectNotify` in `~/.hq/menubar.json`.
+///
+/// Absent when the feature has never been configured; defaults are applied
+/// in `get_settings` (enabled=true, platforms=all five).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingDetectNotifyPrefs {
+    /// When false, all `meeting:detected` events are suppressed regardless
+    /// of the `platforms` list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Allow-list of platform strings. A detected meeting whose `platform`
+    /// is NOT in this list is silently suppressed. An empty vec means
+    /// nothing is allowed; `None` means the field was absent (apply default
+    /// = all platforms allowed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<String>>,
+}
+
 /// Menubar preferences stored in ~/.hq/menubar.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +59,10 @@ pub struct MenubarPrefs {
     /// (see `is_realtime_sync_enabled` and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realtime_sync: Option<bool>,
+    /// Meeting detect-notify settings (US-007). Absent when not yet
+    /// configured; `get_settings` supplies defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_detect_notify: Option<MeetingDetectNotifyPrefs>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
