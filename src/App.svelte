@@ -763,6 +763,7 @@
       {personalFilesTotal}
       {personalFirstPushDone}
       syncTotalFiles={effectiveTotalFiles}
+      {syncPlanTotalFiles}
       companies={syncCompanies}
       {workspaces}
       cloudReachable={workspacesCloudReachable}

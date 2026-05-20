@@ -8,6 +8,7 @@
   import NewFilesBadge from './NewFilesBadge.svelte';
   import MeetingIcon from './MeetingIcon.svelte';
   import type { Workspace } from '../lib/workspaces';
+  import { liveProgressCaption } from '../lib/live-progress-caption';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
@@ -38,12 +39,22 @@
      *  the runner emitting its first event — without it, the bar would
      *  drop back to 0 in that window. */
     personalFirstPushDone?: boolean;
-    /** Real expected file count for the entire sync — emitted by the Rust
-     *  pre-walk before any uploads. When > 0, the bar uses it as the
-     *  denominator for true per-file progress. When 0 (pre-walk hasn't
-     *  fired yet, or hit an error), the bar falls back to workspace-level
-     *  progress. */
+    /** Effective denominator for the unified progress *bar*. Sourced from
+     *  App.svelte's `effectiveTotalFiles` derived value (plan-event total
+     *  when available, else Rust pre-walk total). The bar uses this for
+     *  fill animation; the "N of M transferred" caption does NOT — it uses
+     *  `syncPlanTotalFiles` (strict transfer count) instead, to avoid
+     *  showing the tree-walk total as if it were a transfer count. */
     syncTotalFiles?: number;
+    /** Strict transfer count for the entire sync — sum of
+     *  `filesToDownload + filesToUpload + filesToConflict` across every
+     *  per-company `sync:plan` event the runner emits (hq-cloud@5.5.0+).
+     *  Used by the "N of M transferred" caption so M reflects work the
+     *  sync is actually doing, not the size of the local tree. 0 means
+     *  no plan events have landed yet (either runner is pre-5.5.0 or
+     *  we're still in the Rust pre-walk phase) — caption falls through
+     *  to the count-only branch. */
+    syncPlanTotalFiles?: number;
     /** Companies in the current/last fanout — rendered live during sync.
      *  `name` is optional; runners < v5.1.9 only emit `uid` + `slug`. The
      *  steady-state list is rendered by `workspaces` below; this prop only
@@ -148,6 +159,7 @@
     personalFilesTotal = null,
     personalFirstPushDone = false,
     syncTotalFiles = 0,
+    syncPlanTotalFiles = 0,
     companies = [],
     workspaces = null,
     cloudReachable = true,
@@ -224,6 +236,22 @@
     }
     return Math.min(100, Math.max(0, p * 100));
   });
+
+  // Caption decision under the bar. Pure function lives in
+  // `../lib/live-progress-caption.ts` so it can be unit-tested without a
+  // Svelte component harness — see the regression test that proves the
+  // pre-walk total is never shown as "transferred".
+  const caption = $derived(
+    liveProgressCaption({
+      syncFilesProgressed,
+      syncPlanTotalFiles,
+      syncTotalFiles,
+      fanoutTotal,
+      fanoutDoneCount,
+      personalFilesDone,
+      personalFilesTotal,
+    })
+  );
 
   // Current workspace label — prefer the fanout slot we're currently
   // working on (companies[fanoutDoneCount]) over progress.company,
@@ -579,39 +607,30 @@
           <div class="live-bar">
             <div class="live-bar-fill" style="width: {barPct}%"></div>
           </div>
-          {#if syncTotalFiles > 0 && syncFilesProgressed <= syncTotalFiles}
-            <!-- Real per-file caption: pre-walk computed the exact number
-                 of transfers (uploads + downloads) the runner will do, so
-                 the bar fills with each progress event. Skips don't fire
-                 events and don't count toward either side. -->
+          <!-- Caption decision lives in `liveProgressCaption` so the
+               "do not show the tree-walk total as transferred" rule is
+               unit-tested. See `../lib/live-progress-caption.ts`. -->
+          {#if caption.kind === 'transferred-of'}
             <p class="live-line muted">
-              {syncFilesProgressed.toLocaleString()} of
-              {syncTotalFiles.toLocaleString()} transferred
+              {caption.progressed.toLocaleString()} of
+              {caption.planTotal.toLocaleString()} transferred
             </p>
-          {:else if syncTotalFiles === 0 && fanoutTotal > 0}
-            <!-- Pre-walk computed 0 transfers and the runner has started
-                 (fanout-plan landed). Everything matches the journal —
-                 sync will finalize in a moment with no actual work. -->
+          {:else if caption.kind === 'transferred'}
+            <p class="live-line muted">
+              {caption.progressed.toLocaleString()} transferred
+            </p>
+          {:else if caption.kind === 'up-to-date'}
             <p class="live-line muted">Up to date — finalizing…</p>
-          {:else if syncFilesProgressed > 0}
-            <!-- Bar overshot the estimate (pre-walk under-counted because
-                 we don't yet count pull-side downloads). Show the honest
-                 running count rather than a fake "X of Y". -->
+          {:else if caption.kind === 'fanout'}
             <p class="live-line muted">
-              {syncFilesProgressed.toLocaleString()} transferred
-            </p>
-          {:else if fanoutTotal > 0}
-            <!-- Fallback: pre-walk hasn't landed yet (or returned 0).
-                 Show workspace progress + rolling file count. -->
-            <p class="live-line muted">
-              Workspace {Math.min(fanoutDoneCount + 1, fanoutTotal)} of {fanoutTotal}
-              {#if syncFilesProgressed > 0}
-                · {syncFilesProgressed.toLocaleString()} file{syncFilesProgressed === 1 ? '' : 's'}
+              Workspace {caption.current} of {caption.total}
+              {#if caption.progressed > 0}
+                · {caption.progressed.toLocaleString()} file{caption.progressed === 1 ? '' : 's'}
               {/if}
             </p>
-          {:else if personalFilesTotal != null && personalFilesTotal > 0}
+          {:else if caption.kind === 'personal'}
             <p class="live-line muted">
-              {personalFilesDone} of {personalFilesTotal} files
+              {caption.done} of {caption.total} files
             </p>
           {/if}
         </div>
