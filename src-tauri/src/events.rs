@@ -303,6 +303,62 @@ pub struct SyncPersonalFirstPushSkippedEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Meeting detection events (Recall Desktop SDK → Svelte)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Platform discriminator for `MeetingDetectedEvent`.
+///
+/// Matches the platforms the Recall Desktop SDK can detect. `Other` is a
+/// catch-all for any platform string the SDK emits that we have not
+/// explicitly enumerated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MeetingPlatform {
+    Zoom,
+    Meet,
+    Teams,
+    Slack,
+    Webex,
+    Other,
+}
+
+/// Detection source: SDK detected via a calendar-imminent event, or via the
+/// active-app detector (the user launched a meeting client).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetectionSource {
+    SdkCalendar,
+    SdkActiveApp,
+}
+
+/// Payload for the `meeting:detected` Tauri event forwarded from the
+/// Recall Desktop SDK.
+///
+/// The SDK emits this on its stdout as ndjson. Recall's server-side SDK
+/// documentation and our hq-sync sidecar contract agree on this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingDetectedEvent {
+    /// Recall-assigned stable ID for this detection (used for dedup).
+    pub detection_id: String,
+    /// The meeting URL (Zoom, Meet, Teams, etc.) that was detected.
+    pub meeting_url: String,
+    /// The video-conferencing platform.
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the detection fired.
+    pub detected_at: String,
+    /// Whether the detection came from a calendar event or the active app.
+    pub source: DetectionSource,
+    /// Optional: the calendar event id this detection was derived from
+    /// (present for `sdk-calendar` detections; absent for `sdk-active-app`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_event_id: Option<String>,
+}
+
+/// Tauri event channel name for `MeetingDetectedEvent`.
+pub const EVENT_MEETING_DETECTED: &str = "meeting:detected";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -592,6 +648,56 @@ mod tests {
         let json = r#"not valid json"#;
         let result: Result<SyncEvent, _> = serde_json::from_str(json);
         assert!(result.is_err());
+    }
+
+    // ── MeetingDetectedEvent ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_meeting_detected_event_round_trips() {
+        let payload = MeetingDetectedEvent {
+            detection_id: "det_123".to_string(),
+            meeting_url: "https://zoom.us/j/12345".to_string(),
+            platform: MeetingPlatform::Zoom,
+            detected_at: "2026-05-20T10:00:00Z".to_string(),
+            source: DetectionSource::SdkCalendar,
+            source_event_id: Some("evt_abc".to_string()),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: MeetingDetectedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(payload, parsed);
+    }
+
+    #[test]
+    fn test_meeting_detected_event_omits_none_source_event_id() {
+        let payload = MeetingDetectedEvent {
+            detection_id: "det_456".to_string(),
+            meeting_url: "https://meet.google.com/abc-def-ghi".to_string(),
+            platform: MeetingPlatform::Meet,
+            detected_at: "2026-05-20T10:00:00Z".to_string(),
+            source: DetectionSource::SdkActiveApp,
+            source_event_id: None,
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(!json.contains("\"sourceEventId\""));
+        assert!(json.contains("\"platform\":\"meet\""));
+        assert!(json.contains("\"source\":\"sdk-active-app\""));
+    }
+
+    #[test]
+    fn test_meeting_detected_event_parses_camel_case_from_sdk() {
+        let json = r#"{
+            "detectionId": "det_789",
+            "meetingUrl": "https://teams.microsoft.com/l/meetup-join/abc",
+            "platform": "teams",
+            "detectedAt": "2026-05-20T11:00:00Z",
+            "source": "sdk-calendar",
+            "sourceEventId": "cal_evt_99"
+        }"#;
+        let payload: MeetingDetectedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.detection_id, "det_789");
+        assert_eq!(payload.platform, MeetingPlatform::Teams);
+        assert_eq!(payload.source, DetectionSource::SdkCalendar);
+        assert_eq!(payload.source_event_id.as_deref(), Some("cal_evt_99"));
     }
 
     #[test]

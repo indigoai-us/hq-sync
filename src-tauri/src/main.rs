@@ -290,6 +290,23 @@ fn main() {
                 });
             }
 
+            // Start the Recall Desktop SDK sidecar for meeting detection.
+            // Fire-and-forget: if the SDK binary is absent or credentials are
+            // unavailable, `start_recall_sdk` logs RECALL_SDK_UNAVAILABLE and
+            // returns without affecting the rest of the app. See
+            // `commands::recall_sdk` for the graceful-degradation contract.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = commands::recall_sdk::start_recall_sdk(handle).await {
+                        util::logfile::log(
+                            "recall-sdk",
+                            &format!("start_recall_sdk error (app continues): {e}"),
+                        );
+                    }
+                });
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())

@@ -16,6 +16,7 @@ pub mod oauth;
 pub mod personal;
 pub mod prewarm;
 pub mod process;
+pub mod recall_sdk;
 pub mod provision;
 pub mod run_cli_provision;
 pub mod settings;
