@@ -5,6 +5,7 @@
   import ConflictModal from './ConflictModal.svelte';
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
+  import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import NewFilesBadge from './NewFilesBadge.svelte';
   import MeetingIcon from './MeetingIcon.svelte';
   import type { Workspace } from '../lib/workspaces';
@@ -388,7 +389,7 @@
         syncState === 'syncing'
           ? 'Click to stop the sync'
           : syncState === 'error'
-            ? 'Last sync failed — click to retry'
+            ? 'Sync initialized — click to resume, or finish in Claude Code'
             : syncState === 'auth-error'
               ? 'Sign in again to sync'
               : 'Sync'
@@ -420,7 +421,7 @@
       {#if syncState === 'syncing'}
         Stop
       {:else if syncState === 'error'}
-        Retry
+        Resume
       {:else if syncState === 'auth-error'}
         Sign in
       {:else}
@@ -577,16 +578,31 @@
           />
         </div>
       {:else if syncState === 'error' && errorMessage}
+        <!-- "Sync needs attention" framing — we deliberately avoid "failed"
+             wording and any red treatment on the recoverable-error path.
+             The raw `errorMessage` is no longer rendered in the banner body
+             because it always sounds alarming ("failed to push", "exit 1");
+             the OpenInClaudeCodeButton template (lib/copy-prompts.ts
+             'sync-failed') still includes it in the prefilled prompt, so
+             Claude Code sees the full stderr the moment the user clicks. -->
         <div class="banner banner-notice">
           <div class="banner-update-text">
-            <p class="banner-title">Sync failed</p>
-            <p class="banner-body">{errorMessage}</p>
+            <p class="banner-title">Sync initialized</p>
+            <p class="banner-body">Click the button to finish sync in Claude Code.</p>
           </div>
-          <CopyPromptButton
-            variant="inline"
-            label="Copy prompt"
-            issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
-          />
+          <div class="banner-actions">
+            <OpenInClaudeCodeButton
+              variant="inline"
+              label="Finish sync in Claude Code"
+              folder={config?.hqFolderPath ?? ''}
+              issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+            />
+            <CopyPromptButton
+              variant="inline"
+              label="Copy prompt"
+              issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+            />
+          </div>
         </div>
       {/if}
 
