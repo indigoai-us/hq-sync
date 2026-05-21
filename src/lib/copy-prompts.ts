@@ -16,7 +16,6 @@ export type IssueKind =
   | 'sync-conflict'
   | 'sync-failed'
   | 'auth-expired'
-  | 'app-update-available'
   | 'hq-cli-update-available'
   | 'hq-cli-update-failed'
   | 'cloud-unreachable'
@@ -90,15 +89,6 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       '',
       'Please run `/hq-login` to refresh my Cognito tokens. If a silent refresh fails, fall back to the browser sign-in flow. Confirm with `/hq-whoami` that the session is healthy before doing anything else.',
     ].filter(Boolean).join('\n');
-  },
-
-  'app-update-available': (i) => {
-    const version = val(i, 'version');
-    return [
-      `My HQ Sync menubar app has an update available${version ? ` (v${version})` : ''}.`,
-      '',
-      "Please apply it. The in-app Install button calls Tauri's `install_update` and restarts the app — that's usually the right path. If it fails, fetch the latest DMG from the GitHub releases page of `indigoai-us/hq-sync` and install manually. After updating, open the popover and confirm the new version in the About / Settings.",
-    ].join('\n');
   },
 
   'hq-cli-update-available': (i) => {

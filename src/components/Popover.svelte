@@ -505,14 +505,12 @@
             >
               {updateInstalling ? 'Installing…' : 'Install'}
             </button>
-            <CopyPromptButton
-              variant="inline"
-              label="Copy prompt"
-              issue={{
-                kind: 'app-update-available',
-                payload: { version: updateAvailable.version },
-              }}
-            />
+            <!-- No Copy prompt here: the Install button calls Tauri's
+                 `install_update` + restart, which is self-sufficient.
+                 Unlike conflict/sign-in/hq-cli-update banners, there's
+                 no failure mode where handing a prompt to Claude is
+                 the next step — the auto-updater either works or the
+                 user grabs the DMG from GitHub. Keep this banner quiet. -->
           </div>
         </div>
       {/if}
