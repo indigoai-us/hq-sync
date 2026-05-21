@@ -13,6 +13,11 @@
   let notifications = $state(true);
   let startAtLogin = $state(true);
   let realtimeSync = $state(true);
+  // Defaults to true so a brand-new install matches pre-5.25 behavior.
+  // When false, Sync Now (and Auto-sync) drop the personal target from
+  // the spawned hq-sync-runner's fanout — only cloud-enabled company
+  // memberships sync. See src-tauri/src/commands/sync.rs.
+  let personalSyncEnabled = $state(true);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -43,6 +48,7 @@
           notifications: boolean | null;
           startAtLogin: boolean | null;
           realtimeSync: boolean | null;
+          personalSyncEnabled: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
       ]);
@@ -52,6 +58,7 @@
       notifications = settings.notifications ?? true;
       startAtLogin = settings.startAtLogin ?? autostart;
       realtimeSync = settings.realtimeSync ?? true;
+      personalSyncEnabled = settings.personalSyncEnabled ?? true;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -76,6 +83,7 @@
           notifications,
           startAtLogin,
           realtimeSync,
+          personalSyncEnabled,
         },
       });
       showSaved();
@@ -120,6 +128,11 @@
       // and main.rs auto-starts the daemon on next launch when the flag is set.
       console.error('Auto-sync daemon command failed:', err);
     }
+  }
+
+  async function handleTogglePersonalSync() {
+    personalSyncEnabled = !personalSyncEnabled;
+    await saveAll();
   }
 
   async function handleToggleStartAtLogin() {
@@ -236,6 +249,30 @@
           role="switch"
           aria-checked={realtimeSync}
           aria-label="Auto-sync"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Sync personal vault — when OFF, the menubar passes --skip-personal
+           to the spawned hq-sync-runner so the personal target is dropped
+           from the --companies fanout. Only cloud-enabled company
+           memberships sync. Defaults ON to preserve pre-5.25 behavior. -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <label class="setting-label" for="toggle-personal-sync">Sync personal vault</label>
+          <span class="setting-desc">Sync your personal HQ files in addition to company memberships</span>
+        </div>
+        <button
+          id="toggle-personal-sync"
+          class="toggle"
+          class:active={personalSyncEnabled}
+          onclick={handleTogglePersonalSync}
+          role="switch"
+          aria-checked={personalSyncEnabled}
+          aria-label="Sync personal vault"
         >
           <span class="toggle-knob"></span>
         </button>

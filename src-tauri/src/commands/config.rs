@@ -39,6 +39,19 @@ pub struct MenubarPrefs {
     /// (see `is_realtime_sync_enabled` and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realtime_sync: Option<bool>,
+    /// Sync personal vault: when true (default), the `--companies` fanout
+    /// includes the user's personal target (every top-level entry under
+    /// hq_root minus PERSONAL_VAULT_EXCLUDED_TOP_LEVEL, see hq-cloud
+    /// `personal-vault.ts`). When false, the menubar passes `--no-personal`
+    /// to `hq sync` so the spawned sync-runner drops the personal slot
+    /// from its fanout plan — only cloud-enabled company memberships sync.
+    ///
+    /// Useful for devices that joined HQ for company collaboration only,
+    /// privacy-by-default postures, or soak/recovery scenarios while we're
+    /// cleaning up an already-leaked personal vault. Defaults to true so
+    /// existing users see zero behavior change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_sync_enabled: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
