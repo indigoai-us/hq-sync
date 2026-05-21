@@ -193,6 +193,9 @@ fn main() {
             commands::hq_cli_update::install_hq_cli_update,
             commands::hq_core_update::check_hq_core_update,
             commands::hq_core_update::get_hq_version,
+            commands::hq_core_staging_update::check_hq_core_staging_update,
+            commands::hq_core_apply_staging::read_replace_from_staging_manifest,
+            commands::hq_core_apply_staging::apply_hq_core_staging,
             commands::hq_core_drift::check_hq_core_drift,
             commands::hq_core_drift::restore_from_upstream,
             commands::drift_detail::open_drift_detail,
@@ -274,6 +277,10 @@ fn main() {
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
             commands::hq_core_update::setup_hq_core_update_checker(app.handle());
+            // Staging-channel update checker — internally flag-gated on
+            // `staging_update_channel` in menubar.json, so this is cheap to
+            // run unconditionally (one stat every 6h when the toggle is off).
+            commands::hq_core_staging_update::setup_hq_core_staging_update_checker(app.handle());
             commands::hq_core_drift::setup_hq_core_drift_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for

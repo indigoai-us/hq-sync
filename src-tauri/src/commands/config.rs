@@ -39,6 +39,23 @@ pub struct MenubarPrefs {
     /// (see `is_realtime_sync_enabled` and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realtime_sync: Option<bool>,
+    /// Staging update channel: when true, the menubar polls
+    /// `indigoai-us/hq-core-staging`'s latest GitHub release alongside the
+    /// production hq-core check and renders an "Update from staging" button
+    /// in Settings when staging is ahead of local `core/core.yaml#hqVersion`.
+    ///
+    /// Defaults to **false** — this is the channel for operators who track
+    /// the bleeding-edge auto-beta tags published by the staging repo's
+    /// `auto-beta-release.yml` workflow on every push to main. Production
+    /// users should leave it off and rely on the existing `hq_core_update`
+    /// nag against the public `hq-core` repo.
+    ///
+    /// The toggle IS the feature flag: when missing/false, the staging
+    /// poller no-ops every cycle and `hq-core-staging-update:available`
+    /// is never emitted, so the UI surface that would render the update
+    /// button stays dormant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_update_channel: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getVersion } from '@tauri-apps/api/app';
 
   interface Props {
@@ -13,9 +14,30 @@
   let notifications = $state(true);
   let startAtLogin = $state(true);
   let realtimeSync = $state(true);
+  let stagingUpdateChannel = $state(false);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  // Staging-channel update state. Populated by the `hq-core-staging-update:available`
+  // event (emitted by the Rust background checker when staging is ahead of the
+  // local hqVersion) AND by the manual one-shot `check_hq_core_staging_update`
+  // call this component runs whenever the toggle flips ON.
+  let stagingUpdate = $state<{ local: string | null; latestTag: string; latestSemver: string } | null>(null);
+  let stagingCheckInFlight = $state(false);
+  // Manifest of what the apply will overwrite — read at confirmation time so
+  // the modal lists exactly what's about to change. Lazily loaded.
+  let stagingManifest = $state<{ paths: string[]; preserveSubpaths: string[] } | null>(null);
+  let stagingConfirmOpen = $state(false);
+  let stagingApplyRunning = $state(false);
+  // Streaming progress log — bounded to last N lines so the popover doesn't
+  // grow unbounded during a long apply.
+  let stagingApplyLog = $state<{ stream: string; line: string }[]>([]);
+  const STAGING_APPLY_LOG_MAX = 200;
+  let stagingApplyError = $state<string | null>(null);
+  let stagingApplyDone = $state<string | null>(null);
+  let unlistenStagingAvailable: UnlistenFn | null = null;
+  let unlistenStagingProgress: UnlistenFn | null = null;
 
   // Updater UI state. `checking` blocks the button and shows a spinner;
   // `result` is a transient status line ("Up to date" / "v0.1.8 ready").
@@ -43,6 +65,7 @@
           notifications: boolean | null;
           startAtLogin: boolean | null;
           realtimeSync: boolean | null;
+          stagingUpdateChannel: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
       ]);
@@ -52,6 +75,7 @@
       notifications = settings.notifications ?? true;
       startAtLogin = settings.startAtLogin ?? autostart;
       realtimeSync = settings.realtimeSync ?? true;
+      stagingUpdateChannel = settings.stagingUpdateChannel ?? false;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -76,6 +100,7 @@
           notifications,
           startAtLogin,
           realtimeSync,
+          stagingUpdateChannel,
         },
       });
       showSaved();
@@ -132,6 +157,88 @@
     await saveAll();
   }
 
+  // Staging-channel toggle flip. Two distinct effects on transitions:
+  //   ON  → save, then fire a one-shot manual `check_hq_core_staging_update`
+  //         so the user gets immediate feedback rather than waiting up to
+  //         6h for the background loop to tick.
+  //   OFF → save, clear any cached delta so the row hides immediately
+  //         instead of waiting for the next event.
+  async function handleToggleStagingChannel() {
+    stagingUpdateChannel = !stagingUpdateChannel;
+    await saveAll();
+    if (stagingUpdateChannel) {
+      try {
+        stagingCheckInFlight = true;
+        const info = await invoke<{
+          local: string | null;
+          latestTag: string;
+          latestSemver: string;
+        } | null>('check_hq_core_staging_update');
+        stagingUpdate = info;
+      } catch (err) {
+        console.error('check_hq_core_staging_update failed:', err);
+      } finally {
+        stagingCheckInFlight = false;
+      }
+    } else {
+      stagingUpdate = null;
+      stagingManifest = null;
+      stagingConfirmOpen = false;
+    }
+  }
+
+  async function openStagingConfirm() {
+    if (!stagingUpdate || stagingApplyRunning) return;
+    try {
+      stagingManifest = await invoke<{ paths: string[]; preserveSubpaths: string[] }>(
+        'read_replace_from_staging_manifest'
+      );
+    } catch (err) {
+      console.error('read_replace_from_staging_manifest failed:', err);
+      stagingApplyError = String(err);
+      return;
+    }
+    stagingApplyError = null;
+    stagingApplyDone = null;
+    stagingApplyLog = [];
+    stagingConfirmOpen = true;
+  }
+
+  function closeStagingConfirm() {
+    if (stagingApplyRunning) return;
+    stagingConfirmOpen = false;
+  }
+
+  async function confirmStagingApply() {
+    if (!stagingUpdate || stagingApplyRunning) return;
+    stagingApplyRunning = true;
+    stagingApplyError = null;
+    stagingApplyDone = null;
+    try {
+      const result = await invoke<{ exitCode: number; tag: string }>('apply_hq_core_staging', {
+        tag: stagingUpdate.latestTag,
+      });
+      stagingApplyDone = `Applied ${result.tag}`;
+      // After a successful apply, hide the "update available" row — the
+      // local hqVersion has moved up; the next background check will
+      // re-surface a newer beta only when there actually is one.
+      stagingUpdate = null;
+    } catch (err) {
+      stagingApplyError = String(err);
+    } finally {
+      stagingApplyRunning = false;
+    }
+  }
+
+  function pushApplyLog(entry: { stream: string; line: string }) {
+    // Append to a fresh array so Svelte's reactivity picks up the change.
+    const next = stagingApplyLog.concat(entry);
+    stagingApplyLog =
+      next.length > STAGING_APPLY_LOG_MAX
+        ? next.slice(next.length - STAGING_APPLY_LOG_MAX)
+        : next;
+  }
+
   async function handleCheckForUpdates() {
     if (updateChecking) return;
     updateChecking = true;
@@ -161,9 +268,38 @@
         appVersion = v;
       })
       .catch((err) => console.error('Failed to read app version:', err));
+
+    // Background channel for the staging poller. Fires whenever the Rust
+    // checker (every 6h while toggle is on) finds staging ahead of local.
+    // We don't rely on this alone — the toggle's ON transition also fires
+    // a one-shot check synchronously — but this catches transitions that
+    // happen mid-session without the user touching Settings.
+    listen<{ local: string | null; latestTag: string; latestSemver: string }>(
+      'hq-core-staging-update:available',
+      (event) => {
+        if (stagingUpdateChannel) {
+          stagingUpdate = event.payload;
+        }
+      }
+    )
+      .then((unlisten) => {
+        unlistenStagingAvailable = unlisten;
+      })
+      .catch((err) => console.error('listen hq-core-staging-update:available failed:', err));
+
+    listen<{ stream: string; line: string }>('hq-core-staging-apply:progress', (event) => {
+      pushApplyLog(event.payload);
+    })
+      .then((unlisten) => {
+        unlistenStagingProgress = unlisten;
+      })
+      .catch((err) => console.error('listen hq-core-staging-apply:progress failed:', err));
+
     return () => {
       if (savedTimeout) clearTimeout(savedTimeout);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
+      if (unlistenStagingAvailable) unlistenStagingAvailable();
+      if (unlistenStagingProgress) unlistenStagingProgress();
     };
   });
 </script>
@@ -304,6 +440,57 @@
 
       <div class="settings-divider"></div>
 
+      <!-- Staging update channel — feature-flagged toggle. When ON, the
+           menubar polls indigoai-us/hq-core-staging's latest release every
+           6h and renders an "Update from staging" button below this row
+           when staging is ahead of local core/core.yaml#hqVersion. Replaces
+           local .agents/.codex/.claude/core/.obsidian/AGENTS.md from the
+           staging tag via the personal:replace-from-staging script (the
+           menubar shells out to it with --paths from
+           core.yaml#replace_from_staging.paths). Defaults OFF — opt-in
+           bleeding-edge channel; production users should leave it off. -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <label class="setting-label" for="toggle-staging-channel">Staging Channel</label>
+          <span class="setting-desc">Show updates from `hq-core-staging` betas</span>
+        </div>
+        <button
+          id="toggle-staging-channel"
+          class="toggle"
+          class:active={stagingUpdateChannel}
+          onclick={handleToggleStagingChannel}
+          role="switch"
+          aria-checked={stagingUpdateChannel}
+          aria-label="Staging update channel"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+
+      {#if stagingUpdateChannel && (stagingUpdate || stagingCheckInFlight || stagingApplyDone)}
+        <div class="setting-row staging-update-row">
+          <div class="setting-info">
+            <span class="setting-label">Staging update</span>
+            <span class="setting-desc">
+              {#if stagingCheckInFlight}
+                Checking…
+              {:else if stagingApplyDone}
+                {stagingApplyDone}
+              {:else if stagingUpdate}
+                {stagingUpdate.local ?? '—'} → {stagingUpdate.latestTag}
+              {/if}
+            </span>
+          </div>
+          {#if stagingUpdate && !stagingApplyRunning && !stagingApplyDone}
+            <button class="change-button" onclick={openStagingConfirm}>
+              Update from staging…
+            </button>
+          {/if}
+        </div>
+      {/if}
+
+      <div class="settings-divider"></div>
+
       <!-- Version — read-only; sourced from tauri.conf.json via getVersion() -->
       <div class="setting-row">
         <div class="setting-info">
@@ -313,10 +500,87 @@
       </div>
     </div>
   {/if}
+
+  {#if stagingConfirmOpen && stagingManifest}
+    <!-- Modal overlay: confirmation + live progress in one surface. The user
+         can't dismiss while an apply is in flight (Cancel hidden during run)
+         because cancelling mid-rsync would leave the HQ root in a half-state. -->
+    <div
+      class="staging-modal-backdrop"
+      role="presentation"
+      onclick={closeStagingConfirm}
+    ></div>
+    <div class="staging-modal" role="dialog" aria-modal="true" aria-labelledby="staging-modal-title">
+      <h2 id="staging-modal-title">Update from staging — {stagingUpdate?.latestTag ?? ''}</h2>
+      <p class="staging-modal-lead">
+        This will replace the following top-level entries inside your HQ folder
+        with their contents from <code>indigoai-us/hq-core-staging@{stagingUpdate?.latestTag ?? ''}</code>.
+        Everything else (your <code>companies/</code>, <code>personal/</code>,
+        <code>workspace/</code>, <code>.git/</code>, etc.) is left untouched.
+      </p>
+      <ul class="staging-modal-list">
+        {#each stagingManifest.paths as p (p)}
+          <li><code>{p}</code></li>
+        {/each}
+      </ul>
+      {#if stagingManifest.preserveSubpaths.length > 0}
+        <p class="staging-modal-lead">
+          These sub-paths inside that set are backed up and restored across the overlay:
+        </p>
+        <ul class="staging-modal-list">
+          {#each stagingManifest.preserveSubpaths as sp (sp)}
+            <li><code>{sp}</code></li>
+          {/each}
+        </ul>
+      {/if}
+      <p class="staging-modal-warning">
+        Nothing is committed — the script leaves the changes staged in <code>git status</code>
+        for you to review and commit (or revert) by hand.
+      </p>
+
+      {#if stagingApplyLog.length > 0 || stagingApplyRunning || stagingApplyError || stagingApplyDone}
+        <div
+          class="staging-modal-log"
+          role="log"
+          aria-live="polite"
+          aria-label="Apply progress"
+        >
+          {#each stagingApplyLog as entry, i (i)}
+            <div class="staging-modal-log-line staging-modal-log-{entry.stream}">{entry.line}</div>
+          {/each}
+        </div>
+      {/if}
+
+      {#if stagingApplyError}
+        <p class="staging-modal-error">Error: {stagingApplyError}</p>
+      {/if}
+      {#if stagingApplyDone}
+        <p class="staging-modal-done">{stagingApplyDone}. Review the diff in your editor.</p>
+      {/if}
+
+      <div class="staging-modal-actions">
+        {#if !stagingApplyRunning && !stagingApplyDone}
+          <button class="change-button" onclick={closeStagingConfirm}>Cancel</button>
+          <button
+            class="change-button staging-modal-confirm"
+            onclick={confirmStagingApply}
+            disabled={!stagingUpdate}
+          >
+            Overwrite from {stagingUpdate?.latestTag ?? '…'}
+          </button>
+        {:else if stagingApplyRunning}
+          <button class="change-button" disabled>Running…</button>
+        {:else if stagingApplyDone}
+          <button class="change-button" onclick={closeStagingConfirm}>Close</button>
+        {/if}
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
   .settings {
+    position: relative;
     display: flex;
     flex-direction: column;
     width: 320px;
@@ -526,5 +790,143 @@
        the pill. Flip the knob to the inverted contrast color when active so
        it stays visible against the filled pill. */
     background: var(--popover-primary-text, #111113);
+  }
+
+  /* Staging update row — appears under the Staging Channel toggle when an
+     update is available. Visually similar to the HQ folder row (info + CTA
+     on the right) so it reads as a "thing you can act on" rather than a
+     toggle. */
+  .setting-row.staging-update-row .setting-desc {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  }
+
+  /* Modal backdrop + sheet. Positioned absolute against the .settings popover
+     (which is itself the Tauri window), so the modal sits flush over the
+     popover surface rather than escaping to the OS-window edges. */
+  .staging-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    border-radius: 18px;
+    z-index: 10;
+  }
+
+  .staging-modal {
+    position: absolute;
+    inset: 8px;
+    z-index: 11;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.875rem 1rem 1rem;
+    overflow-y: auto;
+    background: var(--popover-bg, rgba(28, 28, 32, 0.96));
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 14px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  }
+
+  .staging-modal h2 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--popover-text-heading, #ffffff);
+    margin: 0;
+  }
+
+  .staging-modal-lead {
+    font-size: 0.75rem;
+    color: var(--popover-text, #e0e0e0);
+    line-height: 1.4;
+    margin: 0;
+  }
+
+  .staging-modal-list {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-size: 0.75rem;
+    color: var(--popover-text, #e0e0e0);
+    line-height: 1.4;
+  }
+
+  .staging-modal-list code,
+  .staging-modal-lead code,
+  .staging-modal-warning code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 0.6875rem;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    padding: 0 4px;
+    border-radius: 4px;
+  }
+
+  .staging-modal-warning {
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    line-height: 1.4;
+    margin: 0;
+  }
+
+  .staging-modal-log {
+    flex: 1 1 auto;
+    min-height: 100px;
+    max-height: 200px;
+    overflow-y: auto;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-radius: 8px;
+    padding: 0.5rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    font-size: 0.6875rem;
+    line-height: 1.35;
+  }
+
+  .staging-modal-log-line {
+    color: var(--popover-text, #e0e0e0);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .staging-modal-log-stderr {
+    color: #ffb3a0;
+  }
+
+  .staging-modal-log-info {
+    color: #a8c7ff;
+  }
+
+  .staging-modal-log-error {
+    color: #ff9a9a;
+    font-weight: 600;
+  }
+
+  .staging-modal-error {
+    font-size: 0.75rem;
+    color: #ff9a9a;
+    margin: 0;
+  }
+
+  .staging-modal-done {
+    font-size: 0.75rem;
+    color: #a8e6a3;
+    margin: 0;
+  }
+
+  .staging-modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+  }
+
+  .staging-modal-confirm {
+    background: var(--popover-primary, #ffffff);
+    color: var(--popover-primary-text, #111113);
+    border-color: var(--popover-primary, #ffffff);
+  }
+
+  .staging-modal-confirm:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>
