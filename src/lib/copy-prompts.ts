@@ -24,7 +24,9 @@ export type IssueKind =
   | 'workspace-needs-connect'
   | 'workspace-broken'
   | 'repair-company'
-  | 'local-env-failure';
+  | 'local-env-failure'
+  | 'hq-version-undetectable'
+  | 'hq-core-drift';
 
 /**
  * Stable kind identifiers for `local-env-failure` payloads. These match the
@@ -169,6 +171,62 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       `One of my HQ companies${slug ? ` (\`${slug}\`)` : ''} is in a bad state and I need help repairing it.`,
       '',
       "Please walk through: (1) read `companies/{slug}/manifest.yaml` (if any) + the row in `companies/manifest.yaml`, (2) verify the cloud_uid + bucket still exist server-side, (3) check the local folder structure matches the company template, (4) re-run `hq sync` for just that company and watch the journal. Propose each step as a decision queue — don't do destructive ops (delete folders, drop cloud entries) without my explicit go-ahead.",
+    ].join('\n');
+  },
+
+  // Drift detail "Review with agent" — one entry's worth of context handed
+  // off to Claude Code. Payload: `{ path, kind: 'modified'|'missing'|'added',
+  // hqVersion }`. The prompt is path-scoped so the agent can read the local
+  // file (if present) and the upstream version side-by-side before deciding.
+  'hq-core-drift': (i) => {
+    const path = val(i, 'path');
+    const kind = val(i, 'kind'); // 'modified' | 'missing' | 'added'
+    const hqVersion = val(i, 'hqVersion');
+    const versionLine = hqVersion
+      ? `My local hq-core is \`v${hqVersion}\`.`
+      : "I'm not sure what hqVersion I'm on.";
+    const kindLine = kind === 'missing'
+      ? `It's listed in the upstream tree but missing from my local copy.`
+      : kind === 'added'
+      ? `It exists locally under a locked-path scope but doesn't exist in the upstream tree — I either added it or it's left over from a prior version.`
+      : `It exists in both places but the contents differ from upstream.`;
+    return [
+      `My HQ Sync menubar detected a drift in a locked hq-core file: \`${path || '<path>'}\`.`,
+      '',
+      versionLine,
+      kindLine,
+      '',
+      "Please walk me through fixing this:",
+      `1. **Read both versions** — local at \`${path || '<path>'}\`, upstream at https://github.com/indigoai-us/hq-core/blob/v${hqVersion || '<tag>'}/${path || '<path>'}.`,
+      "2. **Decide which to keep** — if my local edit is intentional, propose lifting it into a personal/ overlay so the locked file goes back to matching upstream. If the local edit is accidental or stale, recommend restoring from upstream.",
+      "3. **Do not touch other drifted files** unless I ask — the menubar lists them separately so each gets its own decision.",
+      "4. If the right call is a full hq-core re-sync, run `/update-hq` instead of editing individual files.",
+    ].join('\n');
+  },
+
+  // Footer "HQ vX.Y.Z" row couldn't detect a version — the HQ folder is
+  // missing, `core.yaml` is missing/unparseable, or its `hqVersion` field
+  // is empty. All three mean the install is broken in a way the menubar
+  // can't self-repair (we don't know which HQ to write to). Hand the agent
+  // enough context to triage which case it is and walk the user back to a
+  // working install. Optional `hqFolderPath` payload carries the path the
+  // resolver thought it was using, so the agent can `ls -la` it directly
+  // instead of guessing.
+  'hq-version-undetectable': (i) => {
+    const hqFolderPath = val(i, 'hqFolderPath');
+    return [
+      "My HQ Sync menubar can't detect the version of HQ I'm running.",
+      '',
+      hqFolderPath
+        ? `The resolver picked: \`${hqFolderPath}\``
+        : "The resolver couldn't even locate an HQ folder on this machine.",
+      '',
+      "Please diagnose which of these is true and walk me through fixing it:",
+      "1. **HQ folder missing / wrong** — verify the path above exists (`ls -la`). If wrong, open my HQ Sync app → Settings → re-tether to the correct folder.",
+      "2. **`core.yaml` missing** — at the HQ folder, check both canonical (`core/core.yaml`) and legacy (`core.yaml`) locations. If missing, the install is incomplete; run `/setup` to scaffold it, or `/update-hq` to repair from the latest hq-core release.",
+      "3. **`core.yaml` unparseable or missing `hqVersion`** — read it and tell me what's there. If corrupted, restore from git or re-run `/update-hq`.",
+      '',
+      "Once `hqVersion` is readable again, the footer row will refresh next time I open the popover.",
     ].join('\n');
   },
 

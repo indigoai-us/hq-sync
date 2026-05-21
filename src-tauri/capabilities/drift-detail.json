@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "drift-detail",
+  "description": "Capability set for the drift-detail secondary window. Needs event IPC to receive the DriftReport from Rust + permission to invoke the handshake / restore commands. Without this file, invoke() calls from the window silently fail at the capability check — the symptom is a window that stays stuck on its loading state because drift_window_ready never reaches Rust.",
+  "windows": ["drift-detail"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "shell:allow-open"
+  ]
+}

@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/svelte";
 import App from './App.svelte';
 import NewFilesDetail from './components/NewFilesDetail.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
+import DriftDetail from './components/DriftDetail.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { beforeSend } from "./sentry-before-send";
@@ -27,6 +28,8 @@ if (windowLabel === 'new-files-detail') {
   Component = NewFilesDetail as unknown as typeof App;
 } else if (windowLabel === 'meetings-window') {
   Component = MeetingsWindow as unknown as typeof App;
+} else if (windowLabel === 'drift-detail') {
+  Component = DriftDetail as unknown as typeof App;
 } else {
   Component = App;
 }

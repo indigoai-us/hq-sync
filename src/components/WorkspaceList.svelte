@@ -221,6 +221,15 @@
             {#if w.slug !== w.displayName.toLowerCase().replace(/\s+/g, '-')}
               <span class="row-slug">{w.slug}</span>
             {/if}
+            {#if w.lastSyncedAt && w.state !== 'broken'}
+              <!-- Inline with the name, right-aligned (margin-left: auto in
+                   CSS), hover-only via .row-meta-lastsync. Excluded for
+                   broken rows so the row-meta-line below carries the
+                   reconnect affordance without competing meta. -->
+              <span class="row-meta-lastsync" title={`Last sync · ${formatLastSynced(w.lastSyncedAt)}`}>
+                {formatLastSynced(w.lastSyncedAt)}
+              </span>
+            {/if}
           </div>
           {#if w.state === 'broken'}
             <span class="row-meta-line">
@@ -246,8 +255,6 @@
                 }}
               />
             </span>
-          {:else if w.lastSyncedAt}
-            <span class="row-meta">Last sync · {formatLastSynced(w.lastSyncedAt)}</span>
           {:else if w.state === 'cloud-only'}
             <span class="row-meta">Not yet on this machine</span>
           {:else if w.state === 'local-only' && typeof connectState[w.slug] === 'string'}
@@ -335,23 +342,23 @@
         >
           {#if w.state === 'personal'}
             <!-- person -->
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <circle cx="8" cy="5.5" r="2.6" stroke="currentColor" stroke-width="1.4" />
               <path d="M3 13.2c0-2.3 2.2-3.7 5-3.7s5 1.4 5 3.7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
             </svg>
           {:else if w.state === 'synced'}
             <!-- check -->
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M3.5 8.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           {:else if w.state === 'cloud-only'}
             <!-- cloud -->
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M11.5 12h1a3 3 0 0 0 .3-5.98 4.5 4.5 0 0 0-8.85-.4A3 3 0 0 0 4 12h7.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
             </svg>
           {:else if w.state === 'broken'}
             <!-- warning triangle -->
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M8 2.5L14 13H2L8 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
               <path d="M8 6.5v3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
               <circle cx="8" cy="11.3" r="0.6" fill="currentColor" />
@@ -368,7 +375,8 @@
   .workspace-list-wrapper {
     display: flex;
     flex-direction: column;
-    gap: 0.625rem;
+    /* Tightened 0.625rem → 0.5rem (v0.1.85) to match popover body gap. */
+    gap: 0.5rem;
   }
 
   /* Soft notice strip — used for cloud-unreachable and manifest-parse-error.
@@ -406,7 +414,10 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4375rem 0.5rem;
+    /* Tightened from 0.4375rem (v0.1.85). Combined with the hover-only
+       .row-meta-lastsync below, the steady-state row collapses to a single
+       name line at ~24px tall so more workspaces fit without scrolling. */
+    padding: 0.25rem 0.5rem;
     border-radius: 6px;
     transition: background-color 0.1s ease;
   }
@@ -493,16 +504,47 @@
   }
 
   .row-slug {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-    font-size: 0.625rem;
+    /* Sans-serif (inherit from body) + pill (v0.1.85). Was monospace bare
+       text — felt out of place next to the rest of the UI which is all
+       system sans. Pill background separates the slug from the displayName
+       without leaning on a different font family. */
+    font-family: inherit;
+    font-size: 0.6875rem;
+    font-weight: 500;
+    line-height: 1;
+    padding: 0.1875rem 0.4375rem;
+    border-radius: 999px;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     color: var(--popover-text-muted, #a0a0b0);
     flex-shrink: 0;
   }
 
   .row-meta {
-    font-size: 0.625rem;
+    /* Same consolidation as row-slug (v0.1.85): 10px → 11px. */
+    font-size: 0.6875rem;
     color: var(--popover-text-muted, #a0a0b0);
     line-height: 1.3;
+  }
+
+  /* Last-sync time, sitting inline at the right edge of the name line
+     (margin-left: auto pushes it). Hover-only so the steady-state row is
+     just the name + slug pill — keeps the list dense, surfaces the
+     timestamp on demand. State/info metas (cloud-only, broken,
+     connect-failed) below the name line stay visible without this
+     modifier — those carry an action or unrecoverable status that
+     shouldn't require hover to discover. */
+  .row-meta-lastsync {
+    display: none;
+    margin-left: auto;
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    line-height: 1;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .workspace-row:hover .row-meta-lastsync {
+    display: inline;
   }
 
   /* "Connect failed" / "Manifest out of sync" meta lines — same muted grey

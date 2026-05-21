@@ -138,7 +138,8 @@
   }
 
   .stats-error {
-    font-size: 0.7rem;
+    /* Snapped to canonical 11px (v0.1.85) — was 0.7rem (11.2px). */
+    font-size: 0.6875rem;
     color: #a0a0b0;
     margin: 0;
     text-align: center;
@@ -148,7 +149,8 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.78rem;
+    /* Snapped to canonical 12px (v0.1.85) — was 0.78rem (12.48px). */
+    font-size: 0.75rem;
   }
 
   .stat-icon {
