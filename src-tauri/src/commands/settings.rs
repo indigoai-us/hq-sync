@@ -15,6 +15,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             start_at_login: Some(true),
             autostart_daemon: Some(false),
             realtime_sync: Some(true),
+            personal_sync_enabled: Some(true),
         });
     }
 
@@ -25,7 +26,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
 
     // Apply defaults for missing fields. `realtime_sync` defaults ON — it
     // mirrors `is_realtime_sync_enabled` in daemon.rs so the Settings toggle
-    // and the auto-start logic agree on a fresh install.
+    // and the auto-start logic agree on a fresh install. `personal_sync_enabled`
+    // defaults ON to preserve pre-5.25 behavior — only users who explicitly
+    // toggle it off see the personal target drop from the fanout.
     Ok(MenubarPrefs {
         hq_path: prefs.hq_path,
         sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(false)),
@@ -33,6 +36,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
         autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
         realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+        personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
     })
 }
 
@@ -71,6 +75,7 @@ mod tests {
             start_at_login: None,
             autostart_daemon: None,
             realtime_sync: None,
+            personal_sync_enabled: None,
         };
 
         let result = MenubarPrefs {
@@ -80,6 +85,7 @@ mod tests {
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+            personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, None);
@@ -101,6 +107,7 @@ mod tests {
             start_at_login: None,
             autostart_daemon: None,
             realtime_sync: Some(false),
+            personal_sync_enabled: None,
         };
 
         let result = MenubarPrefs {
@@ -110,6 +117,7 @@ mod tests {
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+            personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
         };
 
         assert_eq!(result.realtime_sync, Some(false));
@@ -124,6 +132,7 @@ mod tests {
             start_at_login: Some(false),
             autostart_daemon: Some(true),
             realtime_sync: Some(true),
+            personal_sync_enabled: Some(true),
         };
 
         let result = MenubarPrefs {
@@ -133,6 +142,7 @@ mod tests {
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+            personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, Some("/custom/path".to_string()));
@@ -151,6 +161,7 @@ mod tests {
             start_at_login: Some(false),
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
+            personal_sync_enabled: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -174,6 +185,7 @@ mod tests {
             start_at_login: Some(true),
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
+            personal_sync_enabled: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -194,6 +206,7 @@ mod tests {
             start_at_login: Some(true),
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
+            personal_sync_enabled: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();

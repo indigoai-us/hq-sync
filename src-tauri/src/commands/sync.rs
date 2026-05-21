@@ -174,7 +174,28 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 ///     the `HQ_SYNC_DELETE_POLICY=currency-gated|owned-only|all` env
 ///     override honored by `sync-runner`.
 /// See indigoai-us/hq-cloud#14 + 2026-05-21 reconcile incident report.
-pub const HQ_CLOUD_VERSION: &str = "~5.24.0";
+///
+/// 5.25.0 (2026-05-21) ships two more fixes building on 5.24:
+///   - PERSONAL_VAULT_DEFAULT_EXCLUSIONS — a hard exclusion list applied
+///     when personalMode is true, complementing the existing top-level
+///     filter (PERSONAL_VAULT_EXCLUDED_TOP_LEVEL) and the ephemeral
+///     conflict-mirror filter (EPHEMERAL_PATH_PATTERN). Categories:
+///     secrets (.env, .env.*, .mcp.json), machine-local state (.beads/,
+///     .obsidian/, .vercel/, .cache_*), update-flow scratch (output/,
+///     _legacy-*), pre-5.24 conflict mirror dir (.hq-conflicts/), OS /
+///     build cruft (.DS_Store, node_modules/, dist/, .next/, build/).
+///     Wired into both the upload walk and the delete-plan walk so
+///     existing journaled entries matching a new exclusion get orphaned
+///     (no DELETE issued). Emits a single `personal-vault-out-of-policy`
+///     event per share() call when count > 0.
+///   - Default delete policy flipped owned-only -> currency-gated (the
+///     5.24-promised flip after the soak window). Rollback knob:
+///     HQ_SYNC_DELETE_POLICY=owned-only.
+///   - New CLI flag `--skip-personal` + env `HQ_SYNC_SKIP_PERSONAL=1`
+///     drops the personal target from the --companies fanout. Used by
+///     the menubar's "Sync personal vault" Settings toggle.
+/// See indigoai-us/hq-cloud#15.
+pub const HQ_CLOUD_VERSION: &str = "~5.25.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -385,7 +406,12 @@ pub async fn resolve_jwt() -> Result<String, String> {
 ///
 /// `HQ_ROOT` is also set in the child env as defense-in-depth (matches the
 /// pre-Phase-7 pattern).
-pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
+///
+/// `personal_sync_enabled` toggles the personal-vault target in the fanout.
+/// When false, `--skip-personal` is appended so the spawned runner's
+/// `resolveSkipPersonal()` drops the personal slot. Sourced from
+/// `MenubarPrefs.personal_sync_enabled` (defaults to true in get_settings).
+pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) -> SpawnArgs {
     let mut env = HashMap::new();
     env.insert("HQ_ROOT".to_string(), hq_folder_path.to_string());
     // The runner is a Node script with `#!/usr/bin/env node`, and npx itself
@@ -394,6 +420,25 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
     // `paths::child_path`.
     env.insert("PATH".to_string(), paths::child_path());
 
+    let mut args = vec![
+        "-y".to_string(),
+        format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
+        RUNNER_BIN.to_string(),
+        "--companies".to_string(),
+        "--direction".to_string(),
+        "both".to_string(),
+        "--on-conflict".to_string(),
+        "keep".to_string(),
+        "--hq-root".to_string(),
+        hq_folder_path.to_string(),
+    ];
+    if !personal_sync_enabled {
+        // Append rather than insert mid-args so reading the joined command
+        // line in logs / Sentry tags is predictable (toggle state shows at
+        // the end, after the canonical args).
+        args.push("--skip-personal".to_string());
+    }
+
     SpawnArgs {
         // Resolve npx via known install prefixes + login-shell PATH fallback.
         // See `paths::resolve_bin` — GUI-launched Tauri apps get a minimal
@@ -401,18 +446,7 @@ pub fn build_sync_spawn_args(hq_folder_path: &str) -> SpawnArgs {
         // (which lives in /opt/homebrew/bin or ~/.npm-global/bin, not in
         // /usr/bin). npx is part of npm, which is a listed installer prereq.
         cmd: paths::resolve_bin("npx"),
-        args: vec![
-            "-y".to_string(),
-            format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION),
-            RUNNER_BIN.to_string(),
-            "--companies".to_string(),
-            "--direction".to_string(),
-            "both".to_string(),
-            "--on-conflict".to_string(),
-            "keep".to_string(),
-            "--hq-root".to_string(),
-            hq_folder_path.to_string(),
-        ],
+        args,
         cwd: None,
         env: Some(env),
     }
@@ -668,6 +702,22 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         }
     };
 
+    // Resolve the personal-sync toggle ONCE for the duration of this sync
+    // run — same flag drives (a) whether we run the personal first-push pass
+    // and (b) whether `--skip-personal` gets appended to the spawned runner.
+    // Defaults to true (preserve pre-5.25 behavior) when get_settings fails,
+    // since a stale-prefs read shouldn't accidentally disable a feature the
+    // user expects to be on. The setting can be flipped at any time from
+    // Settings; next sync picks it up on the next read here.
+    let personal_sync_enabled: bool = match crate::commands::settings::get_settings().await {
+        Ok(prefs) => prefs.personal_sync_enabled.unwrap_or(true),
+        Err(e) => {
+            log("sync", &format!("get_settings failed; assuming personal_sync_enabled=true: {e}"));
+            true
+        }
+    };
+    log("sync", &format!("personal_sync_enabled={}", personal_sync_enabled));
+
     // Resolve vault URL from ~/.hq/config.json
     let vault_api_url = match resolve_vault_api_url() {
         Ok(u) => {
@@ -785,33 +835,41 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
     }
 
     // Personal first-push: provision + upload personal HQ files via /sts/vend-self.
-    log("sync", "phase: personal first-push");
-    if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
-        &app,
-        &vault,
-        &std::path::PathBuf::from(&hq_folder_path),
-    )
-    .await
-    {
-        log("sync", &format!("personal first-push failed: {e}"));
-        #[cfg(debug_assertions)]
-        eprintln!("[sync] personal first-push failed: {}", e);
-        // NOT captured to Sentry: personal first-push happens before the
-        // runner spawns, so it has no stderr breadcrumb context, and the
-        // exit-time `report_sync_error` capture below won't fire because we
-        // continue past this and let the runner take over. If this path ever
-        // becomes a recurring silent failure, add an explicit capture here.
-        let _ = app.emit(
-            EVENT_SYNC_ERROR,
-            SyncErrorEvent {
-                company: None,
-                path: "personal".to_string(),
-                message: format!("personal first-push failed: {e}"),
-            },
-        );
+    // Skipped entirely when the user has flipped off "Sync personal vault" —
+    // running it anyway would auto-provision a bucket the user explicitly
+    // doesn't want populated, then upload everything just for the runner to
+    // immediately re-walk the same tree with `--skip-personal`.
+    if personal_sync_enabled {
+        log("sync", "phase: personal first-push");
+        if let Err(e) = crate::commands::personal::ensure_personal_bucket_and_first_push(
+            &app,
+            &vault,
+            &std::path::PathBuf::from(&hq_folder_path),
+        )
+        .await
+        {
+            log("sync", &format!("personal first-push failed: {e}"));
+            #[cfg(debug_assertions)]
+            eprintln!("[sync] personal first-push failed: {}", e);
+            // NOT captured to Sentry: personal first-push happens before the
+            // runner spawns, so it has no stderr breadcrumb context, and the
+            // exit-time `report_sync_error` capture below won't fire because we
+            // continue past this and let the runner take over. If this path ever
+            // becomes a recurring silent failure, add an explicit capture here.
+            let _ = app.emit(
+                EVENT_SYNC_ERROR,
+                SyncErrorEvent {
+                    company: None,
+                    path: "personal".to_string(),
+                    message: format!("personal first-push failed: {e}"),
+                },
+            );
+        }
+    } else {
+        log("sync", "phase: personal first-push skipped (personal_sync_enabled=false)");
     }
 
-    let spawn_args = build_sync_spawn_args(&hq_folder_path);
+    let spawn_args = build_sync_spawn_args(&hq_folder_path, personal_sync_enabled);
     log(
         "sync",
         &format!(
@@ -1077,7 +1135,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_cmd() {
-        let args = build_sync_spawn_args("/Users/test/HQ");
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
         // `resolve_bin` may return an absolute path (e.g.
         // `/opt/homebrew/bin/npx`) on a dev box with npm installed, or the
         // bare name on a CI box without it. Either way, the trailing file
@@ -1091,7 +1149,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_flags() {
-        let args = build_sync_spawn_args("/Users/test/HQ");
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
         assert_eq!(
             args.args,
             vec![
@@ -1109,13 +1167,46 @@ mod tests {
         );
     }
 
+    /// Personal-sync toggle ON (default) must NOT include `--skip-personal`.
+    /// Pinning the negative explicitly so a future regression that toggles
+    /// the flag in the wrong direction (e.g. inverted check) surfaces here.
+    #[test]
+    fn test_build_sync_spawn_args_omits_skip_personal_when_enabled() {
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
+        assert!(
+            !args.args.iter().any(|a| a == "--skip-personal"),
+            "expected NO `--skip-personal` when personal_sync_enabled=true, got: {:?}",
+            args.args
+        );
+    }
+
+    /// Personal-sync toggle OFF appends `--skip-personal` at the end so the
+    /// spawned hq-sync-runner drops the personal slot from its fanout plan
+    /// (resolveSkipPersonal in sync-runner.ts treats the flag as truthy via
+    /// the parsed-args path, equivalent to HQ_SYNC_SKIP_PERSONAL=1).
+    #[test]
+    fn test_build_sync_spawn_args_appends_skip_personal_when_disabled() {
+        let args = build_sync_spawn_args("/Users/test/HQ", false);
+        assert_eq!(
+            args.args.last().map(String::as_str),
+            Some("--skip-personal"),
+            "expected `--skip-personal` as last arg when personal_sync_enabled=false, got: {:?}",
+            args.args
+        );
+        // The canonical args must still be present in the same order — the
+        // toggle should ONLY append, not reorder or omit anything.
+        assert!(args.args.contains(&"--companies".to_string()));
+        assert!(args.args.contains(&"--direction".to_string()));
+        assert!(args.args.contains(&"both".to_string()));
+    }
+
     /// Sync Now must use `--on-conflict keep` so a divergent local file
     /// preserves the user's edits instead of aborting the company-wide sync.
     /// Regressing to `abort` would cause a single conflicting file to halt
     /// every other file's progress on the affected company.
     #[test]
     fn test_build_sync_spawn_args_on_conflict_is_keep() {
-        let args = build_sync_spawn_args("/tmp");
+        let args = build_sync_spawn_args("/tmp", true);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--on-conflict keep"),
@@ -1128,7 +1219,7 @@ mod tests {
     /// Guards against a future refactor silently dropping back to pull-only.
     #[test]
     fn test_build_sync_spawn_args_opts_into_direction_both() {
-        let args = build_sync_spawn_args("/tmp");
+        let args = build_sync_spawn_args("/tmp", true);
         let joined = args.args.join(" ");
         assert!(
             joined.contains("--direction both"),
@@ -1144,7 +1235,7 @@ mod tests {
     /// obvious in CI, not at runtime on users' machines.
     #[test]
     fn test_build_sync_spawn_args_pins_hq_cloud_package() {
-        let args = build_sync_spawn_args("/tmp");
+        let args = build_sync_spawn_args("/tmp", true);
         let expected_pin = format!("--package={}@{}", HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION);
         assert!(
             args.args.contains(&expected_pin),
@@ -1167,7 +1258,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_hq_root() {
-        let args = build_sync_spawn_args("/Users/test/HQ");
+        let args = build_sync_spawn_args("/Users/test/HQ", true);
         let env = args.env.unwrap();
         assert_eq!(env.get("HQ_ROOT"), Some(&"/Users/test/HQ".to_string()));
         assert_eq!(env.len(), 2);
@@ -1175,7 +1266,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_env_sets_path_with_homebrew() {
-        let args = build_sync_spawn_args("/tmp");
+        let args = build_sync_spawn_args("/tmp", true);
         let env = args.env.unwrap();
         let path = env.get("PATH").expect("PATH must be set so shebang can find node");
         // Must include homebrew so `#!/usr/bin/env node` resolves on Dock launches.
@@ -1184,7 +1275,7 @@ mod tests {
 
     #[test]
     fn test_build_sync_spawn_args_no_cwd() {
-        let args = build_sync_spawn_args("/any/path");
+        let args = build_sync_spawn_args("/any/path", true);
         assert!(args.cwd.is_none());
     }
 
