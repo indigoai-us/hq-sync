@@ -320,7 +320,7 @@
     display: flex;
     flex-direction: column;
     width: 320px;
-    max-height: 400px;
+    max-height: 480px;
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));

@@ -116,12 +116,36 @@
     hqCliUpdateError?: string | null;
     /** Non-null when the user's local hq-core (read from core.yaml's
      *  `hqVersion`) is behind the latest GitHub release of
-     *  indigoai-us/hq-core. The banner CTA launches Claude Code at the
-     *  HQ folder with `/update-hq` pre-filled in the prompt — same
-     *  `claude://code/new` deep-link mechanism as `fixHqCliUpdateInHq`. */
+     *  indigoai-us/hq-core. When non-null, the footer HQ-version row
+     *  surfaces an "Update to vX.Y.Z" pill (right-aligned) whose click
+     *  handler launches Claude Code at the HQ folder with `/update-hq`
+     *  pre-filled in the prompt — same `claude://code/new` deep-link
+     *  mechanism as `fixHqCliUpdateInHq`. Replaces the v0.1.84 top-of-
+     *  popover update banner (less visually noisy, lives next to the
+     *  version string it's about). */
     hqCoreUpdateAvailable?: {
       local: string | null;
       latest: string;
+    } | null;
+    /** Locally-detected hq-core `hqVersion` (cheap on-disk read from
+     *  `core.yaml`). Drives the "HQ vX.Y.Z" footer row, independent of
+     *  the GitHub-release check above. Null → render the row with a
+     *  "version unknown" label + CopyPromptButton so a broken install
+     *  becomes visible rather than silently hidden. */
+    hqVersion?: string | null;
+    /** Drift summary from `hq-core-drift:available`. When `count > 0`,
+     *  the HQ-version footer row renders an "N drifted" pill to the
+     *  right of the version label (alongside the Update pill if both
+     *  are active). Clicking opens the drift detail window with this
+     *  exact payload — passed verbatim so the window doesn't re-fetch
+     *  and risk a count mismatch with the pill. Null → no pill. */
+    hqCoreDrift?: {
+      count: number;
+      modified: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      missing: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      scannedAt: string;
+      hqVersion: string;
     } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
@@ -180,6 +204,8 @@
     hqCliUpdateInstalling = false,
     hqCliUpdateError = null,
     hqCoreUpdateAvailable = null,
+    hqVersion = null,
+    hqCoreDrift = null,
     onsync,
     oncancel,
     onsettings,
@@ -317,6 +343,23 @@
   // the scheme and shells out to `open`). Same mechanism as
   // `fixHqCliUpdateInHq` above — different prompt, different intent
   // (here it's the success path, not an error-recovery fallback).
+  // Open the drift detail window with the current report. Passed
+  // verbatim from the prop so the window receives exactly what the pill
+  // count was computed from (no re-fetch, no rate-limit double-spend, no
+  // pill-vs-window count drift). The Rust side mirrors `new_files.rs`:
+  // managed-state stash → window creation → `drift_window_ready`
+  // handshake → emit. Errors are logged but not surfaced — the worst
+  // case is a click that does nothing, much better than a Sentry-level
+  // exception in the user's face for an opt-in diagnostic surface.
+  async function openDriftDetail() {
+    if (!hqCoreDrift) return;
+    try {
+      await invoke('open_drift_detail', { report: hqCoreDrift });
+    } catch (e) {
+      console.error('open_drift_detail failed:', e);
+    }
+  }
+
   async function updateHqCoreInClaudeCode() {
     const params = new URLSearchParams({ q: '/update-hq' });
     if (config?.hqFolderPath) params.set('folder', config.hqFolderPath);
@@ -521,43 +564,10 @@
         </div>
       {/if}
 
-      <!-- hq-core release banner. Updating hq-core (the user's HQ folder
-           scaffold) means running the /update-hq Claude-Code skill — a
-           heavier interactive flow than the CLI nag's one-shot
-           `npm install -g`, so we can't run it in-process. The Update
-           button instead opens a Claude Code session at the HQ folder
-           with `/update-hq` pre-filled in the prompt (same
-           `claude://code/new` deep-link mechanism as
-           `fixHqCliUpdateInHq`); the user just hits Enter and the skill
-           runs. The banner clears naturally on the next 6h background
-           check once core.yaml's hqVersion has advanced. -->
-
-      {#if hqCoreUpdateAvailable}
-        <div class="banner banner-info banner-update">
-          <div class="banner-update-text">
-            <p class="banner-title">
-              hq-core update available: v{hqCoreUpdateAvailable.latest}
-            </p>
-            {#if hqCoreUpdateAvailable.local}
-              <p class="banner-body">
-                You're on v{hqCoreUpdateAvailable.local}. Click Update to run <code>/update-hq</code> in Claude Code.
-              </p>
-            {:else}
-              <p class="banner-body">
-                Click Update to run <code>/update-hq</code> in Claude Code.
-              </p>
-            {/if}
-          </div>
-          <div class="banner-actions">
-            <button
-              class="banner-update-button"
-              onclick={updateHqCoreInClaudeCode}
-            >
-              Update
-            </button>
-          </div>
-        </div>
-      {/if}
+      <!-- hq-core "Update available" used to live here as a top-of-popover
+           banner. Moved to the footer HQ-version row in v0.1.85 (right-side
+           pill next to the version string it's about) — see footer below.
+           Less visual noise at the top, action sits next to its context. -->
 
       <!-- Runner state banners — auth and runtime errors only. The previous
            `setup-needed` "No companies yet" dead-end is gone: the WorkspaceList
@@ -682,6 +692,63 @@
 
   <!-- Footer -->
   <footer class="popover-footer">
+    <!-- HQ-version row. Always rendered above Settings (sits below the
+         divider) so the user always knows which HQ they're synced to.
+         Three states:
+           1. hqVersion present + hqCoreUpdateAvailable null → "HQ vX.Y.Z" only
+           2. hqVersion present + hqCoreUpdateAvailable non-null → version
+              text + right-aligned "Update to vX.Y.Z" pill (clickable, opens
+              Claude Code with /update-hq pre-filled).
+           3. hqVersion null → "HQ version unknown" + right-aligned
+              CopyPromptButton so the user can hand a triage prompt to an
+              agent in-session (the install is broken in a way we can't
+              self-repair from the menubar). -->
+    <div class="footer-hq-version">
+      <div class="footer-hq-version-label">
+        <!-- Stack / layers icon -->
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M8 1.5L1.5 4.5L8 7.5L14.5 4.5L8 1.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+          <path d="M1.5 8L8 11L14.5 8" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+          <path d="M1.5 11.5L8 14.5L14.5 11.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+        </svg>
+        {#if hqVersion}
+          <span>HQ v{hqVersion}</span>
+        {:else}
+          <span>HQ version unknown</span>
+        {/if}
+      </div>
+      {#if hqVersion === null}
+        <CopyPromptButton
+          variant="compact"
+          label="Copy prompt"
+          issue={{ kind: 'hq-version-undetectable', payload: { hqFolderPath: config?.hqFolderPath ?? '' } }}
+        />
+      {:else}
+        <!-- Drift pill (notice tone, not primary white) — appears first so
+             the eye lands on the diagnostic before the action pill. Hidden
+             when count is 0 or null so the row stays calm on healthy
+             installs. Click → opens the drift detail window. -->
+        {#if hqCoreDrift && hqCoreDrift.count > 0}
+          <button
+            class="footer-hq-version-pill footer-hq-version-pill-notice"
+            onclick={openDriftDetail}
+            title={`${hqCoreDrift.count} locked core file${hqCoreDrift.count === 1 ? '' : 's'} differ from upstream v${hqCoreDrift.hqVersion}. Click for details.`}
+          >
+            {hqCoreDrift.count} drifted
+          </button>
+        {/if}
+        {#if hqCoreUpdateAvailable}
+          <button
+            class="footer-hq-version-pill"
+            onclick={updateHqCoreInClaudeCode}
+            title="Open Claude Code with /update-hq pre-filled"
+          >
+            Update to v{hqCoreUpdateAvailable.latest}
+          </button>
+        {/if}
+      {/if}
+    </div>
+
     <button class="footer-action" onclick={onsettings}>
       <!-- Settings gear icon -->
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -749,7 +816,10 @@
     display: flex;
     align-items: center;
     gap: 0.625rem;
-    padding: 0.875rem 1rem;
+    /* Tightened from 0.875rem (v0.1.85) to give the body more vertical
+       room for the workspace list. Horizontal padding stays at 1rem so
+       the brand icon doesn't crowd the window edge. */
+    padding: 0.625rem 1rem;
   }
 
   .header-icon {
@@ -866,11 +936,14 @@
 
   /* Body */
   .popover-body {
-    padding: 0.75rem 1rem;
+    /* Tightened from 0.75rem 1rem (v0.1.85): vertical padding + inter-card
+       gap collapsed from 12px to 8px. Horizontal padding to 0.75rem so
+       workspace rows get +8px of name room before truncation kicks in. */
+    padding: 0.5rem 0.75rem;
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 0.5rem;
     overflow-y: auto;
     /* Firefox scrollbar styling */
     scrollbar-width: thin;
@@ -931,12 +1004,73 @@
     color: var(--popover-danger, #ef4444);
   }
 
+  /* HQ-version footer row. Same padding rhythm as `.footer-action` so it
+     reads as part of the same column, but it's a div (not a button) — the
+     row itself isn't clickable; the optional right-aligned pill /
+     CopyPromptButton is the affordance. */
+  .footer-hq-version {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.4375rem 0.5rem;
+    font-size: 0.8125rem;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .footer-hq-version-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+  }
+
+  /* Right-aligned "Update to vX.Y.Z" pill. Same visual weight as
+     `.banner-update-button` (white background, dark text — the popover's
+     primary action treatment) but pill-shaped + smaller, since it lives
+     inline next to the version label rather than as a banner-level CTA. */
+  .footer-hq-version-pill {
+    font-size: 0.6875rem;
+    font-family: inherit;
+    font-weight: 600;
+    padding: 0.1875rem 0.5rem;
+    background: var(--popover-primary, #ffffff);
+    color: var(--popover-primary-text, #111113);
+    border: none;
+    border-radius: 999px;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: background-color 0.1s ease, opacity 0.1s ease;
+  }
+
+  .footer-hq-version-pill:hover {
+    background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
+  }
+
+  /* Notice variant — used by the drift "N drifted" pill so it reads as
+     diagnostic rather than action. Sits next to (and visually beneath)
+     the primary white Update pill so the eye still lands on the action.
+     Calm grey surface — no severity colour, consistent with the rest of
+     the menubar's notice-tone language. */
+  .footer-hq-version-pill-notice {
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+  }
+
+  .footer-hq-version-pill-notice:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text-heading, #ffffff);
+  }
+
   /* Banners — actionable state callouts (setup / auth / error) */
   .banner {
     display: flex;
     flex-direction: column;
     gap: 0.1875rem;
-    padding: 0.625rem 0.75rem;
+    /* Tightened from 0.625rem 0.75rem (v0.1.85) — 8px / 10px reads as
+       calmer when the body stacks several at once (update + cli + error). */
+    padding: 0.5rem 0.625rem;
     border-radius: 10px;
     border: 1px solid transparent;
   }

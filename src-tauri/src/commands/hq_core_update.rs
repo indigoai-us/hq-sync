@@ -201,6 +201,24 @@ pub async fn check_hq_core_update(app: AppHandle) -> Result<Option<HqCoreUpdateI
     check_once(&app).await
 }
 
+/// Tauri command — cheap on-disk read of the local hq-core `hqVersion`.
+///
+/// No network, no background loop — just `get_local_version()` exposed to
+/// the frontend so the popover footer can display "HQ vX.Y.Z" (or the
+/// "version unknown" / copy-prompt repair affordance when None) without
+/// waiting for the 20s-delayed update check, and without falsely implying
+/// an upgrade by piggy-backing on `check_hq_core_update`'s `latest` field.
+///
+/// Returns `None` for the same reasons as `get_local_version`: the HQ
+/// folder can't be located, `core.yaml` is missing/unparseable, or it has
+/// no `hqVersion` field. The frontend treats `None` as "show repair
+/// affordance" rather than hiding the row — silence here masks a broken
+/// install, which is exactly the case we want surfaced.
+#[tauri::command]
+pub fn get_hq_version() -> Option<String> {
+    get_local_version()
+}
+
 /// Background loop: first check 20s after launch, then every 6h.
 /// Mirrors `updater::setup_update_checker` and
 /// `hq_cli_update::setup_hq_cli_update_checker`. Logs but does not
