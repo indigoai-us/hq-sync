@@ -52,8 +52,9 @@ use crate::commands::status::{journal_for_sync_complete, write_journal};
 use crate::events::{
     SyncAllCompleteEvent, SyncCompanyProvisionedEvent, SyncCompleteEvent, SyncErrorEvent,
     SyncEvent, EVENT_SYNC_ALL_COMPLETE, EVENT_SYNC_AUTH_ERROR, EVENT_SYNC_COMPANY_PROVISIONED,
-    EVENT_SYNC_COMPLETE, EVENT_SYNC_ERROR, EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES,
-    EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS, EVENT_SYNC_SETUP_NEEDED,
+    EVENT_SYNC_COMPLETE, EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, EVENT_SYNC_ERROR,
+    EVENT_SYNC_FANOUT_PLAN, EVENT_SYNC_NEW_FILES, EVENT_SYNC_PLAN, EVENT_SYNC_PROGRESS,
+    EVENT_SYNC_SETUP_NEEDED,
 };
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -153,7 +154,27 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// first menubar sync ran on a behind machine and would erase legacy/
 /// filtered paths when the local hqRoot's ignore filter rejected them.
 /// See indigoai-us/hq#142 + the 2026-05-14 incident report.
-pub const HQ_CLOUD_VERSION: &str = "~5.19.0";
+///
+/// 5.24.0 (2026-05-21) ships two related fixes, both motivated by a
+/// real incident where a user's personal vault accumulated ~2,600 zombie
+/// objects (~1,700 from old HQ layouts + ~900 from conflict-mirror
+/// pollution + 196 cross-scope `companies/{slug}/**` leaks).
+///   - Conflict-mirror exclusion in the push walker AND delete plan:
+///     `*.conflict-<ISO>-<hash>.<ext>` files never round-trip to S3.
+///     Active for ALL policies, not just the new default. Stops new
+///     litter accretion immediately.
+///   - `currency-gated` delete-propagation policy (opt-in in 5.24,
+///     scheduled default in 5.25). Per-file HEAD + ETag verification
+///     before any local-delete propagates. Strictly safer than
+///     `owned-only` because it lets files arriving via `/update-hq`
+///     (direction:"down") be cleanly deleted by the device that wrote
+///     them, as long as no other device touched them since.
+///   - Plus: new `filesTombstoned` / `filesRefusedStale` counters on
+///     ShareResult, a `delete-refused-stale-etag` event variant, and
+///     the `HQ_SYNC_DELETE_POLICY=currency-gated|owned-only|all` env
+///     override honored by `sync-runner`.
+/// See indigoai-us/hq-cloud#14 + 2026-05-21 reconcile incident report.
+pub const HQ_CLOUD_VERSION: &str = "~5.24.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -443,6 +464,14 @@ fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEvent> {
         files_skipped: 0,
         conflicts: 0,
         aborted: false,
+        // Synthetic complete for a not-yet-provisioned company: nothing was
+        // ever on remote, nothing was journaled, so tombstone + refused-
+        // stale counts are zero by construction. Use None (Option<u32>)
+        // rather than Some(0) so the wire shape matches what a pre-5.24
+        // runner would emit — keeps the renderer's "is this field
+        // populated?" branch the cleaner one.
+        files_tombstoned: None,
+        files_refused_stale: None,
     })
 }
 
@@ -520,6 +549,14 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             }
         }
         SyncEvent::Complete(payload) => app.emit(EVENT_SYNC_COMPLETE, payload.clone()),
+        // hq-cloud ≥5.24.0. Emitted only by the `currency-gated` policy;
+        // pre-5.24 runners silently never emit this and the branch is dead.
+        // Forward to the renderer as a warning row — the file was kept on
+        // remote because peer drift or a missing journal etag made the
+        // delete unsafe to propagate.
+        SyncEvent::DeleteRefusedStaleEtag(payload) => {
+            app.emit(EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, payload.clone())
+        }
         SyncEvent::NewFiles(payload) => app.emit(EVENT_SYNC_NEW_FILES, payload.clone()),
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
@@ -1409,6 +1446,8 @@ mod tests {
             files_skipped: 0,
             conflicts,
             aborted,
+            files_tombstoned: None,
+            files_refused_stale: None,
         })
     }
 
