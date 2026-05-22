@@ -3,6 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { open as openInBrowser } from '@tauri-apps/plugin-shell';
   import CopyPromptButton from './CopyPromptButton.svelte';
+  import type { Issue } from '../lib/copy-prompts';
 
   // Mirrors `DriftEntry` / `DriftReport` from src-tauri/src/commands/hq_core_drift.rs.
   // Camel-cased by serde's `rename_all = "camelCase"`.
@@ -11,6 +12,10 @@
     size: number;
     gitShaLocal: string | null;
     gitShaUpstream: string | null;
+    // Staging-classification tag (@getindigo.ai builders only). Absent for
+    // ineligible users — see src-tauri/src/commands/hq_core_staging.rs.
+    // Wire forms: 'staging-main' | 'pr:182' | 'unaccounted'.
+    stagingStatus?: string | null;
   }
   interface DriftReport {
     count: number;
@@ -27,6 +32,55 @@
   // for different intents in principle (Added never restores, but the
   // composite key keeps the map shape consistent).
   let restoreState = $state<Record<string, 'idle' | 'in-flight' | 'done' | string>>({});
+
+  // One bulk "Copy prompt for all" issue covering every drifted file, so the
+  // user can resolve the whole report in a single agent session. `isBuilder`
+  // is inferred from the presence of any staging classification — staging
+  // tags only appear for @getindigo.ai builders, so a report with no tags is
+  // treated as a regular user (who gets the personal/-overlay framing, with
+  // no mention of hq-core-staging they can't access).
+  const allDriftIssue = $derived.by<Issue | null>(() => {
+    if (!report || report.count === 0) return null;
+    const files = [
+      ...report.modified.map((e) => ({ path: e.path, kind: 'modified', staging: e.stagingStatus ?? null })),
+      ...report.missing.map((e) => ({ path: e.path, kind: 'missing', staging: null })),
+      ...report.added.map((e) => ({ path: e.path, kind: 'added', staging: e.stagingStatus ?? null })),
+    ];
+    const isBuilder = files.some((f) => f.staging != null);
+    return {
+      kind: 'hq-core-drift-all',
+      payload: { hqVersion: report.hqVersion, isBuilder, files },
+    };
+  });
+
+  // Render a staging-classification tag into a short badge label. Returns
+  // null when there's no status (ineligible user / unclassified) so the
+  // badge is simply omitted.
+  function stagingLabel(status: string | null | undefined): string | null {
+    if (!status) return null;
+    if (status === 'staging-main') return 'staging main';
+    if (status === 'unaccounted') return 'unaccounted';
+    const pr = status.startsWith('pr:') ? status.slice(3) : null;
+    return pr ? `PR #${pr}` : status;
+  }
+
+  // Coarse variant used for badge colour. 'main' = settled (green),
+  // 'pr' = in-flight (blue), 'unaccounted' = needs action (amber).
+  function stagingVariant(
+    status: string | null | undefined,
+  ): 'main' | 'pr' | 'unaccounted' | null {
+    if (!status) return null;
+    if (status === 'staging-main') return 'main';
+    if (status === 'unaccounted') return 'unaccounted';
+    if (status.startsWith('pr:')) return 'pr';
+    return null;
+  }
+
+  function stagingTitle(status: string | null | undefined): string {
+    return status === 'unaccounted'
+      ? 'Not yet in hq-core-staging (main or any open PR) — a real, unpromoted edit'
+      : `Already in hq-core-staging (${stagingLabel(status)}) — waiting for the next release`;
+  }
 
   function formatBytes(n: number): string {
     if (n < 1024) return `${n} B`;
@@ -105,6 +159,122 @@
   });
 </script>
 
+<!-- ── Reusable row pieces (snippets) ──────────────────────────────────────── -->
+{#snippet stagingBadge(entry: DriftEntry)}
+  {#if stagingVariant(entry.stagingStatus)}
+    <span
+      class="drift-staging-badge"
+      class:is-main={stagingVariant(entry.stagingStatus) === 'main'}
+      class:is-pr={stagingVariant(entry.stagingStatus) === 'pr'}
+      class:is-unaccounted={stagingVariant(entry.stagingStatus) === 'unaccounted'}
+      title={stagingTitle(entry.stagingStatus)}
+    >{stagingLabel(entry.stagingStatus)}</span>
+  {/if}
+{/snippet}
+
+<!-- One flat row: path (truncates, full text on hover via title) · badge ·
+     size — with the action cluster overlaid on the right, revealed on row
+     hover / keyboard focus so the resting state stays calm. -->
+{#snippet driftRow(
+  entry: DriftEntry,
+  sizeText: string,
+  actions: import('svelte').Snippet<[DriftEntry]>,
+  errKey?: string,
+)}
+  <div class="drift-row">
+    <div class="drift-row-line">
+      <span class="drift-row-path" title={entry.path}>{entry.path}</span>
+      <div class="drift-row-end">
+        <span class="drift-meta-cluster">
+          {@render stagingBadge(entry)}
+          <span class="drift-row-size">{sizeText}</span>
+        </span>
+        <div class="drift-row-actions">{@render actions(entry)}</div>
+      </div>
+    </div>
+    {#if errKey}{@render restoreErr(errKey)}{/if}
+  </div>
+{/snippet}
+
+{#snippet modifiedActions(entry: DriftEntry)}
+  {@render openBtn(entry)}{@render viewBtn(entry)}{@render restoreBtn(entry, 'modified')}{@render reviewBtn(entry, 'modified')}
+{/snippet}
+{#snippet missingActions(entry: DriftEntry)}
+  {@render viewBtn(entry)}{@render restoreBtn(entry, 'missing')}{@render reviewBtn(entry, 'missing')}
+{/snippet}
+{#snippet addedActions(entry: DriftEntry)}
+  {@render openBtn(entry)}{@render reviewBtn(entry, 'added')}
+{/snippet}
+
+{#snippet openBtn(entry: DriftEntry)}
+  <button
+    class="drift-icon-btn"
+    onclick={() => openLocal(entry)}
+    title="Open the local file in your editor"
+    aria-label="Open the local file in your editor"
+  >
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M11 2.6l2.4 2.4M3 13l.6-2.5 7-7 1.9 1.9-7 7L3 13z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  </button>
+{/snippet}
+
+{#snippet viewBtn(entry: DriftEntry)}
+  <button
+    class="drift-icon-btn"
+    onclick={() => viewUpstream(entry)}
+    title="View the upstream version on GitHub"
+    aria-label="View the upstream version on GitHub"
+  >
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M9 3h4v4M13 3l-6.5 6.5M11.5 9.2v2.8a1.7 1.7 0 0 1-1.7 1.7H4A1.7 1.7 0 0 1 2.3 12V6.2A1.7 1.7 0 0 1 4 4.5h2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+  </button>
+{/snippet}
+
+{#snippet restoreBtn(entry: DriftEntry, kind: 'modified' | 'missing')}
+  {@const key = `${kind}:${entry.path}`}
+  {@const st = restoreState[key]}
+  <button
+    class="drift-icon-btn is-danger"
+    class:is-done={st === 'done'}
+    onclick={() => restore(entry, kind)}
+    disabled={st === 'in-flight' || st === 'done'}
+    title={st === 'done'
+      ? 'Restored from upstream'
+      : kind === 'missing'
+      ? 'Create the file locally with the upstream content'
+      : 'Overwrite the local file with the upstream content (destructive)'}
+    aria-label="Restore from upstream"
+  >
+    {#if st === 'in-flight'}
+      <span class="drift-mini-spinner" aria-hidden="true"></span>
+    {:else if st === 'done'}
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M3.5 8.4l3 3 6-6.6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    {:else}
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M8 2.8v6.4M5.2 6.6L8 9.4l2.8-2.8M3 12.6h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    {/if}
+  </button>
+{/snippet}
+
+{#snippet reviewBtn(entry: DriftEntry, kind: 'modified' | 'missing' | 'added')}
+  <CopyPromptButton
+    variant="compact"
+    label="Review with agent"
+    issue={{ kind: 'hq-core-drift', payload: { path: entry.path, kind, hqVersion: report?.hqVersion } }}
+  />
+{/snippet}
+
+{#snippet restoreErr(key: string)}
+  {#if typeof restoreState[key] === 'string' && restoreState[key] !== 'in-flight' && restoreState[key] !== 'done'}
+    <p class="drift-row-error">Restore failed: {restoreState[key]}</p>
+  {/if}
+{/snippet}
+
 <div class="drift-window">
   <!-- Compact title bar — sits in the overlay zone next to the traffic
        lights, ~28px tall (matches native macOS title-bar height). No
@@ -120,6 +290,11 @@
         </span>
       {/if}
     </div>
+    {#if allDriftIssue}
+      <div class="drift-header-actions">
+        <CopyPromptButton variant="inline" label="Copy prompt for all" issue={allDriftIssue} />
+      </div>
+    {/if}
   </header>
 
   {#if !report}
@@ -154,41 +329,7 @@
             review with an agent to decide if the edit should be lifted into a <code>personal/</code> overlay.
           </p>
           {#each report.modified as entry}
-            {@const key = `modified:${entry.path}`}
-            <div class="drift-row">
-              <div class="drift-row-main">
-                <span class="drift-row-path" title={entry.path}>{entry.path}</span>
-                <span class="drift-row-meta">{formatBytes(entry.size)}</span>
-              </div>
-              <div class="drift-row-actions">
-                <button class="drift-action" onclick={() => openLocal(entry)} title="Open the local file in your editor">
-                  Open local
-                </button>
-                <button class="drift-action" onclick={() => viewUpstream(entry)} title="View the upstream version on GitHub">
-                  View upstream
-                </button>
-                <button
-                  class="drift-action drift-action-danger"
-                  onclick={() => restore(entry, 'modified')}
-                  disabled={restoreState[key] === 'in-flight' || restoreState[key] === 'done'}
-                  title="Overwrite the local file with the upstream content (destructive)"
-                >
-                  {restoreState[key] === 'in-flight'
-                    ? 'Restoring…'
-                    : restoreState[key] === 'done'
-                    ? 'Restored'
-                    : 'Restore'}
-                </button>
-                <CopyPromptButton
-                  variant="compact"
-                  label="Review with agent"
-                  issue={{ kind: 'hq-core-drift', payload: { path: entry.path, kind: 'modified', hqVersion: report.hqVersion } }}
-                />
-              </div>
-              {#if typeof restoreState[key] === 'string' && restoreState[key] !== 'in-flight' && restoreState[key] !== 'done'}
-                <p class="drift-row-error">Restore failed: {restoreState[key]}</p>
-              {/if}
-            </div>
+            {@render driftRow(entry, formatBytes(entry.size), modifiedActions, `modified:${entry.path}`)}
           {/each}
         </section>
       {/if}
@@ -202,38 +343,7 @@
             Upstream ships these but they're absent locally. Likely deleted by hand or never extracted.
           </p>
           {#each report.missing as entry}
-            {@const key = `missing:${entry.path}`}
-            <div class="drift-row">
-              <div class="drift-row-main">
-                <span class="drift-row-path" title={entry.path}>{entry.path}</span>
-                <span class="drift-row-meta">{formatBytes(entry.size)} upstream</span>
-              </div>
-              <div class="drift-row-actions">
-                <button class="drift-action" onclick={() => viewUpstream(entry)} title="View the upstream version on GitHub">
-                  View upstream
-                </button>
-                <button
-                  class="drift-action drift-action-danger"
-                  onclick={() => restore(entry, 'missing')}
-                  disabled={restoreState[key] === 'in-flight' || restoreState[key] === 'done'}
-                  title="Create the file locally with upstream content"
-                >
-                  {restoreState[key] === 'in-flight'
-                    ? 'Restoring…'
-                    : restoreState[key] === 'done'
-                    ? 'Restored'
-                    : 'Restore'}
-                </button>
-                <CopyPromptButton
-                  variant="compact"
-                  label="Review with agent"
-                  issue={{ kind: 'hq-core-drift', payload: { path: entry.path, kind: 'missing', hqVersion: report.hqVersion } }}
-                />
-              </div>
-              {#if typeof restoreState[key] === 'string' && restoreState[key] !== 'in-flight' && restoreState[key] !== 'done'}
-                <p class="drift-row-error">Restore failed: {restoreState[key]}</p>
-              {/if}
-            </div>
+            {@render driftRow(entry, `${formatBytes(entry.size)} upstream`, missingActions, `missing:${entry.path}`)}
           {/each}
         </section>
       {/if}
@@ -249,22 +359,7 @@
             locked scope (e.g. into <code>personal/</code>).
           </p>
           {#each report.added as entry}
-            <div class="drift-row">
-              <div class="drift-row-main">
-                <span class="drift-row-path" title={entry.path}>{entry.path}</span>
-                <span class="drift-row-meta">{formatBytes(entry.size)} local</span>
-              </div>
-              <div class="drift-row-actions">
-                <button class="drift-action" onclick={() => openLocal(entry)} title="Open the local file in your editor">
-                  Open local
-                </button>
-                <CopyPromptButton
-                  variant="compact"
-                  label="Review with agent"
-                  issue={{ kind: 'hq-core-drift', payload: { path: entry.path, kind: 'added', hqVersion: report.hqVersion } }}
-                />
-              </div>
-            </div>
+            {@render driftRow(entry, `${formatBytes(entry.size)} local`, addedActions)}
           {/each}
         </section>
       {/if}
@@ -273,6 +368,23 @@
 </div>
 
 <style>
+  /* Scoped via `data-window` (set in main.ts) so this reset can't bleed
+     into other windows. Default UA `body { margin: 8px }` was leaving a
+     grey gutter on the top + left edges where the OS window backing showed
+     through; zero it out and keep the backing transparent so only
+     `.drift-window` paints. */
+  :global(html[data-window='drift-detail']),
+  :global(html[data-window='drift-detail'] body) {
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    background: transparent;
+    overflow: hidden;
+  }
+  :global(html[data-window='drift-detail'] #app) {
+    height: 100vh;
+  }
+
   .drift-window {
     display: flex;
     flex-direction: column;
@@ -283,11 +395,18 @@
     color: var(--popover-text, #e0e0e0);
     font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
     overflow: hidden;
+    /* Three-step type scale — every text element below picks one of these
+       so sizes stay consistent: 13px headings, 12px body/paths, 11px meta. */
+    --fs-lg: 0.8125rem;
+    --fs-md: 0.75rem;
+    --fs-sm: 0.6875rem;
   }
 
   .drift-header {
     display: flex;
     align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
     /* Left padding reserves space for the macOS traffic-light buttons
        (overlaid title bar — see drift_detail.rs WebviewWindowBuilder).
        The buttons live at ~12px x 12px starting at ~7px from the left,
@@ -312,6 +431,14 @@
     -webkit-app-region: no-drag;
   }
 
+  /* Bulk "Copy prompt for all" lives at the right of the title bar. The
+     shared CopyPromptButton's inline variant already matches our pill sizing;
+     just keep it from shrinking and from being swallowed by the drag region. */
+  .drift-header-actions {
+    flex-shrink: 0;
+    -webkit-app-region: no-drag;
+  }
+
   /* Title + meta stacked tightly so the whole block fits inside the
      38px title-bar zone. Heading uses 13px (canonical primary size),
      meta uses 11px (canonical micro). No vertical gap — line-height
@@ -324,14 +451,14 @@
   }
 
   .drift-header h1 {
-    font-size: 0.8125rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
     margin: 0;
   }
 
   .drift-meta {
-    font-size: 0.6875rem;
+    font-size: var(--fs-sm);
     color: var(--popover-text-muted, #a0a0b0);
   }
 
@@ -348,7 +475,7 @@
     gap: 0.75rem;
     padding: 2rem;
     color: var(--popover-text-muted, #a0a0b0);
-    font-size: 0.8125rem;
+    font-size: var(--fs-lg);
     text-align: center;
   }
 
@@ -402,7 +529,7 @@
 
   .drift-section-title {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
     display: flex;
@@ -411,49 +538,51 @@
   }
 
   .drift-section-count {
-    font-size: 0.6875rem;
+    font-size: var(--fs-sm);
     font-weight: 500;
-    padding: 0.0625rem 0.375rem;
+    padding: 0.125rem 0.5rem;
     border-radius: 999px;
+    line-height: 1;
     background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     color: var(--popover-text-muted, #a0a0b0);
   }
 
   .drift-section-desc {
-    margin: 0 0 0.25rem 0;
-    font-size: 0.6875rem;
+    margin: 0 0 0.125rem 0;
+    font-size: var(--fs-sm);
     color: var(--popover-text-muted, #a0a0b0);
     line-height: 1.4;
   }
 
   .drift-section-desc code {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-    font-size: 0.625rem;
+    font-size: var(--fs-sm);
     padding: 0.0625rem 0.25rem;
     background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     border-radius: 3px;
   }
 
+  /* Flat rows — no card chrome. One line per file; the optional restore-error
+     note stacks beneath. Separation comes from the section gap + row height,
+     not a boxed background. */
   .drift-row {
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    padding: 0.5rem 0.625rem;
-    border-radius: 6px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.05));
   }
 
-  .drift-row-main {
+  .drift-row-line {
     display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 0.625rem;
     min-width: 0;
+    min-height: 28px;
+    padding: 0 0.125rem;
   }
 
   .drift-row-path {
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
-    font-size: 0.75rem;
+    font-size: var(--fs-md);
     color: var(--popover-text, #e0e0e0);
     white-space: nowrap;
     overflow: hidden;
@@ -462,54 +591,142 @@
     flex: 1;
   }
 
-  .drift-row-meta {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+  /* Right cluster: badge + size, then the inline action row. */
+  .drift-row-end {
+    display: flex;
+    align-items: center;
+    gap: 0.625rem;
     flex-shrink: 0;
   }
 
+  .drift-meta-cluster {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4375rem;
+    font-size: var(--fs-md);
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .drift-row-size {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Staging-classification badge. Tinted by pipeline state so the eye can
+     triage at a glance: green = settled on staging main, blue = in an open
+     PR, amber = unaccounted (the only real action item). Low-saturation
+     fills tuned for the dark glass backdrop. */
+  .drift-staging-badge {
+    font-size: var(--fs-md);
+    font-weight: 600;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    line-height: 1;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .drift-staging-badge.is-main {
+    color: #7ee0b8;
+    background: rgba(52, 211, 153, 0.14);
+  }
+
+  .drift-staging-badge.is-pr {
+    color: #9cc7ff;
+    background: rgba(96, 165, 250, 0.16);
+  }
+
+  .drift-staging-badge.is-unaccounted {
+    color: #f6c560;
+    background: rgba(245, 180, 70, 0.16);
+  }
+
+  /* Actions sit inline at the right edge, dim at rest and lift to full on
+     row hover / keyboard focus so a wall of buttons doesn't shout when the
+     user is just scanning. */
   .drift-row-actions {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.375rem;
+    flex-shrink: 0;
+    opacity: 0.38;
+    transition: opacity 0.12s ease;
   }
 
-  .drift-action {
-    font-family: inherit;
-    font-size: 0.6875rem;
-    font-weight: 500;
-    padding: 0.1875rem 0.5rem;
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    border: none;
-    border-radius: 999px;
+  .drift-row-line:hover .drift-row-actions,
+  .drift-row-line:focus-within .drift-row-actions {
+    opacity: 1;
+  }
+
+  /* Circular icon buttons — label lives in the tooltip (title/aria-label).
+     Compact + consistent so a dense row stays calm. */
+  .drift-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    padding: 0;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.14));
+    border-radius: 50%;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.06));
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.6));
     cursor: pointer;
-    white-space: nowrap;
-    transition: background-color 0.1s ease, color 0.1s ease, opacity 0.1s ease;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease,
+      opacity 0.12s ease;
   }
 
-  .drift-action:hover:not(:disabled) {
+  .drift-icon-btn:hover:not(:disabled) {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     color: var(--popover-text-heading, #ffffff);
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.3));
   }
 
-  .drift-action:disabled {
-    opacity: 0.6;
+  .drift-icon-btn:disabled {
+    opacity: 0.55;
     cursor: default;
   }
 
-  /* Destructive action (Restore overwrites local) — same surface treatment
-     as the rest, danger semantic conveyed via icon-less label + a confirm
-     dialog at click time. No red — the menubar's notice-tone language
-     intentionally avoids severity colour. */
-  .drift-action-danger {
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+  /* Restore is destructive — stays neutral at rest, warms to red only on
+     hover so the danger reads at the moment of intent, not as constant noise. */
+  .drift-icon-btn.is-danger:hover:not(:disabled) {
+    color: #fca5a5;
+    border-color: rgba(248, 113, 113, 0.5);
+    background: rgba(248, 113, 113, 0.12);
+  }
+
+  /* Post-restore confirmation — green check, disabled. */
+  .drift-icon-btn.is-done {
+    color: #7ee0b8;
+    border-color: rgba(110, 231, 183, 0.45);
+    opacity: 1;
+  }
+
+  .drift-mini-spinner {
+    width: 13px;
+    height: 13px;
+    border: 2px solid var(--popover-surface-strong, rgba(255, 255, 255, 0.18));
+    border-top-color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    border-radius: 50%;
+    animation: drift-spin 0.7s linear infinite;
+  }
+
+  /* Make the shared CopyPromptButton's compact variant match the circular
+     icon buttons — scoped under `.drift-row-actions` so other surfaces
+     (SyncStats) keep its rounded-square look. */
+  .drift-row-actions :global(.copy-prompt-btn.compact) {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 50%;
+    justify-content: center;
   }
 
   .drift-row-error {
     margin: 0;
-    font-size: 0.6875rem;
+    font-size: var(--fs-sm);
     color: var(--popover-danger, #ef4444);
     line-height: 1.3;
   }
