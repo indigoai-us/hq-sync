@@ -205,7 +205,13 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// stat-less descent probe. Without this, instant sync silently fell back
 /// to the 10-minute poll. The `~5.26` -> `~5.27` bump is required to pick it
 /// up (tilde ranges don't cross the minor boundary).
-pub const HQ_CLOUD_VERSION: &str = "~5.27.0";
+/// 5.28.0 (2026-05-22) replaces the watcher's per-directory chokidar watch
+/// with a SINGLE recursive `fs.watch` on macOS (FSEvents). chokidar 4 dropped
+/// `fsevents`, so it watched via kqueue at ~1 fd per path (~11,600 fds over a
+/// real HQ tree) — which EMFILEs under the default soft `ulimit -n` (256) and
+/// silently kills the watcher. After: 1 OS handle for the whole tree. The
+/// `~5.27` -> `~5.28` bump is required to pick it up.
+pub const HQ_CLOUD_VERSION: &str = "~5.28.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
