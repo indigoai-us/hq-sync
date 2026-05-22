@@ -198,7 +198,14 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 ///
 /// 5.26.0 (2026-05-22) adds the event-driven push watcher (`--event-push`,
 /// gated to @getindigo.ai in the menubar; default poll-only otherwise).
-pub const HQ_CLOUD_VERSION: &str = "~5.26.0";
+/// 5.27.0 (2026-05-22) fixes the watcher never firing for `--companies`
+/// edits: the runner no longer forces `personalMode: true` (which excluded
+/// the `companies/` subtree it actually syncs), and the chokidar `ignored`
+/// predicate no longer prunes ancestor dirs of allowlisted leaves on its
+/// stat-less descent probe. Without this, instant sync silently fell back
+/// to the 10-minute poll. The `~5.26` -> `~5.27` bump is required to pick it
+/// up (tilde ranges don't cross the minor boundary).
+pub const HQ_CLOUD_VERSION: &str = "~5.27.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
