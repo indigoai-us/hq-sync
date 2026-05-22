@@ -11,6 +11,10 @@
     size: number;
     gitShaLocal: string | null;
     gitShaUpstream: string | null;
+    // Staging-classification tag (@getindigo.ai builders only). Absent for
+    // ineligible users — see src-tauri/src/commands/hq_core_staging.rs.
+    // Wire forms: 'staging-main' | 'pr:182' | 'unaccounted'.
+    stagingStatus?: string | null;
   }
   interface DriftReport {
     count: number;
@@ -27,6 +31,17 @@
   // for different intents in principle (Added never restores, but the
   // composite key keeps the map shape consistent).
   let restoreState = $state<Record<string, 'idle' | 'in-flight' | 'done' | string>>({});
+
+  // Render a staging-classification tag into a short badge label. Returns
+  // null when there's no status (ineligible user / unclassified) so the
+  // badge is simply omitted.
+  function stagingLabel(status: string | null | undefined): string | null {
+    if (!status) return null;
+    if (status === 'staging-main') return 'staging main';
+    if (status === 'unaccounted') return 'unaccounted';
+    const pr = status.startsWith('pr:') ? status.slice(3) : null;
+    return pr ? `PR #${pr}` : status;
+  }
 
   function formatBytes(n: number): string {
     if (n < 1024) return `${n} B`;
@@ -158,7 +173,19 @@
             <div class="drift-row">
               <div class="drift-row-main">
                 <span class="drift-row-path" title={entry.path}>{entry.path}</span>
-                <span class="drift-row-meta">{formatBytes(entry.size)}</span>
+                <span class="drift-row-meta">
+                  {#if stagingLabel(entry.stagingStatus)}
+                    {@const label = stagingLabel(entry.stagingStatus)}
+                    <span
+                      class="drift-staging-badge"
+                      class:is-unaccounted={entry.stagingStatus === 'unaccounted'}
+                      title={entry.stagingStatus === 'unaccounted'
+                        ? 'Not yet in hq-core-staging (main or any open PR) — this is a real, unpromoted edit'
+                        : `Already in hq-core-staging (${label}) — waiting for the next release`}
+                    >{label}</span>
+                  {/if}
+                  {formatBytes(entry.size)}
+                </span>
               </div>
               <div class="drift-row-actions">
                 <button class="drift-action" onclick={() => openLocal(entry)} title="Open the local file in your editor">
@@ -252,7 +279,19 @@
             <div class="drift-row">
               <div class="drift-row-main">
                 <span class="drift-row-path" title={entry.path}>{entry.path}</span>
-                <span class="drift-row-meta">{formatBytes(entry.size)} local</span>
+                <span class="drift-row-meta">
+                  {#if stagingLabel(entry.stagingStatus)}
+                    {@const label = stagingLabel(entry.stagingStatus)}
+                    <span
+                      class="drift-staging-badge"
+                      class:is-unaccounted={entry.stagingStatus === 'unaccounted'}
+                      title={entry.stagingStatus === 'unaccounted'
+                        ? 'Not yet in hq-core-staging (main or any open PR) — this is a real, unpromoted edit'
+                        : `Already in hq-core-staging (${label}) — waiting for the next release`}
+                    >{label}</span>
+                  {/if}
+                  {formatBytes(entry.size)} local
+                </span>
               </div>
               <div class="drift-row-actions">
                 <button class="drift-action" onclick={() => openLocal(entry)} title="Open the local file in your editor">
@@ -466,6 +505,29 @@
     font-size: 0.6875rem;
     color: var(--popover-text-muted, #a0a0b0);
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  /* Staging-classification badge. Muted pill matching `.drift-section-count`,
+     no severity colour (consistent with the menubar's no-colour stance). The
+     `unaccounted` variant — the actionable case — gets a slightly stronger
+     weight + brighter text, still without red. */
+  .drift-staging-badge {
+    font-size: 0.625rem;
+    font-weight: 500;
+    padding: 0.0625rem 0.375rem;
+    border-radius: 999px;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    color: var(--popover-text-muted, #a0a0b0);
+    white-space: nowrap;
+  }
+
+  .drift-staging-badge.is-unaccounted {
+    font-weight: 600;
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
   }
 
   .drift-row-actions {

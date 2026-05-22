@@ -44,6 +44,7 @@ use sha1::{Digest, Sha1};
 use tauri::{AppHandle, Emitter};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::commands::hq_core_staging::{self, StagingStatus};
 use crate::commands::hq_core_update::get_local_version;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -81,6 +82,14 @@ pub struct DriftEntry {
     /// Upstream git-blob SHA-1, or None when the path is locally-added
     /// (not part of upstream at the current hqVersion).
     pub git_sha_upstream: Option<String>,
+    /// Where this drifted file's content already lives in the staging
+    /// promotion pipeline (`staging main` / `PR #n` / `unaccounted`), or
+    /// `None` when staging classification is dark for this user (the public
+    /// default — see `hq_core_staging`). Absent from the serialized payload
+    /// when `None`, so non-eligible users' reports are byte-identical to the
+    /// pre-feature shape. Only stamped on modified/added entries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_status: Option<StagingStatus>,
 }
 
 /// Drift summary emitted to the frontend. `count` is the total of the
@@ -328,6 +337,7 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> 
                 size: *size_local,
                 git_sha_local: Some(sha_local.clone()),
                 git_sha_upstream: Some(sha_up.clone()),
+                staging_status: None,
             });
             // size_up is unused for modified — we already report local size.
             let _ = size_up;
@@ -340,6 +350,7 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> 
             size: *size_up,
             git_sha_local: None,
             git_sha_upstream: Some(sha_up.clone()),
+            staging_status: None,
         });
     }
     for path in local_paths.difference(&upstream_paths) {
@@ -349,7 +360,22 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> 
             size: *size_local,
             git_sha_local: Some(sha_local.clone()),
             git_sha_upstream: None,
+            staging_status: None,
         });
+    }
+
+    // Staging-aware classification (@getindigo.ai builders only — see
+    // `hq_core_staging`). Fail-quiet: if the staging index can't be built
+    // (ineligible, no gh token, network/API error) we leave every
+    // `staging_status` as None and the report renders exactly as before.
+    // `count` is intentionally NOT affected — staging status is per-row
+    // metadata only, the pill total still reflects all drift.
+    if let Some(index) = hq_core_staging::build_index_if_eligible().await {
+        for entry in modified.iter_mut().chain(added.iter_mut()) {
+            if let Some(sha) = entry.git_sha_local.as_deref() {
+                entry.staging_status = Some(index.classify(&entry.path, sha));
+            }
+        }
     }
 
     let count = modified.len() + missing.len() + added.len();

@@ -17,6 +17,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             realtime_sync: Some(true),
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
+            drift_staging_repo: None,
         });
     }
 
@@ -42,6 +43,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // and `is_instant_sync_enabled` in daemon.rs. Only ever takes effect
         // for `event_push_eligible()` users (Phase 1: @getindigo.ai).
         instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+        drift_staging_repo: prefs.drift_staging_repo,
     })
 }
 
@@ -82,6 +84,7 @@ mod tests {
             realtime_sync: None,
             personal_sync_enabled: None,
             instant_sync: None,
+            drift_staging_repo: None,
         };
 
         let result = MenubarPrefs {
@@ -93,6 +96,7 @@ mod tests {
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+        drift_staging_repo: prefs.drift_staging_repo,
         };
 
         assert_eq!(result.hq_path, None);
@@ -116,6 +120,7 @@ mod tests {
             realtime_sync: Some(false),
             personal_sync_enabled: None,
             instant_sync: None,
+            drift_staging_repo: None,
         };
 
         let result = MenubarPrefs {
@@ -127,6 +132,7 @@ mod tests {
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+        drift_staging_repo: prefs.drift_staging_repo,
         };
 
         assert_eq!(result.realtime_sync, Some(false));
@@ -143,6 +149,7 @@ mod tests {
             realtime_sync: Some(true),
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
+            drift_staging_repo: None,
         };
 
         let result = MenubarPrefs {
@@ -154,6 +161,7 @@ mod tests {
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+        drift_staging_repo: prefs.drift_staging_repo,
         };
 
         assert_eq!(result.hq_path, Some("/custom/path".to_string()));
@@ -174,6 +182,7 @@ mod tests {
             realtime_sync: Some(false),
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
+            drift_staging_repo: None,
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -199,6 +208,7 @@ mod tests {
             realtime_sync: Some(false),
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
+            drift_staging_repo: None,
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -221,6 +231,7 @@ mod tests {
             realtime_sync: Some(false),
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
+            drift_staging_repo: None,
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();

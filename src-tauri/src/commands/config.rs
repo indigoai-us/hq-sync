@@ -67,6 +67,16 @@ pub struct MenubarPrefs {
     /// (see `is_instant_sync_enabled` in daemon.rs and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instant_sync: Option<bool>,
+    /// Staging repo (`owner/name`) for Core-Drift staging classification.
+    /// When set, drifted locked-scope files are cross-referenced against this
+    /// repo's `main` tree + open PRs and tagged (`staging main` / `PR #n` /
+    /// `unaccounted`) in the Core Drift window. Any team adopting a
+    /// stage-then-release HQ workflow can point this at their own staging
+    /// repo. When absent, classification only runs for `@getindigo.ai` users
+    /// (defaulting to `indigoai-us/hq-core-staging`); everyone else sees the
+    /// unchanged drift panel. See `commands/hq_core_staging.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_staging_repo: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
