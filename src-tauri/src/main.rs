@@ -202,6 +202,7 @@ fn main() {
             commands::new_files::detail_window_ready,
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
+            commands::activity::get_activity_log,
             commands::meetings::meetings_feature_enabled,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,

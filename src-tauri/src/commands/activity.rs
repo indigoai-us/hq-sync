@@ -71,6 +71,16 @@ impl SessionActivity {
     }
 }
 
+/// Return the current session activity snapshot. The window pulls this on
+/// mount (robust against emit-timing races — the earlier emit-on-ready
+/// handshake could fire before the webview's listener registered).
+#[tauri::command]
+pub fn get_activity_log(app: AppHandle) -> Vec<ActivityEntry> {
+    app.try_state::<SessionActivity>()
+        .map(|s| s.snapshot())
+        .unwrap_or_default()
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -174,6 +184,17 @@ pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
                 );
             }
         });
+    }
+
+    // Show the window now rather than waiting for a ready-handshake from the
+    // webview. The component pulls its data via get_activity_log on mount, so
+    // there's no emit race to avoid — and showing immediately means the FIRST
+    // click always opens the window (the prior handshake-to-show could leave
+    // it hidden forever if the webview's invoke didn't fire).
+    if let Some(window) = app.get_webview_window(ACTIVITY_WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        log("activity", "open: shown new window");
     }
 
     Ok(())

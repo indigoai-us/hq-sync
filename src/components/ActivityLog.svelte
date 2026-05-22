@@ -77,27 +77,34 @@
   }
 
   $effect(() => {
-    let offList: (() => void) | undefined;
     let offAppend: (() => void) | undefined;
+    let offList: (() => void) | undefined;
 
-    Promise.all([
-      listen<ActivityEntry[]>('activity:list', (event) => {
-        entries = event.payload;
-      }),
-      listen<ActivityEntry>('activity:append', (event) => {
-        entries = [...entries, event.payload];
-      }),
-    ]).then(([offL, offA]) => {
-      offList = offL;
-      offAppend = offA;
-      // Handshake: tell Rust our listeners are registered so it can emit the
-      // current snapshot and show the window (race-free, mirrors New Files).
-      invoke('activity_window_ready');
+    // Pull the current snapshot on mount. This is the authoritative load —
+    // robust against emit-timing races (the old emit-on-ready handshake could
+    // fire before this webview's listener registered, leaving the window
+    // empty). The window is shown by Rust on open; no ready-handshake needed.
+    invoke<ActivityEntry[]>('get_activity_log').then((list) => {
+      entries = list;
+    });
+
+    // Live updates: new entries recorded while the window is open are pushed
+    // via `activity:append`. We also keep `activity:list` as a re-sync hook
+    // (emitted when an already-open window is re-focused).
+    listen<ActivityEntry>('activity:append', (event) => {
+      entries = [...entries, event.payload];
+    }).then((off) => {
+      offAppend = off;
+    });
+    listen<ActivityEntry[]>('activity:list', (event) => {
+      entries = event.payload;
+    }).then((off) => {
+      offList = off;
     });
 
     return () => {
-      offList?.();
       offAppend?.();
+      offList?.();
     };
   });
 </script>
