@@ -214,7 +214,14 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// 5.29.0 (2026-05-22) stamps `direction` ("up"/"down") on per-file progress
 /// events so the menubar's Recent Changes activity log can label each file
 /// uploaded vs downloaded. The `~5.28` -> `~5.29` bump is required to pick it up.
-pub const HQ_CLOUD_VERSION: &str = "~5.29.0";
+/// 5.30.0 (2026-05-22) fixes the personal-vault journal-slug collision: the
+/// personal-vault fanout slot and a real `companies/personal` company both
+/// resolved to journal slug `personal`, sharing one journal — so the company's
+/// whole-tree delete-plan tombstoned the vault's hq-root keys every cycle and
+/// the vault re-uploaded them (~190 `.claude/skills/*` files churned per sync).
+/// 5.30 reserves a distinct vault journal slug (with a one-time seed migration).
+/// The `~5.29` -> `~5.30` bump is required to pick it up.
+pub const HQ_CLOUD_VERSION: &str = "~5.30.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
