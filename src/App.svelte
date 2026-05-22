@@ -9,6 +9,7 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import { startPermissionListeners } from './lib/permissionState.svelte';
   import './styles/popover.css';
 
   interface Config {
@@ -733,6 +734,11 @@
     loadConfig();
     loadWorkspaces();
     setupTrayListeners();
+    // Subscribe to macOS permission status events from the SDK bridge.
+    // The store is module-level reactive — components read it directly.
+    startPermissionListeners().catch((err) => {
+      console.error('startPermissionListeners failed:', err);
+    });
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
     invoke<boolean>('meetings_feature_enabled')

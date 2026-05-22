@@ -51,6 +51,14 @@
     ],
     "macOS": {
       "minimumSystemVersion": "13.0"
+    },
+    "externalBin": [
+      "binaries/recall-desktop-sdk"
+    ],
+    "resources": {
+      "../sidecar/recall-sdk-bridge/bridge.mjs": "recall-sdk-bridge/bridge.mjs",
+      "../sidecar/recall-sdk-bridge/package.json": "recall-sdk-bridge/package.json",
+      "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules"
     }
   }
 }

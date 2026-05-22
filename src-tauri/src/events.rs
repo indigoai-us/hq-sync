@@ -359,6 +359,42 @@ pub struct MeetingDetectedEvent {
 pub const EVENT_MEETING_DETECTED: &str = "meeting:detected";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Permission events (US-011)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One of the five macOS permissions the Recall Desktop SDK can request.
+/// Mirrors `Permission` in @recallai/desktop-sdk's index.d.ts (kebab-case).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecallPermission {
+    Accessibility,
+    ScreenCapture,
+    Microphone,
+    SystemAudio,
+    FullDiskAccess,
+}
+
+/// Per-permission status emitted by the SDK on init and whenever the user
+/// changes it in System Settings. Status strings the SDK uses:
+/// `granted`, `denied`, `not-determined`, and (rarely) `restricted`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionStatusEvent {
+    pub permission: RecallPermission,
+    /// Free-form so we don't break on a new SDK status value; the UI treats
+    /// anything other than "granted" as missing.
+    pub status: String,
+}
+
+/// Tauri event channel name for `PermissionStatusEvent`.
+pub const EVENT_PERMISSION_STATUS: &str = "permission:status";
+
+/// Convenience signal — all required permissions have been granted; the UI
+/// can collapse the missing-permissions banner without checking individual
+/// rows. No payload.
+pub const EVENT_PERMISSIONS_ALL_GRANTED: &str = "permissions:all-granted";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 

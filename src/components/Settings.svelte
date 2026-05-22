@@ -1,6 +1,49 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
+  import {
+    permissions,
+    permissionState,
+    REQUIRED_PERMISSIONS,
+    PERMISSION_LABELS,
+    PERMISSION_EXPLAINERS,
+    startPermissionListeners,
+    type PermissionKey,
+  } from '../lib/permissionState.svelte';
+
+  // Ensure the listener is running on this window too. Idempotent.
+  startPermissionListeners().catch(() => {});
+
+  async function openPermission(perm: PermissionKey) {
+    try {
+      // Same native-register dance as the banner — accessibility +
+      // screen-capture need HQ Sync's own process to call the macOS APIs
+      // first so TCC registers the bundle, not the SDK child binary.
+      if (perm === 'accessibility' || perm === 'screen-capture') {
+        try {
+          await invoke('permissions_force_native_register');
+        } catch (err) {
+          console.warn('permissions_force_native_register:', err);
+        }
+      }
+      await invoke('permissions_open_settings', { permission: perm });
+    } catch (err) {
+      console.error('permissions_open_settings failed:', err);
+    }
+  }
+
+  function permissionStatusLabel(p: PermissionKey): string {
+    const s = permissions[p];
+    if (s === 'granted') return 'Granted';
+    if (s === 'denied') return 'Denied';
+    if (s === 'restricted') return 'Restricted';
+    if (s === 'not-determined') return 'Not set';
+    return 'Unknown';
+  }
+
+  function permissionStatusClass(p: PermissionKey): string {
+    return permissions[p] === 'granted' ? 'status-granted' : 'status-needed';
+  }
 
   interface Props {
     onback: () => void;
@@ -343,6 +386,42 @@
 
       <div class="settings-divider"></div>
 
+      <!-- Meeting Detection — macOS Permissions (US-011) -->
+      <div class="setting-row setting-row-stacked">
+        <div class="setting-info">
+          <span class="setting-label">macOS permissions</span>
+          <span class="setting-desc">
+            Meeting detection needs these granted in System Settings. Click a
+            row to open the right pane.
+          </span>
+        </div>
+      </div>
+      <div class="permission-rows">
+        {#each REQUIRED_PERMISSIONS as perm (perm)}
+          <button
+            type="button"
+            class="permission-row-settings"
+            onclick={() => openPermission(perm)}
+            title="Open System Settings → Privacy & Security → {PERMISSION_LABELS[perm]}"
+          >
+            <div class="permission-row-text">
+              <span class="permission-name">{PERMISSION_LABELS[perm]}</span>
+              <span class="permission-explainer">{PERMISSION_EXPLAINERS[perm]}</span>
+            </div>
+            <span class="permission-row-status {permissionStatusClass(perm)}">
+              {permissionStatusLabel(perm)}
+            </span>
+          </button>
+        {/each}
+        {#if !permissionState.initialized}
+          <div class="permission-loading">
+            Querying permission status… (SDK boots in a few seconds after launch)
+          </div>
+        {/if}
+      </div>
+
+      <div class="settings-divider"></div>
+
       <!-- Start at Login -->
       <div class="setting-row">
         <div class="setting-info">
@@ -652,5 +731,88 @@
 
   .ledger-path-row {
     padding-top: 0.375rem;
+  }
+
+  /* macOS permissions section (US-011) — click-to-open settings, one row
+     per required permission. */
+  .setting-row-stacked {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.25rem;
+  }
+
+  .permission-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    padding-top: 0.375rem;
+  }
+
+  .permission-row-settings {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.625rem;
+    padding: 0.5rem 0.625rem;
+    border-radius: 6px;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.05));
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.08));
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease;
+  }
+
+  .permission-row-settings:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.09));
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+
+  .permission-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .permission-name {
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--popover-text, rgba(255, 255, 255, 0.92));
+  }
+
+  .permission-explainer {
+    font-size: 0.7rem;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.55));
+    line-height: 1.3;
+  }
+
+  .permission-row-status {
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    font-weight: 500;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .status-granted {
+    background: rgba(40, 180, 99, 0.18);
+    color: rgba(120, 230, 160, 1);
+  }
+
+  .status-needed {
+    background: rgba(255, 159, 28, 0.18);
+    color: rgba(255, 200, 120, 1);
+  }
+
+  .permission-loading {
+    padding: 0.5rem 0.625rem;
+    font-size: 0.7rem;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.55));
+    font-style: italic;
   }
 </style>

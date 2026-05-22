@@ -60,7 +60,10 @@ use crate::commands::process::{
     cancel_process_impl, run_process_impl, try_register_handle, ProcessEvent, SpawnArgs,
 };
 use crate::commands::sync::resolve_vault_api_url;
-use crate::events::{MeetingDetectedEvent, EVENT_MEETING_DETECTED};
+use crate::events::{
+    MeetingDetectedEvent, PermissionStatusEvent, EVENT_MEETING_DETECTED,
+    EVENT_PERMISSIONS_ALL_GRANTED, EVENT_PERMISSION_STATUS,
+};
 use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -202,31 +205,30 @@ fn find_sdk_binary() -> Option<String> {
 // Stdout protocol
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// ndjson event shape emitted by the Recall Desktop SDK on stdout.
+/// ndjson event shape emitted by the SDK bridge on stdout. The bridge
+/// translates real Recall SDK callbacks into the lines we parse here.
 ///
-/// We only parse the `meeting:detected` variant — all other lines are
-/// silently skipped. The `type` tag uses a literal string (`meeting:detected`)
-/// that does not map cleanly to a Rust identifier, so we use a flat
-/// `#[serde(tag = "type")]` enum with a rename.
+/// Blank or unknown lines return `None` (handled in `parse_sdk_line`).
 #[derive(Debug, Deserialize)]
-#[serde(tag = "type", rename_all = "kebab-case")]
+#[serde(tag = "type")]
 enum RecallSdkEvent {
     #[serde(rename = "meeting:detected")]
     MeetingDetected(MeetingDetectedEvent),
+    #[serde(rename = "permission:status")]
+    PermissionStatus(PermissionStatusEvent),
+    /// Convenience signal — all required perms granted. No payload.
+    #[serde(rename = "permissions:all-granted")]
+    PermissionsAllGranted {},
 }
 
-/// Parse a single ndjson line from the SDK and optionally return a
-/// `MeetingDetectedEvent`. Blank lines and non-`meeting:detected` lines
-/// return `None`.
-fn parse_sdk_line(line: &str) -> Option<MeetingDetectedEvent> {
+/// Parse a single ndjson line from the SDK bridge. Blank lines and
+/// unrecognised types return `None`.
+fn parse_sdk_line(line: &str) -> Option<RecallSdkEvent> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return None;
     }
-    match serde_json::from_str::<RecallSdkEvent>(trimmed) {
-        Ok(RecallSdkEvent::MeetingDetected(payload)) => Some(payload),
-        Err(_) => None,
-    }
+    serde_json::from_str::<RecallSdkEvent>(trimmed).ok()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -317,20 +319,53 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
         let result = run_process_impl(SDK_HANDLE, &spawn_args, |event| match event {
             ProcessEvent::Stdout(line) => {
                 log("recall-sdk.stdout", &line);
-                if let Some(payload) = parse_sdk_line(&line) {
-                    log(
-                        LOG_TAG,
-                        &format!(
-                            "meeting:detected — id={} platform={:?} url={}",
-                            payload.detection_id, payload.platform, payload.meeting_url
-                        ),
-                    );
-                    if let Err(e) = app_bg.emit(EVENT_MEETING_DETECTED, &payload) {
+                match parse_sdk_line(&line) {
+                    Some(RecallSdkEvent::MeetingDetected(payload)) => {
                         log(
                             LOG_TAG,
-                            &format!("emit meeting:detected failed: {e}"),
+                            &format!(
+                                "meeting:detected — id={} platform={:?} url={}",
+                                payload.detection_id,
+                                payload.platform,
+                                payload.meeting_url
+                            ),
                         );
+                        if let Err(e) = app_bg.emit(EVENT_MEETING_DETECTED, &payload) {
+                            log(
+                                LOG_TAG,
+                                &format!("emit meeting:detected failed: {e}"),
+                            );
+                        }
                     }
+                    Some(RecallSdkEvent::PermissionStatus(payload)) => {
+                        log(
+                            LOG_TAG,
+                            &format!(
+                                "permission:status — {:?} → {}",
+                                payload.permission, payload.status
+                            ),
+                        );
+                        if let Err(e) = app_bg.emit(EVENT_PERMISSION_STATUS, &payload) {
+                            log(
+                                LOG_TAG,
+                                &format!("emit permission:status failed: {e}"),
+                            );
+                        }
+                    }
+                    Some(RecallSdkEvent::PermissionsAllGranted {}) => {
+                        log(LOG_TAG, "permissions:all-granted");
+                        if let Err(e) =
+                            app_bg.emit(EVENT_PERMISSIONS_ALL_GRANTED, &())
+                        {
+                            log(
+                                LOG_TAG,
+                                &format!(
+                                    "emit permissions:all-granted failed: {e}"
+                                ),
+                            );
+                        }
+                    }
+                    None => {}
                 }
             }
             ProcessEvent::Stderr(line) => {
@@ -377,7 +412,21 @@ pub fn stop_recall_sdk() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::events::{DetectionSource, MeetingPlatform};
+    use crate::events::{DetectionSource, MeetingPlatform, RecallPermission};
+
+    fn meeting(line: &str) -> MeetingDetectedEvent {
+        match parse_sdk_line(line).expect("should parse") {
+            RecallSdkEvent::MeetingDetected(m) => m,
+            other => panic!("expected MeetingDetected, got {:?}", other),
+        }
+    }
+
+    fn permission(line: &str) -> PermissionStatusEvent {
+        match parse_sdk_line(line).expect("should parse") {
+            RecallSdkEvent::PermissionStatus(p) => p,
+            other => panic!("expected PermissionStatus, got {:?}", other),
+        }
+    }
 
     #[test]
     fn parse_sdk_line_returns_none_for_empty() {
@@ -400,7 +449,7 @@ mod tests {
     #[test]
     fn parse_sdk_line_parses_meeting_detected_zoom() {
         let line = r#"{"type":"meeting:detected","detectionId":"det_1","meetingUrl":"https://zoom.us/j/999","platform":"zoom","detectedAt":"2026-05-20T10:00:00Z","source":"sdk-calendar","sourceEventId":"evt_abc"}"#;
-        let payload = parse_sdk_line(line).expect("should parse");
+        let payload = meeting(line);
         assert_eq!(payload.detection_id, "det_1");
         assert_eq!(payload.meeting_url, "https://zoom.us/j/999");
         assert_eq!(payload.platform, MeetingPlatform::Zoom);
@@ -411,7 +460,7 @@ mod tests {
     #[test]
     fn parse_sdk_line_parses_meeting_detected_active_app() {
         let line = r#"{"type":"meeting:detected","detectionId":"det_2","meetingUrl":"https://meet.google.com/abc-def","platform":"meet","detectedAt":"2026-05-20T11:00:00Z","source":"sdk-active-app"}"#;
-        let payload = parse_sdk_line(line).expect("should parse");
+        let payload = meeting(line);
         assert_eq!(payload.platform, MeetingPlatform::Meet);
         assert_eq!(payload.source, DetectionSource::SdkActiveApp);
         assert!(payload.source_event_id.is_none());
@@ -420,15 +469,32 @@ mod tests {
     #[test]
     fn parse_sdk_line_handles_leading_whitespace() {
         let line = r#"  {"type":"meeting:detected","detectionId":"det_3","meetingUrl":"https://zoom.us/j/1","platform":"zoom","detectedAt":"2026-05-20T12:00:00Z","source":"sdk-active-app"}  "#;
-        let payload = parse_sdk_line(line).expect("should parse trimmed line");
+        let payload = meeting(line);
         assert_eq!(payload.detection_id, "det_3");
     }
 
     #[test]
     fn parse_sdk_line_parses_other_platform() {
         let line = r#"{"type":"meeting:detected","detectionId":"det_4","meetingUrl":"https://webex.com/meet/abc","platform":"webex","detectedAt":"2026-05-20T13:00:00Z","source":"sdk-calendar"}"#;
-        let payload = parse_sdk_line(line).expect("should parse");
+        let payload = meeting(line);
         assert_eq!(payload.platform, MeetingPlatform::Webex);
+    }
+
+    #[test]
+    fn parse_sdk_line_parses_permission_status() {
+        let line = r#"{"type":"permission:status","permission":"screen-capture","status":"denied"}"#;
+        let payload = permission(line);
+        assert_eq!(payload.permission, RecallPermission::ScreenCapture);
+        assert_eq!(payload.status, "denied");
+    }
+
+    #[test]
+    fn parse_sdk_line_parses_all_granted() {
+        let line = r#"{"type":"permissions:all-granted"}"#;
+        assert!(matches!(
+            parse_sdk_line(line),
+            Some(RecallSdkEvent::PermissionsAllGranted {})
+        ));
     }
 
     #[test]

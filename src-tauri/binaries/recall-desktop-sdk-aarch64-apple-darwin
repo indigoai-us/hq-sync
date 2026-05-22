@@ -1,0 +1,48 @@
+#!/bin/bash
+# recall-desktop-sdk — Tauri sidecar wrapper.
+#
+# Tauri's externalBin convention copies this file (arch-suffixed) into the
+# bundle next to the running app. From the wrapper's perspective, we then
+# resolve bridge.mjs and exec it under node.
+#
+# Resolution order:
+#   1. Next to this wrapper (release bundle pattern — the bridge dir is
+#      copied alongside the wrapper at packaging time).
+#   2. Dev layout: `../../sidecar/recall-sdk-bridge/bridge.mjs` (when the
+#      wrapper lives at <repo>/src-tauri/binaries/) — Tauri dev mode also
+#      copies the wrapper into target/{debug,release}/ so we check the
+#      deeper path too.
+#   3. Override via $RECALL_BRIDGE_PATH for ad-hoc testing.
+#
+# All env vars (RECALL_API_KEY, RECALL_API_URL, RECALL_SDK_DEV) and CLI
+# args (--json from recall_sdk.rs) are passed through verbatim.
+
+# Resolve the wrapper's own directory, following symlinks where possible.
+SCRIPT_PATH="$0"
+case "$SCRIPT_PATH" in
+  /*) ;;
+  *) SCRIPT_PATH="$(pwd)/$SCRIPT_PATH" ;;
+esac
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd -P)"
+
+# Candidate paths — array, not space-delimited string, so paths with spaces
+# (e.g. "HQ Sync.app/Contents/...") survive correctly.
+CANDIDATES=(
+  "$SCRIPT_DIR/bridge.mjs"
+  "$SCRIPT_DIR/../Resources/recall-sdk-bridge/bridge.mjs"
+  "$SCRIPT_DIR/../../sidecar/recall-sdk-bridge/bridge.mjs"
+  "$SCRIPT_DIR/../../../sidecar/recall-sdk-bridge/bridge.mjs"
+  "${RECALL_BRIDGE_PATH:-}"
+)
+
+for candidate in "${CANDIDATES[@]}"; do
+  if [ -n "$candidate" ] && [ -f "$candidate" ]; then
+    exec node "$candidate" "$@"
+  fi
+done
+
+echo "[recall-desktop-sdk wrapper] cannot find bridge.mjs; checked:" >&2
+for candidate in "${CANDIDATES[@]}"; do
+  echo "  $candidate" >&2
+done
+exit 1

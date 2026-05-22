@@ -206,6 +206,8 @@ fn main() {
             commands::meetings::meetings_check_bot_for_url,
             commands::meetings::meetings_notify_detected,
             commands::meetings::meetings_clear_prompt_badge,
+            commands::permissions::permissions_open_settings,
+            commands::permissions::permissions_force_native_register,
             tray::meetings_set_prompt_badge,
         ])
         .setup(|app| {
@@ -293,6 +295,29 @@ fn main() {
                     std::thread::sleep(std::time::Duration::from_secs(2));
                     let _ = commands::daemon::start_daemon(handle);
                 });
+            }
+
+            // Force-register the .app bundle with macOS TCC for Accessibility
+            // and Screen Recording. These calls run from the main hq-sync-menubar
+            // process (inside the .app bundle), so TCC attributes them to
+            // "HQ Sync" rather than the SDK's child binary. Without this, an
+            // old denial of `desktop_sdk_macos_exe` from a pre-bundle dev run
+            // sticks and macOS never prompts/registers the bundled .app.
+            // Best-effort: a failure here is logged and ignored.
+            #[cfg(target_os = "macos")]
+            {
+                match commands::permissions::permissions_force_native_register() {
+                    Ok((ax, sc)) => util::logfile::log(
+                        "permissions",
+                        &format!(
+                            "native register: accessibility={ax} screen-capture={sc}"
+                        ),
+                    ),
+                    Err(e) => util::logfile::log(
+                        "permissions",
+                        &format!("native register failed: {e}"),
+                    ),
+                }
             }
 
             // Start the Recall Desktop SDK sidecar for meeting detection.

@@ -8,7 +8,10 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sidecar:install": "pnpm -C sidecar/recall-sdk-bridge install --config.minimumReleaseAge=1440",
+    "bundle:debug": "npm run sidecar:install && tauri build --debug; bash scripts/fix-recall-framework-symlinks.sh \"src-tauri/target/debug/bundle/macos/HQ Sync.app\"",
+    "bundle:release": "npm run sidecar:install && tauri build; bash scripts/fix-recall-framework-symlinks.sh \"src-tauri/target/release/bundle/macos/HQ Sync.app\""
   },
   "dependencies": {
     "@sentry/svelte": "^10.49.0",

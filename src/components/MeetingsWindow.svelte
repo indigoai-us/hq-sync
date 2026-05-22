@@ -10,6 +10,13 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import PermissionsBanner from './PermissionsBanner.svelte';
+  import { startPermissionListeners } from '../lib/permissionState.svelte';
+
+  // Subscribe to permission events so the banner inside this window reflects
+  // live state. Idempotent — if App.svelte already started listeners on the
+  // main window, this is a no-op (same module, same state).
+  startPermissionListeners().catch(() => {});
 
   interface MeetingEvent {
     id: string;
@@ -846,6 +853,7 @@
 </script>
 
 <div class="meetings-page">
+  <PermissionsBanner />
   <div class="url-invite-row">
     <input
       type="url"

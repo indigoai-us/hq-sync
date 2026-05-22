@@ -8,6 +8,7 @@
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import NewFilesBadge from './NewFilesBadge.svelte';
   import MeetingIcon from './MeetingIcon.svelte';
+  import PermissionsBanner from './PermissionsBanner.svelte';
   import type { Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import type { ConflictFile } from '../stores/conflicts';
@@ -431,6 +432,11 @@
   </header>
 
   <div class="popover-divider"></div>
+
+  <!-- Meeting-detection permissions banner — visible until all required
+       macOS permissions are granted. Renders above the body so the user
+       sees the friction immediately on app open. -->
+  <PermissionsBanner />
 
   <!-- Body -->
   <section class="popover-body">
