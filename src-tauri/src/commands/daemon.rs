@@ -105,12 +105,60 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
 ///   - `--poll-remote-ms 600000` — pulls remote changes every 10 minutes
+///   - `--event-push` — ONLY for @getindigo.ai users (see below)
 ///
-/// Local edits still upload in seconds via the runner's chokidar layer; only
-/// the remote→local pull is on the 10-minute cadence. Conflict policy is
-/// `keep` (skip-and-surface) — local edits win and the conflict store routes
-/// them through the existing modal so auto-pull never clobbers an
-/// in-progress resolution.
+/// As of hq-cloud 5.26 the runner's chokidar watcher is real, but event-driven
+/// push is OFF by default. We opt in here only when BOTH (a) the signed-in user
+/// is @getindigo.ai (Phase 1 rollout limit) AND (b) the user's Instant-sync
+/// setting is ON, by appending `--event-push` (requires `--watch`, which is
+/// always set): for them, local edits upload within seconds of the filesystem
+/// event. Toggling Instant-sync OFF drops them back to poll-only without
+/// disabling Auto-sync.
+///
+/// Everyone else stays poll-only: the remote→local pull runs on the 10-minute
+/// cadence and a local push waits for the next pass — there is no second-by-second
+/// upload of local edits. Conflict policy is `keep` (skip-and-surface) — local
+/// edits win and the conflict store routes them through the existing modal so
+/// auto-pull never clobbers an in-progress resolution.
+
+/// Pure email→eligibility decision for event-driven push.
+///
+/// Event-push is gated to @getindigo.ai users during Phase 1 rollout. Kept
+/// separate from `event_push_eligible` so it's unit-testable without real
+/// Cognito tokens on disk.
+fn is_event_push_email(email: &str) -> bool {
+    email.trim().to_ascii_lowercase().ends_with("@getindigo.ai")
+}
+
+/// Pure decision: should the watch runner get `--event-push`?
+///
+/// Event-driven push requires BOTH the Phase 1 eligibility gate (the signed-in
+/// user is @getindigo.ai — `event_push_eligible`) AND the user's Instant-sync
+/// setting being ON. Eligibility is a hard precondition: an ineligible user
+/// never gets `--event-push` no matter how the setting is toggled. Kept as a
+/// pure `(bool, bool) -> bool` so the decision is unit-testable without real
+/// Cognito tokens or menubar.json on disk.
+fn should_event_push(eligible: bool, instant_sync: bool) -> bool {
+    eligible && instant_sync
+}
+
+/// Resolve whether the signed-in user is eligible for event-driven push.
+///
+/// Reads the Cognito id_token from disk (same reader used by the sync path),
+/// decodes its claims, and delegates the decision to `is_event_push_email`.
+/// Any failure (no tokens, malformed token, missing email) → not eligible.
+/// Synchronous so `build_watch_runner_args` need not be async.
+fn event_push_eligible() -> bool {
+    crate::commands::cognito::read_tokens_from_file()
+        .ok()
+        .flatten()
+        .and_then(|t| t.id_token)
+        .and_then(|tok| crate::commands::cognito::decode_id_token_claims(&tok).ok())
+        .and_then(|c| c.email)
+        .map(|e| is_event_push_email(&e))
+        .unwrap_or(false)
+}
+
 pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     use crate::commands::sync::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 
@@ -128,7 +176,7 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         .filter(|&n| n > 0)
         .unwrap_or(600_000);
 
-    let runner_args = vec![
+    let mut runner_args = vec![
         "--companies".to_string(),
         "--direction".to_string(),
         "both".to_string(),
@@ -140,6 +188,14 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         "--poll-remote-ms".to_string(),
         poll_ms.to_string(),
     ];
+
+    // Event-driven push needs BOTH the Phase 1 eligibility gate
+    // (@getindigo.ai) AND the user's Instant-sync setting ON. The hq-cloud
+    // runner requires --watch for --event-push (already set above), so
+    // appending here is safe for both spawn paths below.
+    if should_event_push(event_push_eligible(), is_instant_sync_enabled()) {
+        runner_args.push("--event-push".to_string());
+    }
 
     // Dev override: HQ_CLOUD_LOCAL_RUNNER points at a built sync-runner.js
     // (e.g. /…/hq/packages/hq-cloud/dist/bin/sync-runner.js). Lets us
@@ -220,6 +276,18 @@ pub fn is_autostart_enabled() -> bool {
 /// `false` written by `save_settings` still wins.
 pub fn is_realtime_sync_enabled() -> bool {
     read_menubar_bool(|p| p.realtime_sync, true)
+}
+
+/// Check if the user-facing Instant-sync (event-driven) flag is enabled in
+/// menubar.json.
+///
+/// Defaults to true when the field is missing so eligible (@getindigo.ai)
+/// users get instant push on a fresh install without discovering the toggle,
+/// matching the `realtime_sync` default-on convention. An explicit `false`
+/// written by `save_settings` still wins. Note this is only consulted for
+/// `event_push_eligible()` users — see `should_event_push`.
+pub fn is_instant_sync_enabled() -> bool {
+    read_menubar_bool(|p| p.instant_sync, true)
 }
 
 fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F, default: bool) -> bool {
@@ -707,6 +775,58 @@ mod tests {
         assert!(
             env.get("PATH").map(|p| !p.is_empty()).unwrap_or(false),
             "PATH must be set so Dock-launched Tauri apps can find node/npx"
+        );
+    }
+
+    // ── event-push email gating ────────────────────────────────────────────
+
+    #[test]
+    fn test_is_event_push_email_gates_getindigo_domain() {
+        // Eligible: @getindigo.ai (case-insensitive, whitespace-tolerant).
+        assert!(is_event_push_email("x@getindigo.ai"));
+        assert!(is_event_push_email("X@GetIndigo.AI"));
+        assert!(is_event_push_email("  x@getindigo.ai  "));
+        // Ineligible: other domains and empty.
+        assert!(!is_event_push_email("x@gmail.com"));
+        assert!(!is_event_push_email(""));
+    }
+
+    // ── should_event_push (eligibility × instant-sync setting) ─────────────
+    //
+    // US-012: --event-push is appended only when the user is event-push
+    // eligible (@getindigo.ai, Phase 1) AND their Instant-sync setting is ON.
+    // Eligibility is a hard precondition the setting can never override.
+
+    #[test]
+    fn test_should_event_push_eligible_and_instant_on_pushes() {
+        // (i) Instant-sync ON + eligible email => event-driven push.
+        assert!(should_event_push(true, true));
+    }
+
+    #[test]
+    fn test_should_event_push_eligible_but_instant_off_is_poll_only() {
+        // (ii) Instant-sync OFF + eligible email => poll-only, no --event-push.
+        assert!(!should_event_push(true, false));
+    }
+
+    #[test]
+    fn test_should_event_push_ineligible_never_pushes_regardless_of_setting() {
+        // (iii) Ineligible email => never event-push, even with the setting ON.
+        assert!(!should_event_push(false, true));
+        assert!(!should_event_push(false, false));
+    }
+
+    #[test]
+    fn test_build_watch_runner_args_no_event_push_when_ineligible() {
+        // On CI / clean machines there are no Cognito tokens, so
+        // event_push_eligible() is false and --event-push must be absent
+        // regardless of the (default-on) Instant-sync setting. This guards
+        // the eligibility precondition end-to-end through the builder.
+        let args = build_watch_runner_args("/any");
+        assert!(
+            !args.args.iter().any(|a| a == "--event-push"),
+            "ineligible identity must never get --event-push, got: {:?}",
+            args.args
         );
     }
 }

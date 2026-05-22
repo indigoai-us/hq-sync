@@ -52,6 +52,21 @@ pub struct MenubarPrefs {
     /// existing users see zero behavior change.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub personal_sync_enabled: Option<bool>,
+    /// Instant sync (event-driven): when true (default), an *eligible* user
+    /// (@getindigo.ai during Phase 1 rollout) gets event-driven push — the
+    /// menubar appends `--event-push` to the watch runner so local edits
+    /// upload within seconds of the filesystem event rather than waiting for
+    /// the next 10-minute poll. When false, the runner stays poll-only.
+    ///
+    /// This is an ADDITIONAL opt-in layered on top of `event_push_eligible()`:
+    /// ineligible users never get `--event-push` regardless of this flag.
+    /// Defaults to true (matching the `realtime_sync` default-on convention)
+    /// so eligible users get instant push without discovering the toggle; an
+    /// explicit `false` written by `save_settings` still wins. Absent in
+    /// pre-5.27 menubar.json files → treated as the default at the boundary
+    /// (see `is_instant_sync_enabled` in daemon.rs and `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instant_sync: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
@@ -586,6 +601,40 @@ mod tests {
         assert_eq!(prefs.realtime_sync, Some(false));
         let out = serde_json::to_string(&prefs).unwrap();
         assert!(out.contains("\"realtimeSync\":false"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_round_trip_true() {
+        // `instant_sync` serializes to camelCase `instantSync` so the
+        // Instant-sync (event-driven) setting persists across restarts.
+        let json = r#"{"instantSync": true}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, Some(true));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(
+            out.contains("\"instantSync\":true"),
+            "expected camelCase key 'instantSync' in serialized output, got: {out}"
+        );
+        assert!(!out.contains("instant_sync"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_absent_deserializes_none() {
+        // Backwards compatibility: pre-5.27 menubar.json predates the field
+        // and must continue to load. None is the absent-marker; the daemon /
+        // settings boundary applies the default-on at read time.
+        let json = r#"{"hqPath": "/custom/HQ"}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, None);
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_false_round_trip() {
+        let json = r#"{"instantSync": false}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, Some(false));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(out.contains("\"instantSync\":false"));
     }
 
     #[test]

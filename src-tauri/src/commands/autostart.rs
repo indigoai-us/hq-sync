@@ -177,6 +177,7 @@ mod tests {
             autostart_daemon: None,
             realtime_sync: None,
             personal_sync_enabled: None,
+            instant_sync: None,
         }
     }
 
