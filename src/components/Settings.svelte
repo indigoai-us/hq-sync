@@ -18,6 +18,14 @@
   // the spawned hq-sync-runner's fanout — only cloud-enabled company
   // memberships sync. See src-tauri/src/commands/sync.rs.
   let personalSyncEnabled = $state(true);
+  // Instant sync (event-driven). Kept a DISTINCT toggle from Auto-sync rather
+  // than folded into it (the PRD allowed either) — Auto-sync controls whether
+  // the daemon runs at all, Instant-sync controls whether it pushes on every
+  // local edit vs the 10-minute poll, so two switches read clearer than one
+  // overloaded control. Defaults true to match the realtime_sync default-on
+  // convention; the backend only honors it for @getindigo.ai (Phase 1
+  // event_push_eligible) identities. See src-tauri/src/commands/daemon.rs.
+  let instantSync = $state(true);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -49,6 +57,7 @@
           startAtLogin: boolean | null;
           realtimeSync: boolean | null;
           personalSyncEnabled: boolean | null;
+          instantSync: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
       ]);
@@ -59,6 +68,7 @@
       startAtLogin = settings.startAtLogin ?? autostart;
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
+      instantSync = settings.instantSync ?? true;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -84,6 +94,7 @@
           startAtLogin,
           realtimeSync,
           personalSyncEnabled,
+          instantSync,
         },
       });
       showSaved();
@@ -133,6 +144,23 @@
   async function handleTogglePersonalSync() {
     personalSyncEnabled = !personalSyncEnabled;
     await saveAll();
+  }
+
+  async function handleToggleInstantSync() {
+    instantSync = !instantSync;
+    await saveAll();
+    // The instant-sync flag is read at daemon spawn time
+    // (build_watch_runner_args). If Auto-sync is already running, bounce the
+    // daemon so the new `--event-push` argv takes effect immediately; the
+    // backend still gates it to event_push_eligible() identities. If Auto-sync
+    // is off, the persisted setting is picked up the next time the daemon starts.
+    if (!realtimeSync) return;
+    try {
+      await invoke('stop_daemon');
+      await invoke('start_daemon');
+    } catch (err) {
+      console.error('Instant-sync daemon restart failed:', err);
+    }
   }
 
   async function handleToggleStartAtLogin() {
@@ -249,6 +277,32 @@
           role="switch"
           aria-checked={realtimeSync}
           aria-label="Auto-sync"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Instant sync (event-driven) — when ON, the daemon spawns the
+           hq-sync-runner with --event-push so local edits upload within
+           seconds of the filesystem event instead of waiting for the
+           10-minute poll. The backend only honors this for @getindigo.ai
+           identities (Phase 1 rollout); other users stay poll-only
+           regardless. See src-tauri/src/commands/daemon.rs. -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <label class="setting-label" for="toggle-instant-sync">Instant sync</label>
+          <span class="setting-desc">Push local edits within seconds instead of every 10 minutes</span>
+        </div>
+        <button
+          id="toggle-instant-sync"
+          class="toggle"
+          class:active={instantSync}
+          onclick={handleToggleInstantSync}
+          role="switch"
+          aria-checked={instantSync}
+          aria-label="Instant sync"
         >
           <span class="toggle-knob"></span>
         </button>

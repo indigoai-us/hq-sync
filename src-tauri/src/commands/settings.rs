@@ -16,6 +16,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             autostart_daemon: Some(false),
             realtime_sync: Some(true),
             personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
         });
     }
 
@@ -37,6 +38,10 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
         realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
         personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+        // Instant sync (event-driven) defaults ON, mirroring `realtime_sync`
+        // and `is_instant_sync_enabled` in daemon.rs. Only ever takes effect
+        // for `event_push_eligible()` users (Phase 1: @getindigo.ai).
+        instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
     })
 }
 
@@ -76,6 +81,7 @@ mod tests {
             autostart_daemon: None,
             realtime_sync: None,
             personal_sync_enabled: None,
+            instant_sync: None,
         };
 
         let result = MenubarPrefs {
@@ -86,6 +92,7 @@ mod tests {
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+            instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, None);
@@ -108,6 +115,7 @@ mod tests {
             autostart_daemon: None,
             realtime_sync: Some(false),
             personal_sync_enabled: None,
+            instant_sync: None,
         };
 
         let result = MenubarPrefs {
@@ -118,6 +126,7 @@ mod tests {
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+            instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
         };
 
         assert_eq!(result.realtime_sync, Some(false));
@@ -133,6 +142,7 @@ mod tests {
             autostart_daemon: Some(true),
             realtime_sync: Some(true),
             personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
         };
 
         let result = MenubarPrefs {
@@ -143,6 +153,7 @@ mod tests {
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+            instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, Some("/custom/path".to_string()));
@@ -162,6 +173,7 @@ mod tests {
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
             personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -186,6 +198,7 @@ mod tests {
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
             personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -207,6 +220,7 @@ mod tests {
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
             personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
