@@ -3,6 +3,7 @@ import App from './App.svelte';
 import NewFilesDetail from './components/NewFilesDetail.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
 import DriftDetail from './components/DriftDetail.svelte';
+import ActivityLog from './components/ActivityLog.svelte';
 import { mount } from 'svelte';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { beforeSend } from "./sentry-before-send";
@@ -30,6 +31,8 @@ if (windowLabel === 'new-files-detail') {
   Component = MeetingsWindow as unknown as typeof App;
 } else if (windowLabel === 'drift-detail') {
   Component = DriftDetail as unknown as typeof App;
+} else if (windowLabel === 'activity-log') {
+  Component = ActivityLog as unknown as typeof App;
 } else {
   Component = App;
 }

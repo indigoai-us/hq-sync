@@ -47,8 +47,15 @@ pub struct SyncCompanyRef {
     pub name: Option<String>,
 }
 
-/// `{type: "progress", company, path, bytes, message?}`
-/// Per-file download event. One per file, per company.
+/// `{type: "progress", company, path, bytes, message?, direction?, deleted?}`
+/// Per-file transfer event. One per file, per company.
+///
+/// `direction` (hq-cloud ≥5.29.0) is `"up"` when the file was uploaded
+/// (push leg) or `"down"` when downloaded (pull leg). `None` on older
+/// runners that don't stamp it — the activity log then falls back to
+/// treating the event as a download (the historical assumption). `deleted`
+/// is `Some(true)` when this event reports a remote delete-marker rather
+/// than a transfer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncProgressEvent {
@@ -57,6 +64,12 @@ pub struct SyncProgressEvent {
     pub bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub message: Option<String>,
+    /// hq-cloud ≥5.29.0: `"up"` (uploaded) | `"down"` (downloaded). None on older runners.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub direction: Option<String>,
+    /// True when this event reports a remote DeleteObject (no transfer).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub deleted: Option<bool>,
 }
 
 /// `{type: "error", company?, path, message}`
@@ -455,6 +468,8 @@ mod tests {
                 path: "docs/a.md".to_string(),
                 bytes: 42,
                 message: Some("shared by M1".to_string()),
+                direction: None,
+                deleted: None,
             })
         );
     }
@@ -470,8 +485,24 @@ mod tests {
                 path: "docs/a.md".to_string(),
                 bytes: 42,
                 message: None,
+                direction: None,
+                deleted: None,
             })
         );
+    }
+
+    #[test]
+    fn test_parse_progress_event_with_direction() {
+        // hq-cloud ≥5.29.0 stamps direction (and may carry deleted).
+        let json = r#"{"type":"progress","company":"indigo","path":"docs/a.md","bytes":42,"direction":"up"}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Progress(p) => {
+                assert_eq!(p.direction, Some("up".to_string()));
+                assert_eq!(p.deleted, None);
+            }
+            _ => panic!("expected Progress"),
+        }
     }
 
     #[test]
@@ -664,10 +695,14 @@ mod tests {
             path: "docs/a.md".to_string(),
             bytes: 42,
             message: None,
+            direction: None,
+            deleted: None,
         };
         let json = serde_json::to_string(&event).unwrap();
-        // `message: None` must not serialize.
+        // `message: None` / `direction: None` / `deleted: None` must not serialize.
         assert!(!json.contains("\"message\""));
+        assert!(!json.contains("\"direction\""));
+        assert!(!json.contains("\"deleted\""));
         assert!(json.contains("\"company\""));
         assert!(json.contains("\"path\""));
         assert!(json.contains("\"bytes\""));

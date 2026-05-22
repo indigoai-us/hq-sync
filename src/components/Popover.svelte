@@ -747,6 +747,15 @@
       {/if}
     </div>
 
+    <button class="footer-action" onclick={() => invoke('open_activity_log')}>
+      <!-- Clock / history icon -->
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
+        <path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      Recent Changes
+    </button>
+
     <button class="footer-action" onclick={onsettings}>
       <!-- Settings gear icon -->
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
