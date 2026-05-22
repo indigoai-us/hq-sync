@@ -340,6 +340,13 @@ fn handle_watch_stdout_line(
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
         t.accumulate(&event);
     }
+    // Record each per-file transfer into the session activity log (Recent
+    // Changes window). The watch daemon is the primary instant-sync path, so
+    // without this the activity log would only ever capture foreground
+    // "Sync Now" runs (handle_sync_line) and stay empty in normal use.
+    if let SyncEvent::Progress(payload) = &event {
+        crate::commands::activity::record_progress(app, payload);
+    }
     if let SyncEvent::AllComplete(payload) = &event {
         let conflicts = {
             let t = totals.lock().unwrap_or_else(|e| e.into_inner());

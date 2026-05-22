@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::events::SyncProgressEvent;
+use crate::util::logfile::log;
 
 /// Window label for the activity-log detail window (routed in `main.ts`).
 const ACTIVITY_WINDOW_LABEL: &str = "activity-log";
@@ -119,15 +120,27 @@ pub fn record_progress(app: &AppHandle, p: &SyncProgressEvent) {
 /// [`activity_window_ready`] once its listeners are registered.
 #[tauri::command]
 pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
+    log("activity", "open_activity_log invoked");
     if let Some(window) = app.get_webview_window(ACTIVITY_WINDOW_LABEL) {
+        log("activity", "open: window exists -> show + emit list");
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
         if let Some(state) = app.try_state::<SessionActivity>() {
-            let _ = app.emit_to(ACTIVITY_WINDOW_LABEL, "activity:list", state.snapshot());
+            let snap = state.snapshot();
+            log("activity", &format!("open: emit list len={}", snap.len()));
+            let _ = app.emit_to(ACTIVITY_WINDOW_LABEL, "activity:list", snap);
         }
         return Ok(());
     }
+    log("activity", "open: building new window");
 
+    // `TitleBarStyle::Overlay` + `transparent(true)` + post-build
+    // `apply_vibrancy` give the same dark "Liquid Glass" backdrop-blur as the
+    // main popover (and the drift-detail window), instead of an opaque white
+    // macOS title bar over a flat gray body. `hidden_title(true)` suppresses
+    // the title text (redundant with the in-body header); the traffic lights
+    // are inset to clear the body's top padding. See drift_detail.rs for the
+    // full rationale on the main-thread vibrancy dispatch.
     tauri::WebviewWindowBuilder::new(
         &app,
         ACTIVITY_WINDOW_LABEL,
@@ -137,9 +150,31 @@ pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
     .inner_size(560.0, 460.0)
     .resizable(true)
     .decorations(true)
+    .title_bar_style(tauri::TitleBarStyle::Overlay)
+    .hidden_title(true)
+    .traffic_light_position(tauri::LogicalPosition::new(20.0, 18.0))
+    .transparent(true)
     .visible(false)
     .build()
     .map_err(|e| e.to_string())?;
+
+    // macOS vibrancy must run on the main thread (AppKit) — command handlers
+    // run on the async worker pool, so dispatch via run_on_main_thread.
+    #[cfg(target_os = "macos")]
+    {
+        let app_for_main = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            use window_vibrancy::{apply_vibrancy, NSVisualEffectMaterial, NSVisualEffectState};
+            if let Some(window) = app_for_main.get_webview_window(ACTIVITY_WINDOW_LABEL) {
+                let _ = apply_vibrancy(
+                    &window,
+                    NSVisualEffectMaterial::Popover,
+                    Some(NSVisualEffectState::Active),
+                    Some(18.0),
+                );
+            }
+        });
+    }
 
     Ok(())
 }
@@ -148,10 +183,12 @@ pub async fn open_activity_log(app: AppHandle) -> Result<(), String> {
 /// registered. Emits the current snapshot and shows the window — race-free.
 #[tauri::command]
 pub async fn activity_window_ready(app: AppHandle) -> Result<(), String> {
+    log("activity", "activity_window_ready invoked by webview");
     let entries = app
         .try_state::<SessionActivity>()
         .map(|s| s.snapshot())
         .unwrap_or_default();
+    log("activity", &format!("ready: snapshot len={}", entries.len()));
 
     app.emit_to(ACTIVITY_WINDOW_LABEL, "activity:list", entries)
         .map_err(|e| e.to_string())?;
@@ -159,6 +196,9 @@ pub async fn activity_window_ready(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(ACTIVITY_WINDOW_LABEL) {
         let _ = window.show();
         let _ = window.set_focus();
+        log("activity", "ready: window shown + focused");
+    } else {
+        log("activity", "ready: window NOT FOUND");
     }
 
     Ok(())

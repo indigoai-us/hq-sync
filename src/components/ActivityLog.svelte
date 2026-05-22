@@ -14,6 +14,9 @@
 
   let entries = $state<ActivityEntry[]>([]);
 
+  /** Only the most recent N changes are shown; older ones scroll off. */
+  const MAX_VISIBLE = 100;
+
   function formatBytes(n: number): string {
     if (n < 1024) return `${n} B`;
     if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -42,9 +45,12 @@
     return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
   }
 
-  // Newest-first, grouped by day. Recomputed whenever `entries` changes.
+  // Newest-first, capped at MAX_VISIBLE, grouped by day. Recomputed whenever
+  // `entries` changes.
   const groups = $derived.by(() => {
-    const sorted = [...entries].sort((a, b) => b.at - a.at);
+    const sorted = [...entries]
+      .sort((a, b) => b.at - a.at)
+      .slice(0, MAX_VISIBLE);
     const out: { key: string; label: string; items: ActivityEntry[] }[] = [];
     for (const e of sorted) {
       const key = dayKey(e.at);
@@ -97,10 +103,14 @@
 </script>
 
 <div class="detail-window">
-  <header class="detail-header">
+  <header class="detail-header" data-tauri-drag-region>
     <h1>Recent Changes</h1>
     <span class="detail-count">
-      {entries.length} change{entries.length === 1 ? '' : 's'} this session
+      {#if entries.length > MAX_VISIBLE}
+        latest {MAX_VISIBLE} of {entries.length} this session
+      {:else}
+        {entries.length} change{entries.length === 1 ? '' : 's'} this session
+      {/if}
     </span>
   </header>
 
@@ -133,15 +143,35 @@
 </div>
 
 <style>
+  /* Reset the root document for THIS window only (scoped by the
+     data-window attribute main.ts stamps), mirroring App.svelte's main-window
+     reset. Without this the default 8px <body> margin offsets our content and
+     the transparent+vibrant window shows a gray strip of bare NSVisualEffect
+     along the top/left edges. Scoped so it can't bleed into other windows. */
+  :global(html[data-window='activity-log']),
+  :global(html[data-window='activity-log'] body) {
+    margin: 0;
+    padding: 0;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    background: transparent;
+  }
+
   .detail-window {
     display: flex;
     flex-direction: column;
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--popover-bg, rgba(18, 18, 20, 0.68));
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    /* Sit a mostly-opaque dark layer over the NSVisualEffect vibrancy so the
+       glass reads as a consistent dark surface — just a hint of translucency —
+       rather than letting the busy content behind the window bleed through as
+       colored blotches. Higher alpha than the popover (0.68) because this
+       window is large and often sits over a terminal/editor. */
+    background: rgba(20, 20, 24, 0.88);
+    backdrop-filter: blur(30px) saturate(1.2);
+    -webkit-backdrop-filter: blur(30px) saturate(1.2);
     color: var(--popover-text, #e0e0e0);
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     overflow: hidden;
@@ -151,7 +181,9 @@
     display: flex;
     align-items: baseline;
     gap: 0.5rem;
-    padding: 1rem 1.25rem 0.75rem;
+    /* Extra top padding clears the macOS traffic-light buttons that the
+       Overlay title-bar style floats over the body's top-left. */
+    padding: 2.25rem 1.25rem 0.75rem;
     border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     flex-shrink: 0;
   }
@@ -213,7 +245,9 @@
     color: var(--popover-text-muted, #a0a0b0);
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    background: var(--popover-bg, rgba(18, 18, 20, 0.92));
+    /* Slightly more opaque than the body so rows scrolling under it stay
+       legible; same hue as the window surface to avoid a seam. */
+    background: rgba(20, 20, 24, 0.95);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
   }
