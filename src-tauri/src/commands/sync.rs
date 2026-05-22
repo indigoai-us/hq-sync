@@ -211,7 +211,10 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// real HQ tree) — which EMFILEs under the default soft `ulimit -n` (256) and
 /// silently kills the watcher. After: 1 OS handle for the whole tree. The
 /// `~5.27` -> `~5.28` bump is required to pick it up.
-pub const HQ_CLOUD_VERSION: &str = "~5.28.0";
+/// 5.29.0 (2026-05-22) stamps `direction` ("up"/"down") on per-file progress
+/// events so the menubar's Recent Changes activity log can label each file
+/// uploaded vs downloaded. The `~5.28` -> `~5.29` bump is required to pick it up.
+pub const HQ_CLOUD_VERSION: &str = "~5.29.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -572,7 +575,12 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         // older runner that doesn't emit Plan, this branch is simply never
         // taken — the existing TOTALS-based denominator stays authoritative.
         SyncEvent::Plan(payload) => app.emit(EVENT_SYNC_PLAN, payload.clone()),
-        SyncEvent::Progress(payload) => app.emit(EVENT_SYNC_PROGRESS, payload.clone()),
+        SyncEvent::Progress(payload) => {
+            // Record into the session activity log (uploaded/downloaded with a
+            // timestamp) and live-append to the Recent Changes window if open.
+            crate::commands::activity::record_progress(app, payload);
+            app.emit(EVENT_SYNC_PROGRESS, payload.clone())
+        }
         SyncEvent::Error(payload) => {
             // `classify_error_event` is the test-covered classification boundary;
             // the dispatch logic here (Some → COMPLETE, None → ERROR) is intentionally
@@ -1579,6 +1587,8 @@ mod tests {
             path: "y".to_string(),
             bytes: 0,
             message: None,
+            direction: None,
+            deleted: None,
         }));
         assert_eq!(t.conflicts, 0);
     }
