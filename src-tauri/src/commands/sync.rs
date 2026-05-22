@@ -195,7 +195,10 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 ///     drops the personal target from the --companies fanout. Used by
 ///     the menubar's "Sync personal vault" Settings toggle.
 /// See indigoai-us/hq-cloud#15.
-pub const HQ_CLOUD_VERSION: &str = "~5.25.0";
+///
+/// 5.26.0 (2026-05-22) adds the event-driven push watcher (`--event-push`,
+/// gated to @getindigo.ai in the menubar; default poll-only otherwise).
+pub const HQ_CLOUD_VERSION: &str = "~5.26.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full

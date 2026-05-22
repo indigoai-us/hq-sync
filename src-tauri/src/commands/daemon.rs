@@ -105,12 +105,45 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
 ///   - `--poll-remote-ms 600000` — pulls remote changes every 10 minutes
+///   - `--event-push` — ONLY for @getindigo.ai users (see below)
 ///
-/// Local edits still upload in seconds via the runner's chokidar layer; only
-/// the remote→local pull is on the 10-minute cadence. Conflict policy is
-/// `keep` (skip-and-surface) — local edits win and the conflict store routes
-/// them through the existing modal so auto-pull never clobbers an
-/// in-progress resolution.
+/// As of hq-cloud 5.26 the runner's chokidar watcher is real, but event-driven
+/// push is OFF by default. We opt in here only for @getindigo.ai signed-in
+/// users by appending `--event-push` (requires `--watch`, which is always set):
+/// for them, local edits upload within seconds of the filesystem event.
+///
+/// Everyone else stays poll-only: the remote→local pull runs on the 10-minute
+/// cadence and a local push waits for the next pass — there is no second-by-second
+/// upload of local edits. Conflict policy is `keep` (skip-and-surface) — local
+/// edits win and the conflict store routes them through the existing modal so
+/// auto-pull never clobbers an in-progress resolution.
+
+/// Pure email→eligibility decision for event-driven push.
+///
+/// Event-push is gated to @getindigo.ai users during Phase 1 rollout. Kept
+/// separate from `event_push_eligible` so it's unit-testable without real
+/// Cognito tokens on disk.
+fn is_event_push_email(email: &str) -> bool {
+    email.trim().to_ascii_lowercase().ends_with("@getindigo.ai")
+}
+
+/// Resolve whether the signed-in user is eligible for event-driven push.
+///
+/// Reads the Cognito id_token from disk (same reader used by the sync path),
+/// decodes its claims, and delegates the decision to `is_event_push_email`.
+/// Any failure (no tokens, malformed token, missing email) → not eligible.
+/// Synchronous so `build_watch_runner_args` need not be async.
+fn event_push_eligible() -> bool {
+    crate::commands::cognito::read_tokens_from_file()
+        .ok()
+        .flatten()
+        .and_then(|t| t.id_token)
+        .and_then(|tok| crate::commands::cognito::decode_id_token_claims(&tok).ok())
+        .and_then(|c| c.email)
+        .map(|e| is_event_push_email(&e))
+        .unwrap_or(false)
+}
+
 pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     use crate::commands::sync::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 
@@ -128,7 +161,7 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         .filter(|&n| n > 0)
         .unwrap_or(600_000);
 
-    let runner_args = vec![
+    let mut runner_args = vec![
         "--companies".to_string(),
         "--direction".to_string(),
         "both".to_string(),
@@ -140,6 +173,13 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         "--poll-remote-ms".to_string(),
         poll_ms.to_string(),
     ];
+
+    // Event-driven push is gated to @getindigo.ai users in Phase 1. The
+    // hq-cloud runner requires --watch for --event-push (already set above),
+    // so appending here is safe for both spawn paths below.
+    if event_push_eligible() {
+        runner_args.push("--event-push".to_string());
+    }
 
     // Dev override: HQ_CLOUD_LOCAL_RUNNER points at a built sync-runner.js
     // (e.g. /…/hq/packages/hq-cloud/dist/bin/sync-runner.js). Lets us
@@ -708,5 +748,18 @@ mod tests {
             env.get("PATH").map(|p| !p.is_empty()).unwrap_or(false),
             "PATH must be set so Dock-launched Tauri apps can find node/npx"
         );
+    }
+
+    // ── event-push email gating ────────────────────────────────────────────
+
+    #[test]
+    fn test_is_event_push_email_gates_getindigo_domain() {
+        // Eligible: @getindigo.ai (case-insensitive, whitespace-tolerant).
+        assert!(is_event_push_email("x@getindigo.ai"));
+        assert!(is_event_push_email("X@GetIndigo.AI"));
+        assert!(is_event_push_email("  x@getindigo.ai  "));
+        // Ineligible: other domains and empty.
+        assert!(!is_event_push_email("x@gmail.com"));
+        assert!(!is_event_push_email(""));
     }
 }
