@@ -818,14 +818,16 @@
              channel. Disabled while running via the new disabled rule
              on .footer-hq-version-pill. -->
         {#if stagingReplace && onrunreplacefromstaging}
-          {#if stagingReplace.available}
+          {#if stagingReplace.available || (stagingDrift && stagingDrift.count > 0)}
             <button
               class="footer-hq-version-pill"
               onclick={onrunreplacefromstaging}
               disabled={stagingReplaceRunning}
               title={stagingReplaceRunning
                 ? `Running rescue against ${stagingReplace.repo} — see /tmp/hq-sync-replace-from-staging-*.log`
-                : `Replace HQ with ${stagingReplace.repo}@${stagingReplace.latestShort}. Local drifts move to personal/; staging overlays on top.`}
+                : stagingReplace.available
+                  ? `Replace HQ with ${stagingReplace.repo}@${stagingReplace.latestShort}. Local drifts move to personal/; staging overlays on top.`
+                  : `Re-overlay ${stagingReplace.repo}@${stagingReplace.latestShort} to reconcile ${stagingDrift?.count ?? 0} drifted file${(stagingDrift?.count ?? 0) === 1 ? '' : 's'}. Local drifts move to personal/.`}
             >
               {#if stagingReplaceRunning}
                 Updating…

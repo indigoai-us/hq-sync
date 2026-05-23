@@ -105,7 +105,7 @@ SKIPPED_BY_HISTORY=0
 # Why core/packages: contains user-curated packs (hq-pack-slack-bot etc.)
 # that staging may also ship under the same path with different content.
 # Without this carve-out a full-replace would clobber the local pack tree.
-CARVE_OUT_PATHS=( "core/packages" )
+CARVE_OUT_PATHS=( "core/packages" ".claude/state" )
 
 usage() {
   sed -n '2,55p' "$0"
@@ -408,7 +408,7 @@ else
   while IFS= read -r line; do
     rel="${line#./}"
     WIPE_TOPLEVEL+=("$rel")
-  done < <( cd "$HQ_ROOT" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" -printf '%p\n' )
+  done < <( cd "$HQ_ROOT" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" -print )
   # companies/_template carve-out (wiped in default mode)
   [ -d "$HQ_ROOT/companies/_template" ] && WIPE_TOPLEVEL+=("companies/_template")
 fi
@@ -537,6 +537,13 @@ compare_one() {
     return 0
   fi
 
+  # Conflict-resolution artifacts (HQ-Sync renames divergent local files to
+  # `<name>.conflict-<timestamp>-<peer>.<ext>`). Never authored, never in
+  # staging — let the wipe consume them rather than dragging them to personal/.
+  case "${rel##*/}" in
+    *.conflict-*) return 0 ;;
+  esac
+
   local reason=""
   if [ ! -e "$src_path" ]; then
     reason="local-only"
@@ -569,6 +576,8 @@ if [ "${#WIPE_TOPLEVEL[@]}" -eq 0 ]; then
 else
   echo "==> Scanning wipe set for drifts vs. $SOURCE_REPO@$REF ..."
   for root_rel in "${WIPE_TOPLEVEL[@]}"; do
+    # companies/_template is always overwritten from staging — never rescue it.
+    [ "$root_rel" = "companies/_template" ] && continue
     walk_and_rescue "$root_rel"
   done
 fi

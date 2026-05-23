@@ -140,6 +140,11 @@ struct GhTreeEntry {
     #[serde(rename = "type")]
     kind: String,
     sha: String,
+    /// Git file mode. `120000` marks a symlink — those are filtered out
+    /// because the blob is the target-path string, not the target's
+    /// content, so local-vs-upstream SHA comparison is meaningless.
+    #[serde(default)]
+    mode: Option<String>,
     #[serde(default)]
     size: Option<u64>,
 }
@@ -171,6 +176,67 @@ pub(crate) fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
     arr.iter()
         .filter_map(|v| v.as_str().map(|s| s.to_string()))
         .collect()
+}
+
+/// Paths excluded from drift detection (both release and staging).
+///
+/// Hardcoded in the app rather than read from `core.yaml` so it survives
+/// every staging overlay (which rewrites `core/core.yaml`). The list covers
+/// four categories of false-positive drift:
+///
+///   - master-sync symlinks (target content differs from the staging blob,
+///     which is the symlink-target path string)
+///   - self-stamping meta-files (`core/core.yaml` carries the rescue stamp)
+///   - user-curated trees not sourced from staging (`core/packages` for
+///     hq-packs installs)
+///   - runtime / overwrite-only state (`.claude/state`, `companies/_template`)
+///
+/// Always interpreted as a directory-prefix match (see
+/// `path_in_excluded_scope`), so leaf entries here also cover files under
+/// the same name without needing a trailing slash.
+pub(crate) fn excluded_scope_paths() -> Vec<String> {
+    [
+        ".claude/settings.local.json",
+        ".claude/state",
+        ".claude/commands", // legacy — consolidated into .claude/skills/
+        ".agents/skills",
+        ".codex/claude",
+        ".codex/output-style.md",
+        "AGENTS.md",
+        "core/core.yaml",
+        "core/packages",
+        "core/workspace", // runtime markers (e.g. .last-archive-run)
+        "companies/_template",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
+}
+
+/// True iff the path is an HQ-Sync conflict-resolution artifact
+/// (e.g. `.claude/CLAUDE.md.conflict-2026-05-15T15-11-53Z-unknown.md`).
+/// These are auto-generated when sync detects a local-vs-cloud divergence
+/// and renames the local copy — never authored content, never in staging.
+pub(crate) fn is_conflict_artifact(path: &str) -> bool {
+    // Match `.conflict-` anywhere in the basename (covers both
+    // `file.txt.conflict-...` and `dir.conflict-...` forms).
+    path.rsplit('/')
+        .next()
+        .map(|name| name.contains(".conflict-"))
+        .unwrap_or(false)
+}
+
+/// True iff the path falls under one of the excluded-path entries.
+/// Always does prefix matching (regardless of trailing slash): `core/packages`
+/// and `core/packages/` both exclude files under that directory tree.
+pub(crate) fn path_in_excluded_scope(path: &str, excluded: &[String]) -> bool {
+    for scope in excluded {
+        let prefix = scope.trim_end_matches('/');
+        if path == prefix || path.starts_with(&format!("{}/", prefix)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// True iff the given upstream path (from the GitHub trees response)
@@ -242,7 +308,19 @@ pub(crate) fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTr
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 out.insert(rel_str, (sha, size));
             }
-        } else if abs.is_file() {
+        } else {
+            // Leaf scope. Use `symlink_metadata` (NOT `is_file`, which
+            // follows symlinks) so master-sync-generated symlinks like
+            // `AGENTS.md → .claude/CLAUDE.md` are skipped instead of
+            // re-hashed against the target's content. Git stores a symlink
+            // as a content blob of its target-path string, not the target's
+            // content, so following the symlink yields a wrong SHA every
+            // time. Symlinks in directory scopes are already skipped by the
+            // walkdir `is_file()` filter above; this is the leaf-scope twin.
+            let Ok(meta) = abs.symlink_metadata() else { continue; };
+            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+                continue;
+            }
             if let Ok(content) = std::fs::read(&abs) {
                 let size = content.len() as u64;
                 let sha = git_blob_sha(&content);
@@ -284,6 +362,10 @@ async fn fetch_upstream_tree(hq_version: &str) -> Result<BTreeMap<String, (Strin
         if entry.kind != "blob" {
             continue;
         }
+        // Skip symlinks — see field comment on GhTreeEntry.
+        if entry.mode.as_deref() == Some("120000") {
+            continue;
+        }
         out.insert(entry.path, (entry.sha, entry.size.unwrap_or(0)));
     }
     Ok(out)
@@ -313,12 +395,21 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> 
         return Ok(None);
     }
 
+    let excluded = excluded_scope_paths();
+
     let upstream = fetch_upstream_tree(&hq_version).await?;
     let local = walk_local_under_scope(&hq_folder, &locked);
 
     let upstream_in_scope: BTreeMap<String, (String, u64)> = upstream
         .into_iter()
         .filter(|(path, _)| path_in_locked_scope(path, &locked))
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .collect();
+
+    let local: BTreeMap<String, (String, u64)> = local
+        .into_iter()
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .filter(|(path, _)| !is_conflict_artifact(path))
         .collect();
 
     let upstream_paths: BTreeSet<&String> = upstream_in_scope.keys().collect();

@@ -37,7 +37,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_drift::{
-    path_in_locked_scope, read_locked_paths, walk_local_under_scope, DriftEntry, DriftReport,
+    excluded_scope_paths, is_conflict_artifact, path_in_excluded_scope, path_in_locked_scope,
+    read_locked_paths, walk_local_under_scope, DriftEntry, DriftReport,
 };
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
@@ -233,6 +234,13 @@ struct GhTreeEntry {
     #[serde(rename = "type")]
     kind: String,
     sha: String,
+    /// Git file mode. `100644`/`100755` = regular file, `120000` = symlink,
+    /// `040000` = tree, `160000` = submodule. Drift code filters out
+    /// `120000` so symlinks aren't compared against local content (the
+    /// blob is the target-path string, not the target's content — local
+    /// would always look "modified" even when identical).
+    #[serde(default)]
+    mode: Option<String>,
     /// Blob size in bytes; absent for non-blob entries (trees/commits/
     /// submodules) and tolerated as `None` so the JSON parses cleanly.
     /// Used by the staging-drift calculator's DriftEntry size column;
@@ -804,13 +812,18 @@ async fn fetch_staging_main_tree_for_drift(
     }
     let mut out: BTreeMap<String, (String, u64)> = BTreeMap::new();
     for entry in parsed.tree {
-        if entry.kind == "blob" {
-            // `size` is None for unusual entries (submodules, etc.); 0 is a
-            // safe placeholder — the value only feeds the detail window's
-            // display column.
-            let size = entry.size.unwrap_or(0);
-            out.insert(entry.path, (entry.sha, size));
+        if entry.kind != "blob" {
+            continue;
         }
+        // Skip symlinks (mode `120000`) — see field comment on GhTreeEntry.
+        if entry.mode.as_deref() == Some("120000") {
+            continue;
+        }
+        // `size` is None for unusual entries (submodules, etc.); 0 is a
+        // safe placeholder — the value only feeds the detail window's
+        // display column.
+        let size = entry.size.unwrap_or(0);
+        out.insert(entry.path, (entry.sha, size));
     }
     Ok(out)
 }
@@ -869,11 +882,19 @@ pub async fn check_staging_drift_once(app: &AppHandle) -> Result<Option<DriftRep
             return Ok(None);
         }
     };
+    let excluded = excluded_scope_paths();
     let local = walk_local_under_scope(&hq_folder, &locked);
 
     let upstream_in_scope: BTreeMap<String, (String, u64)> = upstream
         .into_iter()
         .filter(|(path, _)| path_in_locked_scope(path, &locked))
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .collect();
+
+    let local: BTreeMap<String, (String, u64)> = local
+        .into_iter()
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .filter(|(path, _)| !is_conflict_artifact(path))
         .collect();
 
     let upstream_paths: BTreeSet<&String> = upstream_in_scope.keys().collect();

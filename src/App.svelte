@@ -314,6 +314,12 @@
       // hqVersion may have advanced; refresh the footer row too.
       await loadHqVersion();
       await loadStagingReplace();
+      // Re-run staging drift check so the pill reflects the post-rescue state.
+      if (result.exit_code === 0) {
+        invoke('check_staging_drift').catch((e) =>
+          console.error('post-rescue staging drift check failed:', e)
+        );
+      }
     } catch (err) {
       console.error('run_replace_from_staging failed:', err);
       stagingReplaceLastResult = {
