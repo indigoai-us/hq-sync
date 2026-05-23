@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.1.39"
+version = "0.1.97"
 edition = "2021"
 
 [build-dependencies]
@@ -25,6 +25,10 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 dirs = "6"
 rfd = "0.15"
 sha2 = "0.10"
+# Git blob hashing uses SHA-1: blob_sha = sha1("blob {len}\0{content}").
+# GitHub Trees API returns these per file; computing the same locally lets
+# us diff without downloading file contents. (Used by hq_core_drift.rs)
+sha1 = "0.10"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 sentry = "^0.35"

@@ -18,6 +18,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             start_at_login: Some(true),
             autostart_daemon: Some(false),
             realtime_sync: Some(true),
+            personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
+            drift_staging_repo: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
         });
     }
@@ -29,7 +32,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
 
     // Apply defaults for missing fields. `realtime_sync` defaults ON — it
     // mirrors `is_realtime_sync_enabled` in daemon.rs so the Settings toggle
-    // and the auto-start logic agree on a fresh install.
+    // and the auto-start logic agree on a fresh install. `personal_sync_enabled`
+    // defaults ON to preserve pre-5.25 behavior — only users who explicitly
+    // toggle it off see the personal target drop from the fanout.
     let mdn = prefs.meeting_detect_notify.unwrap_or_else(default_meeting_detect_notify);
     Ok(MenubarPrefs {
         hq_path: prefs.hq_path,
@@ -38,6 +43,12 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
         autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
         realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+        personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+        // Instant sync (event-driven) defaults ON, mirroring `realtime_sync`
+        // and `is_instant_sync_enabled` in daemon.rs. Only ever takes effect
+        // for `event_push_eligible()` users (Phase 1: @getindigo.ai).
+        instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+        drift_staging_repo: prefs.drift_staging_repo,
         meeting_detect_notify: Some(MeetingDetectNotifyPrefs {
             enabled: Some(mdn.enabled.unwrap_or(true)),
             platforms: Some(
@@ -90,6 +101,9 @@ mod tests {
             start_at_login: None,
             autostart_daemon: None,
             realtime_sync: None,
+            personal_sync_enabled: None,
+            instant_sync: None,
+            drift_staging_repo: None,
             meeting_detect_notify: None,
         };
 
@@ -100,6 +114,9 @@ mod tests {
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+            personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+            instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+            drift_staging_repo: prefs.drift_staging_repo,
             meeting_detect_notify: None,
         };
 
@@ -122,6 +139,9 @@ mod tests {
             start_at_login: None,
             autostart_daemon: None,
             realtime_sync: Some(false),
+            personal_sync_enabled: None,
+            instant_sync: None,
+            drift_staging_repo: None,
             meeting_detect_notify: None,
         };
 
@@ -132,6 +152,9 @@ mod tests {
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+            personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+            instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+            drift_staging_repo: prefs.drift_staging_repo,
             meeting_detect_notify: None,
         };
 
@@ -147,6 +170,9 @@ mod tests {
             start_at_login: Some(false),
             autostart_daemon: Some(true),
             realtime_sync: Some(true),
+            personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
+            drift_staging_repo: None,
             meeting_detect_notify: None,
         };
 
@@ -157,6 +183,9 @@ mod tests {
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
+            personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
+            instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
+            drift_staging_repo: prefs.drift_staging_repo,
             meeting_detect_notify: None,
         };
 
@@ -176,6 +205,9 @@ mod tests {
             start_at_login: Some(false),
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
+            personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
+            drift_staging_repo: None,
             meeting_detect_notify: None,
         };
 
@@ -200,6 +232,9 @@ mod tests {
             start_at_login: Some(true),
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
+            personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
+            drift_staging_repo: None,
             meeting_detect_notify: None,
         };
 
@@ -221,6 +256,9 @@ mod tests {
             start_at_login: Some(true),
             autostart_daemon: Some(false),
             realtime_sync: Some(false),
+            personal_sync_enabled: Some(true),
+            instant_sync: Some(true),
+            drift_staging_repo: None,
             meeting_detect_notify: None,
         };
 
@@ -257,6 +295,9 @@ mod tests {
             start_at_login: None,
             autostart_daemon: None,
             realtime_sync: None,
+            personal_sync_enabled: None,
+            instant_sync: None,
+            drift_staging_repo: None,
             meeting_detect_notify: Some(MeetingDetectNotifyPrefs {
                 enabled: Some(false),
                 platforms: Some(vec!["zoom".to_string(), "meet".to_string()]),

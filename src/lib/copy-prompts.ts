@@ -16,7 +16,6 @@ export type IssueKind =
   | 'sync-conflict'
   | 'sync-failed'
   | 'auth-expired'
-  | 'app-update-available'
   | 'hq-cli-update-available'
   | 'hq-cli-update-failed'
   | 'cloud-unreachable'
@@ -24,7 +23,10 @@ export type IssueKind =
   | 'workspace-needs-connect'
   | 'workspace-broken'
   | 'repair-company'
-  | 'local-env-failure';
+  | 'local-env-failure'
+  | 'hq-version-undetectable'
+  | 'hq-core-drift'
+  | 'hq-core-drift-all';
 
 /**
  * Stable kind identifiers for `local-env-failure` payloads. These match the
@@ -88,15 +90,6 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       '',
       'Please run `/hq-login` to refresh my Cognito tokens. If a silent refresh fails, fall back to the browser sign-in flow. Confirm with `/hq-whoami` that the session is healthy before doing anything else.',
     ].filter(Boolean).join('\n');
-  },
-
-  'app-update-available': (i) => {
-    const version = val(i, 'version');
-    return [
-      `My HQ Sync menubar app has an update available${version ? ` (v${version})` : ''}.`,
-      '',
-      "Please apply it. The in-app Install button calls Tauri's `install_update` and restarts the app — that's usually the right path. If it fails, fetch the latest DMG from the GitHub releases page of `indigoai-us/hq-sync` and install manually. After updating, open the popover and confirm the new version in the About / Settings.",
-    ].join('\n');
   },
 
   'hq-cli-update-available': (i) => {
@@ -169,6 +162,150 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       `One of my HQ companies${slug ? ` (\`${slug}\`)` : ''} is in a bad state and I need help repairing it.`,
       '',
       "Please walk through: (1) read `companies/{slug}/manifest.yaml` (if any) + the row in `companies/manifest.yaml`, (2) verify the cloud_uid + bucket still exist server-side, (3) check the local folder structure matches the company template, (4) re-run `hq sync` for just that company and watch the journal. Propose each step as a decision queue — don't do destructive ops (delete folders, drop cloud entries) without my explicit go-ahead.",
+    ].join('\n');
+  },
+
+  // Drift detail "Review with agent" — one entry's worth of context handed
+  // off to Claude Code. Payload: `{ path, kind: 'modified'|'missing'|'added',
+  // hqVersion }`. The prompt is path-scoped so the agent can read the local
+  // file (if present) and the upstream version side-by-side before deciding.
+  'hq-core-drift': (i) => {
+    const path = val(i, 'path');
+    const kind = val(i, 'kind'); // 'modified' | 'missing' | 'added'
+    const hqVersion = val(i, 'hqVersion');
+    const versionLine = hqVersion
+      ? `My local hq-core is \`v${hqVersion}\`.`
+      : "I'm not sure what hqVersion I'm on.";
+    const kindLine = kind === 'missing'
+      ? `It's listed in the upstream tree but missing from my local copy.`
+      : kind === 'added'
+      ? `It exists locally under a locked-path scope but doesn't exist in the upstream tree — I either added it or it's left over from a prior version.`
+      : `It exists in both places but the contents differ from upstream.`;
+    return [
+      `My HQ Sync menubar detected a drift in a locked hq-core file: \`${path || '<path>'}\`.`,
+      '',
+      versionLine,
+      kindLine,
+      '',
+      "Please walk me through fixing this:",
+      `1. **Read both versions** — local at \`${path || '<path>'}\`, upstream at https://github.com/indigoai-us/hq-core/blob/v${hqVersion || '<tag>'}/${path || '<path>'}.`,
+      "2. **Decide which to keep** — if my local edit is intentional, propose lifting it into a personal/ overlay so the locked file goes back to matching upstream. If the local edit is accidental or stale, recommend restoring from upstream.",
+      "3. **Do not touch other drifted files** unless I ask — the menubar lists them separately so each gets its own decision.",
+      "4. If the right call is a full hq-core re-sync, run `/update-hq` instead of editing individual files.",
+    ].join('\n');
+  },
+
+  // Drift detail "Copy prompt for all" — one prompt that covers the WHOLE
+  // drift report so the user can resolve every file in a single agent
+  // session. Payload: `{ hqVersion, isBuilder, files: [{path, kind, staging}] }`.
+  //
+  // Audience-aware: most HQ users are NOT hq-core builders — they can't open
+  // PRs against (or even read) the private hq-core-staging repo, so for them
+  // the only correct resolution is "lift intentional edits into a personal/
+  // overlay, restore the rest from upstream" — never leave a locked core file
+  // edited in place. Builders (staging classification ran, so at least one
+  // file carries a staging tag) get the staging-grouped variant that
+  // distinguishes already-promoted noise from genuinely-unaccounted edits.
+  'hq-core-drift-all': (i) => {
+    const ver = val(i, 'hqVersion') || '<tag>';
+    const files = Array.isArray(i.payload?.files)
+      ? (i.payload!.files as Array<{ path: string; kind: string; staging: string | null }>)
+      : [];
+    const isBuilder = i.payload?.isBuilder === true;
+    const total = files.length;
+    const plural = total === 1 ? '' : 's';
+    const bullets = (paths: string[]) =>
+      paths.length ? paths.map((p) => `- \`${p}\``).join('\n') : '- (none)';
+
+    const modified = files.filter((f) => f.kind === 'modified').map((f) => f.path);
+    const missing = files.filter((f) => f.kind === 'missing').map((f) => f.path);
+    const added = files.filter((f) => f.kind === 'added').map((f) => f.path);
+
+    if (!isBuilder) {
+      return [
+        `My HQ Sync menubar's "Core Drift" panel shows ${total} locked hq-core file${plural} that differ from what v${ver} shipped.`,
+        '',
+        "I'm a regular HQ user — I don't promote changes to hq-core and can't open PRs against `hq-core-staging`. So the right resolution for each file is either to **lift my intentional edit into a `personal/` overlay** (so it survives `/update-hq`) or to **restore the file from upstream**. I should never leave a locked core file edited in place — that just keeps drifting against every release.",
+        '',
+        '**Modified** (local content differs from upstream):',
+        bullets(modified),
+        '',
+        '**Missing** (upstream ships these, absent locally):',
+        bullets(missing),
+        '',
+        '**Added** (local files under a locked scope, not in upstream):',
+        bullets(added),
+        '',
+        'Please resolve ALL of them as one batch:',
+        `1. For each **Modified** file, read my local copy and the upstream version at https://github.com/indigoai-us/hq-core/blob/v${ver}/<path>. If my edit is intentional, move it into a \`personal/\` overlay (e.g. \`personal/<type>/<entry>\`, which master-sync symlinks back into \`core/\`) and restore the locked core file to upstream. If it's accidental or stale, just restore from upstream.`,
+        "2. For each **Missing** file, restore it from upstream — it's a release-shipped file I shouldn't be without.",
+        '3. For each **Added** file, decide whether it belongs in `personal/` (move it there) or should be deleted.',
+        '4. Give me a decision queue — one file at a time, each with a keep-as-personal / restore / delete recommendation and a one-line reason. Show me the plan before changing anything.',
+        "5. After we finish, the Core Drift panel should read zero. If I'd rather discard all local core edits and re-pull the release wholesale, use `/update-hq` instead.",
+      ].join('\n');
+    }
+
+    // Builder variant — group by staging classification.
+    const unaccounted = files.filter((f) => f.staging === 'unaccounted').map((f) => f.path);
+    const stagingMain = files.filter((f) => f.staging === 'staging-main').map((f) => f.path);
+    const prGroups = new Map<string, string[]>();
+    for (const f of files) {
+      if (f.staging && f.staging.startsWith('pr:')) {
+        const n = f.staging.slice(3);
+        if (!prGroups.has(n)) prGroups.set(n, []);
+        prGroups.get(n)!.push(f.path);
+      }
+    }
+    const prLines = [...prGroups.entries()]
+      .sort((a, b) => Number(a[0]) - Number(b[0]))
+      .map(([n, paths]) => `- **PR #${n}**: ${paths.map((p) => `\`${p}\``).join(', ')}`);
+
+    return [
+      `My HQ Sync menubar's "Core Drift" panel shows ${total} locked hq-core file${plural} that differ from v${ver} (my last released version). I'm an HQ builder — I promote core changes through \`indigoai-us/hq-core-staging\`. The menubar already classified each file against staging:`,
+      '',
+      '**Unaccounted** (NOT in staging main or any open PR — the real action items):',
+      bullets(unaccounted),
+      '',
+      '**Missing locally**:',
+      bullets(missing),
+      '',
+      '**Already in staging main** (settled — clears at the next release, no action):',
+      bullets(stagingMain),
+      '',
+      '**In an open staging PR** (in-flight — no action unless the PR is stale):',
+      prLines.length ? prLines.join('\n') : '- (none)',
+      '',
+      'Please help me clear the **Unaccounted** + **Missing** set as one batch:',
+      `1. For each **Unaccounted** file, read local vs upstream (https://github.com/indigoai-us/hq-core/blob/v${ver}/<path>) and decide: **promote** it into hq-core-staging (via \`/promote-hq-core\`) if it's a real core improvement, **lift** it into a \`personal/\` overlay if it's machine-specific, or **restore** from upstream if it's stale.`,
+      '2. For each **Missing** file, restore from upstream.',
+      '3. Leave the already-in-staging files alone — they clear when the next hq-core release is cut and I run `/update-hq`.',
+      "4. Give me a decision queue — one file at a time, with a promote / personal / restore recommendation and a one-line reason. Don't edit locked core in place.",
+    ].join('\n');
+  },
+
+  // Footer "HQ vX.Y.Z" row couldn't detect a version — the HQ folder is
+  // missing, `core.yaml` is missing/unparseable, or its `hqVersion` field
+  // is empty. All three mean the install is broken in a way the menubar
+  // can't self-repair (we don't know which HQ to write to). Hand the agent
+  // enough context to triage which case it is and walk the user back to a
+  // working install. Optional `hqFolderPath` payload carries the path the
+  // resolver thought it was using, so the agent can `ls -la` it directly
+  // instead of guessing.
+  'hq-version-undetectable': (i) => {
+    const hqFolderPath = val(i, 'hqFolderPath');
+    return [
+      "My HQ Sync menubar can't detect the version of HQ I'm running.",
+      '',
+      hqFolderPath
+        ? `The resolver picked: \`${hqFolderPath}\``
+        : "The resolver couldn't even locate an HQ folder on this machine.",
+      '',
+      "Please diagnose which of these is true and walk me through fixing it:",
+      "1. **HQ folder missing / wrong** — verify the path above exists (`ls -la`). If wrong, open my HQ Sync app → Settings → re-tether to the correct folder.",
+      "2. **`core.yaml` missing** — at the HQ folder, check both canonical (`core/core.yaml`) and legacy (`core.yaml`) locations. If missing, the install is incomplete; run `/setup` to scaffold it, or `/update-hq` to repair from the latest hq-core release.",
+      "3. **`core.yaml` unparseable or missing `hqVersion`** — read it and tell me what's there. If corrupted, restore from git or re-run `/update-hq`.",
+      '',
+      "Once `hqVersion` is readable again, the footer row will refresh next time I open the popover.",
     ].join('\n');
   },
 

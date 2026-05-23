@@ -105,12 +105,46 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
 ///   - `--poll-remote-ms 600000` — pulls remote changes every 10 minutes
+///   - `--event-push` — when the user's Instant-sync setting is ON (Phase 2 GA)
 ///
-/// Local edits still upload in seconds via the runner's chokidar layer; only
-/// the remote→local pull is on the 10-minute cadence. Conflict policy is
-/// `keep` (skip-and-surface) — local edits win and the conflict store routes
-/// them through the existing modal so auto-pull never clobbers an
-/// in-progress resolution.
+/// As of hq-cloud 5.26 the runner's chokidar watcher is real. Phase 2 GA
+/// (2026-05-23) opened event-driven push to ALL users: we append `--event-push`
+/// (requires `--watch`, always set) whenever the user's Instant-sync setting is
+/// ON — which it is by default. Local edits then upload within seconds of the
+/// filesystem event. Toggling Instant-sync OFF drops back to poll-only without
+/// disabling Auto-sync.
+///
+/// Instant-sync OFF stays poll-only: the remote→local pull runs on the 10-minute
+/// cadence and a local push waits for the next pass — there is no second-by-second
+/// upload of local edits. (The remote→local pull is ALWAYS poll-driven for now —
+/// the real-time pull-on-event receiver is dormant until the server-side per-
+/// client queue is provisioned — so the 10-minute poll stays regardless.)
+/// Conflict policy is `keep` (skip-and-surface) — local
+/// edits win and the conflict store routes them through the existing modal so
+/// auto-pull never clobbers an in-progress resolution.
+
+/// Pure decision: should the watch runner get `--event-push`?
+///
+/// As of Phase 2 GA (2026-05-23) eligibility is universal, so this effectively
+/// reduces to "is the user's Instant-sync setting ON?". Kept as a pure
+/// `(eligible, instant_sync) -> bool` so the decision stays unit-testable and a
+/// future targeted re-gate (flip `event_push_eligible`) works without touching
+/// this logic.
+fn should_event_push(eligible: bool, instant_sync: bool) -> bool {
+    eligible && instant_sync
+}
+
+/// Resolve whether the signed-in user is eligible for event-driven push.
+///
+/// Phase 2 (2026-05-23): event-driven push is GA — every signed-in user is
+/// eligible. The per-user Instant-sync setting (`is_instant_sync_enabled`,
+/// default-on) is now the sole gate. Kept as a function (rather than inlining
+/// `true` at the call site) so the `should_event_push` seam stays intact and a
+/// future targeted re-gate is a one-line change here.
+fn event_push_eligible() -> bool {
+    true
+}
+
 pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     use crate::commands::sync::{HQ_CLOUD_PACKAGE, HQ_CLOUD_VERSION, RUNNER_BIN};
 
@@ -128,7 +162,7 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         .filter(|&n| n > 0)
         .unwrap_or(600_000);
 
-    let runner_args = vec![
+    let mut runner_args = vec![
         "--companies".to_string(),
         "--direction".to_string(),
         "both".to_string(),
@@ -140,6 +174,14 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
         "--poll-remote-ms".to_string(),
         poll_ms.to_string(),
     ];
+
+    // Phase 2 GA: event-driven push is gated solely by the user's Instant-sync
+    // setting (eligibility is now universal — see `event_push_eligible`). The
+    // hq-cloud runner requires --watch for --event-push (already set above), so
+    // appending here is safe for both spawn paths below.
+    if should_event_push(event_push_eligible(), is_instant_sync_enabled()) {
+        runner_args.push("--event-push".to_string());
+    }
 
     // Dev override: HQ_CLOUD_LOCAL_RUNNER points at a built sync-runner.js
     // (e.g. /…/hq/packages/hq-cloud/dist/bin/sync-runner.js). Lets us
@@ -222,6 +264,18 @@ pub fn is_realtime_sync_enabled() -> bool {
     read_menubar_bool(|p| p.realtime_sync, true)
 }
 
+/// Check if the user-facing Instant-sync (event-driven) flag is enabled in
+/// menubar.json.
+///
+/// Defaults to true when the field is missing so eligible (@getindigo.ai)
+/// users get instant push on a fresh install without discovering the toggle,
+/// matching the `realtime_sync` default-on convention. An explicit `false`
+/// written by `save_settings` still wins. Note this is only consulted for
+/// `event_push_eligible()` users — see `should_event_push`.
+pub fn is_instant_sync_enabled() -> bool {
+    read_menubar_bool(|p| p.instant_sync, true)
+}
+
 fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F, default: bool) -> bool {
     let menubar_path = match paths::menubar_json_path() {
         Ok(p) => p,
@@ -271,6 +325,13 @@ fn handle_watch_stdout_line(
     {
         let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
         t.accumulate(&event);
+    }
+    // Record each per-file transfer into the session activity log (Recent
+    // Changes window). The watch daemon is the primary instant-sync path, so
+    // without this the activity log would only ever capture foreground
+    // "Sync Now" runs (handle_sync_line) and stay empty in normal use.
+    if let SyncEvent::Progress(payload) = &event {
+        crate::commands::activity::record_progress(app, payload);
     }
     if let SyncEvent::AllComplete(payload) = &event {
         let conflicts = {
@@ -708,5 +769,38 @@ mod tests {
             env.get("PATH").map(|p| !p.is_empty()).unwrap_or(false),
             "PATH must be set so Dock-launched Tauri apps can find node/npx"
         );
+    }
+
+    // ── event-push gating (Phase 2 GA) ─────────────────────────────────────
+    //
+    // Phase 2 GA (2026-05-23): eligibility is universal (`event_push_eligible`
+    // => true), so --event-push is appended whenever the user's Instant-sync
+    // setting is ON. The pure `should_event_push` still models the
+    // (eligible × setting) AND, so a future targeted re-gate is a one-liner.
+
+    #[test]
+    fn test_event_push_eligible_is_universal_phase2_ga() {
+        // GA: every signed-in user is eligible — no token/email required.
+        assert!(event_push_eligible());
+    }
+
+    #[test]
+    fn test_should_event_push_eligible_and_instant_on_pushes() {
+        // (i) Instant-sync ON + eligible => event-driven push.
+        assert!(should_event_push(true, true));
+    }
+
+    #[test]
+    fn test_should_event_push_eligible_but_instant_off_is_poll_only() {
+        // (ii) Instant-sync OFF => poll-only, no --event-push.
+        assert!(!should_event_push(true, false));
+    }
+
+    #[test]
+    fn test_should_event_push_ineligible_never_pushes_regardless_of_setting() {
+        // (iii) The seam still holds: were eligibility ever re-gated to false,
+        // the Instant-sync setting could not override it.
+        assert!(!should_event_push(false, true));
+        assert!(!should_event_push(false, false));
     }
 }

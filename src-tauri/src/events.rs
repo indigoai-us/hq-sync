@@ -47,8 +47,15 @@ pub struct SyncCompanyRef {
     pub name: Option<String>,
 }
 
-/// `{type: "progress", company, path, bytes, message?}`
-/// Per-file download event. One per file, per company.
+/// `{type: "progress", company, path, bytes, message?, direction?, deleted?}`
+/// Per-file transfer event. One per file, per company.
+///
+/// `direction` (hq-cloud ≥5.29.0) is `"up"` when the file was uploaded
+/// (push leg) or `"down"` when downloaded (pull leg). `None` on older
+/// runners that don't stamp it — the activity log then falls back to
+/// treating the event as a download (the historical assumption). `deleted`
+/// is `Some(true)` when this event reports a remote delete-marker rather
+/// than a transfer.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncProgressEvent {
@@ -57,6 +64,19 @@ pub struct SyncProgressEvent {
     pub bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub message: Option<String>,
+    /// hq-cloud ≥5.29.0: `"up"` (uploaded) | `"down"` (downloaded). None on older runners.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub direction: Option<String>,
+    /// True when this event reports a remote DeleteObject (no transfer).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub deleted: Option<bool>,
+    /// hq-cloud ≥5.31.0: email of the file's author, read from the S3 object's
+    /// `created-by` user-metadata. Only set on download (pull) events — a
+    /// downloaded file was authored by whoever uploaded it. None on push events
+    /// (the uploader is the local user) and on older runners. The activity log
+    /// shows this so the user sees who authored each file they received.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub author: Option<String>,
 }
 
 /// `{type: "error", company?, path, message}`
@@ -84,8 +104,14 @@ pub struct SyncConflictEvent {
     pub can_auto_resolve: bool,
 }
 
-/// `{type: "complete", company, filesDownloaded, bytesDownloaded, filesSkipped, conflicts, aborted}`
+/// `{type: "complete", company, filesDownloaded, bytesDownloaded, filesSkipped, conflicts, aborted, filesTombstoned?, filesRefusedStale?}`
 /// Emitted once per company after that company's sync finishes (or aborts).
+///
+/// `files_tombstoned` (hq-cloud ≥5.24.0) is the count of journal entries
+/// dropped because the remote was already 404 at HEAD time (cleaned
+/// out-of-band). `files_refused_stale` is the count of delete candidates
+/// refused by the `currency-gated` policy because the remote etag drifted.
+/// Both are optional so pre-5.24 runners deserialize cleanly with `None`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncCompleteEvent {
@@ -95,9 +121,15 @@ pub struct SyncCompleteEvent {
     pub files_skipped: u32,
     pub conflicts: u32,
     pub aborted: bool,
+    /// hq-cloud ≥5.24.0. None on older runners.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub files_tombstoned: Option<u32>,
+    /// hq-cloud ≥5.24.0. None on older runners.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub files_refused_stale: Option<u32>,
 }
 
-/// `{type: "plan", company, filesToDownload, bytesToDownload, filesToUpload, bytesToUpload, filesToSkip, filesToConflict}`
+/// `{type: "plan", company, filesToDownload, bytesToDownload, filesToUpload, bytesToUpload, filesToSkip, filesToConflict, filesToDelete?}`
 /// Stage-1 result from `hq-sync-runner` (≥5.5.0). Emitted once per company
 /// per direction — i.e. for `--direction both` a company emits one plan
 /// event for the push phase and another for the pull phase. The menubar
@@ -107,6 +139,11 @@ pub struct SyncCompleteEvent {
 /// older runner that doesn't emit `plan`, the pre-pass remains as a
 /// fallback (it computed the upload count only and never the
 /// pull-side count, so plan events strictly improve accuracy).
+///
+/// `files_to_delete` (hq-cloud ≥5.24.0) is the push-only count of
+/// journal entries scheduled for remote `DeleteObject`. Optional so
+/// older runners (which don't emit the field) deserialize cleanly with
+/// `None`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncPlanEvent {
@@ -117,6 +154,37 @@ pub struct SyncPlanEvent {
     pub bytes_to_upload: u64,
     pub files_to_skip: u32,
     pub files_to_conflict: u32,
+    /// hq-cloud ≥5.24.0. None on older runners.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub files_to_delete: Option<u32>,
+}
+
+/// `{type: "delete-refused-stale-etag", company, path, journalEtag, remoteEtag, reason}`
+/// Emitted by hq-cloud ≥5.24.0 when the `currency-gated` delete policy
+/// refuses to propagate a local deletion to S3 because:
+///   - `reason: "stale-etag"` — the remote object's current ETag no longer
+///     matches the journal's recorded one. Some other device modified the
+///     file since this machine last synced; the pull leg re-pulls
+///     naturally via `hasRemoteChanged`. `journalEtag` and `remoteEtag`
+///     are real values.
+///   - `reason: "legacy-no-etag"` — the journal entry predates remoteEtag
+///     tracking (no etag to compare against). Refused in the safe
+///     direction; a future sync that picks up an etag can re-evaluate.
+///     `journalEtag` and `remoteEtag` are sentinel strings — do not
+///     display them as ETags. Branch on `reason`.
+///
+/// Frontend treatment: this is operationally informative (peer drift /
+/// migration), not an error. Renderers should surface it as a warning
+/// row ("kept on remote: <path>") rather than a hard failure. Older
+/// runners (<5.24.0) never emit this; absence is the silent default.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncDeleteRefusedStaleEtagEvent {
+    pub company: String,
+    pub path: String,
+    pub journal_etag: String,
+    pub remote_etag: String,
+    pub reason: String,
 }
 
 /// `{type: "new-files", company, files: [{path, bytes, addedBy?}]}`
@@ -177,6 +245,10 @@ pub enum SyncEvent {
     Progress(SyncProgressEvent),
     Error(SyncErrorEvent),
     Complete(SyncCompleteEvent),
+    /// hq-cloud ≥5.24.0. Emitted only under the `currency-gated` delete
+    /// policy (opt-in via `HQ_SYNC_DELETE_POLICY=currency-gated` in 5.24;
+    /// default in 5.25+). Older runners never emit this variant.
+    DeleteRefusedStaleEtag(SyncDeleteRefusedStaleEtagEvent),
     NewFiles(SyncNewFilesEvent),
     AllComplete(SyncAllCompleteEvent),
 }
@@ -195,6 +267,12 @@ pub const EVENT_SYNC_PLAN: &str = "sync:plan";
 pub const EVENT_SYNC_PROGRESS: &str = "sync:progress";
 pub const EVENT_SYNC_ERROR: &str = "sync:error";
 pub const EVENT_SYNC_COMPLETE: &str = "sync:complete";
+/// hq-cloud ≥5.24.0. Emitted only under `currency-gated` delete policy
+/// (opt-in 5.24, default 5.25+). Renderers should surface as an
+/// informational warning ("kept on remote: <path>") rather than an
+/// error — the file is intentionally preserved on S3 because peer drift
+/// or a missing journal etag made the delete unsafe to propagate.
+pub const EVENT_SYNC_DELETE_REFUSED_STALE_ETAG: &str = "sync:delete-refused-stale-etag";
 pub const EVENT_SYNC_NEW_FILES: &str = "sync:new-files";
 pub const EVENT_SYNC_ALL_COMPLETE: &str = "sync:all-complete";
 /// Deprecated — kept for frontend shape-compat. Not emitted by the runner.
@@ -489,6 +567,9 @@ mod tests {
                 path: "docs/a.md".to_string(),
                 bytes: 42,
                 message: Some("shared by M1".to_string()),
+                direction: None,
+                deleted: None,
+                author: None,
             })
         );
     }
@@ -504,8 +585,40 @@ mod tests {
                 path: "docs/a.md".to_string(),
                 bytes: 42,
                 message: None,
+                direction: None,
+                deleted: None,
+                author: None,
             })
         );
+    }
+
+    #[test]
+    fn test_parse_progress_event_with_author() {
+        // hq-cloud ≥5.31.0 stamps `author` (from S3 `created-by`) on download
+        // (pull) progress events so the activity log can attribute the file.
+        let json = r#"{"type":"progress","company":"indigo","path":"docs/a.md","bytes":42,"direction":"down","author":"alice@example.com"}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Progress(p) => {
+                assert_eq!(p.author, Some("alice@example.com".to_string()));
+                assert_eq!(p.direction, Some("down".to_string()));
+            }
+            _ => panic!("expected Progress"),
+        }
+    }
+
+    #[test]
+    fn test_parse_progress_event_with_direction() {
+        // hq-cloud ≥5.29.0 stamps direction (and may carry deleted).
+        let json = r#"{"type":"progress","company":"indigo","path":"docs/a.md","bytes":42,"direction":"up"}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Progress(p) => {
+                assert_eq!(p.direction, Some("up".to_string()));
+                assert_eq!(p.deleted, None);
+            }
+            _ => panic!("expected Progress"),
+        }
     }
 
     #[test]
@@ -550,6 +663,11 @@ mod tests {
                 files_skipped: 2,
                 conflicts: 0,
                 aborted: false,
+                // Pre-5.24 runners don't emit these — None mirrors the
+                // wire absence and keeps the assert checking that the
+                // optional defaults take effect for older payloads.
+                files_tombstoned: None,
+                files_refused_stale: None,
             })
         );
     }
@@ -743,10 +861,16 @@ mod tests {
             path: "docs/a.md".to_string(),
             bytes: 42,
             message: None,
+            direction: None,
+            deleted: None,
+            author: None,
         };
         let json = serde_json::to_string(&event).unwrap();
-        // `message: None` must not serialize.
+        // `message: None` / `direction: None` / `deleted: None` / `author: None` must not serialize.
         assert!(!json.contains("\"message\""));
+        assert!(!json.contains("\"direction\""));
+        assert!(!json.contains("\"deleted\""));
+        assert!(!json.contains("\"author\""));
         assert!(json.contains("\"company\""));
         assert!(json.contains("\"path\""));
         assert!(json.contains("\"bytes\""));
@@ -770,5 +894,140 @@ mod tests {
         let event = SyncEvent::SetupNeeded;
         let json = serde_json::to_string(&event).unwrap();
         assert_eq!(json, r#"{"type":"setup-needed"}"#);
+    }
+
+    // ── hq-cloud 5.24.0 — new event variant + optional fields ──────────────
+
+    #[test]
+    fn test_parse_delete_refused_stale_etag_event_with_real_etags() {
+        let json = r#"{"type":"delete-refused-stale-etag","company":"indigo","path":"shared.md","journalEtag":"abc123","remoteEtag":"def456","reason":"stale-etag"}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            event,
+            SyncEvent::DeleteRefusedStaleEtag(SyncDeleteRefusedStaleEtagEvent {
+                company: "indigo".to_string(),
+                path: "shared.md".to_string(),
+                journal_etag: "abc123".to_string(),
+                remote_etag: "def456".to_string(),
+                reason: "stale-etag".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_delete_refused_stale_etag_legacy_no_etag_reason() {
+        // hq-cloud emits sentinel strings for the legacy-no-etag branch.
+        // Renderers must branch on `reason`, not on the etag values.
+        let json = r#"{"type":"delete-refused-stale-etag","company":"personal","path":"legacy.md","journalEtag":"<legacy-no-etag>","remoteEtag":"<unknown>","reason":"legacy-no-etag"}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::DeleteRefusedStaleEtag(e) => {
+                assert_eq!(e.reason, "legacy-no-etag");
+                assert_eq!(e.journal_etag, "<legacy-no-etag>");
+            }
+            _ => panic!("expected DeleteRefusedStaleEtag"),
+        }
+    }
+
+    #[test]
+    fn test_parse_plan_event_with_files_to_delete() {
+        // hq-cloud ≥5.24.0 emits filesToDelete in the plan event.
+        let json = r#"{"type":"plan","company":"indigo","filesToDownload":0,"bytesToDownload":0,"filesToUpload":3,"bytesToUpload":1024,"filesToSkip":5,"filesToConflict":0,"filesToDelete":2}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Plan(p) => {
+                assert_eq!(p.files_to_delete, Some(2));
+                assert_eq!(p.files_to_upload, 3);
+            }
+            _ => panic!("expected Plan"),
+        }
+    }
+
+    #[test]
+    fn test_parse_plan_event_without_files_to_delete_back_compat() {
+        // Pre-5.24 runners omit filesToDelete entirely. Must default to None.
+        let json = r#"{"type":"plan","company":"indigo","filesToDownload":1,"bytesToDownload":100,"filesToUpload":0,"bytesToUpload":0,"filesToSkip":2,"filesToConflict":0}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Plan(p) => assert_eq!(p.files_to_delete, None),
+            _ => panic!("expected Plan"),
+        }
+    }
+
+    #[test]
+    fn test_parse_complete_event_with_5_24_counters() {
+        let json = r#"{"type":"complete","company":"indigo","filesDownloaded":0,"bytesDownloaded":0,"filesSkipped":1,"conflicts":0,"aborted":false,"filesTombstoned":3,"filesRefusedStale":1}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Complete(c) => {
+                assert_eq!(c.files_tombstoned, Some(3));
+                assert_eq!(c.files_refused_stale, Some(1));
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    #[test]
+    fn test_parse_complete_event_pre_5_24_back_compat() {
+        // Pre-5.24 runners omit the counters; both must default to None.
+        let json = r#"{"type":"complete","company":"indigo","filesDownloaded":1,"bytesDownloaded":10,"filesSkipped":0,"conflicts":0,"aborted":false}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Complete(c) => {
+                assert_eq!(c.files_tombstoned, None);
+                assert_eq!(c.files_refused_stale, None);
+            }
+            _ => panic!("expected Complete"),
+        }
+    }
+
+    #[test]
+    fn test_delete_refused_stale_etag_roundtrip() {
+        let event = SyncEvent::DeleteRefusedStaleEtag(SyncDeleteRefusedStaleEtagEvent {
+            company: "indigo".to_string(),
+            path: "shared.md".to_string(),
+            journal_etag: "old".to_string(),
+            remote_etag: "new".to_string(),
+            reason: "stale-etag".to_string(),
+        });
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: SyncEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(event, parsed);
+    }
+
+    #[test]
+    fn test_plan_event_skips_none_files_to_delete() {
+        // `files_to_delete: None` must NOT serialize — keeps the on-wire
+        // shape identical to what a pre-5.24 runner emits, so any external
+        // consumer that handles both runner versions sees consistent input.
+        let plan = SyncPlanEvent {
+            company: "indigo".to_string(),
+            files_to_download: 0,
+            bytes_to_download: 0,
+            files_to_upload: 0,
+            bytes_to_upload: 0,
+            files_to_skip: 0,
+            files_to_conflict: 0,
+            files_to_delete: None,
+        };
+        let json = serde_json::to_string(&plan).unwrap();
+        assert!(!json.contains("filesToDelete"));
+    }
+
+    #[test]
+    fn test_complete_event_skips_none_counters() {
+        let c = SyncCompleteEvent {
+            company: "indigo".to_string(),
+            files_downloaded: 0,
+            bytes_downloaded: 0,
+            files_skipped: 0,
+            conflicts: 0,
+            aborted: false,
+            files_tombstoned: None,
+            files_refused_stale: None,
+        };
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("filesTombstoned"));
+        assert!(!json.contains("filesRefusedStale"));
     }
 }

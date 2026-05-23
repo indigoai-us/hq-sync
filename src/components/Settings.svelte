@@ -59,6 +59,19 @@
   let notifications = $state(true);
   let startAtLogin = $state(true);
   let realtimeSync = $state(true);
+  // Defaults to true so a brand-new install matches pre-5.25 behavior.
+  // When false, Sync Now (and Auto-sync) drop the personal target from
+  // the spawned hq-sync-runner's fanout — only cloud-enabled company
+  // memberships sync. See src-tauri/src/commands/sync.rs.
+  let personalSyncEnabled = $state(true);
+  // Instant sync (event-driven). Kept a DISTINCT toggle from Auto-sync rather
+  // than folded into it (the PRD allowed either) — Auto-sync controls whether
+  // the daemon runs at all, Instant-sync controls whether it pushes on every
+  // local edit vs the 10-minute poll, so two switches read clearer than one
+  // overloaded control. Defaults true to match the realtime_sync default-on
+  // convention; the backend only honors it for @getindigo.ai (Phase 1
+  // event_push_eligible) identities. See src-tauri/src/commands/daemon.rs.
+  let instantSync = $state(true);
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...ALL_PLATFORMS]);
   let loading = $state(true);
@@ -91,6 +104,8 @@
           notifications: boolean | null;
           startAtLogin: boolean | null;
           realtimeSync: boolean | null;
+          personalSyncEnabled: boolean | null;
+          instantSync: boolean | null;
           meetingDetectNotify?: {
             enabled: boolean | null;
             platforms: string[] | null;
@@ -104,6 +119,8 @@
       notifications = settings.notifications ?? true;
       startAtLogin = settings.startAtLogin ?? autostart;
       realtimeSync = settings.realtimeSync ?? true;
+      personalSyncEnabled = settings.personalSyncEnabled ?? true;
+      instantSync = settings.instantSync ?? true;
       meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
       meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...ALL_PLATFORMS];
     } catch (err) {
@@ -130,6 +147,8 @@
           notifications,
           startAtLogin,
           realtimeSync,
+          personalSyncEnabled,
+          instantSync,
           meetingDetectNotify: {
             enabled: meetingDetectEnabled,
             platforms: meetingDetectPlatforms,
@@ -177,6 +196,28 @@
       // Surface in console — the toggle's persisted state is still authoritative,
       // and main.rs auto-starts the daemon on next launch when the flag is set.
       console.error('Auto-sync daemon command failed:', err);
+    }
+  }
+
+  async function handleTogglePersonalSync() {
+    personalSyncEnabled = !personalSyncEnabled;
+    await saveAll();
+  }
+
+  async function handleToggleInstantSync() {
+    instantSync = !instantSync;
+    await saveAll();
+    // The instant-sync flag is read at daemon spawn time
+    // (build_watch_runner_args). If Auto-sync is already running, bounce the
+    // daemon so the new `--event-push` argv takes effect immediately; the
+    // backend still gates it to event_push_eligible() identities. If Auto-sync
+    // is off, the persisted setting is picked up the next time the daemon starts.
+    if (!realtimeSync) return;
+    try {
+      await invoke('stop_daemon');
+      await invoke('start_daemon');
+    } catch (err) {
+      console.error('Instant-sync daemon restart failed:', err);
     }
   }
 
@@ -308,6 +349,56 @@
           role="switch"
           aria-checked={realtimeSync}
           aria-label="Auto-sync"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Instant sync (event-driven) — when ON, the daemon spawns the
+           hq-sync-runner with --event-push so local edits upload within
+           seconds of the filesystem event instead of waiting for the
+           10-minute poll. The backend only honors this for @getindigo.ai
+           identities (Phase 1 rollout); other users stay poll-only
+           regardless. See src-tauri/src/commands/daemon.rs. -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <label class="setting-label" for="toggle-instant-sync">Instant sync</label>
+          <span class="setting-desc">Push local edits within seconds instead of every 10 minutes</span>
+        </div>
+        <button
+          id="toggle-instant-sync"
+          class="toggle"
+          class:active={instantSync}
+          onclick={handleToggleInstantSync}
+          role="switch"
+          aria-checked={instantSync}
+          aria-label="Instant sync"
+        >
+          <span class="toggle-knob"></span>
+        </button>
+      </div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Sync personal vault — when OFF, the menubar passes --skip-personal
+           to the spawned hq-sync-runner so the personal target is dropped
+           from the --companies fanout. Only cloud-enabled company
+           memberships sync. Defaults ON to preserve pre-5.25 behavior. -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <label class="setting-label" for="toggle-personal-sync">Sync personal vault</label>
+          <span class="setting-desc">Sync your personal HQ files in addition to company memberships</span>
+        </div>
+        <button
+          id="toggle-personal-sync"
+          class="toggle"
+          class:active={personalSyncEnabled}
+          onclick={handleTogglePersonalSync}
+          role="switch"
+          aria-checked={personalSyncEnabled}
+          aria-label="Sync personal vault"
         >
           <span class="toggle-knob"></span>
         </button>
@@ -478,7 +569,7 @@
     display: flex;
     flex-direction: column;
     width: 320px;
-    max-height: 400px;
+    max-height: 480px;
     background: var(--popover-bg, rgba(18, 18, 20, 0.68));
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));

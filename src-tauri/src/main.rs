@@ -144,6 +144,8 @@ fn main() {
         )
         .manage(updater::PendingUpdate(Mutex::new(None)))
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
+        .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
+        .manage(commands::activity::SessionActivity::new())
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -192,8 +194,16 @@ fn main() {
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
             commands::hq_core_update::check_hq_core_update,
+            commands::hq_core_update::get_hq_version,
+            commands::hq_core_drift::check_hq_core_drift,
+            commands::hq_core_drift::restore_from_upstream,
+            commands::drift_detail::open_drift_detail,
+            commands::drift_detail::drift_window_ready,
             commands::new_files::open_new_files_detail,
             commands::new_files::detail_window_ready,
+            commands::activity::open_activity_log,
+            commands::activity::activity_window_ready,
+            commands::activity::get_activity_log,
             commands::meetings::meetings_feature_enabled,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
@@ -275,6 +285,7 @@ fn main() {
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
             commands::hq_core_update::setup_hq_core_update_checker(app.handle());
+            commands::hq_core_drift::setup_hq_core_drift_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's

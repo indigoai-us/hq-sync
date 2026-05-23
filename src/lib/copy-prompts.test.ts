@@ -10,7 +10,6 @@ const ALL_KINDS: IssueKind[] = [
   'sync-conflict',
   'sync-failed',
   'auth-expired',
-  'app-update-available',
   'hq-cli-update-available',
   'hq-cli-update-failed',
   'cloud-unreachable',
@@ -68,14 +67,6 @@ describe('buildPrompt', () => {
 
     const noCompany = buildPrompt({ kind: 'sync-failed' });
     expect(noCompany).toContain('~/.hq/sync-journal.<slug>.json');
-  });
-
-  it('embeds the version in app-update-available', () => {
-    const out = buildPrompt({
-      kind: 'app-update-available',
-      payload: { version: '0.1.99' },
-    });
-    expect(out).toContain('v0.1.99');
   });
 
   it('includes the local→latest delta in hq-cli-update-available', () => {

@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod app;
 pub mod auth;
 pub mod autostart;
@@ -5,10 +6,13 @@ pub mod cognito;
 pub mod config;
 pub mod conflicts;
 pub mod daemon;
+pub mod drift_detail;
 pub mod first_push;
 pub mod folder_picker;
 pub mod git_mirror;
 pub mod hq_cli_update;
+pub mod hq_core_drift;
+pub mod hq_core_staging;
 pub mod hq_core_update;
 pub mod meetings;
 pub mod new_files;

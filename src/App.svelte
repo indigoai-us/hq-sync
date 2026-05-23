@@ -163,6 +163,41 @@
     latest: string;
   } | null>(null);
 
+  // Drift summary — populated by `hq-core-drift:available` from the Rust
+  // background checker (launch+30s, then every 6h). `count` is the total
+  // of modified+missing+added files within `rules.locked` scope. The
+  // popover footer renders an "N drifted" pill on the right of the
+  // HQ-version row when count > 0; clicking opens a detail window. The
+  // full report is needed by the pill click handler (not just count) so
+  // the detail window receives the same payload the listener saw —
+  // re-fetching client-side would double-spend the rate limit and risk a
+  // count mismatch between pill and window.
+  type DriftEntry = {
+    path: string;
+    size: number;
+    gitShaLocal: string | null;
+    gitShaUpstream: string | null;
+  };
+  type DriftReport = {
+    count: number;
+    modified: DriftEntry[];
+    missing: DriftEntry[];
+    added: DriftEntry[];
+    scannedAt: string;
+    hqVersion: string;
+  };
+  let hqCoreDrift = $state<DriftReport | null>(null);
+
+  // Locally-installed hq-core `hqVersion` (or null when core.yaml is
+  // missing/unparseable). Always populated by a cheap on-disk read at app
+  // mount — independent of the 6h GitHub-release check above. Drives the
+  // "HQ v14.2.1" footer row in Popover; null surfaces the repair affordance
+  // instead of silently hiding the row, so a broken install becomes visible
+  // rather than masked. Refreshed after the user re-tethers the HQ folder
+  // in Settings (handleBackFromSettings), since the resolver may now find a
+  // different `core.yaml`.
+  let hqVersion = $state<string | null>(null);
+
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
 
@@ -171,6 +206,19 @@
       config = await invoke<Config>('get_config');
     } catch (err) {
       console.error('Failed to load config:', err);
+    }
+  }
+
+  // Cheap on-disk read of hq-core's `hqVersion` from `core.yaml`. Null when
+  // unreadable — see `hqVersion` state declaration for why null is surfaced
+  // rather than swallowed. Errors are logged but treated as null so a
+  // transient Rust failure doesn't blank the row mid-session.
+  async function loadHqVersion() {
+    try {
+      hqVersion = await invoke<string | null>('get_hq_version');
+    } catch (err) {
+      console.error('Failed to load hq version:', err);
+      hqVersion = null;
     }
   }
 
@@ -251,9 +299,12 @@
     // Popover renders from `config.hqFolderPath`, which was snapshotted at
     // mount. Re-read menubar.json so the change is visible without a quit.
     // Workspaces depend on hq_root too — local folder enumeration would point
-    // at the wrong tree otherwise.
+    // at the wrong tree otherwise. hqVersion also follows the HQ root —
+    // re-tethering to a different folder may surface a different (or now-
+    // readable) `core.yaml`.
     loadConfig();
     loadWorkspaces();
+    loadHqVersion();
   }
 
   function handleSignOut() {
@@ -663,6 +714,17 @@
       })
     );
 
+    // --- hq-core drift listener ---
+    // Protocol (see src-tauri/src/commands/hq_core_drift.rs):
+    //   hq-core-drift:available — full DriftReport payload, emitted both
+    //   on detected drift AND on a re-check that finds zero (so the pill
+    //   can swing back to hidden after the user resolves).
+    unlisteners.push(
+      await listen<DriftReport>('hq-core-drift:available', (event) => {
+        hqCoreDrift = event.payload;
+      })
+    );
+
     // Tray menu "Check for Updates" → on-demand check.
     unlisteners.push(
       await listen('tray:check-for-updates', () => {
@@ -733,6 +795,7 @@
     checkAuth();
     loadConfig();
     loadWorkspaces();
+    loadHqVersion();
     setupTrayListeners();
     // Subscribe to macOS permission status events from the SDK bridge.
     // The store is module-level reactive — components read it directly.
@@ -826,6 +889,8 @@
       {hqCliUpdateInstalling}
       {hqCliUpdateError}
       {hqCoreUpdateAvailable}
+      {hqCoreDrift}
+      {hqVersion}
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}

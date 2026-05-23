@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.1.39"
+version = "0.1.97"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -2608,6 +2608,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha1 0.10.6",
  "sha2 0.10.9",
  "tauri",
  "tauri-build",

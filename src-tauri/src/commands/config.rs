@@ -59,6 +59,44 @@ pub struct MenubarPrefs {
     /// (see `is_realtime_sync_enabled` and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub realtime_sync: Option<bool>,
+    /// Sync personal vault: when true (default), the `--companies` fanout
+    /// includes the user's personal target (every top-level entry under
+    /// hq_root minus PERSONAL_VAULT_EXCLUDED_TOP_LEVEL, see hq-cloud
+    /// `personal-vault.ts`). When false, the menubar passes `--no-personal`
+    /// to `hq sync` so the spawned sync-runner drops the personal slot
+    /// from its fanout plan — only cloud-enabled company memberships sync.
+    ///
+    /// Useful for devices that joined HQ for company collaboration only,
+    /// privacy-by-default postures, or soak/recovery scenarios while we're
+    /// cleaning up an already-leaked personal vault. Defaults to true so
+    /// existing users see zero behavior change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_sync_enabled: Option<bool>,
+    /// Instant sync (event-driven): when true (default), an *eligible* user
+    /// (@getindigo.ai during Phase 1 rollout) gets event-driven push — the
+    /// menubar appends `--event-push` to the watch runner so local edits
+    /// upload within seconds of the filesystem event rather than waiting for
+    /// the next 10-minute poll. When false, the runner stays poll-only.
+    ///
+    /// This is an ADDITIONAL opt-in layered on top of `event_push_eligible()`:
+    /// ineligible users never get `--event-push` regardless of this flag.
+    /// Defaults to true (matching the `realtime_sync` default-on convention)
+    /// so eligible users get instant push without discovering the toggle; an
+    /// explicit `false` written by `save_settings` still wins. Absent in
+    /// pre-5.27 menubar.json files → treated as the default at the boundary
+    /// (see `is_instant_sync_enabled` in daemon.rs and `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instant_sync: Option<bool>,
+    /// Staging repo (`owner/name`) for Core-Drift staging classification.
+    /// When set, drifted locked-scope files are cross-referenced against this
+    /// repo's `main` tree + open PRs and tagged (`staging main` / `PR #n` /
+    /// `unaccounted`) in the Core Drift window. Any team adopting a
+    /// stage-then-release HQ workflow can point this at their own staging
+    /// repo. When absent, classification only runs for `@getindigo.ai` users
+    /// (defaulting to `indigoai-us/hq-core-staging`); everyone else sees the
+    /// unchanged drift panel. See `commands/hq_core_staging.rs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drift_staging_repo: Option<String>,
     /// Meeting detect-notify settings (US-007). Absent when not yet
     /// configured; `get_settings` supplies defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -597,6 +635,40 @@ mod tests {
         assert_eq!(prefs.realtime_sync, Some(false));
         let out = serde_json::to_string(&prefs).unwrap();
         assert!(out.contains("\"realtimeSync\":false"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_round_trip_true() {
+        // `instant_sync` serializes to camelCase `instantSync` so the
+        // Instant-sync (event-driven) setting persists across restarts.
+        let json = r#"{"instantSync": true}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, Some(true));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(
+            out.contains("\"instantSync\":true"),
+            "expected camelCase key 'instantSync' in serialized output, got: {out}"
+        );
+        assert!(!out.contains("instant_sync"));
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_absent_deserializes_none() {
+        // Backwards compatibility: pre-5.27 menubar.json predates the field
+        // and must continue to load. None is the absent-marker; the daemon /
+        // settings boundary applies the default-on at read time.
+        let json = r#"{"hqPath": "/custom/HQ"}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, None);
+    }
+
+    #[test]
+    fn test_menubar_prefs_instant_sync_false_round_trip() {
+        let json = r#"{"instantSync": false}"#;
+        let prefs: MenubarPrefs = serde_json::from_str(json).unwrap();
+        assert_eq!(prefs.instant_sync, Some(false));
+        let out = serde_json::to_string(&prefs).unwrap();
+        assert!(out.contains("\"instantSync\":false"));
     }
 
     #[test]
