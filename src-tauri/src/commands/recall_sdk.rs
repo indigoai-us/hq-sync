@@ -85,6 +85,96 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 const LOG_TAG: &str = "recall-sdk";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Eligibility gate
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Phase-0 allowlist for the meeting-detect-notify feature. Currently only
+/// the project owner — the SDK still has unresolved TCC stability issues on
+/// dev builds (see scripts/fix-recall-framework-symlinks.sh and the deep-sign
+/// reverts in the project journal), so we don't want every signed-in user to
+/// see permission prompts on launch yet.
+///
+/// Lifted to `@getindigo.ai` (matching `meetings_feature_enabled`) once the
+/// signing pipeline lands a stable Developer ID build. Universal after that.
+const MEETING_DETECT_ALLOWLIST: &[&str] = &["stefan@getindigo.ai"];
+
+/// Env-var override for QA: when set to `1`, force-enable the feature
+/// regardless of the signed-in email. Lets a tester exercise the SDK on a
+/// machine signed in as someone outside the allowlist without flipping the
+/// allowlist itself.
+const FORCE_ENV: &str = "HQ_SYNC_MEETING_DETECT_FORCE";
+
+/// Cached per-session decision so we don't re-decode the id_token on every
+/// callsite (start_recall_sdk + main.rs setup + Tauri command from the
+/// renderer). The token is rotated on refresh but the email claim is stable
+/// across rotations, so a process-lifetime cache is safe. Same pattern as
+/// `meetings::CACHED_FLAG`.
+static CACHED_ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Returns true iff this user/process should run meeting detection in Phase 0.
+///
+/// Decision order:
+///   1. `HQ_SYNC_MEETING_DETECT_FORCE=1` → true (QA override).
+///   2. Signed-in email in `MEETING_DETECT_ALLOWLIST` → true.
+///   3. Otherwise → false.
+///
+/// Quiet on missing/malformed tokens (returns false rather than erroring) so a
+/// signed-out user during launch doesn't crash setup.
+pub async fn meeting_detect_eligible() -> bool {
+    if let Some(v) = CACHED_ELIGIBLE.get() {
+        return *v;
+    }
+    let enabled = compute_meeting_detect_eligible().await;
+    let _ = CACHED_ELIGIBLE.set(enabled);
+    enabled
+}
+
+async fn compute_meeting_detect_eligible() -> bool {
+    // Env override wins first — needed for CI/QA on machines signed in as
+    // someone outside the allowlist.
+    if matches!(std::env::var(FORCE_ENV).ok().as_deref(), Some("1")) {
+        log(LOG_TAG, "meeting_detect_eligible: forced via env override");
+        return true;
+    }
+
+    let tokens = match cognito::get_tokens().await {
+        Ok(Some(t)) => t,
+        _ => return false,
+    };
+    let id_token = match tokens.id_token.as_deref() {
+        Some(t) if !t.is_empty() => t,
+        _ => return false,
+    };
+    let claims = match cognito::decode_id_token_claims(id_token) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    is_meeting_detect_allowed_email(claims.email.as_deref())
+}
+
+/// Pure helper — public for unit testing. Case-insensitive exact match
+/// against the allowlist. Empty / `None` / malformed strings are rejected.
+pub fn is_meeting_detect_allowed_email(email: Option<&str>) -> bool {
+    match email {
+        Some(s) if !s.is_empty() => {
+            let lc = s.to_ascii_lowercase();
+            MEETING_DETECT_ALLOWLIST
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(&lc))
+        }
+        _ => false,
+    }
+}
+
+/// Tauri command exposing `meeting_detect_eligible` to the renderer so the
+/// frontend can hide the permissions banner / Settings section / meeting
+/// detection toggle for users outside the Phase 0 allowlist.
+#[tauri::command]
+pub async fn meeting_detect_feature_enabled() -> Result<bool, String> {
+    Ok(meeting_detect_eligible().await)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Credentials
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -243,6 +333,18 @@ fn parse_sdk_line(line: &str) -> Option<RecallSdkEvent> {
 /// app continues running normally.
 pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     log(LOG_TAG, "start_recall_sdk: initialising");
+
+    // ── 0. Phase-0 eligibility gate ──────────────────────────────────────────
+    // The feature is locked to the project owner until the dev-build TCC
+    // stability work lands. Skip silently for everyone else — no SDK process,
+    // no Recall API call, no permission prompts.
+    if !meeting_detect_eligible().await {
+        log(
+            LOG_TAG,
+            "start_recall_sdk: user not in Phase-0 allowlist — skipping (set HQ_SYNC_MEETING_DETECT_FORCE=1 to override)",
+        );
+        return Ok(());
+    }
 
     // ── 1. Check the singleton — don't double-start ──────────────────────────
     if !try_register_handle(SDK_HANDLE) {
@@ -506,5 +608,49 @@ mod tests {
         // We can't assert None always (a dev may have installed the SDK), but we
         // can assert the function doesn't panic.
         let _ = find_sdk_binary(); // must not panic
+    }
+
+    // ── Eligibility gate (Phase-0 allowlist) ──────────────────────────────────
+
+    #[test]
+    fn meeting_detect_allowlist_accepts_stefan_exact() {
+        assert!(is_meeting_detect_allowed_email(Some("stefan@getindigo.ai")));
+    }
+
+    #[test]
+    fn meeting_detect_allowlist_case_insensitive() {
+        // Cognito sometimes returns emails with non-canonical casing.
+        assert!(is_meeting_detect_allowed_email(Some("Stefan@GetIndigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some("STEFAN@GETINDIGO.AI")));
+    }
+
+    #[test]
+    fn meeting_detect_allowlist_rejects_domain_only() {
+        // Domain match is NOT enough — Phase 0 is exact-address-only. Lifted
+        // to a suffix match (matching `meetings::is_allowed_email`) when the
+        // signing pipeline lands.
+        assert!(!is_meeting_detect_allowed_email(Some("teammate@getindigo.ai")));
+    }
+
+    #[test]
+    fn meeting_detect_allowlist_rejects_lookalike() {
+        // Defense against substring/lookalike attacks if the allowlist is
+        // later widened to a suffix match — keep these asserts so the
+        // regression coverage is in place ahead of the change.
+        assert!(!is_meeting_detect_allowed_email(Some("stefan@forgetindigo.ai")));
+        assert!(!is_meeting_detect_allowed_email(Some("stefan+test@getindigo.ai")));
+        assert!(!is_meeting_detect_allowed_email(Some("notstefan@getindigo.ai")));
+    }
+
+    #[test]
+    fn meeting_detect_allowlist_rejects_missing_and_empty() {
+        assert!(!is_meeting_detect_allowed_email(None));
+        assert!(!is_meeting_detect_allowed_email(Some("")));
+    }
+
+    #[test]
+    fn meeting_detect_allowlist_rejects_other_domains() {
+        assert!(!is_meeting_detect_allowed_email(Some("stefan@example.com")));
+        assert!(!is_meeting_detect_allowed_email(Some("stefan@gmail.com")));
     }
 }

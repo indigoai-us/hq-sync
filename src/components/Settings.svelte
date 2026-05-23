@@ -425,91 +425,98 @@
         </button>
       </div>
 
-      <div class="settings-divider"></div>
+      <!-- Meeting Detection + macOS permissions (Phase 0). Both sections are
+           gated on `permissionState.meetingDetectEligible` so the broader
+           user base doesn't see toggles for an SDK that won't spawn. The
+           Rust side (`commands::recall_sdk::meeting_detect_eligible`) is the
+           authoritative gate; this is UX-only. -->
+      {#if permissionState.meetingDetectEligible}
+        <div class="settings-divider"></div>
 
-      <!-- Meeting Detection -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
-          <span class="setting-desc">Notify when a new meeting is detected</span>
-        </div>
-        <button
-          id="toggle-meeting-detect"
-          class="toggle"
-          class:active={meetingDetectEnabled}
-          onclick={handleToggleMeetingDetect}
-          role="switch"
-          aria-checked={meetingDetectEnabled}
-          aria-label="Detect upcoming meetings"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-
-      {#if meetingDetectEnabled}
-        <div class="platform-rows">
-          {#each ALL_PLATFORMS as platform}
-            {@const checked = meetingDetectPlatforms.includes(platform)}
-            <div class="platform-row">
-              <label class="platform-label" for="platform-{platform}">{platform}</label>
-              <button
-                id="platform-{platform}"
-                class="platform-check"
-                class:checked
-                onclick={() => handleTogglePlatform(platform)}
-                role="checkbox"
-                aria-checked={checked}
-                aria-label="Enable {platform} meeting detection"
-              >
-                {#if checked}
-                  <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                    <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                {/if}
-              </button>
-            </div>
-          {/each}
-          <div class="ledger-path-row">
-            <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
+        <!-- Meeting Detection -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
+            <span class="setting-desc">Notify when a new meeting is detected</span>
           </div>
-        </div>
-      {/if}
-
-      <div class="settings-divider"></div>
-
-      <!-- Meeting Detection — macOS Permissions (US-011) -->
-      <div class="setting-row setting-row-stacked">
-        <div class="setting-info">
-          <span class="setting-label">macOS permissions</span>
-          <span class="setting-desc">
-            Meeting detection needs these granted in System Settings. Click a
-            row to open the right pane.
-          </span>
-        </div>
-      </div>
-      <div class="permission-rows">
-        {#each REQUIRED_PERMISSIONS as perm (perm)}
           <button
-            type="button"
-            class="permission-row-settings"
-            onclick={() => openPermission(perm)}
-            title="Open System Settings → Privacy & Security → {PERMISSION_LABELS[perm]}"
+            id="toggle-meeting-detect"
+            class="toggle"
+            class:active={meetingDetectEnabled}
+            onclick={handleToggleMeetingDetect}
+            role="switch"
+            aria-checked={meetingDetectEnabled}
+            aria-label="Detect upcoming meetings"
           >
-            <div class="permission-row-text">
-              <span class="permission-name">{PERMISSION_LABELS[perm]}</span>
-              <span class="permission-explainer">{PERMISSION_EXPLAINERS[perm]}</span>
-            </div>
-            <span class="permission-row-status {permissionStatusClass(perm)}">
-              {permissionStatusLabel(perm)}
-            </span>
+            <span class="toggle-knob"></span>
           </button>
-        {/each}
-        {#if !permissionState.initialized}
-          <div class="permission-loading">
-            Querying permission status… (SDK boots in a few seconds after launch)
+        </div>
+
+        {#if meetingDetectEnabled}
+          <div class="platform-rows">
+            {#each ALL_PLATFORMS as platform}
+              {@const checked = meetingDetectPlatforms.includes(platform)}
+              <div class="platform-row">
+                <label class="platform-label" for="platform-{platform}">{platform}</label>
+                <button
+                  id="platform-{platform}"
+                  class="platform-check"
+                  class:checked
+                  onclick={() => handleTogglePlatform(platform)}
+                  role="checkbox"
+                  aria-checked={checked}
+                  aria-label="Enable {platform} meeting detection"
+                >
+                  {#if checked}
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  {/if}
+                </button>
+              </div>
+            {/each}
+            <div class="ledger-path-row">
+              <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
+            </div>
           </div>
         {/if}
-      </div>
+
+        <div class="settings-divider"></div>
+
+        <!-- Meeting Detection — macOS Permissions (US-011) -->
+        <div class="setting-row setting-row-stacked">
+          <div class="setting-info">
+            <span class="setting-label">macOS permissions</span>
+            <span class="setting-desc">
+              Meeting detection needs these granted in System Settings. Click a
+              row to open the right pane.
+            </span>
+          </div>
+        </div>
+        <div class="permission-rows">
+          {#each REQUIRED_PERMISSIONS as perm (perm)}
+            <button
+              type="button"
+              class="permission-row-settings"
+              onclick={() => openPermission(perm)}
+              title="Open System Settings → Privacy & Security → {PERMISSION_LABELS[perm]}"
+            >
+              <div class="permission-row-text">
+                <span class="permission-name">{PERMISSION_LABELS[perm]}</span>
+                <span class="permission-explainer">{PERMISSION_EXPLAINERS[perm]}</span>
+              </div>
+              <span class="permission-row-status {permissionStatusClass(perm)}">
+                {permissionStatusLabel(perm)}
+              </span>
+            </button>
+          {/each}
+          {#if !permissionState.initialized}
+            <div class="permission-loading">
+              Querying permission status… (SDK boots in a few seconds after launch)
+            </div>
+          {/if}
+        </div>
+      {/if}
 
       <div class="settings-divider"></div>
 

@@ -12,6 +12,7 @@
  *   // missingPermissions() returns the kebab-case keys that aren't granted
  */
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 
 /**
  * The five macOS permissions the SDK requires. Kebab-case matches the
@@ -76,7 +77,43 @@ export const permissions = $state<Partial<Record<PermissionKey, PermissionStatus
 export const permissionState = $state({
   initialized: false,
   allGranted: false,
+  /**
+   * Phase-0 eligibility flag — `null` while the gate is being computed,
+   * `false` for users outside the allowlist, `true` for the project owner
+   * (and anyone with `HQ_SYNC_MEETING_DETECT_FORCE=1` set).
+   *
+   * Resolved by `loadMeetingDetectEligible()` on app mount via the
+   * `meeting_detect_feature_enabled` Tauri command. Components read this to
+   * hide the meeting-detect toggle, permissions banner, and Settings
+   * permissions section when the feature isn't available to this user.
+   *
+   * Defaults to `null` (not yet resolved) rather than `false` so the brief
+   * window before the command returns doesn't flash "not eligible" UI for an
+   * eligible user.
+   */
+  meetingDetectEligible: null as boolean | null,
 });
+
+/**
+ * Resolve the Phase-0 meeting-detect eligibility flag and cache it on
+ * `permissionState`. Idempotent — re-calling is harmless (re-invokes the
+ * Tauri command which is itself cached on the Rust side).
+ *
+ * Errors are caught and treated as not-eligible (closed-by-default). The
+ * gate is best-effort UX gating; the authoritative gate is the Rust side
+ * which never spawns the SDK for ineligible users regardless of UI state.
+ */
+export async function loadMeetingDetectEligible(): Promise<boolean> {
+  try {
+    const eligible = await invoke<boolean>('meeting_detect_feature_enabled');
+    permissionState.meetingDetectEligible = eligible;
+    return eligible;
+  } catch (err) {
+    console.error('meeting_detect_feature_enabled failed:', err);
+    permissionState.meetingDetectEligible = false;
+    return false;
+  }
+}
 
 /**
  * Returns the permissions that are NOT granted. Empty when everything is

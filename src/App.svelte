@@ -9,7 +9,10 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
-  import { startPermissionListeners } from './lib/permissionState.svelte';
+  import {
+    startPermissionListeners,
+    loadMeetingDetectEligible,
+  } from './lib/permissionState.svelte';
   import './styles/popover.css';
 
   interface Config {
@@ -797,8 +800,13 @@
     loadWorkspaces();
     loadHqVersion();
     setupTrayListeners();
+    // Resolve the Phase-0 meeting-detect eligibility flag first; UI surfaces
+    // (PermissionsBanner, Settings meeting-detect + permissions sections)
+    // key off `permissionState.meetingDetectEligible`.
+    loadMeetingDetectEligible();
     // Subscribe to macOS permission status events from the SDK bridge.
     // The store is module-level reactive — components read it directly.
+    // Harmless to register when the SDK isn't running (no events will fire).
     startPermissionListeners().catch((err) => {
       console.error('startPermissionListeners failed:', err);
     });

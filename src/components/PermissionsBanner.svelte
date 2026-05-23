@@ -18,10 +18,20 @@
     type PermissionKey,
   } from '../lib/permissionState.svelte';
 
-  // Visible only after the bridge has reported at least one status — avoids
-  // a banner flash on a correctly-configured machine.
+  // Visible only after:
+  //   1. the Phase-0 eligibility check has resolved truthy (the project owner
+  //      / HQ_SYNC_MEETING_DETECT_FORCE=1), AND
+  //   2. the bridge has reported at least one status (avoids a banner flash on
+  //      a correctly-configured machine).
+  //
+  // For users outside the allowlist the SDK never spawns, so they would never
+  // see a status report — without (1) the banner would silently stay hidden
+  // via (2), but keeping the check explicit makes the gate obvious to future
+  // readers and stays correct if the SDK ever boots earlier than the gate.
   const visible = $derived(
-    permissionState.initialized && !permissionState.allGranted,
+    permissionState.meetingDetectEligible === true &&
+      permissionState.initialized &&
+      !permissionState.allGranted,
   );
 
   const missing = $derived(missingPermissions());

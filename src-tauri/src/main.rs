@@ -218,6 +218,7 @@ fn main() {
             commands::meetings::meetings_clear_prompt_badge,
             commands::permissions::permissions_open_settings,
             commands::permissions::permissions_force_native_register,
+            commands::recall_sdk::meeting_detect_feature_enabled,
             tray::meetings_set_prompt_badge,
         ])
         .setup(|app| {
@@ -309,36 +310,39 @@ fn main() {
             }
 
             // Force-register the .app bundle with macOS TCC for Accessibility
-            // and Screen Recording. These calls run from the main hq-sync-menubar
-            // process (inside the .app bundle), so TCC attributes them to
-            // "HQ Sync" rather than the SDK's child binary. Without this, an
-            // old denial of `desktop_sdk_macos_exe` from a pre-bundle dev run
-            // sticks and macOS never prompts/registers the bundled .app.
-            // Best-effort: a failure here is logged and ignored.
-            #[cfg(target_os = "macos")]
-            {
-                match commands::permissions::permissions_force_native_register() {
-                    Ok((ax, sc)) => util::logfile::log(
-                        "permissions",
-                        &format!(
-                            "native register: accessibility={ax} screen-capture={sc}"
-                        ),
-                    ),
-                    Err(e) => util::logfile::log(
-                        "permissions",
-                        &format!("native register failed: {e}"),
-                    ),
-                }
-            }
-
-            // Start the Recall Desktop SDK sidecar for meeting detection.
-            // Fire-and-forget: if the SDK binary is absent or credentials are
-            // unavailable, `start_recall_sdk` logs RECALL_SDK_UNAVAILABLE and
-            // returns without affecting the rest of the app. See
-            // `commands::recall_sdk` for the graceful-degradation contract.
+            // and Screen Recording, and start the Recall Desktop SDK sidecar.
+            // Both are gated on `meeting_detect_eligible()` so users outside
+            // the Phase-0 allowlist see no permission prompts, no SDK process,
+            // and no Recall API calls. Best-effort: failures logged + ignored.
+            // See `commands::recall_sdk` for the gate definition and the
+            // graceful-degradation contract.
             {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    if !commands::recall_sdk::meeting_detect_eligible().await {
+                        util::logfile::log(
+                            "recall-sdk",
+                            "setup: user not in Phase-0 allowlist — skipping TCC register + SDK spawn",
+                        );
+                        return;
+                    }
+
+                    #[cfg(target_os = "macos")]
+                    {
+                        match commands::permissions::permissions_force_native_register() {
+                            Ok((ax, sc)) => util::logfile::log(
+                                "permissions",
+                                &format!(
+                                    "native register: accessibility={ax} screen-capture={sc}"
+                                ),
+                            ),
+                            Err(e) => util::logfile::log(
+                                "permissions",
+                                &format!("native register failed: {e}"),
+                            ),
+                        }
+                    }
+
                     if let Err(e) = commands::recall_sdk::start_recall_sdk(handle).await {
                         util::logfile::log(
                             "recall-sdk",
