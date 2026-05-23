@@ -147,6 +147,30 @@
       scannedAt: string;
       hqVersion: string;
     } | null;
+    /** "Update from staging" pill state. Null when the feature is dark
+     *  (non-@getindigo.ai user, no GH token, GH API unreachable). Otherwise
+     *  the pill renders when `available=true` (local stamp missing or
+     *  behind staging main HEAD). */
+    stagingReplace?: {
+      available: boolean;
+      localSha: string | null;
+      latestSha: string;
+      latestShort: string;
+      repo: string;
+    } | null;
+    /** True while the rescue script is in-flight. Disables the pill +
+     *  swaps its label to "Updating…" so the user knows something's
+     *  happening during the multi-minute scan. */
+    stagingReplaceRunning?: boolean;
+    /** Last rescue run's result. Surfaced next to the pill so the user
+     *  gets immediate feedback (✓ done / ✗ failed) without opening the
+     *  log file. Cleared at start of a new run. */
+    stagingReplaceLastResult?: {
+      kind: 'ok' | 'err';
+      exitCode: number;
+      logTail: string;
+      logPath: string;
+    } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
      *  header button doubles as Sync/Stop — only meaningful when
@@ -161,6 +185,11 @@
     /** Run `npm install -g @indigoai-us/hq-cli@latest` via the Rust
      *  backend. App.svelte owns the in-flight + error state. */
     oninstallhqcliupdate?: () => void;
+    /** Invoke the rescue script via the Rust `run_replace_from_staging`
+     *  command. App.svelte owns the in-flight + result state. Optional
+     *  so the prop is omittable for non-eligible users (the parent simply
+     *  doesn't bind it; the pill stays hidden anyway). */
+    onrunreplacefromstaging?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -206,6 +235,9 @@
     hqCoreUpdateAvailable = null,
     hqVersion = null,
     hqCoreDrift = null,
+    stagingReplace = null,
+    stagingReplaceRunning = false,
+    stagingReplaceLastResult = null,
     onsync,
     oncancel,
     onsettings,
@@ -215,6 +247,7 @@
     ondismissconflicts,
     oninstallupdate,
     oninstallhqcliupdate,
+    onrunreplacefromstaging,
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
@@ -744,6 +777,44 @@
             Update to v{hqCoreUpdateAvailable.latest}
           </button>
         {/if}
+        {#if stagingReplace && stagingReplace.available && onrunreplacefromstaging}
+          <!-- @getindigo.ai-only: surfaces when local `core/core.yaml`'s
+               `replaced_from_staging.last_sync_sha` is missing or behind
+               staging main. Click runs scripts/replace-from-staging-rescue.sh
+               via the Rust `run_replace_from_staging` command — that flow
+               rescues drift + history-gates + carves out core/packages +
+               stamps the new SHA. Disabled while running so re-clicks
+               can't spawn a second concurrent run. -->
+          <button
+            class="footer-hq-version-pill footer-hq-version-pill-staging"
+            onclick={onrunreplacefromstaging}
+            disabled={stagingReplaceRunning}
+            title={stagingReplaceRunning
+              ? `Running rescue against ${stagingReplace.repo} — see /tmp/hq-sync-replace-from-staging-*.log`
+              : `Replace HQ with ${stagingReplace.repo}@${stagingReplace.latestShort}. Local drifts move to personal/ (rescue script); staging overlays on top.`}
+          >
+            {#if stagingReplaceRunning}
+              Updating…
+            {:else}
+              Update from staging ({stagingReplace.latestShort})
+            {/if}
+          </button>
+        {/if}
+        {#if stagingReplaceLastResult}
+          <!-- Last rescue-run feedback. Tiny inline chip so the user sees
+               success/failure without leaving the popover. Click reveals
+               the log-tail tooltip via `title`. -->
+          <span
+            class="footer-hq-version-result footer-hq-version-result-{stagingReplaceLastResult.kind}"
+            title={stagingReplaceLastResult.logTail || stagingReplaceLastResult.logPath}
+          >
+            {#if stagingReplaceLastResult.kind === 'ok'}
+              ✓ rescue done
+            {:else}
+              ✗ rescue failed (exit {stagingReplaceLastResult.exitCode})
+            {/if}
+          </span>
+        {/if}
       {/if}
     </div>
 
@@ -1068,6 +1139,46 @@
   .footer-hq-version-pill-notice:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     color: var(--popover-text-heading, #ffffff);
+  }
+
+  /* Staging variant — used by the "Update from staging" pill. Distinct
+     from the regular Update pill (which targets the released hq-core
+     version) so the @getindigo.ai builder can tell at a glance which
+     channel they're updating from. Indigo-purple tint keeps it visually
+     separate without screaming severity. Disabled state (mid-run) drops
+     opacity so the spinner-ish "Updating…" label reads as inert. */
+  .footer-hq-version-pill-staging {
+    background: var(--popover-accent-staging, rgba(124, 96, 220, 0.18));
+    color: var(--popover-text-heading, #ffffff);
+  }
+
+  .footer-hq-version-pill-staging:hover {
+    background: var(--popover-accent-staging-hover, rgba(124, 96, 220, 0.32));
+  }
+
+  .footer-hq-version-pill-staging:disabled {
+    cursor: default;
+    opacity: 0.7;
+    background: var(--popover-accent-staging, rgba(124, 96, 220, 0.18));
+  }
+
+  /* Inline result chip rendered next to the pill after a rescue run. Small,
+     non-clickable, hover surfaces the log tail via the parent's `title=`. */
+  .footer-hq-version-result {
+    font-size: 0.6875rem;
+    font-family: inherit;
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding: 0.1875rem 0.375rem;
+    border-radius: 4px;
+  }
+
+  .footer-hq-version-result-ok {
+    color: var(--popover-success, #6ad59c);
+  }
+
+  .footer-hq-version-result-err {
+    color: var(--popover-danger, #d56a6a);
   }
 
   /* Banners — actionable state callouts (setup / auth / error) */

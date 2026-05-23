@@ -49,6 +49,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "../scripts/replace-from-staging-rescue.sh"
+    ],
     "macOS": {
       "minimumSystemVersion": "13.0"
     }

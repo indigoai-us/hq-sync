@@ -197,6 +197,33 @@
   // different `core.yaml`.
   let hqVersion = $state<string | null>(null);
 
+  // "Update from staging" pill state. Populated by `check_staging_replace_available`
+  // (commands/hq_core_staging.rs). Gated to `@getindigo.ai` users on the Rust
+  // side — non-eligible users always see `null` and the pill stays hidden.
+  // `available=true` means local `core/core.yaml`'s
+  // `replaced_from_staging.last_sync_sha` is either missing or behind staging
+  // main's HEAD SHA. Refreshed at mount, after `handleBackFromSettings`, and
+  // after a successful rescue run.
+  type StagingReplaceInfo = {
+    available: boolean;
+    localSha: string | null;
+    latestSha: string;
+    latestShort: string;
+    repo: string;
+  };
+  let stagingReplace = $state<StagingReplaceInfo | null>(null);
+  // Spinner / disable flag for the pill while the rescue script is running.
+  let stagingReplaceRunning = $state<boolean>(false);
+  // Last rescue-run summary (success or error message). Cleared at start of
+  // a new run. Surfaced via Popover so the user gets immediate feedback in
+  // the same row the pill lives in.
+  let stagingReplaceLastResult = $state<{
+    kind: 'ok' | 'err';
+    exitCode: number;
+    logTail: string;
+    logPath: string;
+  } | null>(null);
+
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
 
@@ -218,6 +245,73 @@
     } catch (err) {
       console.error('Failed to load hq version:', err);
       hqVersion = null;
+    }
+  }
+
+  // Refresh the "Update from staging" pill state. Eligibility + token +
+  // GH-API failures all collapse to `null` on the Rust side (feature dark),
+  // so callers don't need to distinguish them. Errors thrown locally are
+  // logged but don't surface — same posture as `loadHqVersion`.
+  async function loadStagingReplace() {
+    try {
+      // Rust returns snake_case; map to camelCase for the Svelte side.
+      const info = await invoke<{
+        available: boolean;
+        local_sha: string | null;
+        latest_sha: string;
+        latest_short: string;
+        repo: string;
+      } | null>('check_staging_replace_available');
+      stagingReplace = info
+        ? {
+            available: info.available,
+            localSha: info.local_sha,
+            latestSha: info.latest_sha,
+            latestShort: info.latest_short,
+            repo: info.repo,
+          }
+        : null;
+    } catch (err) {
+      console.error('check_staging_replace_available failed:', err);
+      stagingReplace = null;
+    }
+  }
+
+  // Invoke the rescue script. Long-running (30-90s on first run because of
+  // the full-history clone + scan). The pill is disabled while the promise
+  // is pending; the result (exit code + log tail + log path) lands in
+  // `stagingReplaceLastResult` for the Popover to surface. After completion
+  // we re-check `loadStagingReplace` so the pill swings to hidden on success
+  // (the script wrote a fresh stamp matching HEAD).
+  async function handleRunReplaceFromStaging() {
+    if (stagingReplaceRunning) return;
+    stagingReplaceRunning = true;
+    stagingReplaceLastResult = null;
+    try {
+      const result = await invoke<{
+        exit_code: number;
+        log_tail: string;
+        log_path: string;
+      }>('run_replace_from_staging');
+      stagingReplaceLastResult = {
+        kind: result.exit_code === 0 ? 'ok' : 'err',
+        exitCode: result.exit_code,
+        logTail: result.log_tail,
+        logPath: result.log_path,
+      };
+      // hqVersion may have advanced; refresh the footer row too.
+      await loadHqVersion();
+      await loadStagingReplace();
+    } catch (err) {
+      console.error('run_replace_from_staging failed:', err);
+      stagingReplaceLastResult = {
+        kind: 'err',
+        exitCode: -1,
+        logTail: String(err),
+        logPath: '',
+      };
+    } finally {
+      stagingReplaceRunning = false;
     }
   }
 
@@ -304,6 +398,7 @@
     loadConfig();
     loadWorkspaces();
     loadHqVersion();
+    loadStagingReplace();
   }
 
   function handleSignOut() {
@@ -758,6 +853,9 @@
     loadConfig();
     loadWorkspaces();
     loadHqVersion();
+    // Eligibility-gated on the Rust side — `null` for non-@getindigo.ai
+    // users. Cheap (one GH API call when eligible), fire-and-forget.
+    loadStagingReplace();
     setupTrayListeners();
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
@@ -848,6 +946,9 @@
       {hqCoreUpdateAvailable}
       {hqCoreDrift}
       {hqVersion}
+      {stagingReplace}
+      {stagingReplaceRunning}
+      {stagingReplaceLastResult}
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}
@@ -857,6 +958,7 @@
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
+      onrunreplacefromstaging={handleRunReplaceFromStaging}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
       onmeetingsclick={() => {

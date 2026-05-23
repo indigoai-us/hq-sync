@@ -30,9 +30,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager};
 
-use crate::commands::config::MenubarPrefs;
+use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -414,6 +416,322 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
         ),
     );
     Some(StagingIndex { main, prs })
+}
+
+// ── Sync-point provenance & full replace-from-staging ─────────────────────────
+//
+// The scripts/replace-from-staging-rescue.sh rescue script stamps
+// `replaced_from_staging.last_sync_sha` into `core/core.yaml` after every
+// successful default-mode run. The menubar surfaces an "Update from staging"
+// pill (only for `@getindigo.ai` users) when:
+//   * the stamp is missing entirely (never synced), OR
+//   * the stamped SHA is older than staging `main`'s HEAD SHA.
+//
+// Clicking the pill invokes `run_replace_from_staging`, which spawns the
+// bundled bash script against the resolved HQ folder. The script handles
+// drift rescue, history-aware skip gate, carve-outs, and the post-overlay
+// stamp write — see scripts/replace-from-staging-rescue.sh for the full
+// algorithm.
+
+/// What the menubar needs to decide whether to show the "Update from staging"
+/// pill and what to label it with. Serialized to the frontend as JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct StagingReplaceInfo {
+    /// True when the user should be offered an update. False means either the
+    /// local stamp matches `main`'s HEAD, or the user is ineligible and the
+    /// feature is dark.
+    pub available: bool,
+    /// `replaced_from_staging.last_sync_sha` from local `core/core.yaml`.
+    /// `None` if the stamp is missing (never synced via this script).
+    pub local_sha: Option<String>,
+    /// HEAD SHA of staging `main` at check time.
+    pub latest_sha: String,
+    /// First 7 chars of `latest_sha`, for use in pill labels like
+    /// `"Update from staging (b02eeb4)"`.
+    pub latest_short: String,
+    /// `owner/name` form of the repo being checked. Useful for tooltip text.
+    pub repo: String,
+}
+
+/// Output from spawning the rescue script. Wired to the frontend so the
+/// popover can show success / failure + the last few lines of script output
+/// without dumping the whole 700-line scan log into the popover.
+#[derive(Debug, Clone, Serialize)]
+pub struct RescueRunResult {
+    /// Process exit code. `0` is success; non-zero is a script-side error.
+    pub exit_code: i32,
+    /// Last ~40 lines of combined stdout+stderr — enough for the trailing
+    /// summary block without flooding the IPC bridge.
+    pub log_tail: String,
+    /// Full log file path on disk for `Open in Finder` / debug.
+    pub log_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhCommit {
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalCoreYaml {
+    #[serde(default)]
+    replaced_from_staging: Option<LocalReplacedFromStaging>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalReplacedFromStaging {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    last_sync_sha: Option<String>,
+}
+
+/// Resolve the user's HQ folder using the same 4-tier resolver the rest of
+/// the app uses (menubar.json → config.json → discovery → ~/HQ).
+fn resolve_hq_folder() -> std::path::PathBuf {
+    let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let config = read_hq_config_lenient().ok().flatten();
+    paths::resolve_hq_folder(
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
+    )
+}
+
+/// Read `replaced_from_staging` from local `core/core.yaml`. Falls back to
+/// `core.yaml` (pre-v14 layout) the same way `hq_core_update.rs` does.
+/// Returns the SHA only if the recorded `source` matches `expected_source`
+/// (different sources can't be meaningfully compared).
+fn local_last_sync_sha(expected_source: &str) -> Option<String> {
+    let hq_folder = resolve_hq_folder();
+    let canonical = hq_folder.join("core").join("core.yaml");
+    let legacy = hq_folder.join("core.yaml");
+    let core_yaml = if canonical.is_file() { canonical } else { legacy };
+
+    let bytes = std::fs::read(&core_yaml).ok()?;
+    let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).ok()?;
+    let rfs = parsed.replaced_from_staging?;
+    // Only honour the stamp when the recorded source matches what we're
+    // about to compare against. A stamp from a different fork tells us
+    // nothing about how far ahead `indigoai-us/hq-core-staging` is.
+    if rfs.source.as_deref() != Some(expected_source) {
+        return None;
+    }
+    rfs.last_sync_sha
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Fetch staging `main`'s HEAD commit SHA via the GitHub API. One round-trip,
+/// returns the 40-char SHA.
+async fn fetch_staging_main_sha(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/{repo}/commits/main");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("staging main commit HTTP {}", resp.status()));
+    }
+    let parsed: GhCommit = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse staging main commit JSON: {e}"))?;
+    let sha = parsed.sha.trim().to_string();
+    if sha.len() < 40 {
+        return Err(format!("unexpected SHA length from GH API: {sha:?}"));
+    }
+    Ok(sha)
+}
+
+/// Tauri command — decide whether to show the "Update from staging" pill.
+/// Returns `None` (feature dark / silent) when:
+///   * user is not `@getindigo.ai`,
+///   * no GH token is available,
+///   * GH API is unreachable.
+/// Returns `Some(StagingReplaceInfo)` otherwise; `available=false` means
+/// local is in sync with staging `main`.
+#[tauri::command]
+pub async fn check_staging_replace_available() -> Option<StagingReplaceInfo> {
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let repo = resolve_staging_repo(eligible)?;
+    if !eligible && repo == DEFAULT_STAGING_REPO {
+        return None;
+    }
+    let token = resolve_gh_token()?;
+    let client = match authed_client(&token) {
+        Ok(c) => c,
+        Err(e) => {
+            log("hq-core-staging", &format!("client build failed: {e}"));
+            return None;
+        }
+    };
+
+    let latest_sha = match fetch_staging_main_sha(&client, &repo).await {
+        Ok(sha) => sha,
+        Err(e) => {
+            log("hq-core-staging", &format!("main HEAD fetch failed: {e}"));
+            return None;
+        }
+    };
+
+    let local_sha = local_last_sync_sha(&repo);
+    let available = match local_sha.as_deref() {
+        Some(local) => local != latest_sha,
+        None => true, // no stamp -> never synced via the script -> offer update
+    };
+
+    let latest_short = latest_sha.chars().take(7).collect::<String>();
+    log(
+        "hq-core-staging",
+        &format!(
+            "replace-from-staging check: repo={repo} local={:?} latest={} available={}",
+            local_sha, latest_short, available
+        ),
+    );
+    Some(StagingReplaceInfo {
+        available,
+        local_sha,
+        latest_sha,
+        latest_short,
+        repo,
+    })
+}
+
+/// Resolve the bundled rescue script via Tauri's resource API. In dev
+/// (`cargo run` / `tauri dev`) the script ships at `_up_/scripts/...` under
+/// the resource dir (Tauri rewrites `../scripts/...` to `_up_/scripts/...`
+/// during resource staging). In packaged builds the bundler places it in
+/// the .app's `Resources/` directory under the same relative path.
+fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let candidates = [
+        "_up_/scripts/replace-from-staging-rescue.sh",
+        "scripts/replace-from-staging-rescue.sh",
+    ];
+    for rel in candidates {
+        if let Ok(p) = app.path().resolve(rel, BaseDirectory::Resource) {
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+    // Last-resort dev fallback: the cwd may be the repo root when
+    // running `cargo run` directly without going through `tauri dev`.
+    let cwd_fallback = std::env::current_dir()
+        .ok()
+        .map(|c| c.join("scripts").join("replace-from-staging-rescue.sh"));
+    if let Some(p) = cwd_fallback {
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    Err(format!(
+        "replace-from-staging-rescue.sh not found in resource dir (looked at: {:?})",
+        candidates
+    ))
+}
+
+/// Tauri command — run the rescue script against the resolved HQ folder.
+/// Re-checks eligibility (defense in depth: a malicious frontend can't
+/// bypass the email gate even with a forged `invoke`). Returns the script's
+/// exit code + tail of combined output.
+///
+/// Long-running (~30-90s on first run because of the full-history clone +
+/// scan). The frontend should show a spinner and disable the pill while
+/// the future is pending.
+#[tauri::command]
+pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult, String> {
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    if !eligible {
+        return Err("ineligible: rescue is restricted to @getindigo.ai users".to_string());
+    }
+    let repo = resolve_staging_repo(eligible)
+        .ok_or_else(|| "no staging repo resolved".to_string())?;
+    let token = resolve_gh_token()
+        .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
+    let hq_folder = resolve_hq_folder();
+    if !hq_folder.join("companies").is_dir() || !hq_folder.join("personal").is_dir() {
+        return Err(format!(
+            "HQ folder at {} is missing companies/ or personal/ (not a valid HQ root)",
+            hq_folder.display()
+        ));
+    }
+    let script = resolve_rescue_script(&app)?;
+
+    // Stream the combined output to a per-invocation log file so the user
+    // can `tail -f` it during the multi-minute scan and so we have a
+    // post-mortem on failures. The popover gets a 40-line tail.
+    let log_path = std::env::temp_dir().join(format!(
+        "hq-sync-replace-from-staging-{}.log",
+        std::process::id()
+    ));
+    let log_file_for_stdout = std::fs::File::create(&log_path)
+        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
+    let log_file_for_stderr = log_file_for_stdout
+        .try_clone()
+        .map_err(|e| format!("dup log file fd: {e}"))?;
+
+    log(
+        "hq-core-staging",
+        &format!(
+            "spawning rescue: script={} hq_root={} repo={} log={}",
+            script.display(),
+            hq_folder.display(),
+            repo,
+            log_path.display()
+        ),
+    );
+
+    // bash <script> --hq-root <folder> --source <repo> --yes
+    // Token is passed via env (never in argv — argv shows up in `ps`).
+    let bash = paths::resolve_bin("bash");
+    let mut cmd = tokio::process::Command::new(&bash);
+    cmd.arg(script.as_os_str())
+        .arg("--hq-root")
+        .arg(hq_folder.as_os_str())
+        .arg("--source")
+        .arg(&repo)
+        .arg("--yes")
+        .env("GH_TOKEN", &token)
+        .stdout(std::process::Stdio::from(log_file_for_stdout))
+        .stderr(std::process::Stdio::from(log_file_for_stderr));
+
+    let status = cmd
+        .status()
+        .await
+        .map_err(|e| format!("spawn rescue script: {e}"))?;
+
+    let exit_code = status.code().unwrap_or(-1);
+    let log_tail = tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+
+    log(
+        "hq-core-staging",
+        &format!("rescue exit={} log={}", exit_code, log_path.display()),
+    );
+
+    Ok(RescueRunResult {
+        exit_code,
+        log_tail,
+        log_path: log_path.display().to_string(),
+    })
+}
+
+/// Read the last N lines of a log file. Pure stdlib so we don't pull in
+/// another dep just for tailing. Reads the whole file into memory — fine
+/// for our use (rescue logs are < 100 KB even in the worst case).
+fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n_lines);
+    Ok(lines[start..].join("\n"))
 }
 
 #[cfg(test)]
