@@ -768,36 +768,43 @@
             {hqCoreDrift.count} drifted
           </button>
         {/if}
-        {#if hqCoreUpdateAvailable}
+        <!-- Pill precedence for the HQ-version footer row:
+             * Eligible @getindigo.ai users (stagingReplace !== null) use
+               the staging channel for updates — the "Update to Staging"
+               pill REPLACES the release "Update to vX.Y.Z" pill entirely
+               for them. They're already ahead of releases by definition,
+               so the release pill would be misleading noise.
+             * Non-eligible users (stagingReplace === null because the
+               Rust check returned None) fall back to the existing
+               release-update pill.
+             The staging pill reuses the standard primary-white pill
+             styling so it reads as a first-class action, not a side
+             channel. Disabled while running via the new disabled rule
+             on .footer-hq-version-pill. -->
+        {#if stagingReplace && onrunreplacefromstaging}
+          {#if stagingReplace.available}
+            <button
+              class="footer-hq-version-pill"
+              onclick={onrunreplacefromstaging}
+              disabled={stagingReplaceRunning}
+              title={stagingReplaceRunning
+                ? `Running rescue against ${stagingReplace.repo} — see /tmp/hq-sync-replace-from-staging-*.log`
+                : `Replace HQ with ${stagingReplace.repo}@${stagingReplace.latestShort}. Local drifts move to personal/; staging overlays on top.`}
+            >
+              {#if stagingReplaceRunning}
+                Updating…
+              {:else}
+                Update to Staging
+              {/if}
+            </button>
+          {/if}
+        {:else if hqCoreUpdateAvailable}
           <button
             class="footer-hq-version-pill"
             onclick={updateHqCoreInClaudeCode}
             title="Open Claude Code with /update-hq pre-filled"
           >
             Update to v{hqCoreUpdateAvailable.latest}
-          </button>
-        {/if}
-        {#if stagingReplace && stagingReplace.available && onrunreplacefromstaging}
-          <!-- @getindigo.ai-only: surfaces when local `core/core.yaml`'s
-               `replaced_from_staging.last_sync_sha` is missing or behind
-               staging main. Click runs scripts/replace-from-staging-rescue.sh
-               via the Rust `run_replace_from_staging` command — that flow
-               rescues drift + history-gates + carves out core/packages +
-               stamps the new SHA. Disabled while running so re-clicks
-               can't spawn a second concurrent run. -->
-          <button
-            class="footer-hq-version-pill footer-hq-version-pill-staging"
-            onclick={onrunreplacefromstaging}
-            disabled={stagingReplaceRunning}
-            title={stagingReplaceRunning
-              ? `Running rescue against ${stagingReplace.repo} — see /tmp/hq-sync-replace-from-staging-*.log`
-              : `Replace HQ with ${stagingReplace.repo}@${stagingReplace.latestShort}. Local drifts move to personal/ (rescue script); staging overlays on top.`}
-          >
-            {#if stagingReplaceRunning}
-              Updating…
-            {:else}
-              Update from staging ({stagingReplace.latestShort})
-            {/if}
           </button>
         {/if}
         {#if stagingReplaceLastResult}
@@ -1126,6 +1133,19 @@
     background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
+  /* Disabled state — used by the "Update to Staging" pill while the
+     rescue script is in flight (multi-minute clone + scan). Keeps the
+     button visually present so the user can see what's happening, but
+     non-interactive (opacity drop + default cursor + suppress hover). */
+  .footer-hq-version-pill:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+
+  .footer-hq-version-pill:disabled:hover {
+    background: var(--popover-primary, #ffffff);
+  }
+
   /* Notice variant — used by the drift "N drifted" pill so it reads as
      diagnostic rather than action. Sits next to (and visually beneath)
      the primary white Update pill so the eye still lands on the action.
@@ -1139,27 +1159,6 @@
   .footer-hq-version-pill-notice:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     color: var(--popover-text-heading, #ffffff);
-  }
-
-  /* Staging variant — used by the "Update from staging" pill. Distinct
-     from the regular Update pill (which targets the released hq-core
-     version) so the @getindigo.ai builder can tell at a glance which
-     channel they're updating from. Indigo-purple tint keeps it visually
-     separate without screaming severity. Disabled state (mid-run) drops
-     opacity so the spinner-ish "Updating…" label reads as inert. */
-  .footer-hq-version-pill-staging {
-    background: var(--popover-accent-staging, rgba(124, 96, 220, 0.18));
-    color: var(--popover-text-heading, #ffffff);
-  }
-
-  .footer-hq-version-pill-staging:hover {
-    background: var(--popover-accent-staging-hover, rgba(124, 96, 220, 0.32));
-  }
-
-  .footer-hq-version-pill-staging:disabled {
-    cursor: default;
-    opacity: 0.7;
-    background: var(--popover-accent-staging, rgba(124, 96, 220, 0.18));
   }
 
   /* Inline result chip rendered next to the pill after a rescue run. Small,
