@@ -27,7 +27,7 @@
 #   - Default ("preserve-list"): wipes every top-level entry except a hardcoded
 #     preserve set (`.git`, `companies/` except `companies/_template/`,
 #     `personal/`, `workspace/`, `.github/`, `.leak-scan/`,
-#     `.hq-sync-journal.json`), plus any paths passed via --preserve.
+#     `.hq-sync-journal.json`, `.hq/`), plus any paths passed via --preserve.
 #
 #   - `--paths`: wipes ONLY the explicit comma-separated list of top-level
 #     entries and overlays only those.
@@ -130,7 +130,7 @@ done
 
 for p in "${EXTRA_PRESERVE[@]+"${EXTRA_PRESERVE[@]}"}"; do
   case "$p" in
-    .git|companies|personal|workspace|.github|.leak-scan|.hq-sync-journal.json|.git/|companies/|personal/|workspace/|.github/|.leak-scan/)
+    .git|companies|personal|workspace|.github|.leak-scan|.hq-sync-journal.json|.hq|.git/|companies/|personal/|workspace/|.github/|.leak-scan/|.hq/)
       echo "error: --preserve $p is redundant ('$p' is always preserved). Remove the flag." >&2
       exit 2
       ;;
@@ -229,7 +229,7 @@ if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
   echo "==> Wipe set:   ${NARROW_PATHS[*]}"
 else
   echo "==> Mode:       preserve-list (default)"
-  echo "==> Preserved:  .git, companies (except companies/_template), personal, workspace, .github, .leak-scan, .hq-sync-journal.json${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}"
+  echo "==> Preserved:  .git, companies (except companies/_template), personal, workspace, .github, .leak-scan, .hq-sync-journal.json, .hq${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}"
 fi
 if [ "${#PRESERVE_SUBPATHS[@]}" -ne 0 ]; then
   echo "==> Preserved subpaths (backed up + restored across the overlay):"
@@ -378,7 +378,7 @@ if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
   done
   RSYNC_EXCLUDES+=( --exclude='/*' )
 else
-  PRUNE_ARGS=( -not -name .git -not -name companies -not -name personal -not -name workspace -not -name .github -not -name .leak-scan -not -name .hq-sync-journal.json )
+  PRUNE_ARGS=( -not -name .git -not -name companies -not -name personal -not -name workspace -not -name .github -not -name .leak-scan -not -name .hq-sync-journal.json -not -name .hq )
   for p in "${EXTRA_PRESERVE[@]+"${EXTRA_PRESERVE[@]}"}"; do
     PRUNE_ARGS+=( -not -name "$p" )
   done
@@ -389,6 +389,7 @@ else
     --exclude=.github
     --exclude=.leak-scan
     --exclude=.hq-sync-journal.json
+    --exclude=.hq
     --include='/companies/'
     --include='/companies/_template/***'
     --exclude='/companies/*'
@@ -655,7 +656,7 @@ if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
     fi
   done
 else
-  echo "==> Wiping HQ root (preserving .git, companies, personal, workspace, .github, .leak-scan, .hq-sync-journal.json${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}) ..."
+  echo "==> Wiping HQ root (preserving .git, companies, personal, workspace, .github, .leak-scan, .hq-sync-journal.json, .hq${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}) ..."
   ( cd "$HQ_ROOT" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" -exec rm -rf {} + )
 
   if [ -d "$HQ_ROOT/companies/_template" ]; then
