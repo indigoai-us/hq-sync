@@ -14,7 +14,7 @@ use crate::util::logfile::log;
 /// Window label used by both this command and the `main.ts` window-router
 /// branch. Kept as a constant so the two stay in sync — drifting either
 /// side breaks the handshake.
-const WINDOW_LABEL: &str = "drift-detail";
+pub const WINDOW_LABEL: &str = "drift-detail";
 
 /// Managed state: holds the pending drift report so the detail window
 /// can fetch it on ready (race-free handshake instead of a timed delay).

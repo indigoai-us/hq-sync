@@ -33,6 +33,26 @@
   // composite key keeps the map shape consistent).
   let restoreState = $state<Record<string, 'idle' | 'in-flight' | 'done' | string>>({});
 
+  // Manual recheck. The background loop only re-scans every 6h (see
+  // hq_core_drift.rs CHECK_INTERVAL), so after resolving drift — or when
+  // staging PRs have moved — the report on screen can be stale. This
+  // button forces a fresh `check_once` via the existing
+  // `check_hq_core_drift` command, which re-emits `drift:report` back to
+  // this window (our $effect listener applies it + resets restoreState),
+  // so the window updates in place. No need to read the return value.
+  let rechecking = $state(false);
+  async function recheck() {
+    if (rechecking) return;
+    rechecking = true;
+    try {
+      await invoke('check_hq_core_drift');
+    } catch (e) {
+      console.error('recheck (check_hq_core_drift) failed:', e);
+    } finally {
+      rechecking = false;
+    }
+  }
+
   // One bulk "Copy prompt for all" issue covering every drifted file, so the
   // user can resolve the whole report in a single agent session. `isBuilder`
   // is inferred from the presence of any staging classification — staging
@@ -290,11 +310,27 @@
         </span>
       {/if}
     </div>
-    {#if allDriftIssue}
-      <div class="drift-header-actions">
+    <div class="drift-header-actions">
+      {#if allDriftIssue}
         <CopyPromptButton variant="inline" label="Copy prompt for all" issue={allDriftIssue} />
-      </div>
-    {/if}
+      {/if}
+      <!-- Recheck stays available even at zero drift, so the user can
+           confirm a reconciliation landed without waiting up to 6h for
+           the background loop. -->
+      <button
+        class="drift-recheck-btn"
+        onclick={recheck}
+        disabled={rechecking}
+        title="Re-scan locked core files against upstream now"
+      >
+        {#if rechecking}
+          <span class="drift-mini-spinner" aria-hidden="true"></span>
+          Rechecking…
+        {:else}
+          Recheck
+        {/if}
+      </button>
+    </div>
   </header>
 
   {#if !report}
@@ -435,8 +471,43 @@
      shared CopyPromptButton's inline variant already matches our pill sizing;
      just keep it from shrinking and from being swallowed by the drag region. */
   .drift-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     flex-shrink: 0;
     -webkit-app-region: no-drag;
+  }
+
+  /* Text pill (not the round icon-btn) — sits beside "Copy prompt for all"
+     in the header. Same neutral-at-rest / brighten-on-hover palette as
+     .drift-icon-btn so the header action cluster reads as one family. */
+  .drift-recheck-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    padding: 4px 10px;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.14));
+    border-radius: 6px;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.06));
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.6));
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease,
+      opacity 0.12s ease;
+  }
+
+  .drift-recheck-btn:hover:not(:disabled) {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text-heading, #ffffff);
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.3));
+  }
+
+  .drift-recheck-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
   }
 
   /* Title + meta stacked tightly so the whole block fits inside the
