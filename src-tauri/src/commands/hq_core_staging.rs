@@ -29,12 +29,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::path::BaseDirectory;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::commands::hq_core_drift::{
+    path_in_locked_scope, read_locked_paths, walk_local_under_scope, DriftEntry, DriftReport,
+};
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -229,6 +233,12 @@ struct GhTreeEntry {
     #[serde(rename = "type")]
     kind: String,
     sha: String,
+    /// Blob size in bytes; absent for non-blob entries (trees/commits/
+    /// submodules) and tolerated as `None` so the JSON parses cleanly.
+    /// Used by the staging-drift calculator's DriftEntry size column;
+    /// the PR-classifier index path ignores it.
+    #[serde(default)]
+    size: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -732,6 +742,246 @@ fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n_lines);
     Ok(lines[start..].join("\n"))
+}
+
+// ── Staging-aware drift count ────────────────────────────────────────────────
+//
+// Parallel to `hq_core_drift::check_once` but compares the user's locked-scope
+// files against staging `main` instead of the released `v{hqVersion}` tag.
+// `@getindigo.ai`-only — non-eligible users see release drift (the existing
+// pill) unchanged.
+//
+// Reuses the same data model (`DriftReport` + `DriftEntry`) so the frontend
+// can plug the staging report into the same pill + detail-window plumbing
+// without forking the UI. Emits on `hq-core-staging-drift:available` (distinct
+// event so App.svelte can route to a separate state slot).
+//
+// Method (lifted from hq_core_drift):
+//   1. `GET /repos/{repo}/git/trees/main?recursive=1` — entire staging tree
+//      in one JSON, each blob carries its git SHA-1.
+//   2. Walk local under `rules.locked` scopes via `walk_local_under_scope`.
+//   3. Set-difference upstream-vs-local to produce modified/missing/added.
+//
+// Cost: one authed API call + a local walk over ~hundreds of files. Cheap
+// enough to run every 6h on the same offset cadence as the release-drift
+// background loop. NO full clone — this is a count pill, not the rescue.
+
+const STAGING_DRIFT_INITIAL_DELAY: Duration = Duration::from_secs(40);
+const STAGING_DRIFT_CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
+
+/// `GET /repos/:owner/:repo/git/trees/main?recursive=1` shaped for drift
+/// computation: path → (blob_sha, size). The hq_core_staging `fetch_main_tree`
+/// (used by the PR-classifier) returns a different shape — path → SetOf<sha>
+/// — because the classifier indexes EVERY blob ever at that path across
+/// `main` + open PRs. For drift we only need the current `main` SHA + size.
+async fn fetch_staging_main_tree_for_drift(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<BTreeMap<String, (String, u64)>, String> {
+    let url = format!("https://api.github.com/repos/{repo}/git/trees/main?recursive=1");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("staging main tree HTTP {}", resp.status()));
+    }
+    let parsed: GhTreesResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse staging tree JSON: {e}"))?;
+    if parsed.truncated {
+        log(
+            "hq-core-staging-drift",
+            "WARNING: staging main tree truncated — drift count is a lower bound",
+        );
+    }
+    let mut out: BTreeMap<String, (String, u64)> = BTreeMap::new();
+    for entry in parsed.tree {
+        if entry.kind == "blob" {
+            // `size` is None for unusual entries (submodules, etc.); 0 is a
+            // safe placeholder — the value only feeds the detail window's
+            // display column.
+            let size = entry.size.unwrap_or(0);
+            out.insert(entry.path, (entry.sha, size));
+        }
+    }
+    Ok(out)
+}
+
+// `GhTreesResponse` and `GhTreeEntry` already live above for the PR-classifier
+// build_index path; they include `size` even though that field is unused
+// there. The drift fetch above reuses both via the same `Deserialize` impls.
+//
+// `size` IS used here, so make sure the trees-API entry shape carries it.
+// (Defined further up — see `struct GhTreeEntry`.)
+//
+// NOTE: the existing GhTreeEntry currently has no `size` field — add one
+// below as part of this patch.
+
+/// Run one staging-drift check. Returns `Ok(None)` for the same fail-quiet
+/// cases as the release-drift counterpart, plus the eligibility / token
+/// gates from the rest of `hq_core_staging`.
+pub async fn check_staging_drift_once(app: &AppHandle) -> Result<Option<DriftReport>, String> {
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let Some(repo) = resolve_staging_repo(eligible) else {
+        return Ok(None);
+    };
+    if !eligible && repo == DEFAULT_STAGING_REPO {
+        return Ok(None);
+    }
+    let Some(token) = resolve_gh_token() else {
+        return Ok(None);
+    };
+    let client = match authed_client(&token) {
+        Ok(c) => c,
+        Err(e) => {
+            log("hq-core-staging-drift", &format!("client build failed: {e}"));
+            return Ok(None);
+        }
+    };
+
+    let hq_folder = resolve_hq_folder();
+    let locked = read_locked_paths(&hq_folder);
+    if locked.is_empty() {
+        return Ok(None);
+    }
+
+    // The "hq_version" field in DriftReport is mirrored back to the renderer
+    // so the detail window can label "drift vs <ref>". For staging drift we
+    // overload it with the source@ref shorthand — the existing renderer
+    // doesn't parse it, just displays as a tag.
+    let report_ref_label = format!("{repo}@main");
+
+    let upstream = match fetch_staging_main_tree_for_drift(&client, &repo).await {
+        Ok(m) => m,
+        Err(e) => {
+            log(
+                "hq-core-staging-drift",
+                &format!("main tree fetch failed: {e}"),
+            );
+            return Ok(None);
+        }
+    };
+    let local = walk_local_under_scope(&hq_folder, &locked);
+
+    let upstream_in_scope: BTreeMap<String, (String, u64)> = upstream
+        .into_iter()
+        .filter(|(path, _)| path_in_locked_scope(path, &locked))
+        .collect();
+
+    let upstream_paths: BTreeSet<&String> = upstream_in_scope.keys().collect();
+    let local_paths: BTreeSet<&String> = local.keys().collect();
+
+    let mut modified = Vec::new();
+    let mut missing = Vec::new();
+    let mut added = Vec::new();
+
+    for path in upstream_paths.intersection(&local_paths) {
+        let (sha_up, _size_up) = &upstream_in_scope[*path];
+        let (sha_local, size_local) = &local[*path];
+        if sha_up != sha_local {
+            modified.push(DriftEntry {
+                path: (*path).clone(),
+                size: *size_local,
+                git_sha_local: Some(sha_local.clone()),
+                git_sha_upstream: Some(sha_up.clone()),
+                staging_status: None,
+            });
+        }
+    }
+    for path in upstream_paths.difference(&local_paths) {
+        let (sha_up, size_up) = &upstream_in_scope[*path];
+        missing.push(DriftEntry {
+            path: (*path).clone(),
+            size: *size_up,
+            git_sha_local: None,
+            git_sha_upstream: Some(sha_up.clone()),
+            staging_status: None,
+        });
+    }
+    for path in local_paths.difference(&upstream_paths) {
+        let (sha_local, size_local) = &local[*path];
+        added.push(DriftEntry {
+            path: (*path).clone(),
+            size: *size_local,
+            git_sha_local: Some(sha_local.clone()),
+            git_sha_upstream: None,
+            staging_status: None,
+        });
+    }
+
+    let count = modified.len() + missing.len() + added.len();
+    let report = DriftReport {
+        count,
+        modified,
+        missing,
+        added,
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+        hq_version: report_ref_label,
+    };
+
+    log(
+        "hq-core-staging-drift",
+        &format!(
+            "check: repo={} count={} (modified={}, missing={}, added={})",
+            repo,
+            report.count,
+            report.modified.len(),
+            report.missing.len(),
+            report.added.len()
+        ),
+    );
+
+    // Always emit so the frontend can swing the count back to zero on
+    // re-check after a rescue run (same posture as hq-core-drift). The
+    // event name is distinct so App.svelte can route to its own state slot
+    // without entangling with the release-drift listener.
+    let _ = app.emit("hq-core-staging-drift:available", &report);
+
+    // Keep the detail window in sync if it's open. Same pattern as
+    // hq_core_drift — emit_to no-ops when the window doesn't exist.
+    if let Some(state) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
+        *state.0.lock().unwrap() = Some(report.clone());
+    }
+    let _ = app.emit_to(
+        crate::commands::drift_detail::WINDOW_LABEL,
+        "drift:report",
+        &report,
+    );
+
+    Ok(Some(report))
+}
+
+/// Tauri command — synchronous one-shot staging-drift check. Mirrors
+/// `hq_core_drift::check_hq_core_drift`. Returns `None` for ineligible
+/// users / dark feature so the frontend can route conditionally without
+/// distinguishing failure modes.
+#[tauri::command]
+pub async fn check_staging_drift(app: AppHandle) -> Result<Option<DriftReport>, String> {
+    check_staging_drift_once(&app).await
+}
+
+/// Background loop: first check 40s after launch (offset from the
+/// release-drift checker's 30s), then every 6h. Logs but doesn't
+/// propagate errors — a flaky network or expired token shouldn't kill
+/// the loop, and a future re-check can succeed once the user runs
+/// `gh auth login` etc.
+pub fn setup_staging_drift_checker(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STAGING_DRIFT_INITIAL_DELAY).await;
+        loop {
+            if let Err(e) = check_staging_drift_once(&handle).await {
+                log(
+                    "hq-core-staging-drift",
+                    &format!("background check failed: {e}"),
+                );
+            }
+            tokio::time::sleep(STAGING_DRIFT_CHECK_INTERVAL).await;
+        }
+    });
 }
 
 #[cfg(test)]

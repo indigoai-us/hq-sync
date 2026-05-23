@@ -152,7 +152,7 @@ struct GhTreeEntry {
 /// `.claude/CLAUDE.md`, `core/policies/`). Trailing-slash convention
 /// indicates "this directory and everything under it"; leaf paths are
 /// single-file scopes.
-fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
+pub(crate) fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
     let core_yaml = if canonical.is_file() { canonical } else { legacy };
@@ -176,7 +176,7 @@ fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
 /// True iff the given upstream path (from the GitHub trees response)
 /// falls under one of the locked-path prefixes. Trailing-slash entries
 /// are dir-prefix matches; non-slash entries are exact-path matches.
-fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
+pub(crate) fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
     for scope in locked {
         if let Some(prefix) = scope.strip_suffix('/') {
             // Directory scope: prefix-match on the dir + '/' so
@@ -194,7 +194,7 @@ fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
 /// Compute git's blob SHA-1 for a byte slice. Git's content-addressable
 /// blob hash is `sha1("blob " + content_length_decimal + "\0" + content)`
 /// — matches what the GitHub trees API returns as `sha` for blob entries.
-fn git_blob_sha(content: &[u8]) -> String {
+pub(crate) fn git_blob_sha(content: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(format!("blob {}\0", content.len()).as_bytes());
     hasher.update(content);
@@ -210,7 +210,7 @@ fn git_blob_sha(content: &[u8]) -> String {
 /// return a map of relative-path → (sha1, size). Walks files directly
 /// for leaf scopes; uses walkdir for directory scopes. Symlinks are
 /// followed but never escape the HQ root.
-fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<String, (String, u64)> {
+pub(crate) fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<String, (String, u64)> {
     let mut out = BTreeMap::new();
     for scope in locked {
         let (rel, is_dir) = if let Some(prefix) = scope.strip_suffix('/') {

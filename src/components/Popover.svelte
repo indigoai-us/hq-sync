@@ -147,6 +147,21 @@
       scannedAt: string;
       hqVersion: string;
     } | null;
+    /** Staging-flavored drift summary from `hq-core-staging-drift:available`.
+     *  Same shape as `hqCoreDrift` but computed against `hq-core-staging@main`
+     *  instead of the released tag. Non-null only for eligible
+     *  @getindigo.ai builders (Rust-side gate). When non-null and
+     *  `count > 0`, REPLACES the release-drift pill — staging users care
+     *  about distance from where they're actually headed (staging),
+     *  not from the tag they've already moved past. */
+    stagingDrift?: {
+      count: number;
+      modified: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      missing: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      scannedAt: string;
+      hqVersion: string;
+    } | null;
     /** "Update from staging" pill state. Null when the feature is dark
      *  (non-@getindigo.ai user, no GH token, GH API unreachable). Otherwise
      *  the pill renders when `available=true` (local stamp missing or
@@ -235,6 +250,7 @@
     hqCoreUpdateAvailable = null,
     hqVersion = null,
     hqCoreDrift = null,
+    stagingDrift = null,
     stagingReplace = null,
     stagingReplaceRunning = false,
     stagingReplaceLastResult = null,
@@ -385,9 +401,14 @@
   // case is a click that does nothing, much better than a Sentry-level
   // exception in the user's face for an opt-in diagnostic surface.
   async function openDriftDetail() {
-    if (!hqCoreDrift) return;
+    // Eligible users see the staging-flavored report; everyone else sees
+    // the release-tagged report. Same window, same structure — only the
+    // upstream reference differs. Both reports use the DriftReport shape
+    // so the detail window doesn't need to branch.
+    const report = stagingDrift ?? hqCoreDrift;
+    if (!report) return;
     try {
-      await invoke('open_drift_detail', { report: hqCoreDrift });
+      await invoke('open_drift_detail', { report });
     } catch (e) {
       console.error('open_drift_detail failed:', e);
     }
@@ -759,7 +780,22 @@
              the eye lands on the diagnostic before the action pill. Hidden
              when count is 0 or null so the row stays calm on healthy
              installs. Click → opens the drift detail window. -->
-        {#if hqCoreDrift && hqCoreDrift.count > 0}
+        <!-- Drift pill precedence:
+             * Eligible users (stagingDrift !== null) see the staging-vs-local
+               count — they care about distance from where they're actually
+               headed, not from the released tag they've moved past.
+             * Non-eligible users keep the existing release-drift pill.
+             Both reports use the same DriftReport shape so the detail
+             window doesn't fork. -->
+        {#if stagingDrift && stagingDrift.count > 0}
+          <button
+            class="footer-hq-version-pill footer-hq-version-pill-notice"
+            onclick={openDriftDetail}
+            title={`${stagingDrift.count} locked core file${stagingDrift.count === 1 ? '' : 's'} differ from ${stagingDrift.hqVersion}. Click for details. Click "Update to Staging" to reconcile.`}
+          >
+            {stagingDrift.count} drifted
+          </button>
+        {:else if !stagingDrift && hqCoreDrift && hqCoreDrift.count > 0}
           <button
             class="footer-hq-version-pill footer-hq-version-pill-notice"
             onclick={openDriftDetail}

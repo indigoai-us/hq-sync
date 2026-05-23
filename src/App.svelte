@@ -187,6 +187,18 @@
   };
   let hqCoreDrift = $state<DriftReport | null>(null);
 
+  // Staging-flavored drift report — same DriftReport shape, but computed
+  // against hq-core-staging@main instead of the released v{hqVersion} tag.
+  // Populated by `hq-core-staging-drift:available` from the Rust background
+  // checker (launch+40s, then every 6h). @getindigo.ai-only on the Rust
+  // side; non-eligible users always see `null` here and fall back to
+  // `hqCoreDrift` for the pill.
+  //
+  // For eligible users this REPLACES the release drift count: a staging-
+  // user's "drift" should be measured against where they're actually
+  // headed (staging) rather than the released tag they're already past.
+  let stagingDrift = $state<DriftReport | null>(null);
+
   // Locally-installed hq-core `hqVersion` (or null when core.yaml is
   // missing/unparseable). Always populated by a cheap on-disk read at app
   // mount — independent of the 6h GitHub-release check above. Drives the
@@ -819,6 +831,19 @@
       })
     );
 
+    // --- staging drift listener ---
+    // Protocol (see src-tauri/src/commands/hq_core_staging.rs::check_staging_drift_once):
+    //   hq-core-staging-drift:available — same DriftReport shape as the
+    //   release drift, but computed against hq-core-staging@main. Emitted
+    //   only for eligible users; non-eligible users never see this event.
+    //   The popover routes the pill to staging count when stagingDrift is
+    //   non-null, falling back to hqCoreDrift otherwise.
+    unlisteners.push(
+      await listen<DriftReport>('hq-core-staging-drift:available', (event) => {
+        stagingDrift = event.payload;
+      })
+    );
+
     // Tray menu "Check for Updates" → on-demand check.
     unlisteners.push(
       await listen('tray:check-for-updates', () => {
@@ -945,6 +970,7 @@
       {hqCliUpdateError}
       {hqCoreUpdateAvailable}
       {hqCoreDrift}
+      {stagingDrift}
       {hqVersion}
       {stagingReplace}
       {stagingReplaceRunning}
