@@ -17,6 +17,7 @@ use walkdir::WalkDir;
 
 use aws_credential_types::Credentials;
 use aws_sdk_s3::config::{Builder as S3ConfigBuilder, Region};
+use aws_sdk_s3::error::{ErrorMetadata, ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::primitives::ByteStream;
 
 use crate::commands::vault_client::{EntityInfo, VaultClient, VaultClientError, VendSelfInput};
@@ -297,6 +298,50 @@ fn build_s3_client(
         .region(Region::new("us-east-1"))
         .build();
     aws_sdk_s3::Client::from_conf(config)
+}
+
+// ── AWS SDK error rendering ───────────────────────────────────────────────────
+
+/// Render the AWS-SDK-modeled service error metadata as a single fingerprint-able
+/// string. Falls back to `"ServiceError"` only when both code and message are
+/// absent (which would itself indicate a broken response — never the
+/// information-free "service error" produced by `SdkError::Display`).
+fn render_metadata(meta: &ErrorMetadata) -> String {
+    let code = meta.code();
+    let message = meta.message().unwrap_or("");
+    let request_id = meta.extra("aws_request_id").or_else(|| meta.extra("RequestId"));
+    match (code, message.is_empty(), request_id) {
+        (Some(c), false, Some(rid)) => format!("{c}: {message} (req={rid})"),
+        (Some(c), false, None) => format!("{c}: {message}"),
+        (Some(c), true, Some(rid)) => format!("{c} (req={rid})"),
+        (Some(c), true, None) => c.to_string(),
+        (None, false, Some(rid)) => format!("{message} (req={rid})"),
+        (None, false, None) => message.to_string(),
+        (None, true, _) => "ServiceError".to_string(),
+    }
+}
+
+/// Render an AWS `SdkError` for diagnostics. For a `ServiceError`, dig out the
+/// modeled code / message / request-id via `ProvideErrorMetadata` so log lines
+/// and Sentry messages are actionable. For all other variants (dispatch,
+/// timeout, construction) the outer `SdkError` Display impl is already
+/// informative, so use it as-is.
+///
+/// **Why this exists:** `SdkError`'s own Display impl renders any service-side
+/// failure as the literal string `"service error"`. That stripped every S3 4xx
+/// error of its code/message before they reached Sentry, so every distinct
+/// failure mode (AccessDenied / NoSuchBucket / EntityTooLarge / etc.) grouped
+/// under a single uninformative issue. See HQ-SYNC-WEB-5 debug report:
+/// workspace/reports/hq-sync-web-5-debug.md.
+fn render_sdk_err<E, R>(e: &SdkError<E, R>) -> String
+where
+    E: ProvideErrorMetadata + std::error::Error,
+{
+    if let Some(svc) = e.as_service_error() {
+        render_metadata(svc.meta())
+    } else {
+        e.to_string()
+    }
 }
 
 // ── Upload retry ──────────────────────────────────────────────────────────────
@@ -664,10 +709,11 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
                                 .raw_response()
                                 .map(|r| r.status().as_u16())
                                 .unwrap_or(0);
+                            let rendered = render_sdk_err(&e);
                             if status == 0 || status >= 500 {
-                                UploadOutcome::Transient(e.to_string())
+                                UploadOutcome::Transient(rendered)
                             } else {
-                                UploadOutcome::Permanent(e.to_string())
+                                UploadOutcome::Permanent(rendered)
                             }
                         }
                     }
@@ -1240,5 +1286,59 @@ mod tests {
             "got: {}",
             p.display()
         );
+    }
+
+    // ── AWS-SDK error rendering ──────────────────────────────────────────────
+    //
+    // Regression guard for HQ-SYNC-WEB-5. Before the fix, the uploader
+    // stringified `SdkError` via its outer Display impl, which renders ANY
+    // service-side failure as the literal `"service error"`. That stripped
+    // every S3 4xx response of its code/message before reaching Sentry, so
+    // distinct failure modes (AccessDenied, NoSuchBucket, EntityTooLarge,
+    // ExpiredToken, …) all collapsed under one uninformative issue.
+    //
+    // These tests pin down the inverse: rendered output must surface the
+    // modeled error code, the human message, and the request id when
+    // available — and must never equal the bare string `"service error"`.
+
+    #[test]
+    fn render_metadata_includes_code_and_message() {
+        let meta = ErrorMetadata::builder()
+            .code("AccessDenied")
+            .message("User: arn:aws:iam::123:user/x is not authorized to perform: s3:PutObject")
+            .custom("aws_request_id", "ABC123")
+            .build();
+        let s = render_metadata(&meta);
+        assert!(s.contains("AccessDenied"), "missing code in: {s}");
+        assert!(s.contains("not authorized"), "missing message in: {s}");
+        assert!(s.contains("ABC123"), "missing request id in: {s}");
+        assert_ne!(s, "service error", "regression: collapsed to outer SdkError Display");
+    }
+
+    #[test]
+    fn render_metadata_code_only() {
+        let meta = ErrorMetadata::builder().code("NoSuchBucket").build();
+        let s = render_metadata(&meta);
+        assert_eq!(s, "NoSuchBucket");
+        assert_ne!(s, "service error");
+    }
+
+    #[test]
+    fn render_metadata_message_only() {
+        let meta = ErrorMetadata::builder().message("entity body too large").build();
+        let s = render_metadata(&meta);
+        assert_eq!(s, "entity body too large");
+        assert_ne!(s, "service error");
+    }
+
+    #[test]
+    fn render_metadata_empty_falls_back_to_named_placeholder() {
+        let meta = ErrorMetadata::builder().build();
+        let s = render_metadata(&meta);
+        // Must not collapse to the literal "service error" — that's the very
+        // value we're insulating against. A named placeholder is acceptable.
+        assert_ne!(s, "service error");
+        assert!(!s.is_empty());
+        assert_eq!(s, "ServiceError");
     }
 }
