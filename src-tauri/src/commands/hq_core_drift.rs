@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::hq_core_staging::{self, StagingStatus};
@@ -405,6 +405,23 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> 
     // which only emits on the unhappy path, drift state can swing in
     // both directions on a re-check.
     let _ = app.emit("hq-core-drift:available", &report);
+
+    // Keep an open detail window (and its PendingDrift stash) in sync with
+    // this scan so a Recheck button — or any background re-check — live-
+    // updates the window in place instead of leaving a stale report on
+    // screen. The detail window listens on `drift:report` (see
+    // drift_detail.rs + DriftDetail.svelte); `emit_to` no-ops harmlessly
+    // when the window isn't open, and the stash means a subsequent open
+    // shows this scan rather than the one that first triggered the pill.
+    if let Some(state) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
+        *state.0.lock().unwrap() = Some(report.clone());
+    }
+    let _ = app.emit_to(
+        crate::commands::drift_detail::WINDOW_LABEL,
+        "drift:report",
+        &report,
+    );
+
     Ok(Some(report))
 }
 
