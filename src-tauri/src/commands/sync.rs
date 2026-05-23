@@ -1596,6 +1596,7 @@ mod tests {
             message: None,
             direction: None,
             deleted: None,
+            author: None,
         }));
         assert_eq!(t.conflicts, 0);
     }

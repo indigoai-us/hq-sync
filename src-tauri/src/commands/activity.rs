@@ -44,6 +44,13 @@ pub struct ActivityEntry {
     /// `direction` + `deleted` fields, defaulting to `"down"` for pre-5.29
     /// runners that don't stamp a direction.
     pub direction: String,
+    /// Email of the file's author (from the runner's `progress.author`, sourced
+    /// from S3 `created-by`). Only present on download rows — a downloaded file
+    /// was authored by whoever uploaded it. None on uploads/deletions and on
+    /// pre-5.31 runners. The activity log shows it so the user sees who authored
+    /// each file they received.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub author: Option<String>,
     /// Epoch milliseconds when the menubar observed the change.
     pub at: u64,
 }
@@ -114,6 +121,7 @@ pub fn record_progress(app: &AppHandle, p: &SyncProgressEvent) {
         path: p.path.clone(),
         bytes: p.bytes,
         direction: direction_for(p),
+        author: p.author.clone(),
         at: now_millis(),
     };
     state.push(entry.clone());
@@ -230,6 +238,14 @@ mod tests {
     use super::*;
 
     fn ev(direction: Option<&str>, deleted: Option<bool>) -> SyncProgressEvent {
+        ev_with_author(direction, deleted, None)
+    }
+
+    fn ev_with_author(
+        direction: Option<&str>,
+        deleted: Option<bool>,
+        author: Option<&str>,
+    ) -> SyncProgressEvent {
         SyncProgressEvent {
             company: "indigo".to_string(),
             path: "knowledge/x.md".to_string(),
@@ -237,6 +253,7 @@ mod tests {
             message: None,
             direction: direction.map(|s| s.to_string()),
             deleted,
+            author: author.map(|s| s.to_string()),
         }
     }
 
@@ -251,6 +268,26 @@ mod tests {
     }
 
     #[test]
+    fn author_flows_from_progress_event_into_entry() {
+        // A download event carrying `author` (from S3 created-by) maps onto the
+        // ActivityEntry so the activity log can attribute the file.
+        let p = ev_with_author(Some("down"), None, Some("alice@example.com"));
+        let entry = ActivityEntry {
+            company: p.company.clone(),
+            path: p.path.clone(),
+            bytes: p.bytes,
+            direction: direction_for(&p),
+            author: p.author.clone(),
+            at: 0,
+        };
+        assert_eq!(entry.author, Some("alice@example.com".to_string()));
+
+        // An upload event has no author.
+        let up = ev_with_author(Some("up"), None, None);
+        assert_eq!(up.author, None);
+    }
+
+    #[test]
     fn push_trims_to_max_entries() {
         let state = SessionActivity::new();
         for i in 0..(MAX_ENTRIES + 50) {
@@ -259,6 +296,7 @@ mod tests {
                 path: format!("f{i}.md"),
                 bytes: 1,
                 direction: "down".to_string(),
+                author: None,
                 at: i as u64,
             });
         }

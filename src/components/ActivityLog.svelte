@@ -8,6 +8,8 @@
     bytes: number;
     /** "up" | "down" | "deleted" */
     direction: string;
+    /** Email of the file's author (from S3 created-by). Only download rows. */
+    author?: string;
     /** epoch millis */
     at: number;
   }
@@ -138,7 +140,9 @@
             </span>
             <span class="col-path detail-path" title={`${item.company}/${item.path}`}>
               <span class="path-main">{item.path}</span>
-              <span class="path-company">{item.company}</span>
+              <span class="path-company">
+                {item.company}{#if item.author}<span class="path-author"> · {item.author}</span>{/if}
+              </span>
             </span>
             <span class="col-time">{formatTime(item.at)}</span>
             <span class="col-size">{formatBytes(item.bytes)}</span>
@@ -314,6 +318,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .path-author {
+    color: var(--popover-text-muted, #8a8a98);
   }
 
   .col-time {
