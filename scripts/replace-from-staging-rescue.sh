@@ -102,10 +102,13 @@ SKIPPED_BY_HISTORY=0
 # restored post-overlay (same mechanism as --preserve-subpath), AND skipped
 # by drift detection so the rescue scan never touches them.
 #
-# Why core/packages: contains user-curated packs (hq-pack-slack-bot etc.)
-# that staging may also ship under the same path with different content.
-# Without this carve-out a full-replace would clobber the local pack tree.
-CARVE_OUT_PATHS=( "core/packages" ".claude/state" )
+# Why core/packages and packages: both hold user-curated packs (hq-pack-*)
+# resolved through the npm/hq-cli install path; staging may also ship under
+# `core/packages` with different content. Without this carve-out a
+# full-replace would clobber the local pack tree.
+# Why .claude/state: runtime session state — `.claude/state/active-session-*`
+# changes every session; shuttling preserves it across the overlay.
+CARVE_OUT_PATHS=( "core/packages" "packages" ".claude/state" )
 
 usage() {
   sed -n '2,55p' "$0"
