@@ -221,7 +221,11 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// the vault re-uploaded them (~190 `.claude/skills/*` files churned per sync).
 /// 5.30 reserves a distinct vault journal slug (with a one-time seed migration).
 /// The `~5.29` -> `~5.30` bump is required to pick it up.
-pub const HQ_CLOUD_VERSION: &str = "~5.30.0";
+/// 5.31.0 (2026-05-22) returns the downloaded object's S3 `created-by` metadata
+/// and stamps it as `author` on download `progress` events, so the Recent
+/// Changes activity log can attribute downloaded files to whoever uploaded
+/// them. The `~5.30` -> `~5.31` bump is required to pick it up.
+pub const HQ_CLOUD_VERSION: &str = "~5.31.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
@@ -1596,6 +1600,7 @@ mod tests {
             message: None,
             direction: None,
             deleted: None,
+            author: None,
         }));
         assert_eq!(t.conflicts, 0);
     }

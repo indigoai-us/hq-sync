@@ -70,6 +70,13 @@ pub struct SyncProgressEvent {
     /// True when this event reports a remote DeleteObject (no transfer).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub deleted: Option<bool>,
+    /// hq-cloud ≥5.31.0: email of the file's author, read from the S3 object's
+    /// `created-by` user-metadata. Only set on download (pull) events — a
+    /// downloaded file was authored by whoever uploaded it. None on push events
+    /// (the uploader is the local user) and on older runners. The activity log
+    /// shows this so the user sees who authored each file they received.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub author: Option<String>,
 }
 
 /// `{type: "error", company?, path, message}`
@@ -470,6 +477,7 @@ mod tests {
                 message: Some("shared by M1".to_string()),
                 direction: None,
                 deleted: None,
+                author: None,
             })
         );
     }
@@ -487,8 +495,24 @@ mod tests {
                 message: None,
                 direction: None,
                 deleted: None,
+                author: None,
             })
         );
+    }
+
+    #[test]
+    fn test_parse_progress_event_with_author() {
+        // hq-cloud ≥5.31.0 stamps `author` (from S3 `created-by`) on download
+        // (pull) progress events so the activity log can attribute the file.
+        let json = r#"{"type":"progress","company":"indigo","path":"docs/a.md","bytes":42,"direction":"down","author":"alice@example.com"}"#;
+        let event: SyncEvent = serde_json::from_str(json).unwrap();
+        match event {
+            SyncEvent::Progress(p) => {
+                assert_eq!(p.author, Some("alice@example.com".to_string()));
+                assert_eq!(p.direction, Some("down".to_string()));
+            }
+            _ => panic!("expected Progress"),
+        }
     }
 
     #[test]
@@ -697,12 +721,14 @@ mod tests {
             message: None,
             direction: None,
             deleted: None,
+            author: None,
         };
         let json = serde_json::to_string(&event).unwrap();
-        // `message: None` / `direction: None` / `deleted: None` must not serialize.
+        // `message: None` / `direction: None` / `deleted: None` / `author: None` must not serialize.
         assert!(!json.contains("\"message\""));
         assert!(!json.contains("\"direction\""));
         assert!(!json.contains("\"deleted\""));
+        assert!(!json.contains("\"author\""));
         assert!(json.contains("\"company\""));
         assert!(json.contains("\"path\""));
         assert!(json.contains("\"bytes\""));
