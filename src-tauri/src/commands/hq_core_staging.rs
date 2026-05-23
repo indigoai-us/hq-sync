@@ -767,7 +767,12 @@ fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
 // background loop. NO full clone — this is a count pill, not the rescue.
 
 const STAGING_DRIFT_INITIAL_DELAY: Duration = Duration::from_secs(40);
-const STAGING_DRIFT_CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
+// 30 min — faster than the 6h family default. The staging channel moves
+// many times per day for active @getindigo.ai builders, so a stale pill is
+// a near-constant footgun. One authed trees-API call per cycle (no clone,
+// no walk over the whole HQ tree — just `rules.locked` scope) keeps the
+// cost negligible vs. the release-drift checker's hourly rhythm.
+const STAGING_DRIFT_CHECK_INTERVAL: Duration = Duration::from_secs(1800);
 
 /// `GET /repos/:owner/:repo/git/trees/main?recursive=1` shaped for drift
 /// computation: path → (blob_sha, size). The hq_core_staging `fetch_main_tree`
