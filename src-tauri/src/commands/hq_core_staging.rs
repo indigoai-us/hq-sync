@@ -657,9 +657,13 @@ fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> 
 }
 
 /// Tauri command — run the rescue script against the resolved HQ folder.
-/// Re-checks eligibility (defense in depth: a malicious frontend can't
-/// bypass the email gate even with a forged `invoke`). Returns the script's
-/// exit code + tail of combined output.
+/// Eligibility is enforced by `resolve_staging_repo`: ineligible users with
+/// no `driftStagingRepo` override resolve to `None` and get rejected here.
+/// Ineligible users WITH an explicit override are allowed through — they
+/// opted in by configuring the menubar pref, and the same path lets the
+/// pill render for them in `check_staging_replace_available`. Keeping the
+/// two entry points consistent avoids the "visible action that always
+/// errors" pattern Codex flagged.
 ///
 /// Long-running (~30-90s on first run because of the full-history clone +
 /// scan). The frontend should show a spinner and disable the pill while
@@ -667,11 +671,9 @@ fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> 
 #[tauri::command]
 pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult, String> {
     let eligible = is_eligible_email(signed_in_email().as_deref());
-    if !eligible {
-        return Err("ineligible: rescue is restricted to @getindigo.ai users".to_string());
-    }
-    let repo = resolve_staging_repo(eligible)
-        .ok_or_else(|| "no staging repo resolved".to_string())?;
+    let repo = resolve_staging_repo(eligible).ok_or_else(|| {
+        "no staging repo resolved (set driftStagingRepo in ~/.hq/menubar.json, or sign in with an @getindigo.ai account)".to_string()
+    })?;
     let token = resolve_gh_token()
         .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
     let hq_folder = resolve_hq_folder();

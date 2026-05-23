@@ -698,7 +698,7 @@ if [ "${#NARROW_PATHS[@]}" -eq 0 ] && [ -f "$HQ_ROOT/core/core.yaml" ]; then
         .replaced_from_staging.last_sync_at  = strenv(AT)
       ' "$HQ_ROOT/core/core.yaml"
     echo "==> Stamped core/core.yaml: replaced_from_staging.last_sync_sha=$SRC_SHA"
-  elif command -v python3 >/dev/null 2>&1; then
+  elif command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
     SHA="$SRC_SHA" SOURCE="$SOURCE_REPO" THE_REF="$REF" AT="$NOW_UTC" CORE="$HQ_ROOT/core/core.yaml" \
       python3 -c '
 import os, yaml
