@@ -17,7 +17,7 @@
 #   b. `.claude/<rest>`     ->  `personal/<rest>`              if `personal/<top-of-rest>/` exists
 #   c. `core/<rest>`        ->  `personal/<rest>`              if `personal/<top-of-rest>/` exists
 #   d. `<rest>`             ->  `personal/<rest>`              if `personal/<top-of-rest>/` exists
-#   e. anything else        ->  `personal/conflicts/<original-relative-path>`
+#   e. anything else        ->  `.hq-conflicts/rescue-<timestamp>/<original-relative-path>`
 #
 # If the rescue destination already exists, the moved file is suffixed with
 # `.drift-<unix-ts>` so we never silently overwrite a prior override.
@@ -27,7 +27,8 @@
 #   - Default ("preserve-list"): wipes every top-level entry except a hardcoded
 #     preserve set (`.git`, `companies/` except `companies/_template/`,
 #     `personal/`, `workspace/`, `.github/`, `.leak-scan/`,
-#     `.hq-sync-journal.json`, `.hq/`), plus any paths passed via --preserve.
+#     `.hq-sync-journal.json`, `.hq/`, `.hq-conflicts/`),
+#     plus any paths passed via --preserve.
 #
 #   - `--paths`: wipes ONLY the explicit comma-separated list of top-level
 #     entries and overlays only those.
@@ -133,7 +134,7 @@ done
 
 for p in "${EXTRA_PRESERVE[@]+"${EXTRA_PRESERVE[@]}"}"; do
   case "$p" in
-    .git|companies|personal|workspace|.github|.leak-scan|.hq-sync-journal.json|.hq|.git/|companies/|personal/|workspace/|.github/|.leak-scan/|.hq/)
+    .git|companies|personal|workspace|.github|.leak-scan|.hq-sync-journal.json|.hq|.hq-conflicts|.git/|companies/|personal/|workspace/|.github/|.leak-scan/|.hq/|.hq-conflicts/)
       echo "error: --preserve $p is redundant ('$p' is always preserved). Remove the flag." >&2
       exit 2
       ;;
@@ -201,6 +202,15 @@ if [ ! -d "$HQ_ROOT/companies" ] || [ ! -d "$HQ_ROOT/personal" ]; then
   exit 3
 fi
 
+# Per-run rescue bucket. Computed once so every drifted file in this run
+# lands under the same `<hqRoot>/.hq-conflicts/rescue-<ts>/` dir — easy to
+# diff, easy to delete, and historical runs accumulate as siblings so the
+# user can audit past rescues without spelunking through personal/.
+# Colons would be valid here but make paths awkward in shells/tab-completion;
+# use hyphens to match other timestamped artifacts (sync conflict suffixes).
+RESCUE_TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+RESCUE_BUCKET=".hq-conflicts/rescue-$RESCUE_TS"
+
 # --- Read prior sync-point metadata (must happen BEFORE the wipe) -----------
 # If the user has run this script before in default mode, core/core.yaml
 # carries the staging SHA we last synced to. We use that SHA later (after
@@ -232,7 +242,7 @@ if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
   echo "==> Wipe set:   ${NARROW_PATHS[*]}"
 else
   echo "==> Mode:       preserve-list (default)"
-  echo "==> Preserved:  .git, companies (except companies/_template), personal, workspace, .github, .leak-scan, .hq-sync-journal.json, .hq${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}"
+  echo "==> Preserved:  .git, companies (except companies/_template), personal, workspace, .github, .leak-scan, .hq-sync-journal.json, .hq, .hq-conflicts${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}"
 fi
 if [ "${#PRESERVE_SUBPATHS[@]}" -ne 0 ]; then
   echo "==> Preserved subpaths (backed up + restored across the overlay):"
@@ -249,7 +259,7 @@ if [ "${#PRESERVE_SUBPATHS[@]}" -ne 0 ]; then
     fi
   done
 fi
-echo "==> Drift policy: rescue to personal/ (fall back to personal/conflicts/)"
+echo "==> Drift policy: rescue to personal/ (fall back to $RESCUE_BUCKET/)"
 if [ "$HISTORY_CHECK" = "1" ]; then
   echo "==> History gate: ON (skip drift if local matches any past staging blob at that path)"
 else
@@ -381,7 +391,7 @@ if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
   done
   RSYNC_EXCLUDES+=( --exclude='/*' )
 else
-  PRUNE_ARGS=( -not -name .git -not -name companies -not -name personal -not -name workspace -not -name .github -not -name .leak-scan -not -name .hq-sync-journal.json -not -name .hq )
+  PRUNE_ARGS=( -not -name .git -not -name companies -not -name personal -not -name workspace -not -name .github -not -name .leak-scan -not -name .hq-sync-journal.json -not -name .hq -not -name .hq-conflicts )
   for p in "${EXTRA_PRESERVE[@]+"${EXTRA_PRESERVE[@]}"}"; do
     PRUNE_ARGS+=( -not -name "$p" )
   done
@@ -393,6 +403,7 @@ else
     --exclude=.leak-scan
     --exclude=.hq-sync-journal.json
     --exclude=.hq
+    --exclude=.hq-conflicts
     --include='/companies/'
     --include='/companies/_template/***'
     --exclude='/companies/*'
@@ -449,8 +460,8 @@ map_rescue_target() {
     return
   fi
 
-  # (e) fall back to conflicts
-  echo "personal/conflicts/$rel"
+  # (e) fall back to the per-run rescue bucket at `.hq-conflicts/rescue-<ts>/`
+  echo "$RESCUE_BUCKET/$rel"
 }
 
 # Move a single drift file. Suffix with .drift-<ts> if the target exists.
@@ -481,7 +492,7 @@ walk_and_rescue() {
   #   2. top-level convenience symlinks (AGENTS.md, MIGRATION.md) — the
   #      staging overlay restores them as part of the source tree.
   # Moving them via `mv` would re-anchor relative targets at the new path
-  # (e.g. personal/conflicts/AGENTS.md -> .claude/CLAUDE.md would dangle).
+  # (e.g. .hq-conflicts/rescue-<ts>/AGENTS.md -> .claude/CLAUDE.md would dangle).
   if [ -L "$root_abs" ]; then
     return 0
   fi
@@ -659,7 +670,7 @@ if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
     fi
   done
 else
-  echo "==> Wiping HQ root (preserving .git, companies, personal, workspace, .github, .leak-scan, .hq-sync-journal.json, .hq${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}) ..."
+  echo "==> Wiping HQ root (preserving .git, companies, personal, workspace, .github, .leak-scan, .hq-sync-journal.json, .hq, .hq-conflicts${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}) ..."
   ( cd "$HQ_ROOT" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" -exec rm -rf {} + )
 
   if [ -d "$HQ_ROOT/companies/_template" ]; then
@@ -735,8 +746,8 @@ for root_rel in "${WIPE_TOPLEVEL[@]}"; do
     echo "    $root_rel: $n_files files"
   fi
 done
-n_personal="$(find "$HQ_ROOT/personal/conflicts" -type f 2>/dev/null | wc -l | tr -d ' ')"
-echo "    personal/conflicts: $n_personal files (drifts that had no personal/ home)"
+n_bucket="$(find "$HQ_ROOT/$RESCUE_BUCKET" -type f 2>/dev/null | wc -l | tr -d ' ')"
+echo "    $RESCUE_BUCKET: $n_bucket files (drifts that had no personal/ home)"
 if [ "$HISTORY_CHECK" = "1" ]; then
   echo "    skipped by history gate: $SKIPPED_BY_HISTORY (local content matched a past staging blob)"
 fi
@@ -744,4 +755,4 @@ fi
 echo ""
 echo "==> Done. Source: $SOURCE_REPO@$REF ($SRC_SHA)"
 echo "    Drifts moved into personal/ (see scan output above)."
-echo "    Review personal/conflicts/ for files that need manual reconciliation."
+echo "    Review $RESCUE_BUCKET/ for files that need manual reconciliation."
