@@ -10,6 +10,9 @@
     direction: string;
     /** Email of the file's author (from S3 created-by). Only download rows. */
     author?: string;
+    /** True if a downloaded file was new to the drive ("added"), false if it
+     *  was an update ("updated"), undefined when not yet known. */
+    isNew?: boolean;
     /** epoch millis */
     at: number;
   }
@@ -65,6 +68,24 @@
     }
     return out;
   });
+
+  /**
+   * Past-tense action verb describing what the author did, for the attribution
+   * line ("Tom added" / "Tom updated"). Downloads distinguish added (new file)
+   * from updated (changed file) when the runner's new-files event has reconciled
+   * `isNew`; an un-reconciled download falls back to "updated".
+   */
+  function actionVerb(item: ActivityEntry): string {
+    switch (item.direction) {
+      case 'up':
+        return 'uploaded';
+      case 'deleted':
+        return 'deleted';
+      case 'down':
+      default:
+        return item.isNew ? 'added' : 'updated';
+    }
+  }
 
   function dirMeta(direction: string): { label: string; cls: string; glyph: string } {
     switch (direction) {
@@ -141,7 +162,7 @@
             <span class="col-path detail-path" title={`${item.company}/${item.path}`}>
               <span class="path-main">{item.path}</span>
               <span class="path-company">
-                {item.company}{#if item.author}<span class="path-author"> · {item.author}</span>{/if}
+                {#if item.author}<span class="path-author">{item.author}</span> {actionVerb(item)}{:else}{item.company}{/if}
               </span>
             </span>
             <span class="col-time">{formatTime(item.at)}</span>
@@ -320,7 +341,10 @@
     white-space: nowrap;
   }
   .path-author {
-    color: var(--popover-text-muted, #8a8a98);
+    /* The "who" — slightly brighter than the trailing verb so it reads as the
+       subject of "{author} added/updated". */
+    color: var(--popover-text, #c8c8d2);
+    font-weight: 500;
   }
 
   .col-time {

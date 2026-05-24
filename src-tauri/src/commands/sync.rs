@@ -626,7 +626,14 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         SyncEvent::DeleteRefusedStaleEtag(payload) => {
             app.emit(EVENT_SYNC_DELETE_REFUSED_STALE_ETAG, payload.clone())
         }
-        SyncEvent::NewFiles(payload) => app.emit(EVENT_SYNC_NEW_FILES, payload.clone()),
+        SyncEvent::NewFiles(payload) => {
+            // Reconcile into the activity log: mark these paths as "added" (vs
+            // the default "updated") and back-fill author from `addedBy` where
+            // the per-file progress event carried none. Lands after the rows'
+            // progress events, so this back-fills + re-emits to the open window.
+            crate::commands::activity::record_new_files(app, payload);
+            app.emit(EVENT_SYNC_NEW_FILES, payload.clone())
+        }
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
             // SyncStats refresh reads this file on popover mount.
