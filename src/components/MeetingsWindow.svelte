@@ -459,8 +459,6 @@
     events: MeetingEvent[];
   }
 
-  const groupedEvents = $derived<DayGroup[]>(groupByDay(filteredEvents));
-
   function groupByDay(list: MeetingEvent[]): DayGroup[] {
     const out: DayGroup[] = [];
     const byLabel = new Map<string, MeetingEvent[]>();
@@ -693,6 +691,11 @@
   const filteredEvents = $derived<MeetingEvent[]>(
     filterEvents(events, selectedCalKeys, showOnlyWithUrl),
   );
+
+  /** Filtered events grouped into day buckets for rendering. Declared after
+   *  `filteredEvents` (and `showOnlyWithUrl`) so it never references a
+   *  block-scoped binding before its declaration. */
+  const groupedEvents = $derived<DayGroup[]>(groupByDay(filteredEvents));
 
   /** Count of events the link-only filter is currently hiding. Drives
    *  the "X hidden — show all" recovery affordance so the user doesn't
