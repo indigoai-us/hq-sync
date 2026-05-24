@@ -147,6 +147,45 @@
       scannedAt: string;
       hqVersion: string;
     } | null;
+    /** Staging-flavored drift summary from `hq-core-staging-drift:available`.
+     *  Same shape as `hqCoreDrift` but computed against `hq-core-staging@main`
+     *  instead of the released tag. Non-null only for eligible
+     *  @getindigo.ai builders (Rust-side gate). When non-null and
+     *  `count > 0`, REPLACES the release-drift pill — staging users care
+     *  about distance from where they're actually headed (staging),
+     *  not from the tag they've already moved past. */
+    stagingDrift?: {
+      count: number;
+      modified: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      missing: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+      scannedAt: string;
+      hqVersion: string;
+    } | null;
+    /** "Update from staging" pill state. Null when the feature is dark
+     *  (non-@getindigo.ai user, no GH token, GH API unreachable). Otherwise
+     *  the pill renders when `available=true` (local stamp missing or
+     *  behind staging main HEAD). */
+    stagingReplace?: {
+      available: boolean;
+      localSha: string | null;
+      latestSha: string;
+      latestShort: string;
+      repo: string;
+    } | null;
+    /** True while the rescue script is in-flight. Disables the pill +
+     *  swaps its label to "Updating…" so the user knows something's
+     *  happening during the multi-minute scan. */
+    stagingReplaceRunning?: boolean;
+    /** Last rescue run's result. Surfaced next to the pill so the user
+     *  gets immediate feedback (✓ done / ✗ failed) without opening the
+     *  log file. Cleared at start of a new run. */
+    stagingReplaceLastResult?: {
+      kind: 'ok' | 'err';
+      exitCode: number;
+      logTail: string;
+      logPath: string;
+    } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
      *  header button doubles as Sync/Stop — only meaningful when
@@ -161,6 +200,11 @@
     /** Run `npm install -g @indigoai-us/hq-cli@latest` via the Rust
      *  backend. App.svelte owns the in-flight + error state. */
     oninstallhqcliupdate?: () => void;
+    /** Invoke the rescue script via the Rust `run_replace_from_staging`
+     *  command. App.svelte owns the in-flight + result state. Optional
+     *  so the prop is omittable for non-eligible users (the parent simply
+     *  doesn't bind it; the pill stays hidden anyway). */
+    onrunreplacefromstaging?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -206,6 +250,10 @@
     hqCoreUpdateAvailable = null,
     hqVersion = null,
     hqCoreDrift = null,
+    stagingDrift = null,
+    stagingReplace = null,
+    stagingReplaceRunning = false,
+    stagingReplaceLastResult = null,
     onsync,
     oncancel,
     onsettings,
@@ -215,6 +263,7 @@
     ondismissconflicts,
     oninstallupdate,
     oninstallhqcliupdate,
+    onrunreplacefromstaging,
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
@@ -352,9 +401,14 @@
   // case is a click that does nothing, much better than a Sentry-level
   // exception in the user's face for an opt-in diagnostic surface.
   async function openDriftDetail() {
-    if (!hqCoreDrift) return;
+    // Eligible users see the staging-flavored report; everyone else sees
+    // the release-tagged report. Same window, same structure — only the
+    // upstream reference differs. Both reports use the DriftReport shape
+    // so the detail window doesn't need to branch.
+    const report = stagingDrift ?? hqCoreDrift;
+    if (!report) return;
     try {
-      await invoke('open_drift_detail', { report: hqCoreDrift });
+      await invoke('open_drift_detail', { report });
     } catch (e) {
       console.error('open_drift_detail failed:', e);
     }
@@ -726,7 +780,29 @@
              the eye lands on the diagnostic before the action pill. Hidden
              when count is 0 or null so the row stays calm on healthy
              installs. Click → opens the drift detail window. -->
-        {#if hqCoreDrift && hqCoreDrift.count > 0}
+        <!-- Drift pill precedence:
+             * Eligible users (stagingDrift !== null) see the staging-vs-local
+               count — they care about distance from where they're actually
+               headed, not from the released tag they've moved past.
+             * Non-eligible users keep the existing release-drift pill.
+             Both reports use the same DriftReport shape so the detail
+             window doesn't fork. -->
+        {#if stagingDrift}
+          <!-- Eligible users always see a staging-drift chip — at 0 it
+               confirms "in sync", >0 it's the same notice pill as before.
+               Either state is clickable so the detail window is always
+               one click away (lets you inspect even when everything is
+               clean). -->
+          <button
+            class="footer-hq-version-pill {stagingDrift.count > 0 ? 'footer-hq-version-pill-notice' : ''}"
+            onclick={openDriftDetail}
+            title={stagingDrift.count > 0
+              ? `${stagingDrift.count} locked core file${stagingDrift.count === 1 ? '' : 's'} differ from ${stagingDrift.hqVersion}. Click for details. Click "Update to Staging" to reconcile.`
+              : `Locked core matches ${stagingDrift.hqVersion}. Click to open the drift detail window.`}
+          >
+            {stagingDrift.count > 0 ? `${stagingDrift.count} drifted` : 'in sync'}
+          </button>
+        {:else if hqCoreDrift && hqCoreDrift.count > 0}
           <button
             class="footer-hq-version-pill footer-hq-version-pill-notice"
             onclick={openDriftDetail}
@@ -735,7 +811,39 @@
             {hqCoreDrift.count} drifted
           </button>
         {/if}
-        {#if hqCoreUpdateAvailable}
+        <!-- Pill precedence for the HQ-version footer row:
+             * Eligible @getindigo.ai users (stagingReplace !== null) use
+               the staging channel for updates — the "Update to Staging"
+               pill REPLACES the release "Update to vX.Y.Z" pill entirely
+               for them. They're already ahead of releases by definition,
+               so the release pill would be misleading noise.
+             * Non-eligible users (stagingReplace === null because the
+               Rust check returned None) fall back to the existing
+               release-update pill.
+             The staging pill reuses the standard primary-white pill
+             styling so it reads as a first-class action, not a side
+             channel. Disabled while running via the new disabled rule
+             on .footer-hq-version-pill. -->
+        {#if stagingReplace && onrunreplacefromstaging}
+          {#if stagingReplace.available || (stagingDrift && stagingDrift.count > 0)}
+            <button
+              class="footer-hq-version-pill"
+              onclick={onrunreplacefromstaging}
+              disabled={stagingReplaceRunning}
+              title={stagingReplaceRunning
+                ? `Running rescue against ${stagingReplace.repo} — see /tmp/hq-sync-replace-from-staging-*.log`
+                : stagingReplace.available
+                  ? `Replace HQ with ${stagingReplace.repo}@${stagingReplace.latestShort}. Local drifts move to personal/; staging overlays on top.`
+                  : `Re-overlay ${stagingReplace.repo}@${stagingReplace.latestShort} to reconcile ${stagingDrift?.count ?? 0} drifted file${(stagingDrift?.count ?? 0) === 1 ? '' : 's'}. Local drifts move to personal/.`}
+            >
+              {#if stagingReplaceRunning}
+                Updating…
+              {:else}
+                Update to Staging
+              {/if}
+            </button>
+          {/if}
+        {:else if hqCoreUpdateAvailable}
           <button
             class="footer-hq-version-pill"
             onclick={updateHqCoreInClaudeCode}
@@ -743,6 +851,21 @@
           >
             Update to v{hqCoreUpdateAvailable.latest}
           </button>
+        {/if}
+        {#if stagingReplaceLastResult}
+          <!-- Last rescue-run feedback. Tiny inline chip so the user sees
+               success/failure without leaving the popover. Click reveals
+               the log-tail tooltip via `title`. -->
+          <span
+            class="footer-hq-version-result footer-hq-version-result-{stagingReplaceLastResult.kind}"
+            title={stagingReplaceLastResult.logTail || stagingReplaceLastResult.logPath}
+          >
+            {#if stagingReplaceLastResult.kind === 'ok'}
+              ✓ rescue done
+            {:else}
+              ✗ rescue failed (exit {stagingReplaceLastResult.exitCode})
+            {/if}
+          </span>
         {/if}
       {/if}
     </div>
@@ -1055,6 +1178,19 @@
     background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
+  /* Disabled state — used by the "Update to Staging" pill while the
+     rescue script is in flight (multi-minute clone + scan). Keeps the
+     button visually present so the user can see what's happening, but
+     non-interactive (opacity drop + default cursor + suppress hover). */
+  .footer-hq-version-pill:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+
+  .footer-hq-version-pill:disabled:hover {
+    background: var(--popover-primary, #ffffff);
+  }
+
   /* Notice variant — used by the drift "N drifted" pill so it reads as
      diagnostic rather than action. Sits next to (and visually beneath)
      the primary white Update pill so the eye still lands on the action.
@@ -1068,6 +1204,25 @@
   .footer-hq-version-pill-notice:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     color: var(--popover-text-heading, #ffffff);
+  }
+
+  /* Inline result chip rendered next to the pill after a rescue run. Small,
+     non-clickable, hover surfaces the log tail via the parent's `title=`. */
+  .footer-hq-version-result {
+    font-size: 0.6875rem;
+    font-family: inherit;
+    white-space: nowrap;
+    flex-shrink: 0;
+    padding: 0.1875rem 0.375rem;
+    border-radius: 4px;
+  }
+
+  .footer-hq-version-result-ok {
+    color: var(--popover-success, #6ad59c);
+  }
+
+  .footer-hq-version-result-err {
+    color: var(--popover-danger, #d56a6a);
   }
 
   /* Banners — actionable state callouts (setup / auth / error) */

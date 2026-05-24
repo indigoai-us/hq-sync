@@ -196,6 +196,9 @@ fn main() {
             commands::hq_core_update::get_hq_version,
             commands::hq_core_drift::check_hq_core_drift,
             commands::hq_core_drift::restore_from_upstream,
+            commands::hq_core_staging::check_staging_replace_available,
+            commands::hq_core_staging::run_replace_from_staging,
+            commands::hq_core_staging::check_staging_drift,
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
             commands::new_files::open_new_files_detail,
@@ -279,6 +282,7 @@ fn main() {
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
             commands::hq_core_update::setup_hq_core_update_checker(app.handle());
             commands::hq_core_drift::setup_hq_core_drift_checker(app.handle());
+            commands::hq_core_staging::setup_staging_drift_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's

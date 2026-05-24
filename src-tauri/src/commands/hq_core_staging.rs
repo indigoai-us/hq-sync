@@ -29,10 +29,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
+use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::commands::config::MenubarPrefs;
+use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
+use crate::commands::hq_core_drift::{
+    excluded_scope_paths, is_conflict_artifact, path_in_excluded_scope, path_in_locked_scope,
+    read_locked_paths, walk_local_under_scope, DriftEntry, DriftReport,
+};
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -227,6 +234,19 @@ struct GhTreeEntry {
     #[serde(rename = "type")]
     kind: String,
     sha: String,
+    /// Git file mode. `100644`/`100755` = regular file, `120000` = symlink,
+    /// `040000` = tree, `160000` = submodule. Drift code filters out
+    /// `120000` so symlinks aren't compared against local content (the
+    /// blob is the target-path string, not the target's content — local
+    /// would always look "modified" even when identical).
+    #[serde(default)]
+    mode: Option<String>,
+    /// Blob size in bytes; absent for non-blob entries (trees/commits/
+    /// submodules) and tolerated as `None` so the JSON parses cleanly.
+    /// Used by the staging-drift calculator's DriftEntry size column;
+    /// the PR-classifier index path ignores it.
+    #[serde(default)]
+    size: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -414,6 +434,582 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
         ),
     );
     Some(StagingIndex { main, prs })
+}
+
+// ── Sync-point provenance & full replace-from-staging ─────────────────────────
+//
+// The scripts/replace-from-staging-rescue.sh rescue script stamps
+// `replaced_from_staging.last_sync_sha` into `core/core.yaml` after every
+// successful default-mode run. The menubar surfaces an "Update from staging"
+// pill (only for `@getindigo.ai` users) when:
+//   * the stamp is missing entirely (never synced), OR
+//   * the stamped SHA is older than staging `main`'s HEAD SHA.
+//
+// Clicking the pill invokes `run_replace_from_staging`, which spawns the
+// bundled bash script against the resolved HQ folder. The script handles
+// drift rescue, history-aware skip gate, carve-outs, and the post-overlay
+// stamp write — see scripts/replace-from-staging-rescue.sh for the full
+// algorithm.
+
+/// What the menubar needs to decide whether to show the "Update from staging"
+/// pill and what to label it with. Serialized to the frontend as JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct StagingReplaceInfo {
+    /// True when the user should be offered an update. False means either the
+    /// local stamp matches `main`'s HEAD, or the user is ineligible and the
+    /// feature is dark.
+    pub available: bool,
+    /// `replaced_from_staging.last_sync_sha` from local `core/core.yaml`.
+    /// `None` if the stamp is missing (never synced via this script).
+    pub local_sha: Option<String>,
+    /// HEAD SHA of staging `main` at check time.
+    pub latest_sha: String,
+    /// First 7 chars of `latest_sha`, for use in pill labels like
+    /// `"Update from staging (b02eeb4)"`.
+    pub latest_short: String,
+    /// `owner/name` form of the repo being checked. Useful for tooltip text.
+    pub repo: String,
+}
+
+/// Output from spawning the rescue script. Wired to the frontend so the
+/// popover can show success / failure + the last few lines of script output
+/// without dumping the whole 700-line scan log into the popover.
+#[derive(Debug, Clone, Serialize)]
+pub struct RescueRunResult {
+    /// Process exit code. `0` is success; non-zero is a script-side error.
+    pub exit_code: i32,
+    /// Last ~40 lines of combined stdout+stderr — enough for the trailing
+    /// summary block without flooding the IPC bridge.
+    pub log_tail: String,
+    /// Full log file path on disk for `Open in Finder` / debug.
+    pub log_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GhCommit {
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalCoreYaml {
+    #[serde(default)]
+    replaced_from_staging: Option<LocalReplacedFromStaging>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocalReplacedFromStaging {
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    last_sync_sha: Option<String>,
+}
+
+/// Resolve the user's HQ folder using the same 4-tier resolver the rest of
+/// the app uses (menubar.json → config.json → discovery → ~/HQ).
+fn resolve_hq_folder() -> std::path::PathBuf {
+    let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let config = read_hq_config_lenient().ok().flatten();
+    paths::resolve_hq_folder(
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
+    )
+}
+
+/// Read `replaced_from_staging` from local `core/core.yaml`. Falls back to
+/// `core.yaml` (pre-v14 layout) the same way `hq_core_update.rs` does.
+/// Returns the SHA only if the recorded `source` matches `expected_source`
+/// (different sources can't be meaningfully compared).
+fn local_last_sync_sha(expected_source: &str) -> Option<String> {
+    let hq_folder = resolve_hq_folder();
+    let canonical = hq_folder.join("core").join("core.yaml");
+    let legacy = hq_folder.join("core.yaml");
+    let core_yaml = if canonical.is_file() { canonical } else { legacy };
+
+    let bytes = std::fs::read(&core_yaml).ok()?;
+    let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).ok()?;
+    let rfs = parsed.replaced_from_staging?;
+    // Only honour the stamp when the recorded source matches what we're
+    // about to compare against. A stamp from a different fork tells us
+    // nothing about how far ahead `indigoai-us/hq-core-staging` is.
+    if rfs.source.as_deref() != Some(expected_source) {
+        return None;
+    }
+    rfs.last_sync_sha
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Fetch staging `main`'s HEAD commit SHA via the GitHub API. One round-trip,
+/// returns the 40-char SHA.
+async fn fetch_staging_main_sha(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/{repo}/commits/main");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("staging main commit HTTP {}", resp.status()));
+    }
+    let parsed: GhCommit = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse staging main commit JSON: {e}"))?;
+    let sha = parsed.sha.trim().to_string();
+    if sha.len() < 40 {
+        return Err(format!("unexpected SHA length from GH API: {sha:?}"));
+    }
+    Ok(sha)
+}
+
+/// Tauri command — decide whether to show the "Update from staging" pill.
+/// Returns `None` (feature dark / silent) when:
+///   * user is not `@getindigo.ai`,
+///   * no GH token is available,
+///   * GH API is unreachable.
+/// Returns `Some(StagingReplaceInfo)` otherwise; `available=false` means
+/// local is in sync with staging `main`.
+#[tauri::command]
+pub async fn check_staging_replace_available() -> Option<StagingReplaceInfo> {
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let repo = resolve_staging_repo(eligible)?;
+    if !eligible && repo == DEFAULT_STAGING_REPO {
+        return None;
+    }
+    let token = resolve_gh_token()?;
+    let client = match authed_client(&token) {
+        Ok(c) => c,
+        Err(e) => {
+            log("hq-core-staging", &format!("client build failed: {e}"));
+            return None;
+        }
+    };
+
+    let latest_sha = match fetch_staging_main_sha(&client, &repo).await {
+        Ok(sha) => sha,
+        Err(e) => {
+            log("hq-core-staging", &format!("main HEAD fetch failed: {e}"));
+            return None;
+        }
+    };
+
+    let local_sha = local_last_sync_sha(&repo);
+    let available = match local_sha.as_deref() {
+        Some(local) => local != latest_sha,
+        None => true, // no stamp -> never synced via the script -> offer update
+    };
+
+    let latest_short = latest_sha.chars().take(7).collect::<String>();
+    log(
+        "hq-core-staging",
+        &format!(
+            "replace-from-staging check: repo={repo} local={:?} latest={} available={}",
+            local_sha, latest_short, available
+        ),
+    );
+    Some(StagingReplaceInfo {
+        available,
+        local_sha,
+        latest_sha,
+        latest_short,
+        repo,
+    })
+}
+
+/// Resolve the bundled rescue script via Tauri's resource API. In dev
+/// (`cargo run` / `tauri dev`) the script ships at `_up_/scripts/...` under
+/// the resource dir (Tauri rewrites `../scripts/...` to `_up_/scripts/...`
+/// during resource staging). In packaged builds the bundler places it in
+/// the .app's `Resources/` directory under the same relative path.
+fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let candidates = [
+        "_up_/scripts/replace-from-staging-rescue.sh",
+        "scripts/replace-from-staging-rescue.sh",
+    ];
+    for rel in candidates {
+        if let Ok(p) = app.path().resolve(rel, BaseDirectory::Resource) {
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+    // Last-resort dev fallback: the cwd may be the repo root when
+    // running `cargo run` directly without going through `tauri dev`.
+    let cwd_fallback = std::env::current_dir()
+        .ok()
+        .map(|c| c.join("scripts").join("replace-from-staging-rescue.sh"));
+    if let Some(p) = cwd_fallback {
+        if p.is_file() {
+            return Ok(p);
+        }
+    }
+    Err(format!(
+        "replace-from-staging-rescue.sh not found in resource dir (looked at: {:?})",
+        candidates
+    ))
+}
+
+/// Tauri command — run the rescue script against the resolved HQ folder.
+/// Eligibility is enforced by `resolve_staging_repo`: ineligible users with
+/// no `driftStagingRepo` override resolve to `None` and get rejected here.
+/// Ineligible users WITH an explicit override are allowed through — they
+/// opted in by configuring the menubar pref, and the same path lets the
+/// pill render for them in `check_staging_replace_available`. Keeping the
+/// two entry points consistent avoids the "visible action that always
+/// errors" pattern Codex flagged.
+///
+/// Long-running (~30-90s on first run because of the full-history clone +
+/// scan). The frontend should show a spinner and disable the pill while
+/// the future is pending.
+#[tauri::command]
+pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult, String> {
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let repo = resolve_staging_repo(eligible).ok_or_else(|| {
+        "no staging repo resolved (set driftStagingRepo in ~/.hq/menubar.json, or sign in with an @getindigo.ai account)".to_string()
+    })?;
+    let token = resolve_gh_token()
+        .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
+    let hq_folder = resolve_hq_folder();
+    if !hq_folder.join("companies").is_dir() || !hq_folder.join("personal").is_dir() {
+        return Err(format!(
+            "HQ folder at {} is missing companies/ or personal/ (not a valid HQ root)",
+            hq_folder.display()
+        ));
+    }
+    let script = resolve_rescue_script(&app)?;
+
+    // Stream the combined output to a per-invocation log file so the user
+    // can `tail -f` it during the multi-minute scan and so we have a
+    // post-mortem on failures. The popover gets a 40-line tail.
+    let log_path = std::env::temp_dir().join(format!(
+        "hq-sync-replace-from-staging-{}.log",
+        std::process::id()
+    ));
+    let log_file_for_stdout = std::fs::File::create(&log_path)
+        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
+    let log_file_for_stderr = log_file_for_stdout
+        .try_clone()
+        .map_err(|e| format!("dup log file fd: {e}"))?;
+
+    log(
+        "hq-core-staging",
+        &format!(
+            "spawning rescue: script={} hq_root={} repo={} log={}",
+            script.display(),
+            hq_folder.display(),
+            repo,
+            log_path.display()
+        ),
+    );
+
+    // bash <script> --hq-root <folder> --source <repo> --yes
+    // Token is passed via env (never in argv — argv shows up in `ps`).
+    let bash = paths::resolve_bin("bash");
+    let mut cmd = tokio::process::Command::new(&bash);
+    cmd.arg(script.as_os_str())
+        .arg("--hq-root")
+        .arg(hq_folder.as_os_str())
+        .arg("--source")
+        .arg(&repo)
+        .arg("--yes")
+        .env("GH_TOKEN", &token)
+        .stdout(std::process::Stdio::from(log_file_for_stdout))
+        .stderr(std::process::Stdio::from(log_file_for_stderr));
+
+    let status = cmd
+        .status()
+        .await
+        .map_err(|e| format!("spawn rescue script: {e}"))?;
+
+    let exit_code = status.code().unwrap_or(-1);
+    let log_tail = tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+
+    log(
+        "hq-core-staging",
+        &format!("rescue exit={} log={}", exit_code, log_path.display()),
+    );
+
+    Ok(RescueRunResult {
+        exit_code,
+        log_tail,
+        log_path: log_path.display().to_string(),
+    })
+}
+
+/// Read the last N lines of a log file. Pure stdlib so we don't pull in
+/// another dep just for tailing. Reads the whole file into memory — fine
+/// for our use (rescue logs are < 100 KB even in the worst case).
+fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n_lines);
+    Ok(lines[start..].join("\n"))
+}
+
+// ── Staging-aware drift count ────────────────────────────────────────────────
+//
+// Parallel to `hq_core_drift::check_once` but compares the user's locked-scope
+// files against staging `main` instead of the released `v{hqVersion}` tag.
+// `@getindigo.ai`-only — non-eligible users see release drift (the existing
+// pill) unchanged.
+//
+// Reuses the same data model (`DriftReport` + `DriftEntry`) so the frontend
+// can plug the staging report into the same pill + detail-window plumbing
+// without forking the UI. Emits on `hq-core-staging-drift:available` (distinct
+// event so App.svelte can route to a separate state slot).
+//
+// Method (lifted from hq_core_drift):
+//   1. `GET /repos/{repo}/git/trees/main?recursive=1` — entire staging tree
+//      in one JSON, each blob carries its git SHA-1.
+//   2. Walk local under `rules.locked` scopes via `walk_local_under_scope`.
+//   3. Set-difference upstream-vs-local to produce modified/missing/added.
+//
+// Cost: one authed API call + a local walk over ~hundreds of files. Cheap
+// enough to run every 6h on the same offset cadence as the release-drift
+// background loop. NO full clone — this is a count pill, not the rescue.
+
+const STAGING_DRIFT_INITIAL_DELAY: Duration = Duration::from_secs(40);
+// 30 min — faster than the 6h family default. The staging channel moves
+// many times per day for active @getindigo.ai builders, so a stale pill is
+// a near-constant footgun. One authed trees-API call per cycle (no clone,
+// no walk over the whole HQ tree — just `rules.locked` scope) keeps the
+// cost negligible vs. the release-drift checker's hourly rhythm.
+const STAGING_DRIFT_CHECK_INTERVAL: Duration = Duration::from_secs(1800);
+
+/// `GET /repos/:owner/:repo/git/trees/main?recursive=1` shaped for drift
+/// computation: path → (blob_sha, size). The hq_core_staging `fetch_main_tree`
+/// (used by the PR-classifier) returns a different shape — path → SetOf<sha>
+/// — because the classifier indexes EVERY blob ever at that path across
+/// `main` + open PRs. For drift we only need the current `main` SHA + size.
+async fn fetch_staging_main_tree_for_drift(
+    client: &reqwest::Client,
+    repo: &str,
+) -> Result<BTreeMap<String, (String, u64)>, String> {
+    let url = format!("https://api.github.com/repos/{repo}/git/trees/main?recursive=1");
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("staging main tree HTTP {}", resp.status()));
+    }
+    let parsed: GhTreesResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("parse staging tree JSON: {e}"))?;
+    if parsed.truncated {
+        log(
+            "hq-core-staging-drift",
+            "WARNING: staging main tree truncated — drift count is a lower bound",
+        );
+    }
+    let mut out: BTreeMap<String, (String, u64)> = BTreeMap::new();
+    for entry in parsed.tree {
+        if entry.kind != "blob" {
+            continue;
+        }
+        // Skip symlinks (mode `120000`) — see field comment on GhTreeEntry.
+        if entry.mode.as_deref() == Some("120000") {
+            continue;
+        }
+        // `size` is None for unusual entries (submodules, etc.); 0 is a
+        // safe placeholder — the value only feeds the detail window's
+        // display column.
+        let size = entry.size.unwrap_or(0);
+        out.insert(entry.path, (entry.sha, size));
+    }
+    Ok(out)
+}
+
+// `GhTreesResponse` and `GhTreeEntry` already live above for the PR-classifier
+// build_index path; they include `size` even though that field is unused
+// there. The drift fetch above reuses both via the same `Deserialize` impls.
+//
+// `size` IS used here, so make sure the trees-API entry shape carries it.
+// (Defined further up — see `struct GhTreeEntry`.)
+//
+// NOTE: the existing GhTreeEntry currently has no `size` field — add one
+// below as part of this patch.
+
+/// Run one staging-drift check. Returns `Ok(None)` for the same fail-quiet
+/// cases as the release-drift counterpart, plus the eligibility / token
+/// gates from the rest of `hq_core_staging`.
+pub async fn check_staging_drift_once(app: &AppHandle) -> Result<Option<DriftReport>, String> {
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let Some(repo) = resolve_staging_repo(eligible) else {
+        return Ok(None);
+    };
+    if !eligible && repo == DEFAULT_STAGING_REPO {
+        return Ok(None);
+    }
+    let Some(token) = resolve_gh_token() else {
+        return Ok(None);
+    };
+    let client = match authed_client(&token) {
+        Ok(c) => c,
+        Err(e) => {
+            log("hq-core-staging-drift", &format!("client build failed: {e}"));
+            return Ok(None);
+        }
+    };
+
+    let hq_folder = resolve_hq_folder();
+    let locked = read_locked_paths(&hq_folder);
+    if locked.is_empty() {
+        return Ok(None);
+    }
+
+    // The "hq_version" field in DriftReport is mirrored back to the renderer
+    // so the detail window can label "drift vs <ref>". For staging drift we
+    // overload it with the source@ref shorthand — the existing renderer
+    // doesn't parse it, just displays as a tag.
+    let report_ref_label = format!("{repo}@main");
+
+    let upstream = match fetch_staging_main_tree_for_drift(&client, &repo).await {
+        Ok(m) => m,
+        Err(e) => {
+            log(
+                "hq-core-staging-drift",
+                &format!("main tree fetch failed: {e}"),
+            );
+            return Ok(None);
+        }
+    };
+    let excluded = excluded_scope_paths();
+    let local = walk_local_under_scope(&hq_folder, &locked);
+
+    let upstream_in_scope: BTreeMap<String, (String, u64)> = upstream
+        .into_iter()
+        .filter(|(path, _)| path_in_locked_scope(path, &locked))
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .collect();
+
+    let local: BTreeMap<String, (String, u64)> = local
+        .into_iter()
+        .filter(|(path, _)| !path_in_excluded_scope(path, &excluded))
+        .filter(|(path, _)| !is_conflict_artifact(path))
+        .collect();
+
+    let upstream_paths: BTreeSet<&String> = upstream_in_scope.keys().collect();
+    let local_paths: BTreeSet<&String> = local.keys().collect();
+
+    let mut modified = Vec::new();
+    let mut missing = Vec::new();
+    let mut added = Vec::new();
+
+    for path in upstream_paths.intersection(&local_paths) {
+        let (sha_up, _size_up) = &upstream_in_scope[*path];
+        let (sha_local, size_local) = &local[*path];
+        if sha_up != sha_local {
+            modified.push(DriftEntry {
+                path: (*path).clone(),
+                size: *size_local,
+                git_sha_local: Some(sha_local.clone()),
+                git_sha_upstream: Some(sha_up.clone()),
+                staging_status: None,
+            });
+        }
+    }
+    for path in upstream_paths.difference(&local_paths) {
+        let (sha_up, size_up) = &upstream_in_scope[*path];
+        missing.push(DriftEntry {
+            path: (*path).clone(),
+            size: *size_up,
+            git_sha_local: None,
+            git_sha_upstream: Some(sha_up.clone()),
+            staging_status: None,
+        });
+    }
+    for path in local_paths.difference(&upstream_paths) {
+        let (sha_local, size_local) = &local[*path];
+        added.push(DriftEntry {
+            path: (*path).clone(),
+            size: *size_local,
+            git_sha_local: Some(sha_local.clone()),
+            git_sha_upstream: None,
+            staging_status: None,
+        });
+    }
+
+    let count = modified.len() + missing.len() + added.len();
+    let report = DriftReport {
+        count,
+        modified,
+        missing,
+        added,
+        scanned_at: chrono::Utc::now().to_rfc3339(),
+        hq_version: report_ref_label,
+    };
+
+    log(
+        "hq-core-staging-drift",
+        &format!(
+            "check: repo={} count={} (modified={}, missing={}, added={})",
+            repo,
+            report.count,
+            report.modified.len(),
+            report.missing.len(),
+            report.added.len()
+        ),
+    );
+
+    // Always emit so the frontend can swing the count back to zero on
+    // re-check after a rescue run (same posture as hq-core-drift). The
+    // event name is distinct so App.svelte can route to its own state slot
+    // without entangling with the release-drift listener.
+    let _ = app.emit("hq-core-staging-drift:available", &report);
+
+    // Keep the detail window in sync if it's open. Same pattern as
+    // hq_core_drift — emit_to no-ops when the window doesn't exist.
+    if let Some(state) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
+        *state.0.lock().unwrap() = Some(report.clone());
+    }
+    let _ = app.emit_to(
+        crate::commands::drift_detail::WINDOW_LABEL,
+        "drift:report",
+        &report,
+    );
+
+    Ok(Some(report))
+}
+
+/// Tauri command — synchronous one-shot staging-drift check. Mirrors
+/// `hq_core_drift::check_hq_core_drift`. Returns `None` for ineligible
+/// users / dark feature so the frontend can route conditionally without
+/// distinguishing failure modes.
+#[tauri::command]
+pub async fn check_staging_drift(app: AppHandle) -> Result<Option<DriftReport>, String> {
+    check_staging_drift_once(&app).await
+}
+
+/// Background loop: first check 40s after launch (offset from the
+/// release-drift checker's 30s), then every 6h. Logs but doesn't
+/// propagate errors — a flaky network or expired token shouldn't kill
+/// the loop, and a future re-check can succeed once the user runs
+/// `gh auth login` etc.
+pub fn setup_staging_drift_checker(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(STAGING_DRIFT_INITIAL_DELAY).await;
+        loop {
+            if let Err(e) = check_staging_drift_once(&handle).await {
+                log(
+                    "hq-core-staging-drift",
+                    &format!("background check failed: {e}"),
+                );
+            }
+            tokio::time::sleep(STAGING_DRIFT_CHECK_INTERVAL).await;
+        }
+    });
 }
 
 #[cfg(test)]

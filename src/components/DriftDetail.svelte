@@ -36,18 +36,24 @@
   // Manual recheck. The background loop only re-scans every 6h (see
   // hq_core_drift.rs CHECK_INTERVAL), so after resolving drift — or when
   // staging PRs have moved — the report on screen can be stale. This
-  // button forces a fresh `check_once` via the existing
-  // `check_hq_core_drift` command, which re-emits `drift:report` back to
-  // this window (our $effect listener applies it + resets restoreState),
-  // so the window updates in place. No need to read the return value.
+  // button forces a fresh check; both Rust commands re-emit `drift:report`
+  // back to this window so the $effect listener applies it + resets
+  // restoreState, updating the window in place.
+  //
+  // Route by report origin so we don't re-check release drift when the
+  // window is showing staging drift (or vice versa). Staging reports carry
+  // an `owner/repo@ref`-shaped `hqVersion`; release reports are a bare
+  // version string like `14.2.1`. The `@` is the unambiguous tell.
   let rechecking = $state(false);
   async function recheck() {
     if (rechecking) return;
     rechecking = true;
     try {
-      await invoke('check_hq_core_drift');
+      const isStaging = !!report?.hqVersion?.includes('@');
+      const cmd = isStaging ? 'check_staging_drift' : 'check_hq_core_drift';
+      await invoke(cmd);
     } catch (e) {
-      console.error('recheck (check_hq_core_drift) failed:', e);
+      console.error('recheck failed:', e);
     } finally {
       rechecking = false;
     }
