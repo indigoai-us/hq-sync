@@ -198,7 +198,9 @@ pub(crate) fn excluded_scope_paths() -> Vec<String> {
     [
         ".claude/settings.local.json",
         ".claude/state",
-        ".claude/commands", // legacy — consolidated into .claude/skills/
+        ".claude/audit",     // runtime audit logs; not authored content
+        ".claude/worktrees", // Claude Code per-Agent worktree sandboxes
+        ".claude/commands",  // legacy — consolidated into .claude/skills/
         ".agents/skills",
         ".codex/claude",
         ".codex/output-style.md",
