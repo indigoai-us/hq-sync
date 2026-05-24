@@ -10,6 +10,10 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import {
+    loadMeetingsCache,
+    saveMeetingsCache,
+  } from '../lib/meetingsCache';
 
   interface MeetingEvent {
     id: string;
@@ -94,9 +98,30 @@
     status: string;
   }
 
-  let events = $state<MeetingEvent[]>([]);
-  let botsByEventId = $state<Map<string, ScheduledBot>>(new Map());
-  let companyNamesByUid = $state<Map<string, string>>(new Map());
+  /**
+   * Stale-while-revalidate hydrate: synchronously read the last cached
+   * snapshot so $state defaults below paint rows on open instead of an
+   * empty skeleton. `refresh()` still runs from the lifecycle $effect to
+   * pull fresh data — the cache just gets us to first paint without
+   * waiting for the round-trip. Returns null on cache miss / corrupt /
+   * expired entry (>24h old), in which case every state var falls back
+   * to its empty default and the cold-start skeleton renders as before.
+   * Lives outside any $state so it runs exactly once at script-init.
+   */
+  const cachedSnapshot = loadMeetingsCache<
+    MeetingEvent,
+    ScheduledBot,
+    GoogleAccount,
+    GoogleCalendar
+  >();
+
+  let events = $state<MeetingEvent[]>(cachedSnapshot?.events ?? []);
+  let botsByEventId = $state<Map<string, ScheduledBot>>(
+    new Map(cachedSnapshot?.botsByEventId ?? []),
+  );
+  let companyNamesByUid = $state<Map<string, string>>(
+    new Map(cachedSnapshot?.companyNamesByUid ?? []),
+  );
   let loading = $state(false);
   let listError = $state<string | null>(null);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
@@ -159,16 +184,28 @@
   //                          all" — distinct from the empty set ("show nothing")
   //                          so we can drop the filter without losing context
   //   `filterOpen`         — dropdown visibility
-  let accounts = $state<GoogleAccount[]>([]);
-  let calendarsByAccount = $state<Map<string, GoogleCalendar[]>>(new Map());
+  let accounts = $state<GoogleAccount[]>(cachedSnapshot?.accounts ?? []);
+  let calendarsByAccount = $state<Map<string, GoogleCalendar[]>>(
+    new Map(cachedSnapshot?.calendarsByAccount ?? []),
+  );
   /** Calendar IDs the user has actually enabled in hq-console Integrations
    *  per account. Used to scope the filter dropdown so it never lists a
    *  calendar that hq-pro isn't fanning out against — prevents the trap
    *  where checking a dropdown box does nothing because the calendar
    *  isn't enabled server-side. */
-  let enabledCalIdsByAccount = $state<Map<string, Set<string>>>(new Map());
-  let accountEmailById = $state<Map<string, string>>(new Map());
-  let calendarSummaryByKey = $state<Map<CalendarKey, string>>(new Map());
+  let enabledCalIdsByAccount = $state<Map<string, Set<string>>>(
+    new Map(
+      (cachedSnapshot?.enabledCalIdsByAccount ?? []).map(
+        ([acct, ids]) => [acct, new Set(ids)],
+      ),
+    ),
+  );
+  let accountEmailById = $state<Map<string, string>>(
+    new Map(cachedSnapshot?.accountEmailById ?? []),
+  );
+  let calendarSummaryByKey = $state<Map<CalendarKey, string>>(
+    new Map(cachedSnapshot?.calendarSummaryByKey ?? []),
+  );
   let selectedCalKeys = $state<Set<CalendarKey> | null>(null);
   let filterOpen = $state(false);
   /** Bound to the filter-row container so the outside-click effect can
@@ -224,6 +261,22 @@
       void refresh();
     }, 30_000);
 
+    // Refresh on window-focus regain — the user re-opening this detached
+    // window (or alt-tabbing back to it) is the canonical "I want fresh
+    // data" signal. Pairs with the cache hydrate up top: cached rows
+    // paint synchronously on open, the focus event fires within a beat,
+    // fresh data swaps in. Mount-then-focus pair on first open is deduped
+    // by the `loading` guard at the top of refresh(), so we don't pay
+    // for a double-fetch.
+    let unlistenFocus: (() => void) | null = null;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) void refresh();
+      })
+      .then((fn) => {
+        unlistenFocus = fn;
+      });
+
     // Esc closes the window — feels native on macOS where ⌘W is the
     // standard but Esc is the common expectation for a detached panel.
     const onkeydown = (e: KeyboardEvent) => {
@@ -236,10 +289,16 @@
     return () => {
       window.clearInterval(pollId);
       window.removeEventListener('keydown', onkeydown);
+      unlistenFocus?.();
     };
   });
 
   async function refresh() {
+    // Dedupe concurrent calls. The lifecycle $effect, the 30s poll, the
+    // focus-refresh listener, and the manual refresh button can all race;
+    // bailing on an in-flight load is cheaper than queueing them and
+    // matches the existing refresh-button-disabled-while-loading UX.
+    if (loading) return;
     loading = true;
     listError = null;
     try {
@@ -274,11 +333,39 @@
       // the failing account, but events from it still render with the
       // accountId as the badge fallback.
       await loadCalendarsForAccounts(accts ?? []);
+
+      // Persist after EVERYTHING (events + calendars) so the next open
+      // hydrates a complete view — calendar maps need to be in the cache
+      // too or the filter dropdown would be empty on next paint until the
+      // second refresh ran. Best-effort: any write failure is swallowed
+      // inside saveMeetingsCache and never breaks this code path.
+      persistSnapshot();
     } catch (err) {
       listError = String(err);
     } finally {
       loading = false;
     }
+  }
+
+  /**
+   * Serialize the current $state into a cache snapshot. Maps and Sets
+   * become their `Array.from()` form so the payload roundtrips through
+   * `JSON.stringify` — `JSON.stringify(new Map())` returns `"{}"`, which
+   * would silently empty every map on the next load.
+   */
+  function persistSnapshot(): void {
+    saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
+      events,
+      botsByEventId: Array.from(botsByEventId.entries()),
+      companyNamesByUid: Array.from(companyNamesByUid.entries()),
+      accounts,
+      accountEmailById: Array.from(accountEmailById.entries()),
+      calendarsByAccount: Array.from(calendarsByAccount.entries()),
+      enabledCalIdsByAccount: Array.from(enabledCalIdsByAccount.entries()).map(
+        ([acct, ids]) => [acct, Array.from(ids)],
+      ),
+      calendarSummaryByKey: Array.from(calendarSummaryByKey.entries()),
+    });
   }
 
   async function loadCalendarsForAccounts(accts: GoogleAccount[]) {
