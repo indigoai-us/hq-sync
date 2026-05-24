@@ -787,15 +787,22 @@
              * Non-eligible users keep the existing release-drift pill.
              Both reports use the same DriftReport shape so the detail
              window doesn't fork. -->
-        {#if stagingDrift && stagingDrift.count > 0}
+        {#if stagingDrift}
+          <!-- Eligible users always see a staging-drift chip — at 0 it
+               confirms "in sync", >0 it's the same notice pill as before.
+               Either state is clickable so the detail window is always
+               one click away (lets you inspect even when everything is
+               clean). -->
           <button
-            class="footer-hq-version-pill footer-hq-version-pill-notice"
+            class="footer-hq-version-pill {stagingDrift.count > 0 ? 'footer-hq-version-pill-notice' : ''}"
             onclick={openDriftDetail}
-            title={`${stagingDrift.count} locked core file${stagingDrift.count === 1 ? '' : 's'} differ from ${stagingDrift.hqVersion}. Click for details. Click "Update to Staging" to reconcile.`}
+            title={stagingDrift.count > 0
+              ? `${stagingDrift.count} locked core file${stagingDrift.count === 1 ? '' : 's'} differ from ${stagingDrift.hqVersion}. Click for details. Click "Update to Staging" to reconcile.`
+              : `Locked core matches ${stagingDrift.hqVersion}. Click to open the drift detail window.`}
           >
-            {stagingDrift.count} drifted
+            {stagingDrift.count > 0 ? `${stagingDrift.count} drifted` : 'in sync'}
           </button>
-        {:else if !stagingDrift && hqCoreDrift && hqCoreDrift.count > 0}
+        {:else if hqCoreDrift && hqCoreDrift.count > 0}
           <button
             class="footer-hq-version-pill footer-hq-version-pill-notice"
             onclick={openDriftDetail}
