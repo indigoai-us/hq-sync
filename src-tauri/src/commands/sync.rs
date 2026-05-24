@@ -121,6 +121,33 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// startup so the cost lands in the background rather than during the
 /// user's first click of "Sync Now".
 ///
+/// 5.34.x closes a 10-bug cross-machine sync cleanup (indigoai-us/
+/// hq-cloud#24). Promoted to the new floor because three of those bugs
+/// directly destroy the menubar's user-facing promises and have
+/// surfaced as live support pain on `~5.19.0`:
+///   - Bug #9: cross-machine deletes now propagate via journal-vs-LIST
+///     diff + HEAD-verify scope guard. Pre-5.34.0 the pull walker had
+///     no tombstone-consumption mechanism, so the menubar's "drifted
+///     files" count never zeroed (root cause of the operator's
+///     `sync-app-is-still-showing-24-drifted-files-after-update`
+///     project — see hq-cloud-5.33.0-deep-test reports).
+///   - Bug #7: first-time-upload-with-cloud-collision now writes a
+///     mirror instead of silently overwriting peer content. Pre-fix
+///     two open laptops editing the same file before either had
+///     synced silently destroyed the slower-to-sync side with no
+///     conflict event → no tray badge → invisible data loss.
+///   - Bug #10: dir-vs-file `(local-file, cloud-dir)` collision no
+///     longer throws `ENOTDIR` and aborts the whole company sync.
+///     Pre-fix one stale path wedged auto-sync indefinitely; the tray
+///     went red every 10-min cycle with no in-menubar diagnostic.
+/// Plus #1/#6/#8 (`.hq/` leak channel), #2 (pull-side ephemeral
+/// filter), #3 (conflictPaths dedup), #4 (dir-vs-file warning), and
+/// #5 (file-mode preserved across sync — was collapsing every mode
+/// to 0644 on receiver). Codex P1/P2 follow-ups added HEAD-verify
+/// scope gating, EACCES journal retention, local-edit-vs-remote-
+/// delete race detection for both files and symlinks, and strict-
+/// octal `hq-mode` parsing. See PR #24 commit log for the full chain.
+///
 /// 5.19.x switches the sync runner's slug resolution to the per-user
 /// namespace endpoint (`/entity/check-slug/me` → `entity.get(uid)`).
 /// On 2026-05-15 hq-pro#67 went live and flipped the legacy global
@@ -153,7 +180,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// first menubar sync ran on a behind machine and would erase legacy/
 /// filtered paths when the local hqRoot's ignore filter rejected them.
 /// See indigoai-us/hq#142 + the 2026-05-14 incident report.
-pub const HQ_CLOUD_VERSION: &str = "~5.19.0";
+pub const HQ_CLOUD_VERSION: &str = "~5.34.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
