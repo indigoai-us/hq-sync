@@ -58,6 +58,12 @@ split-debuginfo = "packed"
 # any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
 # doesn't expose the panel handle, so we reach into AppKit directly.
 objc2 = "0.6"
+# Used by commands/permissions.rs to trigger TCC microphone registration
+# from HQ Sync's main process. AVCaptureDevice's requestAccessForMediaType:
+# selector takes a non-optional ObjC block as the completion handler, so we
+# need block2 to construct one (Apple's API contract — passing nil
+# completion handler crashes).
+block2 = "0.6"
 
 [features]
 journal-cli = []

@@ -118,6 +118,24 @@ fi
 
 echo ""
 
+# ── Info.plist usage descriptions ────────────────────────────────────────
+# Apple kills the app on the spot if a TCC-controlled API is called without
+# the matching usage-description key in Info.plist. Hit this on 2026-05-25
+# when AVCaptureDevice.requestAccess(audio) crashed with "This app has
+# crashed because it attempted to access privacy-sensitive data without a
+# usage description." — so the verifier checks every key our Rust code
+# directly relies on. If we add a new TCC call, append the matching key here.
+echo "Info.plist usage descriptions (Apple kills the app instantly if these are missing):"
+
+PLIST="$APP/Contents/Info.plist"
+plist_has() {
+  /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST" >/dev/null 2>&1
+}
+check "NSMicrophoneUsageDescription (required by AVCaptureDevice.requestAccess(audio))" \
+  plist_has NSMicrophoneUsageDescription
+
+echo ""
+
 # ── Code signing integrity ───────────────────────────────────────────────
 echo "Code signing:"
 check "codesign --verify --deep --strict passes" \

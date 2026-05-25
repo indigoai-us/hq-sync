@@ -64,16 +64,95 @@ mod macos {
         /// Returns the current status without prompting.
         pub fn CGPreflightScreenCaptureAccess() -> bool;
     }
+
+    // AVFoundation — needed to link the framework so AVCaptureDevice symbols
+    // resolve at load time. The Rust side calls into it via objc2 / block2
+    // (see `request_microphone_access`), not via these extern declarations.
+    #[link(name = "AVFoundation", kind = "framework")]
+    extern "C" {}
 }
 
-/// Trigger native macOS API calls for Accessibility + Screen Recording from
-/// the `hq-sync-menubar` process itself. Idempotent — safe to call on every
-/// app launch.
+/// Register the .app bundle with macOS TCC for Microphone (and System Audio
+/// by extension — on Sequoia+ they're consolidated into one privacy pane).
+///
+/// macOS Microphone only gets populated when an app actively *requests*
+/// access via `+[AVCaptureDevice requestAccessForMediaType:completionHandler:]`.
+/// There's no `+` button in System Settings to add an app manually like
+/// there is for Accessibility or Screen Recording.
+///
+/// The Recall SDK's helper binary already makes this request from inside
+/// the bundle, BUT TCC attributes it to the helper's own (ad-hoc) identity
+/// rather than the parent .app, so the prompt never fires and HQ Sync never
+/// appears in the Microphone list. Calling the same API from `hq-sync-menubar`
+/// (whose identity is the stable signed .app bundle) makes TCC attach the
+/// grant to "HQ Sync".
+///
+/// Fire-and-forget — the completion handler is a no-op stack block. We
+/// don't need the granted bool here; the SDK's own polling reads back the
+/// status once TCC has the entry.
+#[cfg(target_os = "macos")]
+fn request_microphone_access() {
+    use block2::RcBlock;
+    use objc2::{
+        class, msg_send,
+        runtime::{AnyClass, AnyObject, Bool},
+    };
+
+    // SAFETY: every msg_send below targets a class method on a documented
+    // Apple framework class. AVCaptureDevice + NSString are always present
+    // at runtime on macOS 10.7+. Pointer ownership is autorelease-pool
+    // managed by ObjC; we never retain across the call boundary.
+    unsafe {
+        let av_cls: &AnyClass = class!(AVCaptureDevice);
+
+        // AVMediaTypeAudio is the NSString constant @"soun". Build it from
+        // a C string literal rather than dlsym'ing the global to keep this
+        // self-contained.
+        let ns_string_cls: &AnyClass = class!(NSString);
+        let audio_type: *mut AnyObject = msg_send![
+            ns_string_cls,
+            stringWithUTF8String: b"soun\0".as_ptr() as *const i8
+        ];
+        if audio_type.is_null() {
+            log(LOG_TAG, "request_microphone_access: NSString init failed");
+            return;
+        }
+
+        // The completion handler is non-optional per Apple's header (passing
+        // nil crashes inside AVFoundation). RcBlock heap-allocates the block
+        // with an internal retain count, so AVFoundation can hold its own
+        // strong ref while we drop our handle here — the block stays alive
+        // until AVFoundation invokes it once and releases.
+        //
+        // The selector signature is `^(BOOL granted)`. ObjC `BOOL` maps to
+        // `objc2::runtime::Bool` (NOT Rust bool, which has a different ABI
+        // on i386 — Bool is a u8 wrapper that always matches ObjC's contract).
+        let handler = RcBlock::new(|granted: Bool| {
+            log(
+                LOG_TAG,
+                &format!(
+                    "AVCaptureDevice.requestAccess(audio) -> granted={}",
+                    granted.as_bool()
+                ),
+            );
+        });
+
+        log(LOG_TAG, "AVCaptureDevice.requestAccess(audio): calling");
+        let _: () = msg_send![
+            av_cls,
+            requestAccessForMediaType: audio_type,
+            completionHandler: &*handler
+        ];
+    }
+}
+
+/// Trigger native macOS API calls for Accessibility + Screen Recording +
+/// Microphone from the `hq-sync-menubar` process itself. Idempotent — safe
+/// to call on every app launch.
 ///
 /// Returns a status report `(accessibility_trusted, screen_capture_authorized)`
-/// that the caller logs. Returning bool rather than panicking on a denied
-/// permission is intentional — we just want to make the TCC system *aware*
-/// of the app.
+/// that the caller logs. Microphone is fire-and-forget (the prompt is
+/// async; the bool isn't useful in the return value).
 #[tauri::command]
 pub fn permissions_force_native_register() -> Result<(bool, bool), String> {
     #[cfg(target_os = "macos")]
@@ -97,6 +176,13 @@ pub fn permissions_force_native_register() -> Result<(bool, bool), String> {
         // the binary in the Screen Recording list if it's not there yet.
         let sc = unsafe { CGRequestScreenCaptureAccess() };
         log(LOG_TAG, &format!("CGRequestScreenCaptureAccess -> {sc}"));
+
+        // Microphone: fire a request from THIS process so TCC attributes
+        // it to the .app bundle, not the SDK helper. First call shows the
+        // prompt; subsequent calls are silent no-ops once a decision is
+        // cached. Also covers System Audio on macOS Sequoia+, where the
+        // two are consolidated under "Screen & System Audio Recording".
+        request_microphone_access();
 
         Ok((ax, sc))
     }
