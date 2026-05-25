@@ -766,12 +766,25 @@
       }>('meeting:detected', async (event) => {
         const { meetingUrl, platform, summary, sourceEventId } = event.payload;
         try {
-          if (meetingUrl) {
-            const bot = await invoke<{ botId: string } | null>('meetings_check_bot_for_url', {
-              meetingUrl,
-              eventId: sourceEventId ?? null,
-            });
-            if (bot) return;
+          // Synthetic `recall-window:<id>` URLs come from URL-less SDK
+          // detections (unscheduled Zoom meetings, etc.). hq-pro will reject
+          // them as invalid input, and there's no way a bot got provisioned
+          // against that key anyway — skip the dedup check and go straight
+          // to notify. Same fallback applies if the bot check itself
+          // throws (network, auth, etc.) — better to over-notify once than
+          // swallow the detection entirely.
+          const isSyntheticUrl = typeof meetingUrl === 'string'
+            && meetingUrl.startsWith('recall-window:');
+          if (meetingUrl && !isSyntheticUrl) {
+            try {
+              const bot = await invoke<{ botId: string } | null>('meetings_check_bot_for_url', {
+                meetingUrl,
+                eventId: sourceEventId ?? null,
+              });
+              if (bot) return;
+            } catch (botErr) {
+              console.warn('meetings_check_bot_for_url failed, continuing to notify:', botErr);
+            }
           }
           await invoke('meetings_notify_detected', {
             payload: {

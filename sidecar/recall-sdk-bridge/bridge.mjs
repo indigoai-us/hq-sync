@@ -189,19 +189,45 @@ setTimeout(() => {
 RecallAiSdk.addEventListener("meeting-detected", (event) => {
   try {
     const window = event?.window ?? {};
-    const meetingUrl = typeof window.url === "string" ? window.url : "";
+    const rawUrl = typeof window.url === "string" ? window.url.trim() : "";
+    const windowId = typeof window.id === "string" ? window.id : "";
+    const platform = normalisePlatform(window.platform);
+
+    // For unscheduled / single-window Zoom meetings the SDK often can't
+    // extract a URL — the meeting was joined from the Zoom app directly
+    // rather than from a calendar link, so there's nothing to scrape.
+    // Forward the detection anyway: downstream dedup keys on this URL
+    // string, and the notification logic can fall back to "Zoom meeting"
+    // as the title without a real join URL. Dropping these used to
+    // silently hide every unscheduled meeting on this machine.
+    //
+    // We keep `source: sdk-active-app` (the Rust DetectionSource enum
+    // only knows `sdk-calendar` and `sdk-active-app` — adding a third
+    // variant would be a wire change). For URL-less detections we encode
+    // the windowId into a `recall-window:<id>` synthetic URL — both
+    // recognisable in logs and stable for dedup.
+    const fallbackKey = windowId ? `recall-window:${windowId}` : "";
+    const meetingUrl = rawUrl || fallbackKey;
     if (!meetingUrl) {
-      emitLog("warn", `meeting-detected with no url (windowId=${window.id ?? "?"})`);
+      // No URL and no windowId — nothing we can dedup on. Drop with a log.
+      emitLog("warn", "meeting-detected with no url and no windowId — dropping");
       return;
     }
+
     emitNdjson({
       type: "meeting:detected",
       detectionId: randomUUID(),
       meetingUrl,
-      platform: normalisePlatform(window.platform),
+      platform,
       detectedAt: new Date().toISOString(),
       source: "sdk-active-app",
     });
+    if (!rawUrl) {
+      emitLog(
+        "info",
+        `meeting-detected forwarded without url (synthetic=${meetingUrl}, platform=${platform || "?"})`,
+      );
+    }
   } catch (err) {
     emitLog("error", `event translate failed: ${err?.message ?? err}`);
   }

@@ -754,24 +754,11 @@ pub async fn meetings_notify_detected(
     }
 
     // 4. Build notification body: "<Platform>: <summary or url>".
-    let display = {
-        let mut p = if platform_lc.is_empty() {
-            "Meeting".to_string()
-        } else {
-            platform_lc.clone()
-        };
-        if let Some(c) = p.get_mut(0..1) {
-            c.make_ascii_uppercase();
-        }
-        p
-    };
-    let body = match payload.summary.as_deref().filter(|s| !s.is_empty()) {
-        Some(s) => format!("{display}: {s}"),
-        None => match payload.meeting_url.as_deref().filter(|s| !s.is_empty()) {
-            Some(u) => format!("{display}: {u}"),
-            None => display,
-        },
-    };
+    let body = build_notification_body(
+        &platform_lc,
+        payload.summary.as_deref(),
+        payload.meeting_url.as_deref(),
+    );
 
     // 5. Fire the notification. Permission denial is logged but not an error.
     if let Err(e) = app.notification().builder().title("Meeting detected").body(&body).show() {
@@ -795,6 +782,44 @@ pub async fn meetings_notify_detected(
 pub async fn meetings_clear_prompt_badge(app: AppHandle) {
     use crate::tray::{get_prompt_pending, set_prompt_badge};
     set_prompt_badge(&app, get_prompt_pending().saturating_sub(1));
+}
+
+/// Build the notification body for a detected meeting.
+///
+/// Format:
+/// - With a summary: `"<Platform>: <summary>"` (calendar-derived path)
+/// - With a real URL: `"<Platform>: <url>"` (active-app path)
+/// - With a synthetic `recall-window:<id>` URL or no URL at all:
+///   `"<Platform> meeting"` (URL-less SDK detection — typical for
+///   unscheduled Zoom meetings joined from the desktop app; we don't want
+///   to leak the synthetic key into the user-visible notification)
+///
+/// `platform_lc` is the lowercased platform discriminator (e.g. `"zoom"`).
+/// Empty falls back to `"Meeting"`.
+fn build_notification_body(
+    platform_lc: &str,
+    summary: Option<&str>,
+    meeting_url: Option<&str>,
+) -> String {
+    let display = {
+        let mut p = if platform_lc.is_empty() {
+            "Meeting".to_string()
+        } else {
+            platform_lc.to_string()
+        };
+        if let Some(c) = p.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        p
+    };
+    let is_synthetic_url = |u: &str| u.starts_with("recall-window:");
+    match summary.filter(|s| !s.is_empty()) {
+        Some(s) => format!("{display}: {s}"),
+        None => match meeting_url.filter(|s| !s.is_empty()) {
+            Some(u) if !is_synthetic_url(u) => format!("{display}: {u}"),
+            _ => format!("{display} meeting"),
+        },
+    }
 }
 
 /// Allows only `[a-zA-Z0-9._-]+` — matches Recall.ai bot id shape (UUID with
@@ -914,5 +939,82 @@ mod tests {
             evt.hangout_link.as_deref(),
             Some("https://meet.google.com/abc-defg-hij"),
         );
+    }
+
+    // ── build_notification_body ──────────────────────────────────────────────
+    // Regression: URL-less SDK detections (typically unscheduled Zoom from
+    // the desktop app) reach us with a synthetic `recall-window:<id>` URL
+    // from the bridge. The notification body must NOT leak that key — it
+    // should render as "<Platform> meeting" instead.
+
+    #[test]
+    fn build_notification_body_uses_summary_when_present() {
+        let body = build_notification_body(
+            "zoom",
+            Some("Weekly standup"),
+            Some("https://zoom.us/j/123"),
+        );
+        assert_eq!(body, "Zoom: Weekly standup");
+    }
+
+    #[test]
+    fn build_notification_body_uses_url_when_no_summary() {
+        let body = build_notification_body(
+            "meet",
+            None,
+            Some("https://meet.google.com/abc-defg-hij"),
+        );
+        assert_eq!(body, "Meet: https://meet.google.com/abc-defg-hij");
+    }
+
+    #[test]
+    fn build_notification_body_hides_synthetic_recall_window_url() {
+        // The bridge emits this shape when the SDK detects a meeting window
+        // but can't scrape a real join URL.
+        let body = build_notification_body(
+            "zoom",
+            None,
+            Some("recall-window:43F5EBF4-8949-4DD4-B075-2E8EF68AAA30"),
+        );
+        assert_eq!(body, "Zoom meeting");
+        // Hard check: no part of the synthetic key leaks.
+        assert!(!body.contains("recall-window"), "synthetic key leaked: {body}");
+        assert!(!body.contains("43F5EBF4"), "windowId leaked: {body}");
+    }
+
+    #[test]
+    fn build_notification_body_summary_wins_over_synthetic_url() {
+        // If for some reason the SDK gave us both, summary should still win.
+        let body = build_notification_body(
+            "zoom",
+            Some("Quick chat"),
+            Some("recall-window:abc"),
+        );
+        assert_eq!(body, "Zoom: Quick chat");
+    }
+
+    #[test]
+    fn build_notification_body_falls_back_when_url_and_summary_missing() {
+        let body = build_notification_body("teams", None, None);
+        assert_eq!(body, "Teams meeting");
+    }
+
+    #[test]
+    fn build_notification_body_handles_unknown_platform() {
+        // Bridge maps unrecognised platforms to "other" — verify graceful
+        // rendering without panicking on the first-char uppercase.
+        let body = build_notification_body("", None, None);
+        assert_eq!(body, "Meeting meeting");
+        // ^^ ugly-but-stable; this path requires both platform AND url AND
+        // summary to be missing, which currently can't happen — the bridge
+        // always sends at least the synthetic URL. Keeps the function total.
+    }
+
+    #[test]
+    fn build_notification_body_treats_empty_strings_as_missing() {
+        // The Svelte handler can forward `meetingUrl: ""` / `summary: ""`
+        // depending on how the payload was constructed.
+        let body = build_notification_body("zoom", Some(""), Some(""));
+        assert_eq!(body, "Zoom meeting");
     }
 }
