@@ -219,6 +219,8 @@ fn main() {
             commands::permissions::permissions_open_settings,
             commands::permissions::permissions_force_native_register,
             commands::recall_sdk::meeting_detect_feature_enabled,
+            commands::recall_sdk::start_recording,
+            commands::recall_sdk::stop_recording,
             tray::meetings_set_prompt_badge,
         ])
         .setup(|app| {

@@ -171,6 +171,26 @@
     /** Click handler for the meeting icon — toggles the modal open state
      *  in App.svelte (where the modal itself is rendered). */
     onmeetingsclick?: () => void;
+    /** Active meeting detections from the Recall Desktop SDK. Rendered as
+     *  rows above the sync section with Record/Stop controls. */
+    activeMeetings?: ActiveMeeting[];
+    /** Triggers `start_recording(windowId)` on the Rust side. Owner is
+     *  App.svelte, which also flips the row state on the response. */
+    onstartrecording?: (windowId: string) => void | Promise<void>;
+    /** Triggers `stop_recording(windowId)` on the Rust side. */
+    onstoprecording?: (windowId: string) => void | Promise<void>;
+  }
+
+  /** Mirror of `App.svelte`'s `ActiveMeeting` interface — duplicated here
+   *  so we don't pull a runtime import from a parent. */
+  interface ActiveMeeting {
+    windowId: string;
+    platform: string;
+    meetingUrl: string;
+    detectedAt: string;
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    recordingId?: string;
+    error?: string;
   }
 
   let {
@@ -218,7 +238,16 @@
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
+    activeMeetings = [],
+    onstartrecording,
+    onstoprecording,
   }: Props = $props();
+
+  /** Title-case a platform string for display ("zoom" → "Zoom"). */
+  function platformLabel(p: string): string {
+    if (!p) return 'Meeting';
+    return p.charAt(0).toUpperCase() + p.slice(1);
+  }
 
   // Instance ref for SyncStats so parent can trigger refresh
   let statsEl: SyncStats | undefined = $state();
@@ -474,6 +503,56 @@
   </header>
 
   <div class="popover-divider"></div>
+
+  <!-- Active meeting detections — rendered above all sync content when
+       the SDK has detected an in-progress meeting. The row's primary
+       action is Record (or Stop, if recording), wired to the
+       Tauri commands of the same name. Phase-0 only — non-allowlisted
+       users will never see this section because `activeMeetings` never
+       gets populated (the Rust side gates `meeting:detected` emission
+       on the Phase-0 check). -->
+  {#if activeMeetings.length > 0}
+    <section class="active-meetings" aria-label="Active meetings">
+      {#each activeMeetings as meeting (meeting.windowId)}
+        <div class="meeting-row" data-state={meeting.state}>
+          <div class="meeting-info">
+            <span class="meeting-platform">{platformLabel(meeting.platform)} meeting</span>
+            {#if meeting.state === 'recording'}
+              <span class="meeting-status recording">
+                <span class="recording-dot"></span>
+                Recording
+              </span>
+            {:else if meeting.state === 'starting'}
+              <span class="meeting-status">Starting…</span>
+            {:else if meeting.state === 'stopping'}
+              <span class="meeting-status">Stopping…</span>
+            {:else if meeting.state === 'error' && meeting.error}
+              <span class="meeting-status error" title={meeting.error}>Error</span>
+            {:else}
+              <span class="meeting-status">Detected</span>
+            {/if}
+          </div>
+          {#if meeting.state === 'recording'}
+            <button
+              type="button"
+              class="meeting-action stop"
+              onclick={() => onstoprecording?.(meeting.windowId)}
+              disabled={meeting.state !== 'recording'}
+            >Stop</button>
+          {:else if meeting.state === 'starting' || meeting.state === 'stopping'}
+            <button type="button" class="meeting-action" disabled>…</button>
+          {:else}
+            <button
+              type="button"
+              class="meeting-action record"
+              onclick={() => onstartrecording?.(meeting.windowId)}
+            >Record</button>
+          {/if}
+        </div>
+      {/each}
+    </section>
+    <div class="popover-divider"></div>
+  {/if}
 
   <!-- Body -->
   <section class="popover-body">
@@ -1251,5 +1330,117 @@
     font-size: 0.6875rem;
     color: var(--popover-text-muted, #a0a0b0);
     line-height: 1.4;
+  }
+
+  /* ── Active meetings section ─────────────────────────────────────────
+     Shown above the sync body whenever the Recall Desktop SDK has a
+     live meeting detection. One row per windowId; rows disappear on
+     `meeting:closed` or `recording:ended`. */
+  .active-meetings {
+    padding: 0.5rem 0.875rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+  }
+
+  .meeting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.5rem 0.625rem;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+
+  .meeting-row[data-state='recording'] {
+    background: rgba(239, 68, 68, 0.06);
+    border-color: rgba(239, 68, 68, 0.18);
+  }
+
+  .meeting-row[data-state='error'] {
+    background: rgba(239, 68, 68, 0.05);
+    border-color: rgba(239, 68, 68, 0.16);
+  }
+
+  .meeting-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.0625rem;
+    min-width: 0;
+  }
+
+  .meeting-platform {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--popover-text, #e7e7eb);
+  }
+
+  .meeting-status {
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3125rem;
+  }
+
+  .meeting-status.recording {
+    color: #f87171;
+    font-weight: 500;
+  }
+  .meeting-status.error {
+    color: #fca5a5;
+    cursor: help;
+  }
+
+  /* Pulsing red dot during recording — purely decorative, no aria. */
+  .recording-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ef4444;
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+    animation: recording-pulse 1.6s ease-out infinite;
+  }
+  @keyframes recording-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+    70%  { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  }
+
+  .meeting-action {
+    flex: 0 0 auto;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.3125rem 0.625rem;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--popover-text, #e7e7eb);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 100ms ease, border-color 100ms ease;
+  }
+  .meeting-action:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.16);
+  }
+  .meeting-action:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .meeting-action.record {
+    background: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.32);
+    color: #fecaca;
+  }
+  .meeting-action.record:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.24);
+    border-color: rgba(239, 68, 68, 0.44);
+  }
+  .meeting-action.stop {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.16);
   }
 </style>

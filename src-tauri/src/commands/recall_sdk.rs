@@ -55,14 +55,21 @@ use std::time::Duration;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 
+use std::io::Write;
+use std::process::ChildStdin;
+use std::sync::{Mutex, OnceLock};
+
 use crate::commands::cognito;
 use crate::commands::process::{
-    cancel_process_impl, run_process_impl, try_register_handle, ProcessEvent, SpawnArgs,
+    cancel_process_impl, run_process_with_stdin_impl, try_register_handle, ProcessEvent, SpawnArgs,
 };
 use crate::commands::sync::resolve_vault_api_url;
 use crate::events::{
-    MeetingDetectedEvent, PermissionStatusEvent, EVENT_MEETING_DETECTED,
-    EVENT_PERMISSIONS_ALL_GRANTED, EVENT_PERMISSION_STATUS,
+    MeetingClosedEvent, MeetingDetectedEvent, PermissionStatusEvent, RecordingEndedEvent,
+    RecordingErrorEvent, RecordingMediaCaptureEvent, RecordingStartedEvent, EVENT_MEETING_CLOSED,
+    EVENT_MEETING_DETECTED, EVENT_PERMISSIONS_ALL_GRANTED, EVENT_PERMISSION_STATUS,
+    EVENT_RECORDING_ENDED, EVENT_RECORDING_ERROR, EVENT_RECORDING_MEDIA_CAPTURE,
+    EVENT_RECORDING_STARTED,
 };
 use crate::util::client_info::build_client;
 use crate::util::logfile::log;
@@ -83,6 +90,54 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 
 /// Log tag used by all `log()` calls in this module.
 const LOG_TAG: &str = "recall-sdk";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bridge stdin (command channel)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The SDK bridge accepts ndjson commands on stdin so we can drive
+// `RecallAiSdk.startRecording` / `stopRecording` without spawning a new
+// process per recording. The `ChildStdin` handle is stored here when
+// `run_process_with_stdin_impl` spawns the bridge; cleared when it exits.
+//
+// All access goes through `write_bridge_command()` which serialises the
+// payload to JSON, appends `\n`, and flushes — matching the bridge's
+// `readline` parser exactly. Failures are reported as `Err(String)`
+// (typically "bridge not running") so the calling Tauri command can
+// surface a clean error to the UI instead of panicking.
+
+static BRIDGE_STDIN: OnceLock<Mutex<Option<ChildStdin>>> = OnceLock::new();
+
+fn bridge_stdin_cell() -> &'static Mutex<Option<ChildStdin>> {
+    BRIDGE_STDIN.get_or_init(|| Mutex::new(None))
+}
+
+/// Serialise a JSON value, append `\n`, and write to the bridge's stdin.
+///
+/// Returns `Err` when:
+/// - The bridge isn't running (`stdin` handle missing — likely never
+///   spawned, or already exited)
+/// - The lock is poisoned (a previous writer panicked mid-write)
+/// - The write or flush itself fails (broken pipe — bridge died)
+///
+/// The caller is responsible for any retry / recovery semantics; this
+/// function intentionally has no implicit retry.
+fn write_bridge_command(value: &serde_json::Value) -> Result<(), String> {
+    let cell = bridge_stdin_cell();
+    let mut guard = cell
+        .lock()
+        .map_err(|e| format!("bridge stdin lock poisoned: {e}"))?;
+    let stdin = guard
+        .as_mut()
+        .ok_or_else(|| "bridge not running".to_string())?;
+    let line = serde_json::to_string(value)
+        .map_err(|e| format!("command serialise failed: {e}"))?;
+    writeln!(stdin, "{line}").map_err(|e| format!("bridge stdin write failed: {e}"))?;
+    stdin
+        .flush()
+        .map_err(|e| format!("bridge stdin flush failed: {e}"))?;
+    Ok(())
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Eligibility gate
@@ -304,11 +359,21 @@ fn find_sdk_binary() -> Option<String> {
 enum RecallSdkEvent {
     #[serde(rename = "meeting:detected")]
     MeetingDetected(MeetingDetectedEvent),
+    #[serde(rename = "meeting:closed")]
+    MeetingClosed(MeetingClosedEvent),
     #[serde(rename = "permission:status")]
     PermissionStatus(PermissionStatusEvent),
     /// Convenience signal — all required perms granted. No payload.
     #[serde(rename = "permissions:all-granted")]
     PermissionsAllGranted {},
+    #[serde(rename = "recording:started")]
+    RecordingStarted(RecordingStartedEvent),
+    #[serde(rename = "recording:ended")]
+    RecordingEnded(RecordingEndedEvent),
+    #[serde(rename = "recording:media-capture")]
+    RecordingMediaCapture(RecordingMediaCaptureEvent),
+    #[serde(rename = "recording:error")]
+    RecordingError(RecordingErrorEvent),
 }
 
 /// Parse a single ndjson line from the SDK bridge. Blank lines and
@@ -418,75 +483,192 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
 
     let app_bg = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let result = run_process_impl(SDK_HANDLE, &spawn_args, |event| match event {
-            ProcessEvent::Stdout(line) => {
-                log("recall-sdk.stdout", &line);
-                match parse_sdk_line(&line) {
-                    Some(RecallSdkEvent::MeetingDetected(payload)) => {
-                        log(
-                            LOG_TAG,
-                            &format!(
-                                "meeting:detected — id={} platform={:?} url={}",
-                                payload.detection_id,
-                                payload.platform,
-                                payload.meeting_url
-                            ),
-                        );
-                        if let Err(e) = app_bg.emit(EVENT_MEETING_DETECTED, &payload) {
-                            log(
-                                LOG_TAG,
-                                &format!("emit meeting:detected failed: {e}"),
-                            );
-                        }
-                    }
-                    Some(RecallSdkEvent::PermissionStatus(payload)) => {
-                        log(
-                            LOG_TAG,
-                            &format!(
-                                "permission:status — {:?} → {}",
-                                payload.permission, payload.status
-                            ),
-                        );
-                        if let Err(e) = app_bg.emit(EVENT_PERMISSION_STATUS, &payload) {
-                            log(
-                                LOG_TAG,
-                                &format!("emit permission:status failed: {e}"),
-                            );
-                        }
-                    }
-                    Some(RecallSdkEvent::PermissionsAllGranted {}) => {
-                        log(LOG_TAG, "permissions:all-granted");
-                        if let Err(e) =
-                            app_bg.emit(EVENT_PERMISSIONS_ALL_GRANTED, &())
-                        {
+        let result = run_process_with_stdin_impl(
+            SDK_HANDLE,
+            &spawn_args,
+            |event| match event {
+                ProcessEvent::Stdout(line) => {
+                    log("recall-sdk.stdout", &line);
+                    match parse_sdk_line(&line) {
+                        Some(RecallSdkEvent::MeetingDetected(payload)) => {
                             log(
                                 LOG_TAG,
                                 &format!(
-                                    "emit permissions:all-granted failed: {e}"
+                                    "meeting:detected — id={} platform={:?} url={}",
+                                    payload.detection_id,
+                                    payload.platform,
+                                    payload.meeting_url
                                 ),
+                            );
+                            if let Err(e) = app_bg.emit(EVENT_MEETING_DETECTED, &payload) {
+                                log(
+                                    LOG_TAG,
+                                    &format!("emit meeting:detected failed: {e}"),
+                                );
+                            }
+                        }
+                        Some(RecallSdkEvent::MeetingClosed(payload)) => {
+                            log(
+                                LOG_TAG,
+                                &format!(
+                                    "meeting:closed — windowId={} platform={:?}",
+                                    payload.window_id, payload.platform
+                                ),
+                            );
+                            if let Err(e) = app_bg.emit(EVENT_MEETING_CLOSED, &payload) {
+                                log(
+                                    LOG_TAG,
+                                    &format!("emit meeting:closed failed: {e}"),
+                                );
+                            }
+                        }
+                        Some(RecallSdkEvent::PermissionStatus(payload)) => {
+                            log(
+                                LOG_TAG,
+                                &format!(
+                                    "permission:status — {:?} → {}",
+                                    payload.permission, payload.status
+                                ),
+                            );
+                            if let Err(e) = app_bg.emit(EVENT_PERMISSION_STATUS, &payload) {
+                                log(
+                                    LOG_TAG,
+                                    &format!("emit permission:status failed: {e}"),
+                                );
+                            }
+                        }
+                        Some(RecallSdkEvent::PermissionsAllGranted {}) => {
+                            log(LOG_TAG, "permissions:all-granted");
+                            if let Err(e) =
+                                app_bg.emit(EVENT_PERMISSIONS_ALL_GRANTED, &())
+                            {
+                                log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "emit permissions:all-granted failed: {e}"
+                                    ),
+                                );
+                            }
+                        }
+                        Some(RecallSdkEvent::RecordingStarted(payload)) => {
+                            log(
+                                LOG_TAG,
+                                &format!(
+                                    "recording:started — windowId={} platform={:?}",
+                                    payload.window_id, payload.platform
+                                ),
+                            );
+                            if let Err(e) = app_bg.emit(EVENT_RECORDING_STARTED, &payload) {
+                                log(
+                                    LOG_TAG,
+                                    &format!("emit recording:started failed: {e}"),
+                                );
+                            }
+                        }
+                        Some(RecallSdkEvent::RecordingEnded(payload)) => {
+                            log(
+                                LOG_TAG,
+                                &format!(
+                                    "recording:ended — windowId={} platform={:?}",
+                                    payload.window_id, payload.platform
+                                ),
+                            );
+                            if let Err(e) = app_bg.emit(EVENT_RECORDING_ENDED, &payload) {
+                                log(
+                                    LOG_TAG,
+                                    &format!("emit recording:ended failed: {e}"),
+                                );
+                            }
+                        }
+                        Some(RecallSdkEvent::RecordingMediaCapture(payload)) => {
+                            // High-frequency event during a recording — log
+                            // only the binary capturing transition. The
+                            // Tauri event is still emitted with full detail
+                            // for the UI to render audio/video badges.
+                            log(
+                                LOG_TAG,
+                                &format!(
+                                    "recording:media-capture — windowId={} type={} capturing={}",
+                                    payload.window_id,
+                                    payload.capture_type,
+                                    payload.capturing
+                                ),
+                            );
+                            if let Err(e) =
+                                app_bg.emit(EVENT_RECORDING_MEDIA_CAPTURE, &payload)
+                            {
+                                log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "emit recording:media-capture failed: {e}"
+                                    ),
+                                );
+                            }
+                        }
+                        Some(RecallSdkEvent::RecordingError(payload)) => {
+                            log(
+                                LOG_TAG,
+                                &format!(
+                                    "recording:error — cmd={} windowId={} message={}",
+                                    payload.cmd, payload.window_id, payload.message
+                                ),
+                            );
+                            if let Err(e) = app_bg.emit(EVENT_RECORDING_ERROR, &payload) {
+                                log(
+                                    LOG_TAG,
+                                    &format!("emit recording:error failed: {e}"),
+                                );
+                            }
+                        }
+                        None => {}
+                    }
+                }
+                ProcessEvent::Stderr(line) => {
+                    log("recall-sdk.stderr", &line);
+                }
+                ProcessEvent::Exit {
+                    code,
+                    signal,
+                    success,
+                } => {
+                    log(
+                        LOG_TAG,
+                        &format!(
+                            "SDK exited: success={} code={:?} signal={:?}",
+                            success, code, signal
+                        ),
+                    );
+                    // Clear the stashed stdin handle so a subsequent
+                    // start_recording call returns a clean "bridge not
+                    // running" error instead of writing into a closed pipe.
+                    if let Ok(mut guard) = bridge_stdin_cell().lock() {
+                        *guard = None;
+                    }
+                }
+            },
+            |child| {
+                // Stash the bridge's stdin so `start_recording` / `stop_recording`
+                // Tauri commands can write commands to it. The handle stays
+                // alive for the lifetime of the bridge process; cleared on
+                // ProcessEvent::Exit above.
+                if let Some(stdin) = child.stdin.take() {
+                    match bridge_stdin_cell().lock() {
+                        Ok(mut guard) => {
+                            *guard = Some(stdin);
+                            log(LOG_TAG, "bridge stdin handle registered");
+                        }
+                        Err(e) => {
+                            log(
+                                LOG_TAG,
+                                &format!("bridge stdin lock poisoned at spawn: {e}"),
                             );
                         }
                     }
-                    None => {}
+                } else {
+                    log(LOG_TAG, "bridge spawned without stdin pipe (unexpected)");
                 }
-            }
-            ProcessEvent::Stderr(line) => {
-                log("recall-sdk.stderr", &line);
-            }
-            ProcessEvent::Exit {
-                code,
-                signal,
-                success,
-            } => {
-                log(
-                    LOG_TAG,
-                    &format!(
-                        "SDK exited: success={} code={:?} signal={:?}",
-                        success, code, signal
-                    ),
-                );
-            }
-        });
+            },
+        );
 
         if let Err(e) = result {
             log(
@@ -505,6 +687,145 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
 /// the SDK is not running — `cancel_process_impl` is a no-op in that case.
 pub fn stop_recall_sdk() {
     cancel_process_impl(SDK_HANDLE, SIGKILL_DELAY);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recording control (start / stop)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Response shape for `POST /v1/recall/upload-token` on hq-pro.
+///
+/// hq-pro mints a one-shot Recall.ai SDK upload token via Recall's
+/// `/api/v2/sdk-upload/` endpoint and returns the token + the durable
+/// Recording id. The token is consumed by `RecallAiSdk.startRecording`
+/// inside the bridge.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SdkUploadTokenResponse {
+    /// Recall.ai Recording UUID — stable handle for the recording.
+    id: String,
+    /// One-shot token consumed by `RecallAiSdk.startRecording({ uploadToken })`.
+    upload_token: String,
+}
+
+/// Fetch a fresh SDK upload token from hq-pro.
+///
+/// Returns `(recordingId, uploadToken)` on success. Errors when hq-pro
+/// rejects (`recall-not-provisioned`, upstream Recall failure, network) —
+/// caller surfaces the message to the UI.
+async fn fetch_sdk_upload_token() -> Result<(String, String), String> {
+    let base = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| format!("vault url: {e}"))?;
+
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .post(format!("{base}/v1/recall/upload-token"))
+        .header("authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        // Empty body — v1 of the endpoint takes no per-call recording
+        // config (Recall account defaults apply). Add config here when
+        // we expose transcript-provider knobs to the UI.
+        .body("{}")
+        .send()
+        .await
+        .map_err(|e| format!("upload-token fetch: {e}"))?;
+
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("upload-token read: {e}"))?;
+
+    if !status.is_success() {
+        return Err(format!("upload-token HTTP {status}: {text}"));
+    }
+
+    let parsed: SdkUploadTokenResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("upload-token parse: {e} — body: {text}"))?;
+
+    if parsed.id.is_empty() || parsed.upload_token.is_empty() {
+        return Err(format!(
+            "upload-token response missing id or token — body: {text}"
+        ));
+    }
+
+    Ok((parsed.id, parsed.upload_token))
+}
+
+/// Start a local recording for the given SDK window.
+///
+/// Pre-conditions checked before the bridge command is sent:
+/// - The user is in the Phase-0 allowlist (same gate as detection)
+/// - The bridge is running (stdin handle present)
+///
+/// Side effects on success:
+/// - hq-pro mints a fresh `uploadToken`
+/// - The bridge starts the SDK recording, which streams audio + metadata
+///   to Recall.ai. A `recording:started` event will follow asynchronously
+///   when the SDK confirms.
+///
+/// Returns the Recall.ai `recordingId` so the caller can stash it
+/// alongside the windowId for later transcript fetch.
+#[tauri::command]
+pub async fn start_recording(window_id: String) -> Result<String, String> {
+    if !meeting_detect_eligible().await {
+        return Err("user not in Phase-0 allowlist".to_string());
+    }
+    if window_id.trim().is_empty() {
+        return Err("window_id is required".to_string());
+    }
+
+    log(
+        LOG_TAG,
+        &format!("start_recording: requested for windowId={window_id}"),
+    );
+
+    let (recording_id, upload_token) = fetch_sdk_upload_token().await?;
+    log(
+        LOG_TAG,
+        &format!(
+            "start_recording: minted token (recordingId={recording_id}) for windowId={window_id}"
+        ),
+    );
+
+    let cmd = serde_json::json!({
+        "cmd": "start-recording",
+        "windowId": window_id,
+        "uploadToken": upload_token,
+    });
+    write_bridge_command(&cmd)?;
+
+    Ok(recording_id)
+}
+
+/// Stop the active recording for the given SDK window.
+///
+/// Idempotent — issuing stop against a window that isn't recording is a
+/// bridge-side no-op (the SDK silently ignores). Always returns `Ok(())`
+/// unless the bridge isn't running.
+#[tauri::command]
+pub async fn stop_recording(window_id: String) -> Result<(), String> {
+    if !meeting_detect_eligible().await {
+        return Err("user not in Phase-0 allowlist".to_string());
+    }
+    if window_id.trim().is_empty() {
+        return Err("window_id is required".to_string());
+    }
+
+    log(
+        LOG_TAG,
+        &format!("stop_recording: requested for windowId={window_id}"),
+    );
+
+    let cmd = serde_json::json!({
+        "cmd": "stop-recording",
+        "windowId": window_id,
+    });
+    write_bridge_command(&cmd)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -652,5 +973,64 @@ mod tests {
     fn meeting_detect_allowlist_rejects_other_domains() {
         assert!(!is_meeting_detect_allowed_email(Some("stefan@example.com")));
         assert!(!is_meeting_detect_allowed_email(Some("stefan@gmail.com")));
+    }
+
+    // ── Recording event parsing ────────────────────────────────────────────
+    //
+    // The bridge emits these on stdout after the SDK responds to a
+    // startRecording/stopRecording command, or when a meeting window
+    // closes and the SDK auto-ends the recording. Parser is the bottleneck
+    // — if these break, recording state on the UI side desyncs from reality.
+
+    #[test]
+    fn parse_sdk_line_parses_recording_started() {
+        let line = r#"{"type":"recording:started","windowId":"win-1","platform":"zoom","startedAt":"2026-05-25T17:00:00Z"}"#;
+        match parse_sdk_line(line).expect("should parse") {
+            RecallSdkEvent::RecordingStarted(p) => {
+                assert_eq!(p.window_id, "win-1");
+                assert_eq!(p.platform, MeetingPlatform::Zoom);
+                assert_eq!(p.started_at, "2026-05-25T17:00:00Z");
+            }
+            other => panic!("expected RecordingStarted, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_sdk_line_parses_recording_ended() {
+        let line = r#"{"type":"recording:ended","windowId":"win-1","platform":"meet","endedAt":"2026-05-25T17:30:00Z"}"#;
+        match parse_sdk_line(line).expect("should parse") {
+            RecallSdkEvent::RecordingEnded(p) => {
+                assert_eq!(p.window_id, "win-1");
+                assert_eq!(p.platform, MeetingPlatform::Meet);
+                assert_eq!(p.ended_at, "2026-05-25T17:30:00Z");
+            }
+            other => panic!("expected RecordingEnded, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_sdk_line_parses_recording_media_capture() {
+        let line = r#"{"type":"recording:media-capture","windowId":"win-1","captureType":"audio","capturing":true}"#;
+        match parse_sdk_line(line).expect("should parse") {
+            RecallSdkEvent::RecordingMediaCapture(p) => {
+                assert_eq!(p.window_id, "win-1");
+                assert_eq!(p.capture_type, "audio");
+                assert!(p.capturing);
+            }
+            other => panic!("expected RecordingMediaCapture, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_sdk_line_parses_recording_error() {
+        let line = r#"{"type":"recording:error","cmd":"start-recording","windowId":"win-1","message":"upload token rejected"}"#;
+        match parse_sdk_line(line).expect("should parse") {
+            RecallSdkEvent::RecordingError(p) => {
+                assert_eq!(p.cmd, "start-recording");
+                assert_eq!(p.window_id, "win-1");
+                assert_eq!(p.message, "upload token rejected");
+            }
+            other => panic!("expected RecordingError, got {:?}", other),
+        }
     }
 }

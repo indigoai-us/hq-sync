@@ -116,6 +116,91 @@
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
 
+  /**
+   * Active meeting detections — populated as the Recall Desktop SDK fires
+   * `meeting:detected` events. Lives only in-memory: we don't persist
+   * across app restarts because the SDK re-emits detections after restart
+   * if a meeting window is still active.
+   *
+   * Keyed implicitly by `windowId` (the SDK's stable handle for the
+   * meeting window). Entries are added on `meeting:detected`, mutated
+   * on `recording:started` / `recording:ended` / `recording:error`,
+   * and removed on `meeting:closed`.
+   *
+   * Surfaced to the user via the Popover's "Active meetings" section,
+   * where each entry gets a Record / Stop button wired back into the
+   * `start_recording` / `stop_recording` Tauri commands.
+   */
+  interface ActiveMeeting {
+    /** SDK window id (stable for the duration of the meeting). */
+    windowId: string;
+    /** Lowercase platform discriminator (`zoom`, `meet`, ...). */
+    platform: string;
+    /** Meeting URL — real or synthetic `recall-window:<id>`. */
+    meetingUrl: string;
+    /** ISO 8601 timestamp when the detection fired. */
+    detectedAt: string;
+    /** Lifecycle state — drives the Record/Stop button label. */
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    /** Recall.ai recording id (returned by start_recording). */
+    recordingId?: string;
+    /** Last error message from a failed start/stop, if any. */
+    error?: string;
+  }
+  let activeMeetings = $state<ActiveMeeting[]>([]);
+
+  function upsertActiveMeeting(m: ActiveMeeting) {
+    const idx = activeMeetings.findIndex((x) => x.windowId === m.windowId);
+    if (idx >= 0) {
+      activeMeetings[idx] = m;
+    } else {
+      activeMeetings = [...activeMeetings, m];
+    }
+  }
+  function updateActiveMeeting(
+    windowId: string,
+    patch: Partial<ActiveMeeting>,
+  ) {
+    const idx = activeMeetings.findIndex((x) => x.windowId === windowId);
+    if (idx < 0) return;
+    activeMeetings[idx] = { ...activeMeetings[idx], ...patch };
+  }
+  function removeActiveMeeting(windowId: string) {
+    activeMeetings = activeMeetings.filter((x) => x.windowId !== windowId);
+  }
+
+  async function handleStartRecording(windowId: string) {
+    updateActiveMeeting(windowId, { state: 'starting', error: undefined });
+    try {
+      const recordingId = await invoke<string>('start_recording', { windowId });
+      updateActiveMeeting(windowId, { recordingId });
+      // The actual flip to `recording` happens on the `recording:started`
+      // event listener below — that confirms the SDK accepted the start,
+      // not just that the bridge dispatched it.
+    } catch (err) {
+      console.error('start_recording failed:', err);
+      updateActiveMeeting(windowId, {
+        state: 'error',
+        error: typeof err === 'string' ? err : String(err),
+      });
+    }
+  }
+  async function handleStopRecording(windowId: string) {
+    updateActiveMeeting(windowId, { state: 'stopping' });
+    try {
+      await invoke('stop_recording', { windowId });
+      // Flip to detected/closed on `recording:ended` event.
+    } catch (err) {
+      console.error('stop_recording failed:', err);
+      // Roll back to recording — the bridge errored before the SDK got
+      // the stop, so we're still recording.
+      updateActiveMeeting(windowId, {
+        state: 'recording',
+        error: typeof err === 'string' ? err : String(err),
+      });
+    }
+  }
+
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -763,8 +848,32 @@
         platform?: string;
         summary?: string;
         sourceEventId?: string;
+        // Synthetic key carried in `meetingUrl` for URL-less detections;
+        // SDK windowId is what we key on for recording control. The bridge
+        // emits `meetingUrl: "recall-window:<windowId>"` in that case, so
+        // we can extract it back out.
       }>('meeting:detected', async (event) => {
         const { meetingUrl, platform, summary, sourceEventId } = event.payload;
+
+        // Derive the SDK windowId — either parsed from the synthetic URL
+        // prefix or fall back to using the URL itself as a stable key. The
+        // recording-control commands need a windowId to talk to the SDK.
+        const isSyntheticUrl = typeof meetingUrl === 'string'
+          && meetingUrl.startsWith('recall-window:');
+        const windowId = isSyntheticUrl
+          ? meetingUrl!.slice('recall-window:'.length)
+          : (meetingUrl ?? '');
+
+        if (windowId) {
+          upsertActiveMeeting({
+            windowId,
+            platform: platform ?? 'other',
+            meetingUrl: meetingUrl ?? '',
+            detectedAt: new Date().toISOString(),
+            state: 'detected',
+          });
+        }
+
         try {
           // Synthetic `recall-window:<id>` URLs come from URL-less SDK
           // detections (unscheduled Zoom meetings, etc.). hq-pro will reject
@@ -773,8 +882,6 @@
           // to notify. Same fallback applies if the bot check itself
           // throws (network, auth, etc.) — better to over-notify once than
           // swallow the detection entirely.
-          const isSyntheticUrl = typeof meetingUrl === 'string'
-            && meetingUrl.startsWith('recall-window:');
           if (meetingUrl && !isSyntheticUrl) {
             try {
               const bot = await invoke<{ botId: string } | null>('meetings_check_bot_for_url', {
@@ -798,6 +905,56 @@
           console.error('meeting:detected handler error:', err);
         }
       })
+    );
+
+    // Recording lifecycle — flip the active-meeting row state machine as
+    // the bridge confirms each transition. The Tauri commands above
+    // (handleStart/StopRecording) only know "we asked the bridge to do
+    // this"; these events confirm the SDK accepted it. We keep the row
+    // in `starting` / `stopping` until the SDK confirms, then flip to
+    // `recording` / removed.
+    unlisteners.push(
+      await listen<{ windowId: string; platform: string; startedAt: string }>(
+        'recording:started',
+        (event) => {
+          updateActiveMeeting(event.payload.windowId, {
+            state: 'recording',
+            error: undefined,
+          });
+        },
+      ),
+    );
+    unlisteners.push(
+      await listen<{ windowId: string; platform: string; endedAt: string }>(
+        'recording:ended',
+        (event) => {
+          // Recording over — drop the row. (Future: keep the row for a
+          // few seconds showing "Saved" so the user gets confirmation
+          // before it disappears.)
+          removeActiveMeeting(event.payload.windowId);
+        },
+      ),
+    );
+    unlisteners.push(
+      await listen<{ cmd: string; windowId: string; message: string }>(
+        'recording:error',
+        (event) => {
+          updateActiveMeeting(event.payload.windowId, {
+            state: 'error',
+            error: `${event.payload.cmd}: ${event.payload.message}`,
+          });
+        },
+      ),
+    );
+    unlisteners.push(
+      await listen<{ windowId: string; platform: string; closedAt: string }>(
+        'meeting:closed',
+        (event) => {
+          // User closed the meeting app without recording — drop the row
+          // so the popover doesn't show stale detections.
+          removeActiveMeeting(event.payload.windowId);
+        },
+      ),
     );
   }
 
@@ -927,6 +1084,9 @@
         invoke('open_meetings_window').catch(() => {});
         invoke('meetings_clear_prompt_badge').catch(() => {});
       }}
+      {activeMeetings}
+      onstartrecording={handleStartRecording}
+      onstoprecording={handleStopRecording}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />

@@ -42,6 +42,7 @@
 
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { createInterface } from "node:readline";
 
 const require = createRequire(import.meta.url);
 
@@ -270,8 +271,173 @@ RecallAiSdk.addEventListener("permissions-granted", () => {
   emitLog("info", "all required permissions granted");
 });
 
+RecallAiSdk.addEventListener("meeting-closed", (event) => {
+  // SDK fires this when the meeting window goes away (user quits Zoom,
+  // tab closes, Slack huddle ends, etc.). Lets the UI clear the row from
+  // the active-meetings list so stale rows don't pile up if the user
+  // chose not to record.
+  const window = event?.window ?? {};
+  emitNdjson({
+    type: "meeting:closed",
+    windowId: typeof window.id === "string" ? window.id : "",
+    platform: normalisePlatform(window.platform),
+    closedAt: new Date().toISOString(),
+  });
+  emitLog(
+    "info",
+    `meeting-closed (windowId=${window.id ?? "?"}, platform=${window.platform ?? "?"})`,
+  );
+});
+
 RecallAiSdk.addEventListener("shutdown", (event) => {
   emitLog("info", `SDK shutdown (code=${event?.code} signal=${event?.signal})`);
+});
+
+// --- Recording lifecycle events ---
+//
+// The SDK fires these in response to startRecording/stopRecording calls
+// (and to meeting-app state changes — e.g. a meeting closing auto-ends
+// the recording). The shape we forward to Rust mirrors the
+// `meeting:detected` convention: discriminator under `type`, windowId
+// surfaced separately so the Svelte side can key on it directly.
+
+RecallAiSdk.addEventListener("recording-started", (event) => {
+  const window = event?.window ?? {};
+  emitNdjson({
+    type: "recording:started",
+    windowId: typeof window.id === "string" ? window.id : "",
+    platform: normalisePlatform(window.platform),
+    startedAt: new Date().toISOString(),
+  });
+  emitLog(
+    "info",
+    `recording-started (windowId=${window.id ?? "?"}, platform=${window.platform ?? "?"})`,
+  );
+});
+
+RecallAiSdk.addEventListener("recording-ended", (event) => {
+  const window = event?.window ?? {};
+  emitNdjson({
+    type: "recording:ended",
+    windowId: typeof window.id === "string" ? window.id : "",
+    platform: normalisePlatform(window.platform),
+    endedAt: new Date().toISOString(),
+  });
+  emitLog(
+    "info",
+    `recording-ended (windowId=${window.id ?? "?"}, platform=${window.platform ?? "?"})`,
+  );
+});
+
+RecallAiSdk.addEventListener("media-capture-status", (event) => {
+  // Tells us audio/video capture is actively running for a window. Useful
+  // for the UI: "Recording…" indicator only flips on once we see at least
+  // one capturing=true event (a recording-started without media capture
+  // means the SDK accepted the request but hasn't latched onto a source
+  // yet — possibly because of a permission glitch).
+  emitNdjson({
+    type: "recording:media-capture",
+    windowId: event?.window?.id ?? "",
+    captureType: event?.type ?? "",
+    capturing: Boolean(event?.capturing),
+  });
+});
+
+// --- Command channel (stdin → SDK) ---
+//
+// Rust's recall_sdk.rs writes JSON-per-line commands to our stdin to
+// drive recording start/stop without spawning a new SDK process per
+// recording. Wire format:
+//
+//   {"cmd":"start-recording","windowId":"<uuid>","uploadToken":"<token>"}
+//   {"cmd":"stop-recording","windowId":"<uuid>"}
+//   {"cmd":"pause-recording","windowId":"<uuid>"}
+//   {"cmd":"resume-recording","windowId":"<uuid>"}
+//
+// Unknown commands are logged and skipped (forward-compat). Malformed
+// JSON lines are logged at warn-level — the line is discarded but the
+// loop keeps running so a single bad write doesn't kill the SDK process.
+
+async function handleCommand(cmd) {
+  const windowId = typeof cmd?.windowId === "string" ? cmd.windowId : "";
+  if (!windowId) {
+    emitLog("warn", `command missing windowId: ${JSON.stringify(cmd)}`);
+    return;
+  }
+
+  try {
+    switch (cmd.cmd) {
+      case "start-recording": {
+        const uploadToken =
+          typeof cmd.uploadToken === "string" ? cmd.uploadToken : "";
+        if (!uploadToken) {
+          emitLog(
+            "warn",
+            `start-recording missing uploadToken (windowId=${windowId})`,
+          );
+          return;
+        }
+        emitLog("info", `start-recording: windowId=${windowId}`);
+        await RecallAiSdk.startRecording({ windowId, uploadToken });
+        return;
+      }
+      case "stop-recording": {
+        emitLog("info", `stop-recording: windowId=${windowId}`);
+        await RecallAiSdk.stopRecording({ windowId });
+        return;
+      }
+      case "pause-recording": {
+        emitLog("info", `pause-recording: windowId=${windowId}`);
+        await RecallAiSdk.pauseRecording({ windowId });
+        return;
+      }
+      case "resume-recording": {
+        emitLog("info", `resume-recording: windowId=${windowId}`);
+        await RecallAiSdk.resumeRecording({ windowId });
+        return;
+      }
+      default:
+        emitLog("warn", `unknown command: ${cmd.cmd}`);
+    }
+  } catch (err) {
+    emitLog(
+      "error",
+      `command ${cmd.cmd} (windowId=${windowId}) failed: ${err?.message ?? err}`,
+    );
+    // Surface failures back to Rust as a typed error event so the UI
+    // can show "couldn't start recording" instead of just spinning.
+    emitNdjson({
+      type: "recording:error",
+      cmd: cmd.cmd,
+      windowId,
+      message: String(err?.message ?? err),
+    });
+  }
+}
+
+const stdinReader = createInterface({ input: process.stdin });
+stdinReader.on("line", (line) => {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    emitLog(
+      "warn",
+      `command parse failed (${err?.message ?? err}): ${trimmed.slice(0, 120)}`,
+    );
+    return;
+  }
+  handleCommand(parsed).catch((err) => {
+    emitLog("error", `handleCommand crashed: ${err?.message ?? err}`);
+  });
+});
+stdinReader.on("close", () => {
+  // Rust closed our stdin — usually means the parent is shutting us
+  // down. Initiate graceful shutdown so we don't linger.
+  emitLog("info", "stdin closed; initiating graceful shutdown");
+  gracefulShutdown("stdin-close");
 });
 
 // --- Signal handling ---

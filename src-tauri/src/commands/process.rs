@@ -284,6 +284,168 @@ where
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pure impl — variant with piped stdin
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Like [`run_process_impl`], but also pipes stdin and invokes `on_spawn`
+/// once with the child's `ChildStdin` immediately after spawn.
+///
+/// The callback receives `&mut Child` so it can `child.stdin.take()` and
+/// stash the handle wherever it needs to live (typically a module-level
+/// `Mutex<Option<ChildStdin>>` so other Tauri commands can write to it).
+///
+/// Used by the Recall SDK bridge to drive `start-recording` /
+/// `stop-recording` commands without spawning a new SDK process per
+/// recording. Other callers continue to use `run_process_impl`, which
+/// keeps the existing stdin=inherit default and avoids any
+/// reads-from-stdin-on-an-unwriter-pipe surprises.
+pub fn run_process_with_stdin_impl<F, S>(
+    handle: &str,
+    spawn: &SpawnArgs,
+    on_event: F,
+    on_spawn: S,
+) -> Result<(), String>
+where
+    F: FnMut(ProcessEvent),
+    S: FnOnce(&mut std::process::Child),
+{
+    let mut cmd = Command::new(&spawn.cmd);
+    cmd.args(&spawn.args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+
+    if let Some(cwd) = &spawn.cwd {
+        cmd.current_dir(cwd);
+    }
+    if let Some(env) = &spawn.env {
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("spawn '{}': {}", spawn.cmd, e))?;
+
+    let pid = child.id();
+    register_process(handle, pid);
+
+    // Let the caller take stdin (and stash the handle) before we start
+    // reading stdout/stderr — if the caller's setup writes a startup
+    // command, it should land before the bridge has emitted anything.
+    on_spawn(&mut child);
+
+    let stdout = child.stdout.take().expect("stdout pipe");
+    let stderr = child.stderr.take().expect("stderr pipe");
+
+    enum ReaderMsg {
+        Event(ProcessEvent),
+        Done {
+            stream: &'static str,
+            err: Option<String>,
+        },
+    }
+
+    let (tx, rx) = mpsc::channel::<ReaderMsg>();
+
+    let tx_stdout = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stdout).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stdout
+                        .send(ReaderMsg::Event(ProcessEvent::Stdout(line)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stdout.send(ReaderMsg::Done {
+            stream: "stdout",
+            err,
+        });
+    });
+
+    let tx_stderr = tx.clone();
+    thread::spawn(move || {
+        let mut err: Option<String> = None;
+        for line_result in BufReader::new(stderr).lines() {
+            match line_result {
+                Ok(line) => {
+                    if tx_stderr
+                        .send(ReaderMsg::Event(ProcessEvent::Stderr(line)))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    err = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+        let _ = tx_stderr.send(ReaderMsg::Done {
+            stream: "stderr",
+            err,
+        });
+    });
+
+    drop(tx);
+
+    let mut on_event_mut = on_event;
+    let mut first_stream_err: Option<String> = None;
+    let mut done_count = 0;
+
+    for msg in rx {
+        match msg {
+            ReaderMsg::Event(ev) => on_event_mut(ev),
+            ReaderMsg::Done { stream, err } => {
+                if let Some(e) = err {
+                    if first_stream_err.is_none() {
+                        first_stream_err = Some(format!("{}: {}", stream, e));
+                    }
+                }
+                done_count += 1;
+                if done_count == 2 {
+                    break;
+                }
+            }
+        }
+    }
+
+    let wait_result = child.wait().map_err(|e| e.to_string());
+    deregister_process(handle);
+
+    if let Some(err) = first_stream_err {
+        on_event_mut(ProcessEvent::Exit {
+            code: None,
+            signal: None,
+            success: false,
+        });
+        return Err(err);
+    }
+
+    let status = wait_result?;
+    on_event_mut(ProcessEvent::Exit {
+        code: status.code(),
+        signal: status.signal(),
+        success: status.success(),
+    });
+
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Cancellation
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -436,6 +436,92 @@ pub struct MeetingDetectedEvent {
 /// Tauri event channel name for `MeetingDetectedEvent`.
 pub const EVENT_MEETING_DETECTED: &str = "meeting:detected";
 
+/// Payload for `meeting:closed` — emitted by the SDK when the meeting
+/// window goes away (user quit the app, Zoom call ended, Slack huddle
+/// closed, etc.). Used by the UI to clear an active-meeting row that
+/// was never recorded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingClosedEvent {
+    pub window_id: String,
+    pub platform: MeetingPlatform,
+    pub closed_at: String,
+}
+
+/// Tauri event channel name for `MeetingClosedEvent`.
+pub const EVENT_MEETING_CLOSED: &str = "meeting:closed";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recording lifecycle events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Payload for `recording:started` — emitted by the SDK bridge after
+/// `RecallAiSdk.startRecording({ windowId, uploadToken })` resolves
+/// successfully. The `windowId` keys back to the detection that
+/// triggered the recording so the Svelte side can flip the UI to
+/// "Recording…" for the matching row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingStartedEvent {
+    /// SDK window id for the recording.
+    pub window_id: String,
+    /// Platform discriminator (`zoom`, `meet`, …). Same enum as detections.
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the bridge confirmed the start.
+    pub started_at: String,
+}
+
+/// Payload for `recording:ended` — emitted when the SDK ends the recording,
+/// whether triggered by an explicit `stopRecording` from Rust or by the
+/// meeting window closing (the SDK auto-stops in that case).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingEndedEvent {
+    /// SDK window id for the recording that ended.
+    pub window_id: String,
+    /// Platform discriminator (`zoom`, `meet`, …).
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the bridge confirmed the end.
+    pub ended_at: String,
+}
+
+/// Payload for `recording:media-capture` — emitted by the SDK as it
+/// latches onto audio / video sources after `startRecording`. Useful
+/// for distinguishing "recording started but no audio yet" (likely a
+/// TCC issue) from "recording fully live".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingMediaCaptureEvent {
+    pub window_id: String,
+    /// One of `audio`, `video`, `screenshare` from the SDK.
+    pub capture_type: String,
+    /// True when the source is actively streaming; false when it stops.
+    pub capturing: bool,
+}
+
+/// Payload for `recording:error` — emitted by the bridge when a
+/// start/stop command throws inside the SDK. Carries the command
+/// name + windowId + a human-readable message so the UI can surface a
+/// specific failure instead of just spinning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingErrorEvent {
+    /// The bridge command that failed (`start-recording`, `stop-recording`, …).
+    pub cmd: String,
+    pub window_id: String,
+    /// Human-readable error message from the SDK.
+    pub message: String,
+}
+
+/// Tauri event channel name for `RecordingStartedEvent`.
+pub const EVENT_RECORDING_STARTED: &str = "recording:started";
+/// Tauri event channel name for `RecordingEndedEvent`.
+pub const EVENT_RECORDING_ENDED: &str = "recording:ended";
+/// Tauri event channel name for `RecordingMediaCaptureEvent`.
+pub const EVENT_RECORDING_MEDIA_CAPTURE: &str = "recording:media-capture";
+/// Tauri event channel name for `RecordingErrorEvent`.
+pub const EVENT_RECORDING_ERROR: &str = "recording:error";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Permission events (US-011)
 // ─────────────────────────────────────────────────────────────────────────────
