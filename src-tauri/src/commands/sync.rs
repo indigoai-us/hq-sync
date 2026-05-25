@@ -225,7 +225,62 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// and stamps it as `author` on download `progress` events, so the Recent
 /// Changes activity log can attribute downloaded files to whoever uploaded
 /// them. The `~5.30` -> `~5.31` bump is required to pick it up.
-pub const HQ_CLOUD_VERSION: &str = "~5.31.0";
+/// 5.32.0 (2026-05-23) extends sync to cloud:false companies via the
+/// personal-vault fanout slot — the menubar can sync local-only company
+/// trees through the same engine without registering them as cloud-backed.
+/// 5.33.0 (2026-05-23) closes the original conflict-loop incident: lifts
+/// machine-id provisioning into hq-cloud (4-tier resolver with SHA-1 hex
+/// normalization for non-hex tier-1/tier-3 sources) and widens
+/// `EPHEMERAL_PATH_PATTERN` to accept the `unknown` sentinel and
+/// extensionless originals. Pre-5.33 Lightsail outposts stamped
+/// `-unknown` short tokens that the share filter then refused, looping
+/// `.conflict-*` litter through S3 forever. See indigoai-us/hq-cloud#23.
+/// 5.34.0 (2026-05-24) ships the 10-bug cross-machine sync cleanup
+/// (indigoai-us/hq-cloud#24) — three of those bugs directly destroy the
+/// menubar's user-facing promises:
+///   - Bug #9: cross-machine deletes now propagate via journal-vs-LIST
+///     diff + HEAD-verify scope guard. Pre-5.34 the pull walker had no
+///     tombstone-consumption mechanism, so the menubar's "drifted files"
+///     count never zeroed (root cause of the operator's
+///     `sync-app-is-still-showing-24-drifted-files-after-update` project).
+///   - Bug #7: first-time-upload-with-cloud-collision now writes a
+///     mirror instead of silently overwriting peer content. Pre-fix two
+///     open laptops editing the same file before either synced silently
+///     destroyed the slower-to-sync side with no conflict event → no tray
+///     badge → invisible data loss.
+///   - Bug #10: dir-vs-file `(local-file, cloud-dir)` no longer throws
+///     `ENOTDIR` and aborts the whole company sync. Pre-fix one stale
+///     path wedged auto-sync indefinitely.
+/// Plus #1/#6/#8 (`.hq/` leak channel), #2 (pull-side ephemeral filter),
+/// #3 (conflictPaths dedup), #4 (dir-vs-file warning), #5 (file mode
+/// preserved across sync). Codex P1/P2 follow-ups: HEAD-verify STS scope,
+/// EACCES journal retention, local-edit-vs-remote-delete race detection
+/// for both files and symlinks, strict-octal `hq-mode` parse.
+/// 5.35.0 (2026-05-24) adds `.claude/state/` + `.claude/audit/` to
+/// `DEFAULT_IGNORES`. Those directories are session-/host-scoped by
+/// design and were the dominant source of conflict mirrors in the 5.34.0
+/// live cross-machine test (~25 of 30 mirrors traced directly there).
+/// See indigoai-us/hq-cloud#25.
+/// 5.36.0 (2026-05-24) ships two sync speedups: lstat fast-path skips
+/// SHA-256 when `(size, mtimeMs)` match the journal baseline (~5–10× on
+/// no-op syncs — most syncs) and a bounded-parallel transfer pool
+/// (default 16, knob `HQ_SYNC_TRANSFER_CONCURRENCY`) for uploads +
+/// downloads (4–8× on transfer-heavy syncs). Codex P1 follow-ups
+/// serialize the interactive conflict prompt under the pool and drain
+/// in-flight transfers on worker error. See indigoai-us/hq-cloud#26.
+/// 5.37.0 (2026-05-25) ships file mtime + birthtime preservation across
+/// sync. Push stamps source-side `lstat.mtimeMs` (and `birthtimeMs` when
+/// the filesystem supports it AND differs from mtime) into S3 metadata
+/// as `hq-mtime` / `hq-btime`. Pull applies the stamped value via
+/// `utimesSync` after the byte write, falling back to write-time when
+/// metadata is absent (back-compat). Symlinks skipped on both sides.
+/// Composes cleanly with the 5.36 fast-path — the journal records the
+/// post-utimes mtime, so the next sync correctly skips re-hashing. Codex
+/// P2 widened the accepted mtime domain to include `0` (Unix epoch,
+/// reproducible-builds clamp value) and negative epochs (pre-1970). See
+/// indigoai-us/hq-cloud#27. The `~5.31` -> `~5.37` bump is required to
+/// pick the whole chain up.
+pub const HQ_CLOUD_VERSION: &str = "~5.37.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
