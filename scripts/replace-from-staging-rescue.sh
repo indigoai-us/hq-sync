@@ -514,10 +514,33 @@ walk_and_rescue() {
   # symlinks inside the wipe-set tree are skipped automatically. find also
   # does not descend INTO directory symlinks under -P, so symlinked
   # subtrees stay invisible to the rescue walk.
+  #
+  # Prune `node_modules/` and nested `.git/` from the walk before -type f
+  # matching:
+  #   * `node_modules/` — vendored dep trees that are never authored
+  #     content. A single `pnpm install` can drop 100k+ files; with
+  #     hq-core staging shipping no `node_modules/`, every file under
+  #     one reads as local-only drift → every file gets `mv`'d into the
+  #     rescue bucket. On Corey's v0.1.101 run that meant the script
+  #     was actively moving 25 GB / 391k files across 150 cloned repos
+  #     when he caught it (CPU pegged for tens of minutes; would have
+  #     `rm -rf`'d `repos/` after the scan finished if `repos/` hadn't
+  #     since been added to the preserve list in v0.1.102).
+  #   * nested `.git/` — internal git plumbing. A loose-objects walk
+  #     can be 10k+ files per repo, none of which match staging history
+  #     (the staging repo has its own .git, not user repos'). Same
+  #     "every file becomes drift" failure mode as `node_modules/`.
+  # Pruning is defence-in-depth: with `repos/` preserved at the top
+  # level (v0.1.102 fix), neither pattern should appear inside any
+  # remaining wipe-set subtree under a normal HQ install. But the cost
+  # of pruning is one extra find expression; the cost of NOT pruning
+  # when one DOES sneak in (e.g. `core/packages/<pack>/node_modules`
+  # if the carve-out logic ever misses) is hours of wasted I/O and a
+  # broken rescue bucket. Belt-and-suspenders.
   while IFS= read -r -d '' f; do
     local rel="${f#"$HQ_ROOT/"}"
     compare_one "$rel"
-  done < <(find "$root_abs" -type f -print0)
+  done < <(find "$root_abs" \( -type d \( -name node_modules -o -name .git \) -prune \) -o \( -type f -print0 \))
 }
 
 # True (exit 0) iff $local_path's git blob SHA ever appeared at $rel in the
