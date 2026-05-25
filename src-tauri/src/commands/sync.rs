@@ -121,6 +121,34 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// startup so the cost lands in the background rather than during the
 /// user's first click of "Sync Now".
 ///
+/// 5.37.x ships file-time preservation across sync: source-side `mtime`
+/// (and `birthtime` where the filesystem supports it) is stamped into
+/// S3 metadata on push and applied via `utimesSync` on pull. Before
+/// 5.37.0 every cross-machine pull reset the receiver's mtime to "the
+/// time of sync," which broke build watchers, rsync-like cache checks,
+/// and "is this file fresh" heuristics on the receiver. Codex P2 round
+/// during PR #27 widened the accepted mtime domain to include Unix
+/// epoch (`0`) and pre-1970 negatives so reproducible-builds clamp
+/// values round-trip correctly. Composes cleanly with the 5.36.0
+/// lstat fast-path (the journal records the post-utimes mtime, so the
+/// next sync's fast-path correctly skips re-hashing). See
+/// indigoai-us/hq-cloud#27 for the wire-format details.
+///
+/// 5.36.x shipped two sync speedups: an lstat fast-path that skips
+/// SHA-256 when `(size, mtimeMs)` match the journal baseline (~5–10×
+/// on no-op syncs, which are most syncs), and a bounded-parallel
+/// transfer pool (default 16, knob `HQ_SYNC_TRANSFER_CONCURRENCY`) for
+/// uploads and downloads (4–8× on transfer-heavy syncs). Codex P1
+/// follow-ups serialized interactive conflict prompts (no stdin
+/// interleave under the pool) and drained in-flight transfers on
+/// worker error (no orphaned PUTs while `share()` already failed).
+/// See PR #26.
+///
+/// 5.35.x adds `.claude/state/` + `.claude/audit/` to DEFAULT_IGNORES.
+/// Those directories are session-/host-scoped by design and were the
+/// dominant source of conflict mirrors in the 5.34.0 live cross-
+/// machine test (~25 of 30 mirrors traced directly there). See PR #25.
+///
 /// 5.34.x closes a 10-bug cross-machine sync cleanup (indigoai-us/
 /// hq-cloud#24). Promoted to the new floor because three of those bugs
 /// directly destroy the menubar's user-facing promises and have
@@ -180,7 +208,7 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// first menubar sync ran on a behind machine and would erase legacy/
 /// filtered paths when the local hqRoot's ignore filter rejected them.
 /// See indigoai-us/hq#142 + the 2026-05-14 incident report.
-pub const HQ_CLOUD_VERSION: &str = "~5.34.0";
+pub const HQ_CLOUD_VERSION: &str = "~5.37.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
