@@ -790,6 +790,39 @@ pub async fn meetings_notify_detected(
     // command itself never blocks; the thread captures the windowId via
     // closure and lives until the user dismisses the notification (or
     // macOS auto-dismisses it).
+    // Register the bundle identifier with mac-notification-sys once per
+    // process lifetime. Without this, the library calls
+    // `get_bundle_identifier_or_default("use_default")` internally, which
+    // triggers a macOS "Choose Application" picker because Launch
+    // Services can't resolve the literal string "use_default" to an
+    // installed app (observed in field test on 2026-05-25). Calling
+    // `set_application` with our real bundle id makes notifications
+    // attribute correctly to HQ Sync and skips the picker.
+    //
+    // `set_application` itself is guarded by an internal `Once`, so
+    // calling it on every notification send would be safe — but wrapping
+    // in our own OnceLock keeps the log line at one-per-process.
+    static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
+    NOTIFICATION_APP_INIT.get_or_init(|| {
+        const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+        match mac_notification_sys::set_application(BUNDLE_ID) {
+            Ok(()) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("mac-notification-sys: registered bundle {BUNDLE_ID}"),
+                );
+            }
+            Err(e) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!(
+                        "mac-notification-sys: set_application({BUNDLE_ID}) failed: {e}"
+                    ),
+                );
+            }
+        }
+    });
+
     let window_id_for_thread = payload
         .window_id
         .clone()
