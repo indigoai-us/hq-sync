@@ -26,6 +26,12 @@
   // convention; the backend only honors it for @getindigo.ai (Phase 1
   // event_push_eligible) identities. See src-tauri/src/commands/daemon.rs.
   let instantSync = $state(true);
+  // Share notifications — dogfood gate: section only rendered for @getindigo.ai
+  // users. Same gate as meetings_feature_enabled (both call is_indigo_user()
+  // on the Rust side). Re-read on each poll cycle in share_notify.rs so the
+  // toggle takes effect immediately without app restart.
+  let shareNotifications = $state(true);
+  let isIndigoUser = $state(false);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -49,7 +55,7 @@
 
   async function loadSettings() {
     try {
-      const [settings, autostart] = await Promise.all([
+      const [settings, autostart, indigoUser] = await Promise.all([
         invoke<{
           hqPath: string | null;
           syncOnLaunch: boolean | null;
@@ -58,8 +64,10 @@
           realtimeSync: boolean | null;
           personalSyncEnabled: boolean | null;
           instantSync: boolean | null;
+          shareNotifications: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
+        invoke<boolean>('meetings_feature_enabled'),
       ]);
 
       hqPath = settings.hqPath;
@@ -69,6 +77,8 @@
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
       instantSync = settings.instantSync ?? true;
+      shareNotifications = settings.shareNotifications ?? true;
+      isIndigoUser = indigoUser;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -95,6 +105,7 @@
           realtimeSync,
           personalSyncEnabled,
           instantSync,
+          shareNotifications,
         },
       });
       showSaved();
@@ -122,6 +133,11 @@
 
   async function handleToggleNotifications() {
     notifications = !notifications;
+    await saveAll();
+  }
+
+  async function handleToggleShareNotifications() {
+    shareNotifications = !shareNotifications;
     await saveAll();
   }
 
@@ -352,6 +368,32 @@
           <span class="toggle-knob"></span>
         </button>
       </div>
+
+      <!-- Share notifications — dogfood gate: only rendered for @getindigo.ai
+           users. Persists shareNotifications in menubar.json; the poll in
+           share_notify.rs re-reads on each cycle so the toggle takes effect
+           on the next sync:complete without restart. -->
+      {#if isIndigoUser}
+        <div class="settings-divider"></div>
+
+        <div class="setting-row">
+          <div class="setting-info">
+            <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
+            <span class="setting-desc">Show a notification when someone shares files with you</span>
+          </div>
+          <button
+            id="toggle-share-notifications"
+            class="toggle"
+            class:active={shareNotifications}
+            onclick={handleToggleShareNotifications}
+            role="switch"
+            aria-checked={shareNotifications}
+            aria-label="Share notifications"
+          >
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+      {/if}
 
       <div class="settings-divider"></div>
 
