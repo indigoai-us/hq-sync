@@ -77,6 +77,14 @@ pub struct MenubarPrefs {
     /// unchanged drift panel. See `commands/hq_core_staging.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift_staging_repo: Option<String>,
+    /// Share notifications: when true (default), HQ Sync polls
+    /// `/v1/files/shared-with-me` on launch and after each sync, fires a
+    /// macOS notification per new share event, and opens a ShareDetail window
+    /// on click (US-004 / US-005). Only ever active for `@getindigo.ai` users
+    /// (dogfood gate in `commands/share_notify.rs`). Absent in pre-share-notify
+    /// menubar.json files → treated as true (see `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_notifications: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

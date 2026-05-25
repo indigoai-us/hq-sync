@@ -18,6 +18,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
             drift_staging_repo: None,
+            share_notifications: Some(true),
         });
     }
 
@@ -44,6 +45,10 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // for `event_push_eligible()` users (Phase 1: @getindigo.ai).
         instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
         drift_staging_repo: prefs.drift_staging_repo,
+        // Share notifications default ON — re-read on each poll cycle so the
+        // toggle takes effect without restart. Only active for @getindigo.ai
+        // users (dogfood gate checked separately in share_notify.rs).
+        share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
     })
 }
 
@@ -85,6 +90,7 @@ mod tests {
             personal_sync_enabled: None,
             instant_sync: None,
             drift_staging_repo: None,
+            share_notifications: None,
         };
 
         let result = MenubarPrefs {
@@ -96,7 +102,8 @@ mod tests {
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
-        drift_staging_repo: prefs.drift_staging_repo,
+            drift_staging_repo: prefs.drift_staging_repo,
+            share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, None);
@@ -104,6 +111,7 @@ mod tests {
         assert_eq!(result.notifications, Some(true));
         assert_eq!(result.start_at_login, Some(true));
         assert_eq!(result.realtime_sync, Some(true));
+        assert_eq!(result.share_notifications, Some(true));
     }
 
     #[test]
@@ -121,6 +129,7 @@ mod tests {
             personal_sync_enabled: None,
             instant_sync: None,
             drift_staging_repo: None,
+            share_notifications: None,
         };
 
         let result = MenubarPrefs {
@@ -132,10 +141,12 @@ mod tests {
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
-        drift_staging_repo: prefs.drift_staging_repo,
+            drift_staging_repo: prefs.drift_staging_repo,
+            share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
         };
 
         assert_eq!(result.realtime_sync, Some(false));
+        assert_eq!(result.share_notifications, Some(true));
     }
 
     #[test]
@@ -150,6 +161,7 @@ mod tests {
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
             drift_staging_repo: None,
+            share_notifications: Some(false),
         };
 
         let result = MenubarPrefs {
@@ -161,7 +173,8 @@ mod tests {
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
-        drift_staging_repo: prefs.drift_staging_repo,
+            drift_staging_repo: prefs.drift_staging_repo,
+            share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, Some("/custom/path".to_string()));
@@ -169,6 +182,8 @@ mod tests {
         assert_eq!(result.notifications, Some(false));
         assert_eq!(result.start_at_login, Some(false));
         assert_eq!(result.autostart_daemon, Some(true));
+        // explicit false must survive the unwrap_or(true)
+        assert_eq!(result.share_notifications, Some(false));
     }
 
     #[test]
@@ -183,6 +198,7 @@ mod tests {
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
             drift_staging_repo: None,
+            share_notifications: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -192,6 +208,7 @@ mod tests {
         assert_eq!(parsed.sync_on_launch, prefs.sync_on_launch);
         assert_eq!(parsed.notifications, prefs.notifications);
         assert_eq!(parsed.start_at_login, prefs.start_at_login);
+        assert_eq!(parsed.share_notifications, prefs.share_notifications);
     }
 
     #[test]
@@ -209,6 +226,7 @@ mod tests {
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
             drift_staging_repo: None,
+            share_notifications: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -218,6 +236,7 @@ mod tests {
         let parsed: MenubarPrefs = serde_json::from_str(&contents).unwrap();
         assert_eq!(parsed.sync_on_launch, Some(false));
         assert_eq!(parsed.notifications, Some(true));
+        assert_eq!(parsed.share_notifications, Some(true));
     }
 
     #[test]
@@ -232,6 +251,7 @@ mod tests {
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
             drift_staging_repo: None,
+            share_notifications: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -240,5 +260,6 @@ mod tests {
         // Should use camelCase keys
         assert!(json.contains("syncOnLaunch"));
         assert!(json.contains("startAtLogin"));
+        assert!(json.contains("shareNotifications"));
     }
 }
