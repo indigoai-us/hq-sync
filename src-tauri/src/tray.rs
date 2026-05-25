@@ -73,6 +73,11 @@ fn current_state() -> &'static Arc<Mutex<TrayState>> {
 /// new call's flag to false while its own panel is still opening.
 static MODAL_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
+/// Count of unacknowledged share events. When > 0, the tray tooltip
+/// gains a " · N new share(s)" suffix as a lightweight visual badge
+/// (avoids needing a new tray icon PNG for the share-notify feature).
+static SHARE_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Whether at least one native modal is currently open.
 pub fn is_modal_open() -> bool {
     MODAL_DEPTH.load(Ordering::SeqCst) > 0
@@ -369,11 +374,11 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
         *current = state;
     }
 
-    // Update the actual tray icon
+    // Update icon + badge-aware tooltip
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(icon_for_state(state)));
-        let _ = tray.set_tooltip(Some(state.tooltip()));
     }
+    refresh_tray_tooltip(app);
 }
 
 /// Get the current tray state.
@@ -406,7 +411,7 @@ fn reassert_tray(app: &AppHandle) {
             let _ = tray.set_visible(true);
             let state = get_current_state();
             let _ = tray.set_icon(Some(icon_for_state(state)));
-            let _ = tray.set_tooltip(Some(state.tooltip()));
+            refresh_tray_tooltip(&handle);
             log("tray", "reassert_tray: completed");
         } else {
             log("tray", "reassert_tray: tray not found");
@@ -441,6 +446,41 @@ fn setup_sync_listeners(app: &AppHandle) {
     app.listen(EVENT_SYNC_CONFLICT, move |_event| {
         update_tray_icon(&app4, TrayState::Conflict);
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Share-notification badge
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compose the current tray tooltip from global state + badge count and
+/// apply it to the tray icon. Called by `update_tray_icon`,
+/// `set_share_badge`, and `clear_share_badge` so the tooltip is always
+/// consistent with both the tray state and the share badge.
+fn refresh_tray_tooltip(app: &AppHandle) {
+    let state = get_current_state();
+    let count = SHARE_BADGE_COUNT.load(Ordering::SeqCst);
+    let tooltip = if count > 0 {
+        format!("{} · {} new share(s)", state.tooltip(), count)
+    } else {
+        state.tooltip().to_string()
+    };
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(tooltip.as_str()));
+    }
+}
+
+/// Mark N unacknowledged share events. Updates the tray tooltip suffix.
+/// Call from `share_notify::do_poll` after emitting new events.
+pub fn set_share_badge(app: &AppHandle, count: usize) {
+    SHARE_BADGE_COUNT.store(count, Ordering::SeqCst);
+    refresh_tray_tooltip(app);
+}
+
+/// Clear the share badge. Call from `share_notify::share_detail_window_ready`
+/// after the ack POST fires (best-effort).
+pub fn clear_share_badge(app: &AppHandle) {
+    SHARE_BADGE_COUNT.store(0, Ordering::SeqCst);
+    refresh_tray_tooltip(app);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -541,6 +581,21 @@ mod tests {
         // Caller is responsible for keeping the popover on-screen if needed.
         let (x, _) = compute_popover_position(10.0, 0.0, 24.0, 24.0, 320.0, 4.0);
         assert_eq!(x, 10 + 12 - 160); // = -138
+    }
+
+    #[test]
+    fn test_share_badge_count_atomic() {
+        // AppHandle isn't constructible in unit tests, but we can verify
+        // the AtomicUsize counter itself. `refresh_tray_tooltip` / `set_share_badge`
+        // / `clear_share_badge` wrap this counter; the tray interaction is
+        // exercised in integration/e2e contexts.
+        let before = SHARE_BADGE_COUNT.load(Ordering::SeqCst);
+        SHARE_BADGE_COUNT.store(5, Ordering::SeqCst);
+        assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 5);
+        SHARE_BADGE_COUNT.store(0, Ordering::SeqCst);
+        assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 0);
+        // Restore — best-effort in parallel test runs.
+        SHARE_BADGE_COUNT.store(before, Ordering::SeqCst);
     }
 
     #[test]

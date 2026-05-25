@@ -874,6 +874,24 @@
         }
       )
     );
+
+    // --- Share-notification event listener (US-005) ---
+    // Rust emits `share:new-events` after each poll when new events are found.
+    // Opening ShareDetail here (rather than inside the notification click
+    // handler) means the window is ready before the user acts on the notif.
+    unlisteners.push(
+      await listen<Array<{
+        eventId: string;
+        issuerEmail: string;
+        issuerDisplayName: string;
+        paths: string[];
+        note: string | null;
+        permission: string;
+        createdAt: string;
+      }>>('share:new-events', async (event) => {
+        await invoke('open_share_detail', { events: event.payload });
+      })
+    );
   }
 
   $effect(() => {

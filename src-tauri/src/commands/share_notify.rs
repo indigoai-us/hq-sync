@@ -44,7 +44,8 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -114,6 +115,14 @@ struct SharedWithMeResponse {
     #[allow(dead_code)]
     next_cursor: Option<String>,
 }
+
+/// Tauri event emitted to the share-detail window once its listener is ready
+/// (ready-handshake; mirrors "new-files:list" in new_files.rs).
+const EVENT_SHARE_EVENTS_LIST: &str = "share:events-list";
+
+/// Managed state: pending share events for the detail window ready-handshake.
+/// Follows the `PendingNewFiles` pattern in new_files.rs exactly.
+pub struct PendingShareEvents(pub Mutex<Vec<ShareEvent>>);
 
 // ── Cursor persistence ────────────────────────────────────────────────────────
 
@@ -314,10 +323,166 @@ async fn do_poll(app: &AppHandle) {
                         ),
                     );
 
+                    // Fire one macOS notification per share event (US-005).
+                    // Body: note (truncated to 100 chars) OR comma-joined basenames.
+                    for evt in &body.events {
+                        let body_text = match &evt.note {
+                            Some(n) if !n.is_empty() => {
+                                if n.len() > 100 {
+                                    format!("{}…", &n[..100])
+                                } else {
+                                    n.clone()
+                                }
+                            }
+                            _ => {
+                                let basenames: Vec<&str> = evt
+                                    .paths
+                                    .iter()
+                                    .map(|p| p.rsplit('/').next().unwrap_or(p.as_str()))
+                                    .collect();
+                                basenames.join(", ")
+                            }
+                        };
+                        let title =
+                            format!("{} shared files with you", evt.issuer_display_name);
+                        if let Err(e) = app
+                            .notification()
+                            .builder()
+                            .title(&title)
+                            .body(&body_text)
+                            .show()
+                        {
+                            log(
+                                LOG_TAG,
+                                &format!("NOTIFY_PERMISSION_DENIED or error: {e}"),
+                            );
+                        }
+                    }
+
+                    // Badge the tray icon with the unacknowledged event count.
+                    crate::tray::set_share_badge(app, body.events.len());
+
                     // Emit to frontend — US-005 listens here.
                     let _ = app.emit(EVENT_SHARE_NEW_EVENTS, &body.events);
                 }
             }
+        }
+    }
+}
+
+// ── ShareDetail window ─────────────────────────────────────────────────────────
+
+const SHARE_DETAIL_LABEL: &str = "share-detail";
+
+/// Tauri command: open (or focus) the ShareDetail window with the given events.
+///
+/// Mirrors `open_new_files_detail` in new_files.rs:
+/// 1. Stash events in `PendingShareEvents` managed state.
+/// 2. If window exists, show + focus it and re-emit the list directly.
+/// 3. Otherwise create it hidden; `share_detail_window_ready` will show it.
+#[tauri::command]
+pub async fn open_share_detail(
+    app: AppHandle,
+    events: Vec<ShareEvent>,
+) -> Result<(), String> {
+    // Stash so the ready-handshake can retrieve them.
+    if let Some(state) = app.try_state::<PendingShareEvents>() {
+        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = events.clone();
+    }
+
+    if let Some(window) = app.get_webview_window(SHARE_DETAIL_LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        app.emit_to(SHARE_DETAIL_LABEL, EVENT_SHARE_EVENTS_LIST, &events)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        SHARE_DETAIL_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Shared with Me")
+    .inner_size(640.0, 560.0)
+    .resizable(true)
+    .decorations(true)
+    .visible(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Tauri command: called by ShareDetail.svelte once its event listener is
+/// registered. Emits pending events, shows the window, fires best-effort ack,
+/// and clears the tray badge.
+#[tauri::command]
+pub async fn share_detail_window_ready(app: AppHandle) -> Result<(), String> {
+    let events: Vec<ShareEvent> = app
+        .try_state::<PendingShareEvents>()
+        .map(|s| s.0.lock().unwrap_or_else(|p| p.into_inner()).clone())
+        .unwrap_or_default();
+
+    app.emit_to(SHARE_DETAIL_LABEL, EVENT_SHARE_EVENTS_LIST, &events)
+        .map_err(|e| e.to_string())?;
+
+    if let Some(window) = app.get_webview_window(SHARE_DETAIL_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+
+    // Best-effort ack — fire-and-forget so the window doesn't block on it.
+    if !events.is_empty() {
+        let event_ids: Vec<String> = events.iter().map(|e| e.event_id.clone()).collect();
+        let app_clone = app.clone();
+        tauri::async_runtime::spawn(async move {
+            post_ack(&app_clone, event_ids).await;
+            crate::tray::clear_share_badge(&app_clone);
+        });
+    }
+
+    Ok(())
+}
+
+/// POST `/v1/files/shared-with-me/ack` with the given event IDs.
+/// Best-effort: errors are logged but never surfaced to the caller.
+async fn post_ack(_app: &AppHandle, event_ids: Vec<String>) {
+    let access_token = match cognito::get_valid_access_token().await {
+        Ok(t) => t,
+        Err(e) => {
+            log(LOG_TAG, &format!("SHARE_NOTIFY_ACK_AUTH_FAIL {e}"));
+            return;
+        }
+    };
+    let base_url = match resolve_vault_api_url() {
+        Ok(u) => u.trim_end_matches('/').to_string(),
+        Err(e) => {
+            log(LOG_TAG, &format!("SHARE_NOTIFY_ACK_ERROR cannot resolve vault URL: {e}"));
+            return;
+        }
+    };
+    let url = format!("{}/v1/files/shared-with-me/ack", base_url);
+    let body = serde_json::json!({ "eventIds": event_ids });
+
+    match build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            log(
+                LOG_TAG,
+                &format!("SHARE_NOTIFY_ACK_OK {} event(s)", event_ids.len()),
+            );
+        }
+        Ok(r) => {
+            log(LOG_TAG, &format!("SHARE_NOTIFY_ACK_ERROR status={}", r.status()));
+        }
+        Err(e) => {
+            log(LOG_TAG, &format!("SHARE_NOTIFY_ACK_NETWORK_FAIL {e}"));
         }
     }
 }

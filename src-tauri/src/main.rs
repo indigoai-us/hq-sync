@@ -132,6 +132,7 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -145,6 +146,7 @@ fn main() {
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
+        .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -216,6 +218,8 @@ fn main() {
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
             commands::share_notify::poll_shared_with_me,
+            commands::share_notify::open_share_detail,
+            commands::share_notify::share_detail_window_ready,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
