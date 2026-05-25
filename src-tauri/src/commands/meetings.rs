@@ -644,6 +644,11 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
 pub struct NotifyDetectedPayload {
     /// The detected meeting URL (primary stable key for dedup).
     pub meeting_url: Option<String>,
+    /// SDK window id for the detection — used by the notification's
+    /// action-button thread to route a Record click back to
+    /// `start_recording`. Caller passes `event.payload.windowId` straight
+    /// through; absent only for very old bridge versions.
+    pub window_id: Option<String>,
     /// Platform string from the SDK (e.g. "zoom", "meet").
     pub platform: Option<String>,
     /// Meeting title or calendar event summary, if known.
@@ -711,7 +716,7 @@ pub async fn meetings_notify_detected(
         mark, read_ledger, should_suppress, stable_key, write_ledger, LedgerAction,
     };
     use chrono::Utc;
-    use tauri_plugin_notification::NotificationExt;
+    use tauri::Emitter;
 
     // 1. Top-level notifications pref.
     let settings = get_settings().await?;
@@ -760,32 +765,90 @@ pub async fn meetings_notify_detected(
         payload.meeting_url.as_deref(),
     );
 
-    // 5. Fire the notification. Permission denial is logged but not an error.
+    // 5. Fire the notification via `mac-notification-sys` directly so we
+    // can attach a "Record" action button AND learn when the user clicks
+    // the notification body. `tauri-plugin-notification` 2.3.3's desktop
+    // path ignores `action_type_id` (it's mobile-only at that layer), so
+    // we bypass it for this specific surface and keep the rest of the
+    // app's plugin-based notifications unchanged.
     //
-    // Note on visual ordering vs the meeting app's own banner: Zoom (and
-    // most meeting apps) post their "you joined a meeting" notification at
-    // virtually the same instant the Recall SDK detects the window. macOS
-    // stack ordering can't be controlled from a Banner-style sender — if
-    // the host app uses Alert-style notifications (sticky, in System
-    // Settings → Notifications → <app>), ours appears below theirs no
-    // matter when we fire. A delayed fire was tried on 2026-05-25 and
-    // didn't help. The proper fix is `UNNotificationContent.interruption
-    // Level = .timeSensitive`, which tauri-plugin-notification does not
-    // currently expose on macOS — until it does, the tray "Prompt" badge
-    // is the more reliable persistent signal.
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title("Meeting detected")
-        .body(&body)
-        .show()
-    {
-        crate::util::logfile::log(
-            "meetings",
-            &format!("notification send failed: {e}"),
-        );
-        return Ok(false);
-    }
+    // Wire shape:
+    //   Notification body click  → emit `notification:meeting-action`
+    //                              with action="open"
+    //   "Record" action button   → emit `notification:meeting-action`
+    //                              with action="record"
+    //   Anything else (dismiss,  → no event (silently dropped)
+    //   ignore, timeout)
+    //
+    // The Svelte side listens for the event and either focuses the
+    // popover (action=open) or invokes `start_recording` directly
+    // (action=record).
+    //
+    // mac-notification-sys's `send()` is blocking when `wait_for_click`
+    // is true — it returns the response only after the user interacts.
+    // We spawn a dedicated thread per notification so the async Tauri
+    // command itself never blocks; the thread captures the windowId via
+    // closure and lives until the user dismisses the notification (or
+    // macOS auto-dismisses it).
+    let window_id_for_thread = payload
+        .window_id
+        .clone()
+        .unwrap_or_default();
+    let platform_for_thread = platform_lc.clone();
+    let body_for_thread = body.clone();
+    let app_for_thread = app.clone();
+    std::thread::spawn(move || {
+        let mut notification = mac_notification_sys::Notification::default();
+        notification
+            .title("Meeting detected")
+            .message(&body_for_thread)
+            // `main_button` attaches a single action button labelled
+            // "Record". On modern macOS (Sonoma/Sequoia) banner-style
+            // notifications reveal action buttons on hover; alert-style
+            // shows them inline. Either way, clicking it returns
+            // ActionButton("Record") in the response.
+            .main_button(mac_notification_sys::MainButton::SingleAction("Record"))
+            // Block the thread until the user interacts (or macOS
+            // auto-dismisses, which surfaces as None).
+            .wait_for_click(true);
+        match notification.send() {
+            Ok(resp) => {
+                let action = match resp {
+                    mac_notification_sys::NotificationResponse::ActionButton(name)
+                        if name.eq_ignore_ascii_case("record") =>
+                    {
+                        Some("record")
+                    }
+                    mac_notification_sys::NotificationResponse::Click => Some("open"),
+                    // CloseButton, Reply, None — no actionable signal for us.
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    let payload = crate::events::NotificationMeetingActionEvent {
+                        action: action.to_string(),
+                        window_id: window_id_for_thread,
+                        platform: platform_for_thread,
+                    };
+                    if let Err(e) = app_for_thread
+                        .emit(crate::events::EVENT_NOTIFICATION_MEETING_ACTION, &payload)
+                    {
+                        crate::util::logfile::log(
+                            "meetings",
+                            &format!(
+                                "emit notification:meeting-action failed: {e}"
+                            ),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("mac-notification-sys send failed: {e}"),
+                );
+            }
+        }
+    });
 
     // 6. Mark ledger + bump tray badge.
     mark(&mut ledger, key, LedgerAction::Notified, now);

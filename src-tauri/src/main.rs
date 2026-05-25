@@ -222,6 +222,7 @@ fn main() {
             commands::recall_sdk::start_recording,
             commands::recall_sdk::stop_recording,
             tray::meetings_set_prompt_badge,
+            tray::show_main_window,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at

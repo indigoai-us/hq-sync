@@ -421,6 +421,12 @@ pub struct MeetingDetectedEvent {
     pub detection_id: String,
     /// The meeting URL (Zoom, Meet, Teams, etc.) that was detected.
     pub meeting_url: String,
+    /// SDK window id for the detected meeting. Canonical handle for
+    /// `RecallAiSdk.startRecording({ windowId })` and `meeting-closed`
+    /// matching. Optional for back-compat with older bridge versions
+    /// that only emitted `meetingUrl`; current bridge always populates.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub window_id: Option<String>,
     /// The video-conferencing platform.
     pub platform: MeetingPlatform,
     /// ISO 8601 timestamp when the detection fired.
@@ -450,6 +456,36 @@ pub struct MeetingClosedEvent {
 
 /// Tauri event channel name for `MeetingClosedEvent`.
 pub const EVENT_MEETING_CLOSED: &str = "meeting:closed";
+
+/// Payload for `notification:meeting-action` — emitted by the Rust side
+/// when the user interacts with a "Meeting detected" macOS notification.
+///
+/// Fired in two cases:
+/// - User clicked the notification body itself (`action: "open"`)
+/// - User clicked the "Record" action button (`action: "record"`)
+///
+/// The Svelte side routes these to the popover or
+/// `invoke('start_recording', { windowId })` respectively. `windowId`
+/// is the SDK window the notification was emitted for; the renderer
+/// uses it to look up the corresponding `ActiveMeeting` row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationMeetingActionEvent {
+    /// `"open"` — user clicked the notification body; the renderer should
+    /// open/focus the popover so the row is visible.
+    /// `"record"` — user clicked the Record action button; the renderer
+    /// should call `start_recording(windowId)` directly.
+    pub action: String,
+    /// SDK window id for the meeting the notification was emitted for.
+    /// Empty when the notification predates per-meeting bookkeeping
+    /// (defensive — shouldn't happen in practice).
+    pub window_id: String,
+    /// Platform discriminator from the original detection (lowercase).
+    pub platform: String,
+}
+
+/// Tauri event channel name for `NotificationMeetingActionEvent`.
+pub const EVENT_NOTIFICATION_MEETING_ACTION: &str = "notification:meeting-action";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Recording lifecycle events
@@ -897,6 +933,7 @@ mod tests {
         let payload = MeetingDetectedEvent {
             detection_id: "det_123".to_string(),
             meeting_url: "https://zoom.us/j/12345".to_string(),
+            window_id: Some("win-abc".to_string()),
             platform: MeetingPlatform::Zoom,
             detected_at: "2026-05-20T10:00:00Z".to_string(),
             source: DetectionSource::SdkCalendar,
@@ -912,6 +949,7 @@ mod tests {
         let payload = MeetingDetectedEvent {
             detection_id: "det_456".to_string(),
             meeting_url: "https://meet.google.com/abc-def-ghi".to_string(),
+            window_id: None,
             platform: MeetingPlatform::Meet,
             detected_at: "2026-05-20T10:00:00Z".to_string(),
             source: DetectionSource::SdkActiveApp,

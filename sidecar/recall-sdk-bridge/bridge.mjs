@@ -219,6 +219,12 @@ RecallAiSdk.addEventListener("meeting-detected", (event) => {
       type: "meeting:detected",
       detectionId: randomUUID(),
       meetingUrl,
+      // Always include windowId — it's the canonical SDK handle and the
+      // only stable identifier across `startRecording({ windowId })` and
+      // `meeting-closed` events. For URL-having detections we encoded it
+      // into the synthetic URL only as a fallback dedup key; downstream
+      // callers should prefer `windowId` directly.
+      windowId: windowId || undefined,
       platform,
       detectedAt: new Date().toISOString(),
       source: "sdk-active-app",

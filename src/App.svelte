@@ -852,17 +852,23 @@
         // SDK windowId is what we key on for recording control. The bridge
         // emits `meetingUrl: "recall-window:<windowId>"` in that case, so
         // we can extract it back out.
+        windowId?: string;
       }>('meeting:detected', async (event) => {
         const { meetingUrl, platform, summary, sourceEventId } = event.payload;
+        const directWindowId = event.payload.windowId;
 
-        // Derive the SDK windowId — either parsed from the synthetic URL
-        // prefix or fall back to using the URL itself as a stable key. The
-        // recording-control commands need a windowId to talk to the SDK.
+        // Prefer the direct `windowId` field — it's the canonical SDK
+        // handle that newer bridge versions include on every detection.
+        // Fall back to extracting it from the synthetic
+        // `recall-window:<id>` URL for backward compat (URL-less
+        // detections; older bridge). Last-resort use the meetingUrl
+        // itself as a stable key for dedup-only purposes (real URLs).
         const isSyntheticUrl = typeof meetingUrl === 'string'
           && meetingUrl.startsWith('recall-window:');
-        const windowId = isSyntheticUrl
-          ? meetingUrl!.slice('recall-window:'.length)
-          : (meetingUrl ?? '');
+        const windowId = directWindowId
+          ?? (isSyntheticUrl
+            ? meetingUrl!.slice('recall-window:'.length)
+            : (meetingUrl ?? ''));
 
         if (windowId) {
           upsertActiveMeeting({
@@ -896,6 +902,9 @@
           await invoke('meetings_notify_detected', {
             payload: {
               meetingUrl: meetingUrl ?? null,
+              // Pass through so the notification's action-button thread
+              // can route Record clicks back to start_recording.
+              windowId: windowId || null,
               platform: platform ?? null,
               summary: summary ?? null,
               sourceEventId: sourceEventId ?? null,
@@ -953,6 +962,39 @@
           // User closed the meeting app without recording — drop the row
           // so the popover doesn't show stale detections.
           removeActiveMeeting(event.payload.windowId);
+        },
+      ),
+    );
+
+    // Notification action dispatch — fired by the Rust mac-notification-sys
+    // worker thread when the user interacts with a "Meeting detected"
+    // notification. Two cases:
+    //   action="open"   → user clicked the notification body. Open the
+    //                     popover so the active-meetings row is visible.
+    //   action="record" → user clicked the Record action button. Skip
+    //                     the popover and start recording directly.
+    unlisteners.push(
+      await listen<{ action: string; windowId: string; platform: string }>(
+        'notification:meeting-action',
+        async (event) => {
+          const { action, windowId } = event.payload;
+          if (action === 'record' && windowId) {
+            await handleStartRecording(windowId);
+            // Clear the prompt-tray badge — the user acted on the
+            // detection, even if the recording itself errors.
+            invoke('meetings_clear_prompt_badge').catch(() => {});
+            return;
+          }
+          if (action === 'open') {
+            // Pop the main popover into view. Tauri doesn't expose a
+            // direct "open popover" command — the tray click is what
+            // normally toggles visibility. We invoke `show_main_window`
+            // (defined in main.rs) which focuses the popover window.
+            invoke('show_main_window').catch((err) => {
+              console.warn('show_main_window failed:', err);
+            });
+            invoke('meetings_clear_prompt_badge').catch(() => {});
+          }
         },
       ),
     );
