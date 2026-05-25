@@ -103,12 +103,17 @@ else
   # `strings` finds the symbol names embedded as panic/format paths even
   # in stripped release binaries — Tauri's release profile keeps the
   # symbol table by default.
-  check "Phase-0 gate compiled in (meeting_detect_eligible)" \
-    bash -c "strings '$MENUBAR' | grep -q 'meeting_detect_eligible'"
-  check "Permission registration compiled in (permissions_force_native_register)" \
-    bash -c "strings '$MENUBAR' | grep -q 'permissions_force_native_register'"
-  check "Recall SDK lifecycle compiled in (start_recall_sdk)" \
-    bash -c "strings '$MENUBAR' | grep -q 'start_recall_sdk'"
+  # Look for distinctive log-message substrings that survive `strip` in
+  # release builds (function symbol names DO get stripped — looking for
+  # the function name itself misses real positives, as we hit on the
+  # first run of this script). These strings are baked into the binary
+  # via the `log()` macro and only appear in their respective modules.
+  check "Phase-0 gate compiled in (meeting_detect: log signature)" \
+    bash -c "strings '$MENUBAR' | grep -q 'start_recall_sdk: user not in Phase-0 allowlist'"
+  check "Permission registration compiled in (CGRequestScreenCaptureAccess log)" \
+    bash -c "strings '$MENUBAR' | grep -q 'CGRequestScreenCaptureAccess'"
+  check "Recall SDK lifecycle compiled in (start_recall_sdk: initialising log)" \
+    bash -c "strings '$MENUBAR' | grep -q 'start_recall_sdk: initialising'"
 fi
 
 echo ""
@@ -126,26 +131,34 @@ warn_check "hardened runtime enabled (required for distribution)" \
 echo ""
 
 # ── Ghost-process check (the trap from 2026-05-25) ───────────────────────
+# Only meaningful for a DEPLOYED bundle — running this against a fresh
+# build in src-tauri/target/ would false-fire because the running PIDs
+# legitimately don't reference that build directory.
 echo "Process / bundle alignment:"
 
-MENUBAR_PIDS=$(pgrep -f 'HQ Sync.app/Contents/MacOS/hq-sync-menubar' 2>/dev/null || true)
-GHOST=0
-if [ -n "$MENUBAR_PIDS" ]; then
-  BUNDLE_MTIME=$(stat -f '%m' "$APP")
-  for pid in $MENUBAR_PIDS; do
-    PROC_START=$(ps -p "$pid" -o lstart= 2>/dev/null | xargs -I{} date -j -f '%a %b %e %T %Y' '{}' '+%s' 2>/dev/null || echo 0)
-    if [ "$PROC_START" -gt 0 ] && [ "$PROC_START" -lt "$BUNDLE_MTIME" ]; then
-      red "  ✗ PID $pid started BEFORE the on-disk bundle (mtime=$BUNDLE_MTIME, started=$PROC_START)"
-      red "    This is a GHOST process from a previous bundle that got auto-updated."
-      red "    Kill it (kill -TERM $pid) and relaunch from /Applications."
-      GHOST=1
+if [[ "$APP" == /Applications/* ]]; then
+  MENUBAR_PIDS=$(pgrep -f 'HQ Sync.app/Contents/MacOS/hq-sync-menubar' 2>/dev/null || true)
+  GHOST=0
+  if [ -n "$MENUBAR_PIDS" ]; then
+    BUNDLE_MTIME=$(stat -f '%m' "$APP")
+    for pid in $MENUBAR_PIDS; do
+      PROC_START=$(ps -p "$pid" -o lstart= 2>/dev/null | xargs -I{} date -j -f '%a %b %e %T %Y' '{}' '+%s' 2>/dev/null || echo 0)
+      if [ "$PROC_START" -gt 0 ] && [ "$PROC_START" -lt "$BUNDLE_MTIME" ]; then
+        red "  ✗ PID $pid started BEFORE the on-disk bundle (mtime=$BUNDLE_MTIME, started=$PROC_START)"
+        red "    This is a GHOST process from a previous bundle that got auto-updated."
+        red "    Kill it (kill -TERM $pid) and relaunch from /Applications."
+        GHOST=1
+      fi
+    done
+    if [ "$GHOST" -eq 0 ]; then
+      green "  ✓ Running hq-sync-menubar PIDs match the on-disk bundle"
     fi
-  done
-  if [ "$GHOST" -eq 0 ]; then
-    green "  ✓ Running hq-sync-menubar PIDs match the on-disk bundle"
+  else
+    yellow "  ⚠ HQ Sync is not running. Launch it before testing."
   fi
 else
-  yellow "  ⚠ HQ Sync is not running. Launch it before testing."
+  GHOST=0
+  yellow "  (skipped — bundle is not at /Applications; ghost-process check is deploy-target-only)"
 fi
 
 echo ""
