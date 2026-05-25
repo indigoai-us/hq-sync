@@ -326,25 +326,8 @@ async fn do_poll(app: &AppHandle) {
                     // Fire one macOS notification per share event (US-005).
                     // Body: note (truncated to 100 chars) OR comma-joined basenames.
                     for evt in &body.events {
-                        let body_text = match &evt.note {
-                            Some(n) if !n.is_empty() => {
-                                if n.len() > 100 {
-                                    format!("{}…", &n[..100])
-                                } else {
-                                    n.clone()
-                                }
-                            }
-                            _ => {
-                                let basenames: Vec<&str> = evt
-                                    .paths
-                                    .iter()
-                                    .map(|p| p.rsplit('/').next().unwrap_or(p.as_str()))
-                                    .collect();
-                                basenames.join(", ")
-                            }
-                        };
-                        let title =
-                            format!("{} shared files with you", evt.issuer_display_name);
+                        let body_text = notification_body(evt.note.as_deref(), &evt.paths);
+                        let title = notification_title(&evt.issuer_display_name);
                         if let Err(e) = app
                             .notification()
                             .builder()
@@ -366,6 +349,47 @@ async fn do_poll(app: &AppHandle) {
                     let _ = app.emit(EVENT_SHARE_NEW_EVENTS, &body.events);
                 }
             }
+        }
+    }
+}
+
+// ── Notification content helpers ──────────────────────────────────────────────
+
+/// Build the macOS notification title for a share event.
+/// Format: "<issuerDisplayName> shared files with you"
+pub(crate) fn notification_title(issuer_display_name: &str) -> String {
+    format!("{} shared files with you", issuer_display_name)
+}
+
+/// Build the macOS notification body for a share event.
+///
+/// - If a non-empty note is present: return the note, truncated to 100
+///   *Unicode scalar values* (characters, not bytes) with a "…" suffix when
+///   truncated. Using character count avoids a panic on multi-byte sequences.
+/// - Otherwise: return the comma-joined basenames of the shared paths.
+pub(crate) fn notification_body(note: Option<&str>, paths: &[String]) -> String {
+    const CHAR_LIMIT: usize = 100;
+    match note {
+        Some(n) if !n.is_empty() => {
+            let char_count = n.chars().count();
+            if char_count > CHAR_LIMIT {
+                // Find the byte offset of the CHAR_LIMIT-th character boundary.
+                let cut = n
+                    .char_indices()
+                    .nth(CHAR_LIMIT)
+                    .map(|(i, _)| i)
+                    .unwrap_or(n.len());
+                format!("{}…", &n[..cut])
+            } else {
+                n.to_string()
+            }
+        }
+        _ => {
+            let basenames: Vec<&str> = paths
+                .iter()
+                .map(|p| p.rsplit('/').next().unwrap_or(p.as_str()))
+                .collect();
+            basenames.join(", ")
         }
     }
 }
@@ -590,5 +614,73 @@ mod tests {
             path.ends_with(".hq/share-notify-cursor.json"),
             "cursor path must live under ~/.hq, got {path:?}"
         );
+    }
+
+    // ── notification_body tests ───────────────────────────────────────────────
+
+    #[test]
+    fn test_notification_body_short_note_returned_as_is() {
+        let body = notification_body(Some("Please review the Q1 data"), &[]);
+        assert_eq!(body, "Please review the Q1 data");
+    }
+
+    #[test]
+    fn test_notification_body_long_note_truncated_at_100_chars_with_ellipsis() {
+        // Build a 150-character ASCII note.
+        let long_note: String = "a".repeat(150);
+        let body = notification_body(Some(&long_note), &[]);
+        // Truncated to 100 chars + "…" (the Unicode ellipsis character, 3 UTF-8 bytes)
+        let expected = format!("{}…", "a".repeat(100));
+        assert_eq!(body, expected);
+        assert_eq!(body.chars().count(), 101); // 100 content chars + 1 ellipsis
+    }
+
+    #[test]
+    fn test_notification_body_note_exactly_100_chars_not_truncated() {
+        let note: String = "b".repeat(100);
+        let body = notification_body(Some(&note), &[]);
+        assert_eq!(body, note);
+        assert!(!body.contains('…'));
+    }
+
+    #[test]
+    fn test_notification_body_truncates_safely_at_char_boundary_for_multibyte() {
+        // Each "😀" is 4 bytes but 1 character. A 150-char emoji string
+        // would be 600 bytes — byte-index slicing at 100 would panic; char-aware
+        // slicing should not.
+        let emoji_note: String = "😀".repeat(150);
+        let body = notification_body(Some(&emoji_note), &[]);
+        assert!(body.ends_with('…'));
+        assert_eq!(body.chars().count(), 101); // 100 emojis + ellipsis
+    }
+
+    #[test]
+    fn test_notification_body_falls_back_to_comma_joined_basenames_when_no_note() {
+        let paths = vec![
+            "/vault/reports/q1.csv".to_string(),
+            "/vault/data/summary.md".to_string(),
+        ];
+        let body = notification_body(None, &paths);
+        assert_eq!(body, "q1.csv, summary.md");
+    }
+
+    #[test]
+    fn test_notification_body_falls_back_to_basenames_when_note_is_empty_string() {
+        let paths = vec!["reports/annual.pdf".to_string()];
+        let body = notification_body(Some(""), &paths);
+        assert_eq!(body, "annual.pdf");
+    }
+
+    #[test]
+    fn test_notification_body_basename_with_no_slash() {
+        let paths = vec!["standalone.md".to_string()];
+        let body = notification_body(None, &paths);
+        assert_eq!(body, "standalone.md");
+    }
+
+    #[test]
+    fn test_notification_title_format() {
+        let title = notification_title("Stefan Johnson");
+        assert_eq!(title, "Stefan Johnson shared files with you");
     }
 }
