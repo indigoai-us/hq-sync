@@ -189,7 +189,13 @@ fn resolve_staging_repo(eligible: bool) -> Option<String> {
 
 /// Resolve a GitHub token via the local `gh` CLI, falling back to parsing
 /// `~/.config/gh/hosts.yml`. Returns `None` (feature dark) on any failure.
-fn resolve_gh_token() -> Option<String> {
+///
+/// Crate-public: `hq_core_update::install_hq_core_update` reuses this to
+/// pass `GH_TOKEN` through to the rescue script when available. The public
+/// hq-core repo doesn't strictly require a token, but threading one through
+/// dodges the anonymous-clone rate limit (60/h) for users who already have
+/// `gh` configured locally.
+pub(crate) fn resolve_gh_token() -> Option<String> {
     // 1. `gh auth token` — the canonical, always-fresh source.
     let gh = paths::resolve_bin("gh");
     if let Ok(output) = Command::new(&gh).args(["auth", "token"]).output() {
@@ -506,7 +512,10 @@ struct LocalReplacedFromStaging {
 
 /// Resolve the user's HQ folder using the same 4-tier resolver the rest of
 /// the app uses (menubar.json → config.json → discovery → ~/HQ).
-fn resolve_hq_folder() -> std::path::PathBuf {
+///
+/// Crate-public: shared with `hq_core_update::install_hq_core_update` so the
+/// prod-update spawn path doesn't re-implement the resolver tree.
+pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
     let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
         .ok()
         .filter(|p| p.exists())
@@ -628,7 +637,11 @@ pub async fn check_staging_replace_available() -> Option<StagingReplaceInfo> {
 /// the resource dir (Tauri rewrites `../scripts/...` to `_up_/scripts/...`
 /// during resource staging). In packaged builds the bundler places it in
 /// the .app's `Resources/` directory under the same relative path.
-fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+///
+/// Crate-public: `hq_core_update::install_hq_core_update` reuses this to
+/// spawn the same rescue script against the released hq-core repo (replaces
+/// the old "open Claude Code with /update-hq" CTA for prod users).
+pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let candidates = [
         "_up_/scripts/replace-from-staging-rescue.sh",
         "scripts/replace-from-staging-rescue.sh",
@@ -746,7 +759,10 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
 /// Read the last N lines of a log file. Pure stdlib so we don't pull in
 /// another dep just for tailing. Reads the whole file into memory — fine
 /// for our use (rescue logs are < 100 KB even in the worst case).
-fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
+///
+/// Crate-public so `hq_core_update::install_hq_core_update` can surface the
+/// same trailing-log feedback chip the staging pill uses.
+pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("read {}: {e}", path.display()))?;
     let lines: Vec<&str> = content.lines().collect();

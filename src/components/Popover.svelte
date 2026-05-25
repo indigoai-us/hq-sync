@@ -117,15 +117,27 @@
     /** Non-null when the user's local hq-core (read from core.yaml's
      *  `hqVersion`) is behind the latest GitHub release of
      *  indigoai-us/hq-core. When non-null, the footer HQ-version row
-     *  surfaces an "Update to vX.Y.Z" pill (right-aligned) whose click
-     *  handler launches Claude Code at the HQ folder with `/update-hq`
-     *  pre-filled in the prompt — same `claude://code/new` deep-link
-     *  mechanism as `fixHqCliUpdateInHq`. Replaces the v0.1.84 top-of-
-     *  popover update banner (less visually noisy, lives next to the
-     *  version string it's about). */
+     *  surfaces an "Update to vX.Y.Z" pill (right-aligned). The pill now
+     *  invokes `install_hq_core_update` in-process (spawns the same
+     *  rescue script the staging pill uses, pointed at the released
+     *  hq-core tag) — replaces the prior Claude-Code-deep-link CTA. */
     hqCoreUpdateAvailable?: {
       local: string | null;
       latest: string;
+    } | null;
+    /** True while the prod-update rescue script is running. Disables the
+     *  pill and swaps the label to "Updating…" so the user knows
+     *  something's happening during the multi-minute clone+overlay. */
+    hqCoreUpdateInstalling?: boolean;
+    /** Last prod-update run's result. Surfaced next to the pill so the
+     *  user gets immediate feedback (✓ done / ✗ failed) without opening
+     *  the log file. Cleared at start of a new run. Same shape as
+     *  `stagingReplaceLastResult`. */
+    hqCoreUpdateLastResult?: {
+      kind: 'ok' | 'err';
+      exitCode: number;
+      logTail: string;
+      logPath: string;
     } | null;
     /** Locally-detected hq-core `hqVersion` (cheap on-disk read from
      *  `core.yaml`). Drives the "HQ vX.Y.Z" footer row, independent of
@@ -205,6 +217,10 @@
      *  so the prop is omittable for non-eligible users (the parent simply
      *  doesn't bind it; the pill stays hidden anyway). */
     onrunreplacefromstaging?: () => void;
+    /** Invoke the prod-update rescue via `install_hq_core_update`.
+     *  App.svelte owns the in-flight + result state. Optional so the
+     *  prop is omittable when the parent hasn't wired it. */
+    oninstallhqcoreupdate?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -248,6 +264,8 @@
     hqCliUpdateInstalling = false,
     hqCliUpdateError = null,
     hqCoreUpdateAvailable = null,
+    hqCoreUpdateInstalling = false,
+    hqCoreUpdateLastResult = null,
     hqVersion = null,
     hqCoreDrift = null,
     stagingDrift = null,
@@ -264,6 +282,7 @@
     oninstallupdate,
     oninstallhqcliupdate,
     onrunreplacefromstaging,
+    oninstallhqcoreupdate,
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
@@ -749,8 +768,12 @@
          Three states:
            1. hqVersion present + hqCoreUpdateAvailable null → "HQ vX.Y.Z" only
            2. hqVersion present + hqCoreUpdateAvailable non-null → version
-              text + right-aligned "Update to vX.Y.Z" pill (clickable, opens
-              Claude Code with /update-hq pre-filled).
+              text + right-aligned "Update to vX.Y.Z" pill. Click invokes
+              `install_hq_core_update` (spawns the rescue script against
+              indigoai-us/hq-core at the release tag — same engine the
+              staging pill uses). While running the pill is disabled and
+              relabelled "Updating…"; on completion a ✓ / ✗ chip
+              appears next to it.
            3. hqVersion null → "HQ version unknown" + right-aligned
               CopyPromptButton so the user can hand a triage prompt to an
               agent in-session (the install is broken in a way we can't
@@ -843,7 +866,26 @@
               {/if}
             </button>
           {/if}
+        {:else if hqCoreUpdateAvailable && oninstallhqcoreupdate}
+          <button
+            class="footer-hq-version-pill"
+            onclick={oninstallhqcoreupdate}
+            disabled={hqCoreUpdateInstalling}
+            title={hqCoreUpdateInstalling
+              ? `Installing v${hqCoreUpdateAvailable.latest} — see /tmp/hq-sync-install-hq-core-update-*.log`
+              : `Replace HQ with indigoai-us/hq-core@v${hqCoreUpdateAvailable.latest}. Local drifts move to personal/; the release tree overlays on top.`}
+          >
+            {#if hqCoreUpdateInstalling}
+              Updating…
+            {:else}
+              Update to v{hqCoreUpdateAvailable.latest}
+            {/if}
+          </button>
         {:else if hqCoreUpdateAvailable}
+          <!-- Fallback when the parent hasn't wired oninstallhqcoreupdate
+               (legacy callers, or sub-windows that don't own install
+               state): keep the old Claude-Code deep-link behavior so the
+               pill still does something. -->
           <button
             class="footer-hq-version-pill"
             onclick={updateHqCoreInClaudeCode}
@@ -851,6 +893,22 @@
           >
             Update to v{hqCoreUpdateAvailable.latest}
           </button>
+        {/if}
+        {#if hqCoreUpdateLastResult}
+          <!-- Prod-update result chip. Mirrors the staging variant below;
+               same styling, same title-tooltip behaviour for the log
+               tail. Rendered before the staging chip so the most-recent
+               prod action is closest to its pill. -->
+          <span
+            class="footer-hq-version-result footer-hq-version-result-{hqCoreUpdateLastResult.kind}"
+            title={hqCoreUpdateLastResult.logTail || hqCoreUpdateLastResult.logPath}
+          >
+            {#if hqCoreUpdateLastResult.kind === 'ok'}
+              ✓ update done
+            {:else}
+              ✗ update failed (exit {hqCoreUpdateLastResult.exitCode})
+            {/if}
+          </span>
         {/if}
         {#if stagingReplaceLastResult}
           <!-- Last rescue-run feedback. Tiny inline chip so the user sees

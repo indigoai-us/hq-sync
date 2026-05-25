@@ -155,12 +155,25 @@
   // hq-core release notifier state — populated by `hq-core-update:available`
   // from the Rust background checker (launch+20s, then every 6h). Non-null
   // means the user's `core.yaml` `hqVersion` lags the latest GitHub release
-  // of indigoai-us/hq-core. The banner CTA opens Claude Code at the HQ
-  // folder with `/update-hq` pre-filled in the prompt (same
-  // `claude://code/new` deep-link mechanism as `fixHqCliUpdateInHq`).
+  // of indigoai-us/hq-core. The Update pill now invokes
+  // `install_hq_core_update` directly (replaces the prior "open Claude
+  // Code with /update-hq" CTA — see commands/hq_core_update.rs for the
+  // new in-process spawn flow).
   let hqCoreUpdateAvailable = $state<{
     local: string | null;
     latest: string;
+  } | null>(null);
+  // Spinner / disable flag for the prod Update pill while the rescue
+  // script is running. Mirrors `stagingReplaceRunning` below.
+  let hqCoreUpdateInstalling = $state<boolean>(false);
+  // Last install-run summary (success or error). Surfaced via Popover so
+  // the user sees ✓ / ✗ in the same row the pill lives in. Cleared at the
+  // start of a new run.
+  let hqCoreUpdateLastResult = $state<{
+    kind: 'ok' | 'err';
+    exitCode: number;
+    logTail: string;
+    logPath: string;
   } | null>(null);
 
   // Drift summary — populated by `hq-core-drift:available` from the Rust
@@ -331,6 +344,65 @@
       };
     } finally {
       stagingReplaceRunning = false;
+    }
+  }
+
+  // Prod-user "Update" action. Invokes `install_hq_core_update` which
+  // spawns the same rescue script the staging path uses, just pointed at
+  // `indigoai-us/hq-core` at the latest release tag. Long-running
+  // (30-90s); the pill is disabled while pending and the result lands in
+  // `hqCoreUpdateLastResult` for Popover to surface. On success we
+  // re-read `hqVersion` so the footer row updates without waiting for
+  // the 6h background check, and we clear `hqCoreUpdateAvailable` once
+  // the local version catches up (mirrors the hq-cli updater's pattern).
+  async function handleInstallHqCoreUpdate() {
+    if (hqCoreUpdateInstalling) return;
+    hqCoreUpdateInstalling = true;
+    hqCoreUpdateLastResult = null;
+    try {
+      const result = await invoke<{
+        exit_code: number;
+        log_tail: string;
+        log_path: string;
+      }>('install_hq_core_update');
+      hqCoreUpdateLastResult = {
+        kind: result.exit_code === 0 ? 'ok' : 'err',
+        exitCode: result.exit_code,
+        logTail: result.log_tail,
+        logPath: result.log_path,
+      };
+      // Refresh local version so the footer "HQ v…" row reflects what
+      // the rescue overlaid. On success we also clear the Update pill
+      // if the local now matches the target — the next background check
+      // will re-arm it if the user is somehow still behind (e.g. release
+      // bumped during the install window).
+      await loadHqVersion();
+      if (
+        result.exit_code === 0 &&
+        hqCoreUpdateAvailable &&
+        hqVersion === hqCoreUpdateAvailable.latest
+      ) {
+        hqCoreUpdateAvailable = null;
+      }
+      // Re-run release drift so the "N drifted" pill swings to zero
+      // once the overlay completed (locked-scope files now match the
+      // released tag). Fire-and-forget — failure just leaves a stale
+      // pill until the next background tick.
+      if (result.exit_code === 0) {
+        invoke('check_hq_core_drift').catch((e) =>
+          console.error('post-install hq-core drift check failed:', e)
+        );
+      }
+    } catch (err) {
+      console.error('install_hq_core_update failed:', err);
+      hqCoreUpdateLastResult = {
+        kind: 'err',
+        exitCode: -1,
+        logTail: String(err),
+        logPath: '',
+      };
+    } finally {
+      hqCoreUpdateInstalling = false;
     }
   }
 
@@ -1084,6 +1156,8 @@
       {hqCliUpdateInstalling}
       {hqCliUpdateError}
       {hqCoreUpdateAvailable}
+      {hqCoreUpdateInstalling}
+      {hqCoreUpdateLastResult}
       {hqCoreDrift}
       {stagingDrift}
       {hqVersion}
@@ -1099,6 +1173,7 @@
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
+      oninstallhqcoreupdate={handleInstallHqCoreUpdate}
       onrunreplacefromstaging={handleRunReplaceFromStaging}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}

@@ -19,15 +19,21 @@
 //!      stripped). If latest > local, emit `hq-core-update:available`.
 //!
 //! Differences from the CLI nag:
-//!   * No install command. Updating hq-core means running the `/update-hq`
-//!     Claude-Code skill inside the user's HQ folder, which is a much
-//!     heavier interactive flow than a one-shot `npm install -g`. The
-//!     banner's CTA is "Open release notes" — handled in the frontend via
-//!     `@tauri-apps/plugin-shell`'s `open()` against the GitHub release
-//!     URL, which is allowed by the existing `shell:allow-open` capability.
-//!   * No `:cleared` event for the same reason — there's nothing the app
-//!     can do to make `core.yaml` advance, so the banner naturally clears
-//!     on the next background check after the user has updated.
+//!   * Updating hq-core no longer requires opening Claude Code. The
+//!     `install_hq_core_update` Tauri command spawns the bundled
+//!     `replace-from-staging-rescue.sh` against `indigoai-us/hq-core` at the
+//!     latest release tag — the same rescue + overlay engine the staging
+//!     pill uses for `@getindigo.ai` builders, just pointed at the public
+//!     prod repo. Drifts are rescued into `personal/`, the release tree is
+//!     overlaid on top, and `core/core.yaml`'s `replaced_from_staging`
+//!     stamp is updated with the cloned SHA so subsequent checks have a
+//!     valid history floor. The frontend pill swaps its label to
+//!     "Updating…" while the future is pending and surfaces a result chip
+//!     on completion (mirroring the staging pill's UX).
+//!   * No `:cleared` event — the banner naturally clears on the next
+//!     background check after `core.yaml`'s `hqVersion` advances. The
+//!     frontend re-reads `get_hq_version` post-install so the footer
+//!     version row updates without waiting for the 6h cycle.
 //!
 //! Cadence: first check 20s after launch (offset from updater's 10s and
 //! the CLI nag's 15s so they don't spike CPU + network in lockstep), then
@@ -217,6 +223,132 @@ pub async fn check_hq_core_update(app: AppHandle) -> Result<Option<HqCoreUpdateI
 #[tauri::command]
 pub fn get_hq_version() -> Option<String> {
     get_local_version()
+}
+
+/// Canonical owner/name of the prod hq-core repo. Mirrors the constant
+/// shape staging uses (`DEFAULT_STAGING_REPO`) so the spawn site stays
+/// symmetric. Hard-coded — there's no menubar.json override for prod
+/// because the release feed and the rescue source must agree, and the
+/// release feed (`RELEASES_URL` above) is already pinned.
+const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
+
+/// Tauri command — prod-user "Update" action. Spawns the bundled
+/// `replace-from-staging-rescue.sh` against `indigoai-us/hq-core` at the
+/// latest release tag (`v{latest}`), replacing the old "open Claude Code
+/// with /update-hq" CTA.
+///
+/// Shape mirrors `hq_core_staging::run_replace_from_staging`:
+///   1. Resolve the HQ folder via the standard 4-tier resolver. Bail if it
+///      isn't a valid HQ root (missing `companies/` or `personal/`) — the
+///      rescue script depends on `personal/` as the drift override target,
+///      so failing fast here gives a clean error instead of an opaque
+///      bash exit-3.
+///   2. Resolve the bundled rescue script via Tauri's resource API.
+///   3. Refetch the latest release tag from GitHub. We don't trust the
+///      frontend-supplied value — it may be stale (last background check
+///      ran 6h ago) and the operation is heavyweight enough that the
+///      extra round-trip is negligible.
+///   4. Spawn `bash <script> --hq-root <folder> --source indigoai-us/hq-core
+///      --ref v{latest} --yes`. GH token is forwarded via `GH_TOKEN` env
+///      when available — public repo doesn't strictly need it, but having
+///      one dodges the 60/h anonymous-clone rate limit during the
+///      history-index walk.
+///   5. Return the same `RescueRunResult` shape (exit code + 40-line log
+///      tail + log path) so the frontend can reuse the staging pill's
+///      result-chip UI verbatim.
+///
+/// Long-running (~30-90s on first run because of the full-history clone +
+/// scan). The frontend disables the pill + swaps to "Updating…" while the
+/// future is pending.
+#[tauri::command]
+pub async fn install_hq_core_update(
+    app: AppHandle,
+) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
+    let hq_folder = crate::commands::hq_core_staging::resolve_hq_folder();
+    if !hq_folder.join("companies").is_dir() || !hq_folder.join("personal").is_dir() {
+        return Err(format!(
+            "HQ folder at {} is missing companies/ or personal/ (not a valid HQ root)",
+            hq_folder.display()
+        ));
+    }
+    let script = crate::commands::hq_core_staging::resolve_rescue_script(&app)?;
+
+    let latest = fetch_latest()
+        .await
+        .map_err(|e| format!("fetch latest hq-core release: {e}"))?;
+    if latest.is_empty() {
+        return Err("GitHub returned an empty tag for the latest hq-core release".to_string());
+    }
+    // hq-core release tags are `vX.Y.Z` (see strip_v_prefix doc above);
+    // `fetch_latest` strips the leading `v` for the semver comparator, so
+    // re-add it here for the git ref.
+    let git_ref = format!("v{latest}");
+
+    let log_path = std::env::temp_dir().join(format!(
+        "hq-sync-install-hq-core-update-{}.log",
+        std::process::id()
+    ));
+    let log_file_for_stdout = std::fs::File::create(&log_path)
+        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
+    let log_file_for_stderr = log_file_for_stdout
+        .try_clone()
+        .map_err(|e| format!("dup log file fd: {e}"))?;
+
+    log(
+        "hq-core-update",
+        &format!(
+            "spawning rescue (prod): script={} hq_root={} repo={} ref={} log={}",
+            script.display(),
+            hq_folder.display(),
+            PROD_HQ_CORE_REPO,
+            git_ref,
+            log_path.display()
+        ),
+    );
+
+    let bash = paths::resolve_bin("bash");
+    let mut cmd = tokio::process::Command::new(&bash);
+    cmd.arg(script.as_os_str())
+        .arg("--hq-root")
+        .arg(hq_folder.as_os_str())
+        .arg("--source")
+        .arg(PROD_HQ_CORE_REPO)
+        .arg("--ref")
+        .arg(&git_ref)
+        .arg("--yes")
+        .stdout(std::process::Stdio::from(log_file_for_stdout))
+        .stderr(std::process::Stdio::from(log_file_for_stderr));
+
+    // GH token is optional for the public repo. Forward when present so
+    // the history-index walk doesn't hit anonymous rate limits.
+    if let Some(token) = crate::commands::hq_core_staging::resolve_gh_token() {
+        cmd.env("GH_TOKEN", &token);
+    }
+
+    let status = cmd
+        .status()
+        .await
+        .map_err(|e| format!("spawn rescue script: {e}"))?;
+
+    let exit_code = status.code().unwrap_or(-1);
+    let log_tail = crate::commands::hq_core_staging::tail_log(&log_path, 40)
+        .unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+
+    log(
+        "hq-core-update",
+        &format!(
+            "rescue exit={} ref={} log={}",
+            exit_code,
+            git_ref,
+            log_path.display()
+        ),
+    );
+
+    Ok(crate::commands::hq_core_staging::RescueRunResult {
+        exit_code,
+        log_tail,
+        log_path: log_path.display().to_string(),
+    })
 }
 
 /// Background loop: first check 20s after launch, then every 6h.

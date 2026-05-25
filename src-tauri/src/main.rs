@@ -196,6 +196,7 @@ fn main() {
             commands::hq_cli_update::install_hq_cli_update,
             commands::hq_core_update::check_hq_core_update,
             commands::hq_core_update::get_hq_version,
+            commands::hq_core_update::install_hq_core_update,
             commands::hq_core_drift::check_hq_core_drift,
             commands::hq_core_drift::restore_from_upstream,
             commands::hq_core_staging::check_staging_replace_available,
