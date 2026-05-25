@@ -760,16 +760,55 @@ pub async fn meetings_notify_detected(
         payload.meeting_url.as_deref(),
     );
 
-    // 5. Fire the notification. Permission denial is logged but not an error.
-    if let Err(e) = app.notification().builder().title("Meeting detected").body(&body).show() {
-        crate::util::logfile::log("meetings", &format!("notification send failed: {e}"));
-        return Ok(false);
-    }
-
-    // 6. Mark ledger + bump tray badge.
+    // 5. Mark the ledger and bump the tray badge IMMEDIATELY (before the
+    //    delayed banner fire below):
+    //    - Rapid re-emits of the same detection (the SDK occasionally
+    //      double-fires) are deduped against the just-written ledger entry
+    //      instead of all racing into the delay queue.
+    //    - The tray "Prompt" badge is the persistent "act on me" signal —
+    //      it should light up the instant we know about the meeting, not
+    //      4 seconds later when the banner finally drops.
     mark(&mut ledger, key, LedgerAction::Notified, now);
     let _ = write_ledger(&ledger);
     set_prompt_badge(&app, get_prompt_pending() + 1);
+
+    // 6. Fire the notification banner on a short delay.
+    //
+    // **Why the delay:** Zoom, Slack huddles, Teams, and Meet all post
+    // their OWN "you joined a meeting" banner at the same instant the
+    // Recall SDK detects the meeting window. macOS stacks notifications
+    // newest-on-top, so if we fire concurrently with the meeting app we
+    // end up *underneath* its banner and effectively invisible — which
+    // is exactly what users have hit in testing on 2026-05-25 ("Zoom's
+    // notification covered ours").
+    //
+    // By waiting `NOTIFICATION_DELAY_MS` we arrive AFTER the meeting
+    // app's banner has been shown, so ours lands on top of the stack
+    // and stays visible until the macOS auto-dismiss.
+    //
+    // tauri-plugin-notification doesn't expose macOS `interruptionLevel`
+    // (timeSensitive / critical) or "alert" vs "banner" style, so a
+    // delay is the only reliable lever we have here. If/when the plugin
+    // exposes `UNNotificationContent.interruptionLevel = .timeSensitive`
+    // we can drop this delay in favour of that.
+    const NOTIFICATION_DELAY_MS: u64 = 4_000;
+    let app_bg = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(NOTIFICATION_DELAY_MS))
+            .await;
+        if let Err(e) = app_bg
+            .notification()
+            .builder()
+            .title("Meeting detected")
+            .body(&body)
+            .show()
+        {
+            crate::util::logfile::log(
+                "meetings",
+                &format!("notification send failed: {e}"),
+            );
+        }
+    });
 
     Ok(true)
 }
