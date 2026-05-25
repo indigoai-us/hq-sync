@@ -19,6 +19,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             instant_sync: Some(true),
             drift_staging_repo: None,
             share_notifications: Some(true),
+            staging_channel: Some(true),
         });
     }
 
@@ -49,6 +50,12 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // toggle takes effect without restart. Only active for @getindigo.ai
         // users (dogfood gate checked separately in share_notify.rs).
         share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
+        // Staging channel (@getindigo.ai-only): defaults ON so existing
+        // builders' "Update to Staging" pill keeps rendering across the
+        // upgrade. An explicit `false` flips them to the prod release
+        // channel — the same surface non-@indigo users see. See
+        // `MenubarPrefs::staging_channel` for the full gating contract.
+        staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
     })
 }
 
@@ -91,6 +98,7 @@ mod tests {
             instant_sync: None,
             drift_staging_repo: None,
             share_notifications: None,
+            staging_channel: None,
         };
 
         let result = MenubarPrefs {
@@ -104,6 +112,7 @@ mod tests {
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
+            staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, None);
@@ -130,6 +139,7 @@ mod tests {
             instant_sync: None,
             drift_staging_repo: None,
             share_notifications: None,
+            staging_channel: None,
         };
 
         let result = MenubarPrefs {
@@ -143,6 +153,7 @@ mod tests {
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
+            staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
         };
 
         assert_eq!(result.realtime_sync, Some(false));
@@ -162,6 +173,7 @@ mod tests {
             instant_sync: Some(true),
             drift_staging_repo: None,
             share_notifications: Some(false),
+            staging_channel: Some(true),
         };
 
         let result = MenubarPrefs {
@@ -175,6 +187,7 @@ mod tests {
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
+            staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
         };
 
         assert_eq!(result.hq_path, Some("/custom/path".to_string()));
@@ -199,6 +212,7 @@ mod tests {
             instant_sync: Some(true),
             drift_staging_repo: None,
             share_notifications: Some(true),
+            staging_channel: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -227,6 +241,7 @@ mod tests {
             instant_sync: Some(true),
             drift_staging_repo: None,
             share_notifications: Some(true),
+            staging_channel: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -252,6 +267,7 @@ mod tests {
             instant_sync: Some(true),
             drift_staging_repo: None,
             share_notifications: Some(true),
+            staging_channel: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();

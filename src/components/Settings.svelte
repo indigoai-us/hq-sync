@@ -31,7 +31,17 @@
   // on the Rust side). Re-read on each poll cycle in share_notify.rs so the
   // toggle takes effect immediately without app restart.
   let shareNotifications = $state(true);
+  // Shared @getindigo.ai gate, used by BOTH the share-notify section and
+  // the staging-channel toggle below. Populated at mount from
+  // `meetings_feature_enabled` (cached process-lifetime on the Rust side).
   let isIndigoUser = $state(false);
+  // Staging channel — @getindigo.ai-only toggle (visibility gated on
+  // `isIndigoUser`). When ON (default), the popover renders "Update to
+  // Staging" and the rescue script targets hq-core-staging. When OFF,
+  // both the staging-replace check and the staging-drift check return
+  // None on the Rust side, so the popover falls through to the prod
+  // "Update to vX.Y.Z" pill (same surface non-@indigo users see).
+  let stagingChannel = $state(true);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -65,9 +75,14 @@
           personalSyncEnabled: boolean | null;
           instantSync: boolean | null;
           shareNotifications: boolean | null;
+          stagingChannel: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
-        invoke<boolean>('meetings_feature_enabled'),
+        // Shared @getindigo.ai gate for share-notify section AND
+        // staging-channel toggle visibility. Rust side caches the
+        // decision process-lifetime so this is effectively free after
+        // first call.
+        invoke<boolean>('meetings_feature_enabled').catch(() => false),
       ]);
 
       hqPath = settings.hqPath;
@@ -78,6 +93,7 @@
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
       instantSync = settings.instantSync ?? true;
       shareNotifications = settings.shareNotifications ?? true;
+      stagingChannel = settings.stagingChannel ?? true;
       isIndigoUser = indigoUser;
     } catch (err) {
       console.error('Failed to load settings:', err);
@@ -106,12 +122,23 @@
           personalSyncEnabled,
           instantSync,
           shareNotifications,
+          stagingChannel,
         },
       });
       showSaved();
     } catch (err) {
       console.error('Failed to save settings:', err);
     }
+  }
+
+  // Flip the staging-channel toggle. Backend reads the persisted value on
+  // every check_staging_replace_available / check_staging_drift call, so
+  // the next popover open reflects the new state. No daemon bounce
+  // needed — unlike instant-sync, this doesn't change a long-running
+  // process's argv.
+  async function handleToggleStagingChannel() {
+    stagingChannel = !stagingChannel;
+    await saveAll();
   }
 
   async function handlePickFolder() {
@@ -325,6 +352,37 @@
       </div>
 
       <div class="settings-divider"></div>
+
+      <!-- Staging channel — @getindigo.ai-only toggle. When ON (default
+           for @indigo builders), the popover's Update pill targets
+           `hq-core-staging` and shows the staging-flavored drift count.
+           When OFF, the staging-replace + staging-drift checks both
+           return None and the popover falls through to the prod release
+           channel (the same surface non-@indigo users see). Visibility
+           gated on `isIndigoUser` (shared @getindigo.ai gate; same
+           predicate the share-notify section uses, via
+           `meetings_feature_enabled`). See `commands/hq_core_staging.rs`. -->
+      {#if isIndigoUser}
+        <div class="setting-row">
+          <div class="setting-info">
+            <label class="setting-label" for="toggle-staging-channel">Use staging channel</label>
+            <span class="setting-desc">Target hq-core-staging for the Update pill instead of the released hq-core tag</span>
+          </div>
+          <button
+            id="toggle-staging-channel"
+            class="toggle"
+            class:active={stagingChannel}
+            onclick={handleToggleStagingChannel}
+            role="switch"
+            aria-checked={stagingChannel}
+            aria-label="Use staging channel"
+          >
+            <span class="toggle-knob"></span>
+          </button>
+        </div>
+
+        <div class="settings-divider"></div>
+      {/if}
 
       <!-- Sync personal vault — when OFF, the menubar passes --skip-personal
            to the spawned hq-sync-runner so the personal target is dropped

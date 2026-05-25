@@ -490,6 +490,16 @@
     loadWorkspaces();
     loadHqVersion();
     loadStagingReplace();
+    // Staging-drift pill needs to refresh too — the user may have just
+    // flipped the staging-channel toggle. The Rust check returns None when
+    // the toggle is off; clearing local state and re-invoking the check
+    // keeps the UI in sync without waiting for the 30-min background tick.
+    // When toggle is on the existing `hq-core-staging-drift:available`
+    // listener re-fires and repopulates `stagingDrift`.
+    stagingDrift = null;
+    invoke('check_staging_drift').catch((e) =>
+      console.error('post-settings staging drift refresh failed:', e)
+    );
   }
 
   function handleSignOut() {

@@ -163,6 +163,27 @@ fn signed_in_email() -> Option<String> {
         .and_then(|c| c.email)
 }
 
+/// Read `stagingChannel` from `~/.hq/menubar.json`. Returns `true` (channel
+/// ON) when the field is missing or null — preserves the pre-toggle
+/// behaviour for @indigo builders who haven't touched Settings. Explicit
+/// `false` flips them to the prod release channel.
+///
+/// Non-@indigo users' value is read but has no effect: `is_eligible_email`
+/// gates them out before `is_staging_channel_enabled` is consulted. The
+/// field is only writable for @indigo users via the Settings toggle (which
+/// is hidden behind the shared `meetings_feature_enabled` gate — same
+/// @getindigo.ai predicate the share-notify section uses).
+fn is_staging_channel_enabled() -> bool {
+    let prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    prefs
+        .and_then(|p| p.staging_channel)
+        .unwrap_or(true)
+}
+
 /// Resolve the staging repo (`owner/name`) to classify against:
 ///   1. explicit `driftStagingRepo` in `~/.hq/menubar.json` (any team can
 ///      point this at their own staging repo), else
@@ -581,6 +602,9 @@ async fn fetch_staging_main_sha(
 /// Tauri command — decide whether to show the "Update from staging" pill.
 /// Returns `None` (feature dark / silent) when:
 ///   * user is not `@getindigo.ai`,
+///   * `stagingChannel` is explicitly `false` in `~/.hq/menubar.json`
+///     (Settings toggle off → @indigo user opted into the prod release
+///     channel; popover falls through to the prod "Update to vX.Y.Z" pill),
 ///   * no GH token is available,
 ///   * GH API is unreachable.
 /// Returns `Some(StagingReplaceInfo)` otherwise; `available=false` means
@@ -590,6 +614,14 @@ pub async fn check_staging_replace_available() -> Option<StagingReplaceInfo> {
     let eligible = is_eligible_email(signed_in_email().as_deref());
     let repo = resolve_staging_repo(eligible)?;
     if !eligible && repo == DEFAULT_STAGING_REPO {
+        return None;
+    }
+    // Settings toggle: @indigo users can opt out of the staging channel.
+    // When off, fall through to the prod release flow (same surface
+    // non-@indigo users see). Non-@indigo users already short-circuited
+    // above on the eligibility/repo check, so this is effectively
+    // @indigo-only.
+    if !is_staging_channel_enabled() {
         return None;
     }
     let token = resolve_gh_token()?;
@@ -683,6 +715,18 @@ pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBu
 /// the future is pending.
 #[tauri::command]
 pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult, String> {
+    // Settings toggle: @indigo user opted out of the staging channel. The
+    // pill should already be hidden (`check_staging_replace_available`
+    // returns None when the toggle is off), so reaching this command means
+    // the frontend is stale or a custom caller is invoking us — either way,
+    // honour the toggle and refuse the spawn so the user doesn't get a
+    // surprise rescue against a channel they disabled.
+    if !is_staging_channel_enabled() {
+        return Err(
+            "staging channel disabled in Settings — re-enable to run replace-from-staging"
+                .to_string(),
+        );
+    }
     let eligible = is_eligible_email(signed_in_email().as_deref());
     let repo = resolve_staging_repo(eligible).ok_or_else(|| {
         "no staging repo resolved (set driftStagingRepo in ~/.hq/menubar.json, or sign in with an @getindigo.ai account)".to_string()
@@ -860,6 +904,13 @@ async fn fetch_staging_main_tree_for_drift(
 /// cases as the release-drift counterpart, plus the eligibility / token
 /// gates from the rest of `hq_core_staging`.
 pub async fn check_staging_drift_once(app: &AppHandle) -> Result<Option<DriftReport>, String> {
+    // Settings toggle: when @indigo user opts out of the staging channel,
+    // skip the drift check entirely. The frontend's staging-drift listener
+    // never fires, so the popover falls through to the release-drift pill
+    // (the same one non-@indigo users see).
+    if !is_staging_channel_enabled() {
+        return Ok(None);
+    }
     let eligible = is_eligible_email(signed_in_email().as_deref());
     let Some(repo) = resolve_staging_repo(eligible) else {
         return Ok(None);

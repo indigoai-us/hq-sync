@@ -85,6 +85,24 @@ pub struct MenubarPrefs {
     /// menubar.json files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_notifications: Option<bool>,
+    /// Update channel for @getindigo.ai builders. When `true` (default), the
+    /// Settings toggle is ON → the popover renders "Update to Staging" and
+    /// the rescue script targets `indigoai-us/hq-core-staging`. When `false`,
+    /// the toggle is OFF → both the staging-replace check and the staging-
+    /// drift check return None (feature dark), so the popover falls through
+    /// to the prod "Update to vX.Y.Z" pill backed by `install_hq_core_update`
+    /// — the same flow non-@indigo users see.
+    ///
+    /// Setting visibility is gated by `staging_channel_setting_visible`
+    /// (returns true only for `@getindigo.ai` emails). Non-@indigo users
+    /// never see the toggle and always get the prod release channel; their
+    /// menubar.json `stagingChannel` field, if set, is read but has no
+    /// effect (the staging eligibility gate dominates).
+    ///
+    /// Defaults to true so existing @indigo builders see no behaviour change
+    /// across upgrade — explicit `false` flips them to the prod channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_channel: Option<bool>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under
