@@ -9,10 +9,7 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
-  import {
-    startPermissionListeners,
-    loadMeetingDetectEligible,
-  } from './lib/permissionState.svelte';
+  import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import './styles/popover.css';
 
   interface Config {
@@ -800,16 +797,12 @@
     loadWorkspaces();
     loadHqVersion();
     setupTrayListeners();
-    // Resolve the Phase-0 meeting-detect eligibility flag first; UI surfaces
-    // (PermissionsBanner, Settings meeting-detect + permissions sections)
-    // key off `permissionState.meetingDetectEligible`.
+    // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
+    // Settings.svelte hides the meeting-detect toggle when this is false.
+    // (Per-permission TCC status tracking was removed 2026-05-25 — see
+    // permissionState.svelte.ts for why; native macOS prompts are
+    // sufficient.)
     loadMeetingDetectEligible();
-    // Subscribe to macOS permission status events from the SDK bridge.
-    // The store is module-level reactive — components read it directly.
-    // Harmless to register when the SDK isn't running (no events will fire).
-    startPermissionListeners().catch((err) => {
-      console.error('startPermissionListeners failed:', err);
-    });
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
     invoke<boolean>('meetings_feature_enabled')
