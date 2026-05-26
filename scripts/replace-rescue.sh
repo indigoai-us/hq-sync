@@ -21,16 +21,46 @@
 #      in the wipe set that DIFFERS from staging (or exists only locally) is
 #      MOVED into `personal/` so it survives as a layered override.
 #
-# Drift mapping (in order):
+# Drift detection — three-way classification (v0.1.104+):
 #
-#   a. `.claude/CLAUDE.md`  ->  `personal/CLAUDE.md`           (hard-coded)
-#   b. `.claude/<rest>`     ->  `personal/<rest>`              if `personal/<top-of-rest>/` exists
-#   c. `core/<rest>`        ->  `personal/<rest>`              if `personal/<top-of-rest>/` exists
-#   d. `<rest>`             ->  `personal/<rest>`              if `personal/<top-of-rest>/` exists
-#   e. anything else        ->  `.hq-conflicts/rescue-<timestamp>/<original-relative-path>`
+#   For every regular file under each wipe-set top-level entry, the walk
+#   classifies it as one of:
 #
-# If the rescue destination already exists, the moved file is suffixed with
-# `.drift-<unix-ts>` so we never silently overwrite a prior override.
+#     A. USER-ONLY  — path not in upstream HEAD AND not in the last-sync
+#                     tree (per `replaced_from_source.last_sync_sha`). The
+#                     user created this file and upstream has no opinion
+#                     about it. ACTION: leave in place. The rsync overlay
+#                     is run without --delete so user-only files survive.
+#
+#     B. UNCHANGED  — local file is byte-identical to the version at the
+#                     last-sync SHA (or, when no stamp is available, to
+#                     the current upstream HEAD). User didn't touch it
+#                     since last sync. ACTION: delete locally; the overlay
+#                     writes the fresh upstream version on top.
+#
+#     C. USER-EDIT  — local file differs from the last-sync version (or
+#                     from HEAD in head-compare fallback mode). The user
+#                     authored a change after the last sync. ACTION:
+#                     rescue per the mapping below.
+#
+# Rescue mapping for USER-EDIT files:
+#
+#   a. `.claude/CLAUDE.md`  ->  DIFF-APPEND additions to `personal/CLAUDE.md`
+#                              (whole-file move was too disruptive — most
+#                              users only add sections, so we extract the
+#                              lines present locally but not in baseline
+#                              and append them under a timestamped marker.)
+#   b. `.claude/<rest>`     ->  `personal/<rest>`  (mkdir -p personal/<top-of-rest>/)
+#   c. `core/<rest>`        ->  `personal/<rest>`  (mkdir -p personal/<top-of-rest>/)
+#   d. `<rest>` (root file) ->  `personal/<rest>`  (mkdir -p personal/<top-of-rest>/)
+#
+# `personal/<top-of-rest>/` is always created when missing — no more
+# fallback to a per-run `.hq-conflicts/rescue-<ts>/` bucket. The previous
+# fallback orphaned rescues outside `personal/`, which was the wrong
+# default destination for user customisations.
+#
+# If the rescue destination already exists, the moved file is suffixed
+# with `.drift-<unix-ts>` so we never silently overwrite a prior override.
 #
 # Two operating modes (same as the parent script):
 #
@@ -52,23 +82,27 @@
 # `--preserve-subpath <rel>` (repeatable) carves out individual files INSIDE
 # the wipe set, copied to a mktemp shuttle pre-wipe and restored post-overlay.
 #
-# Drift truthiness — history-check gate (default ON):
+# Baseline mode — what counts as "user edit":
 #
-#   A naive cmp-based drift detector flags every local-vs-staging difference.
-#   That over-rescues: files the user never touched but that staging later
-#   modified or deleted look identical to files the user actually edited.
+#   * `history_floor` (default, used when `replaced_from_source.last_sync_sha`
+#     is stamped AND reachable in the clone): a file is a USER-EDIT iff its
+#     `git hash-object` SHA differs from the blob SHA at that path at the
+#     stamped commit. One `git rev-parse <floor>:<rel>` per file — cheap.
+#     This is strictly more accurate than the v0.1.103 history-walk index:
+#     the floor is the exact point the user diverged from, so no spurious
+#     "matches some past staging blob" coincidences mask real edits.
 #
-#   With history-check enabled, every candidate drift's local blob SHA
-#   (computed via `git hash-object`) is checked against the set of all blob
-#   SHAs that ever appeared at that path across the staging repo's full
-#   history. If the local content matches ANY past staging version at that
-#   path, the user provably didn't author the change — the local copy is
-#   just lag — and rescue is skipped. Only files that are genuinely
-#   user-added or user-edited survive the gate.
+#   * `head_compare` (fallback when no stamp is set OR `--no-history-check`
+#     is passed): a file is a USER-EDIT iff `cmp -s` against the upstream
+#     HEAD copy disagrees. Loses the ability to distinguish
+#     "upstream-removed since last sync" from "user-added new file" — both
+#     look like "in local, not in HEAD". Safe default for first-ever runs.
 #
-#   Cost: the clone switches to `--filter=blob:none` (full commits/trees,
-#   lazy blobs). ~15 MB for hq-core-staging vs. ~5 MB shallow. Indexing the
-#   history adds ~1-3 s. Pass --no-history-check to disable.
+# Cost: full-history clone with `--filter=blob:none` (~15 MB for
+# hq-core-staging vs. ~5 MB shallow). Per-file blob SHA comparisons are
+# microseconds each. The big v0.1.103 perf footgun (391k-file node_modules
+# walks) is dead now that `repos/` is preserved and node_modules + nested
+# .git are pruned from the walk.
 #
 # Sync-point provenance — `core/core.yaml`:
 #
@@ -118,7 +152,6 @@ PRESERVE_SUBPATHS=()
 NARROW_PATHS_CSV=""
 HQ_ROOT_OVERRIDE=""
 HISTORY_CHECK=1
-SKIPPED_BY_HISTORY=0
 
 # Paths that are ALWAYS preserved across the wipe+overlay, regardless of
 # mode or user flags. Each entry is shuttled to a mktemp area pre-wipe and
@@ -224,14 +257,11 @@ if [ ! -d "$HQ_ROOT/companies" ] || [ ! -d "$HQ_ROOT/personal" ]; then
   exit 3
 fi
 
-# Per-run rescue bucket. Computed once so every drifted file in this run
-# lands under the same `<hqRoot>/.hq-conflicts/rescue-<ts>/` dir — easy to
-# diff, easy to delete, and historical runs accumulate as siblings so the
-# user can audit past rescues without spelunking through personal/.
-# Colons would be valid here but make paths awkward in shells/tab-completion;
-# use hyphens to match other timestamped artifacts (sync conflict suffixes).
-RESCUE_TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
-RESCUE_BUCKET=".hq-conflicts/rescue-$RESCUE_TS"
+# Per-run timestamp marker. Used in the CLAUDE.md diff-append header and
+# as the suffix on collision-renamed rescue destinations. The v0.1.103
+# `.hq-conflicts/rescue-<ts>/` fallback bucket is gone — every rescue
+# now lands under `personal/`, mkdir-ing the parent dir if missing.
+RUN_TS="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
 
 # --- Read prior sync-point metadata (must happen BEFORE the wipe) -----------
 # If the user has run this script before in default mode, core/core.yaml
@@ -288,7 +318,7 @@ if [ "${#PRESERVE_SUBPATHS[@]}" -ne 0 ]; then
     fi
   done
 fi
-echo "==> Drift policy: rescue to personal/ (fall back to $RESCUE_BUCKET/)"
+echo "==> Drift policy: rescue user-edited files to personal/ (mkdir -p as needed); leave user-only files untouched"
 if [ "$HISTORY_CHECK" = "1" ]; then
   echo "==> History gate: ON (skip drift if local matches any past staging blob at that path)"
 else
@@ -297,7 +327,7 @@ fi
 [ "$DRY_RUN" = "1" ] && echo "==> DRY RUN     (no destructive operations will run)"
 
 if [ "$ASSUME_YES" != "1" ] && [ "$DRY_RUN" != "1" ]; then
-  printf "\nThis will MOVE drift files into personal/, then DELETE the listed top-level\nentries, then unpack %s@%s on top.\nType 'yes' to proceed: " "$SOURCE_REPO" "$REF"
+  printf "\nThis will:\n  * rescue user-edited files (vs the last sync) into personal/,\n  * leave user-only files (not in upstream) untouched,\n  * delete upstream files unchanged since last sync, then unpack %s@%s on top.\nType 'yes' to proceed: " "$SOURCE_REPO" "$REF"
   read -r confirm
   [ "$confirm" = "yes" ] || { echo "Aborted."; exit 4; }
 fi
@@ -350,63 +380,33 @@ fi
 SRC_SHA="$(cd "$TMPDIR/src" && git rev-parse HEAD)"
 echo "==> Source SHA: $SRC_SHA"
 
-# --- Build the history index (path → all-time blob SHAs) --------------------
-HISTORY_INDEX="$TMPDIR/path-shas.tsv"
-: > "$HISTORY_INDEX"
+# --- Resolve the history floor (last-sync SHA reachable in clone?) ----------
+#
+# The v0.1.104 algorithm drops the path → all-time-SHA index in favour of
+# per-file `git rev-parse <floor>:<rel>` comparisons. The floor is just the
+# stamped `replaced_from_source.last_sync_sha`, validated to be reachable
+# in this clone. When reachable, BASELINE_MODE=history_floor; otherwise
+# BASELINE_MODE=head_compare (cmp local vs upstream HEAD).
+#
+# Reachability check uses `git cat-file -e` because commits + trees are
+# always fully fetched even under --filter=blob:none. The floor SHA's
+# tree is what we'll consult per file; blobs at that tree may be lazy
+# but `git rev-parse <floor>:<rel>` only needs the tree, not the blob
+# contents.
 HISTORY_FLOOR=""
-if [ "$HISTORY_CHECK" = "1" ]; then
-  # Decide whether the prior-sync SHA can be used as the floor for the log
-  # walk. Three preconditions:
-  #   1. The previously-recorded source matches the current --source.
-  #   2. The SHA is reachable in this (potentially partial-blob) clone —
-  #      commits + trees are always fully fetched even under --filter=blob:none,
-  #      so `git cat-file -e` is the right check.
-  #   3. The SHA is non-empty (PREV_SYNC_SHA was read above).
-  if [ -n "$PREV_SYNC_SHA" ] && [ "$PREV_SYNC_SOURCE" = "$SOURCE_REPO" ]; then
-    if (cd "$TMPDIR/src" && git cat-file -e "$PREV_SYNC_SHA" 2>/dev/null); then
-      HISTORY_FLOOR="$PREV_SYNC_SHA"
-    else
-      echo "    prior-sync SHA $PREV_SYNC_SHA not reachable in clone (likely rebased/dropped); falling back to --all"
-    fi
-  fi
-
-  # Pick the git-log walk argument: floor SHA (commits reachable from it)
-  # OR --all (every ref, no floor). With a floor, the index captures only
-  # blobs staging knew about at our last sync — files matching only
-  # post-sync blobs are then correctly rescued as user-authored.
-  if [ -n "$HISTORY_FLOOR" ]; then
-    echo "==> Indexing staging history up to floor $HISTORY_FLOOR ..."
-    GIT_LOG_WALK_ARG="$HISTORY_FLOOR"
+BASELINE_MODE="head_compare"
+if [ "$HISTORY_CHECK" = "1" ] && [ -n "$PREV_SYNC_SHA" ] && [ "$PREV_SYNC_SOURCE" = "$SOURCE_REPO" ]; then
+  if (cd "$TMPDIR/src" && git cat-file -e "$PREV_SYNC_SHA" 2>/dev/null); then
+    HISTORY_FLOOR="$PREV_SYNC_SHA"
+    BASELINE_MODE="history_floor"
   else
-    echo "==> Indexing staging history (path → blob SHAs across all commits) ..."
-    GIT_LOG_WALK_ARG="--all"
+    echo "    prior-sync SHA $PREV_SYNC_SHA not reachable in clone (rebased/dropped?); falling back to head_compare"
   fi
-
-  # `git log <walk-arg> --raw --no-renames --no-abbrev` emits one line per
-  # file change with FULL 40-char blob SHAs (matching `git hash-object` output):
-  #   :MODE MODE OLDSHA NEWSHA STATUS\tpath
-  # We extract NEWSHA for A/M, OLDSHA for D, then dedupe. With
-  # --pretty=format: there are no commit headers to filter out. Without
-  # --no-abbrev git defaults to 7-char abbreviation, which silently
-  # mismatches local hash-object SHAs and disables the gate entirely.
-  (cd "$TMPDIR/src" && git log "$GIT_LOG_WALK_ARG" --raw --no-renames --no-abbrev --pretty=format: 2>/dev/null) \
-    | awk -F'\t' 'NF>=2 {
-        n=split($1, hdr, " ")
-        if (n<5) next
-        status=substr(hdr[5],1,1)
-        path=$2
-        if (status=="A" || status=="M") {
-          print hdr[4] "\t" path
-        } else if (status=="D") {
-          print hdr[3] "\t" path
-        }
-      }' | LC_ALL=C sort -u > "$HISTORY_INDEX"
-  n_pairs="$(wc -l < "$HISTORY_INDEX" | tr -d ' ')"
-  if [ -n "$HISTORY_FLOOR" ]; then
-    echo "    indexed $n_pairs (sha, path) pairs from history reachable from $HISTORY_FLOOR"
-  else
-    echo "    indexed $n_pairs unique (sha, path) pairs"
-  fi
+fi
+if [ "$BASELINE_MODE" = "history_floor" ]; then
+  echo "==> Baseline: $HISTORY_FLOOR (last-sync floor reachable)"
+else
+  echo "==> Baseline: HEAD compare (no usable last-sync stamp; first-ever run or stamp mismatch)"
 fi
 
 # --- Build wipe/overlay arg sets per mode ------------------------------------
@@ -458,133 +458,29 @@ else
   [ -d "$HQ_ROOT/companies/_template" ] && WIPE_TOPLEVEL+=("companies/_template")
 fi
 
-# --- Drift detection + rescue ------------------------------------------------
+# --- Drift detection + rescue (v0.1.104 algorithm) --------------------------
 #
-# For every file under each wipe-set root, compare to staging. If the file
-# exists only locally OR differs from staging, MOVE it into personal/.
+# For each file under each wipe-set top-level entry, three-way classify
+# as USER-ONLY / UNCHANGED / USER-EDIT and act:
+#
+#   USER-ONLY  -> leave in place (skip — neither rescued nor deleted).
+#                 The rsync overlay below runs WITHOUT --delete, so any
+#                 file we leave alone survives the operation cleanly.
+#   UNCHANGED  -> rm -f the local copy. Overlay re-creates from source.
+#   USER-EDIT  -> rescue (mv to personal/, or diff-append for CLAUDE.md),
+#                 then the rm is implicit (rescue_one mv'd it).
+#
+# Counters surfaced in the post-run summary.
+COUNT_USER_ONLY=0
+COUNT_UNCHANGED=0
+COUNT_USER_EDIT=0
+COUNT_CLAUDE_DIFF_APPEND=0
 
-# Map a wipe-set-relative path to its personal/ rescue target. Echoes the
-# rescue path (HQ-relative) on stdout.
-map_rescue_target() {
-  local rel="$1"
-
-  # (a) hard-coded special case
-  if [ "$rel" = ".claude/CLAUDE.md" ]; then
-    echo "personal/CLAUDE.md"
-    return
-  fi
-
-  # (b/c/d) try stripping .claude/ or core/ prefix, then check if
-  # personal/<top-of-rest>/ is a real directory.
-  local rest=""
-  case "$rel" in
-    .claude/*) rest="${rel#.claude/}" ;;
-    core/*)    rest="${rel#core/}" ;;
-    *)         rest="$rel" ;;
-  esac
-
-  local top="${rest%%/*}"
-  if [ -n "$top" ] && [ "$top" != "$rest" ] && [ -d "$HQ_ROOT/personal/$top" ]; then
-    # rest has at least one subdir AND personal/<top>/ exists
-    echo "personal/$rest"
-    return
-  fi
-
-  # (e) fall back to the per-run rescue bucket at `.hq-conflicts/rescue-<ts>/`
-  echo "$RESCUE_BUCKET/$rel"
-}
-
-# Move a single drift file. Suffix with .drift-<ts> if the target exists.
-rescue_one() {
-  local rel="$1"
-  local target
-  target="$(map_rescue_target "$rel")"
-  local dest="$HQ_ROOT/$target"
-  mkdir -p "$(dirname "$dest")"
-  if [ -e "$dest" ]; then
-    dest="${dest}.drift-$(date +%s)-$$"
-  fi
-  mv "$HQ_ROOT/$rel" "$dest"
-  echo "    drift: $rel  ->  ${dest#"$HQ_ROOT/"}"
-}
-
-# Walk a wipe-set root, comparing each file to staging.
-walk_and_rescue() {
-  local root_rel="$1"
-  local root_abs="$HQ_ROOT/$root_rel"
-  [ -e "$root_abs" ] || [ -L "$root_abs" ] || return 0
-
-  # Symlinks (top-level OR mid-tree) are NEVER rescued. Two families:
-  #   1. master-sync-generated wrappers/mirrors
-  #      (.claude/skills/<ns>:<skill>/<file>, core/<type>/<entry>) — these
-  #      will be regenerated on the next Stop/PostToolUse fire of
-  #      .claude/hooks/master-sync.sh after the overlay completes.
-  #   2. top-level convenience symlinks (AGENTS.md, MIGRATION.md) — the
-  #      staging overlay restores them as part of the source tree.
-  # Moving them via `mv` would re-anchor relative targets at the new path
-  # (e.g. .hq-conflicts/rescue-<ts>/AGENTS.md -> .claude/CLAUDE.md would dangle).
-  if [ -L "$root_abs" ]; then
-    return 0
-  fi
-
-  if [ -f "$root_abs" ]; then
-    compare_one "$root_rel"
-    return
-  fi
-
-  # Directory: walk regular files only. `find -type f` with the default -P
-  # mode does not match symlinks, so master-sync mirrors and any other
-  # symlinks inside the wipe-set tree are skipped automatically. find also
-  # does not descend INTO directory symlinks under -P, so symlinked
-  # subtrees stay invisible to the rescue walk.
-  #
-  # Prune `node_modules/` and nested `.git/` from the walk before -type f
-  # matching:
-  #   * `node_modules/` — vendored dep trees that are never authored
-  #     content. A single `pnpm install` can drop 100k+ files; with
-  #     hq-core staging shipping no `node_modules/`, every file under
-  #     one reads as local-only drift → every file gets `mv`'d into the
-  #     rescue bucket. On Corey's v0.1.101 run that meant the script
-  #     was actively moving 25 GB / 391k files across 150 cloned repos
-  #     when he caught it (CPU pegged for tens of minutes; would have
-  #     `rm -rf`'d `repos/` after the scan finished if `repos/` hadn't
-  #     since been added to the preserve list in v0.1.102).
-  #   * nested `.git/` — internal git plumbing. A loose-objects walk
-  #     can be 10k+ files per repo, none of which match staging history
-  #     (the staging repo has its own .git, not user repos'). Same
-  #     "every file becomes drift" failure mode as `node_modules/`.
-  # Pruning is defence-in-depth: with `repos/` preserved at the top
-  # level (v0.1.102 fix), neither pattern should appear inside any
-  # remaining wipe-set subtree under a normal HQ install. But the cost
-  # of pruning is one extra find expression; the cost of NOT pruning
-  # when one DOES sneak in (e.g. `core/packages/<pack>/node_modules`
-  # if the carve-out logic ever misses) is hours of wasted I/O and a
-  # broken rescue bucket. Belt-and-suspenders.
-  while IFS= read -r -d '' f; do
-    local rel="${f#"$HQ_ROOT/"}"
-    compare_one "$rel"
-  done < <(find "$root_abs" \( -type d \( -name node_modules -o -name .git \) -prune \) -o \( -type f -print0 \))
-}
-
-# True (exit 0) iff $local_path's git blob SHA ever appeared at $rel in the
-# staging history. When this returns true, the local content is provably a
-# point-in-history staging version that the user did not author — rescue
-# would just resurrect upstream-deleted/superseded cruft.
-local_matches_history() {
-  local rel="$1" local_path="$2"
-  [ "$HISTORY_CHECK" = "1" ] || return 1
-  [ -s "$HISTORY_INDEX" ] || return 1
-  local sha
-  sha="$(git hash-object "$local_path" 2>/dev/null)" || return 1
-  # -F (fixed string) + -x (whole line) on lines of the form "<sha>\t<path>".
-  # No regex escaping needed for the path.
-  LC_ALL=C grep -qFx "${sha}	${rel}" "$HISTORY_INDEX"
-}
-
-# True if $rel is under any always-preserved subpath. Drift detection skips
-# these — they're shuttled out, the wipe+overlay runs, then they're restored
-# unchanged. Detecting them as drifts would just move them to personal/ and
-# then leave a phantom-restored copy back at their original location.
+# True if $rel is under any always-preserved subpath. Drift detection
+# skips these — they're shuttled out, the wipe+overlay runs, then they're
+# restored unchanged. Detecting them as drifts would just move them to
+# personal/ and then leave a phantom-restored copy back at their original
+# location.
 is_under_preserve() {
   local rel="$1" sp
   for sp in "${PRESERVE_SUBPATHS[@]+"${PRESERVE_SUBPATHS[@]}"}"; do
@@ -595,93 +491,297 @@ is_under_preserve() {
   return 1
 }
 
-compare_one() {
+# Map a USER-EDIT path to its personal/ rescue target. Always lands under
+# personal/ — no fallback bucket. Strips `.claude/` or `core/` prefix so
+# `.claude/policies/foo.md` -> `personal/policies/foo.md`, etc. Caller
+# `mkdir -p "$(dirname dest)"` to ensure the parent exists.
+map_rescue_target() {
+  local rel="$1"
+  if [ "$rel" = ".claude/CLAUDE.md" ]; then
+    echo "personal/CLAUDE.md"
+    return
+  fi
+  local rest=""
+  case "$rel" in
+    .claude/*) rest="${rel#.claude/}" ;;
+    core/*)    rest="${rel#core/}" ;;
+    *)         rest="$rel" ;;
+  esac
+  echo "personal/$rest"
+}
+
+# Diff-append the user's additions in .claude/CLAUDE.md to personal/CLAUDE.md.
+# "Additions" are lines present locally but not in baseline (the last-sync
+# version, or current HEAD when no floor). Removed/modified lines are NOT
+# preserved by this algorithm — users rarely delete from CLAUDE.md and the
+# complexity of a true three-way merge isn't worth it in v1. If the user
+# did delete or modify lines they'll need to manually reconcile against
+# the new upstream version.
+#
+# Header marker (`<!-- drift-append ... -->`) timestamps the run + records
+# the source SHA so a user reading personal/CLAUDE.md can audit when each
+# block landed.
+diff_append_claude_md() {
+  local local_file="$HQ_ROOT/.claude/CLAUDE.md"
+  local personal_file="$HQ_ROOT/personal/CLAUDE.md"
+  local baseline_file
+  baseline_file="$(mktemp -t claude-md-baseline.XXXXXX)"
+
+  # Try the floor first, then HEAD. Either provides a "what the user
+  # started from" snapshot.
+  if [ "$BASELINE_MODE" = "history_floor" ]; then
+    (cd "$TMPDIR/src" && git show "$HISTORY_FLOOR:.claude/CLAUDE.md" > "$baseline_file" 2>/dev/null) || :
+  fi
+  if [ ! -s "$baseline_file" ] && [ -f "$TMPDIR/src/.claude/CLAUDE.md" ]; then
+    cp "$TMPDIR/src/.claude/CLAUDE.md" "$baseline_file"
+  fi
+
+  mkdir -p "$HQ_ROOT/personal"
+
+  if [ ! -s "$baseline_file" ]; then
+    # No baseline at all — record the whole local file as a drift block
+    # under a marker noting the absence of a baseline.
+    rm -f "$baseline_file"
+    {
+      [ -s "$personal_file" ] && printf '\n'
+      printf '<!-- drift-append from .claude/CLAUDE.md @ %s (source %s; no baseline available) -->\n' \
+        "$RUN_TS" "$SRC_SHA"
+      cat "$local_file"
+    } >> "$personal_file"
+    echo "    diff-appended (full local, no baseline): .claude/CLAUDE.md -> personal/CLAUDE.md"
+    COUNT_CLAUDE_DIFF_APPEND=$((COUNT_CLAUDE_DIFF_APPEND + 1))
+    return
+  fi
+
+  # Extract additions via `diff -u`. The sed strips the `+`/`+++` prefixes
+  # and preserves blank-line additions. Lost: file-header (`+++ local`)
+  # which we filter explicitly.
+  local additions_file
+  additions_file="$(mktemp -t claude-md-additions.XXXXXX)"
+  diff -u "$baseline_file" "$local_file" 2>/dev/null \
+    | sed -n '/^+++/!{ /^+/{ s/^+//; p } }' \
+    > "$additions_file" || :
+  rm -f "$baseline_file"
+
+  if [ ! -s "$additions_file" ]; then
+    rm -f "$additions_file"
+    echo "    no user edits to .claude/CLAUDE.md (skipped diff-append)"
+    return
+  fi
+
+  {
+    [ -s "$personal_file" ] && printf '\n'
+    printf '<!-- drift-append from .claude/CLAUDE.md @ %s (source %s) -->\n' \
+      "$RUN_TS" "$SRC_SHA"
+    cat "$additions_file"
+  } >> "$personal_file"
+  rm -f "$additions_file"
+  echo "    diff-appended: .claude/CLAUDE.md additions -> personal/CLAUDE.md"
+  COUNT_CLAUDE_DIFF_APPEND=$((COUNT_CLAUDE_DIFF_APPEND + 1))
+}
+
+# Rescue a single USER-EDIT file. Special-cases .claude/CLAUDE.md to
+# diff-append. All other paths land under personal/<rest>, mkdir-ing the
+# parent dir as needed. Collision suffix: .drift-<unix-ts>-<pid>.
+# Implicitly removes the original local path (CLAUDE.md is rm'd after
+# the diff-append; others are mv'd off).
+rescue_one() {
+  local rel="$1"
+  local local_path="$HQ_ROOT/$rel"
+  COUNT_USER_EDIT=$((COUNT_USER_EDIT + 1))
+
+  if [ "$rel" = ".claude/CLAUDE.md" ]; then
+    diff_append_claude_md
+    rm -f "$local_path"
+    return
+  fi
+
+  local target
+  target="$(map_rescue_target "$rel")"
+  local dest="$HQ_ROOT/$target"
+  mkdir -p "$(dirname "$dest")"
+  if [ -e "$dest" ]; then
+    dest="${dest}.drift-$(date +%s)-$$"
+  fi
+  mv "$local_path" "$dest"
+  echo "    rescued: $rel  ->  ${dest#"$HQ_ROOT/"}"
+}
+
+# Classify + act on one file. The per-file workhorse of the new algorithm.
+process_one() {
   local rel="$1"
   local local_path="$HQ_ROOT/$rel"
   local src_path="$TMPDIR/src/$rel"
 
-  # Always-preserved paths bypass drift detection entirely.
+  # Always-preserved paths bypass drift detection entirely (shuttle owns
+  # them across the overlay).
   if is_under_preserve "$rel"; then
     return 0
   fi
 
-  # Conflict-resolution artifacts (HQ-Sync renames divergent local files to
-  # `<name>.conflict-<timestamp>-<peer>.<ext>`). Never authored, never in
-  # staging — let the wipe consume them rather than dragging them to personal/.
+  # Conflict-resolution artifacts (HQ-Sync renames divergent local files
+  # to `<name>.conflict-<ts>-<peer>.<ext>`). Never authored, never in
+  # upstream — rm them so the wipe consumes them rather than dragging
+  # them to personal/.
   case "${rel##*/}" in
-    *.conflict-*) return 0 ;;
+    *.conflict-*)
+      if [ "$DRY_RUN" = "1" ]; then
+        echo "    drop conflict artifact: $rel"
+      else
+        rm -f "$local_path"
+      fi
+      return 0
+      ;;
   esac
 
-  local reason=""
-  if [ ! -e "$src_path" ]; then
-    reason="local-only"
-  elif ! cmp -s "$local_path" "$src_path"; then
-    reason="modified"
-  else
-    return 0  # identical -> overlay will replace cleanly
+  # Script-managed files: core/core.yaml (v14+) and core.yaml (pre-v14
+  # legacy layout). The script reads the prior stamp at the start of the
+  # run and rewrites a fresh stamp at the end (see the yq/python block
+  # below). Subjecting these to drift detection just creates noise: the
+  # local file always differs from the floor because we wrote a new
+  # stamp last run, but that's not a user edit — it's our own output.
+  # Skip rescue, just delete; the overlay restores the fresh upstream
+  # version, then the stamp step updates it with the new sync point.
+  case "$rel" in
+    core/core.yaml|core.yaml)
+      if [ "$DRY_RUN" = "1" ]; then
+        echo "    skip script-managed (rewrites at stamp step): $rel"
+      else
+        rm -f "$local_path"
+      fi
+      return 0
+      ;;
+  esac
+
+  # Symlinks (mid-tree) — already filtered out by `find -type f` at the
+  # caller, but defensive check in case process_one is invoked from a
+  # path the walker didn't filter (e.g. top-level file branch).
+  [ -L "$local_path" ] && return 0
+
+  # Is path in upstream HEAD?
+  local in_head=0
+  [ -e "$src_path" ] && in_head=1
+
+  # Is path in last-sync floor (if we have one)?
+  local in_floor=0
+  if [ "$BASELINE_MODE" = "history_floor" ]; then
+    if (cd "$TMPDIR/src" && git cat-file -e "$HISTORY_FLOOR:$rel" 2>/dev/null); then
+      in_floor=1
+    fi
   fi
 
-  # History gate. If the local content matches some past staging blob at
-  # this path, the user provably didn't author the change.
-  if local_matches_history "$rel" "$local_path"; then
-    SKIPPED_BY_HISTORY=$((SKIPPED_BY_HISTORY + 1))
+  # USER-ONLY: path is unknown to upstream (HEAD AND floor both lack it).
+  # The user created this — leave it alone. The overlay (no --delete)
+  # doesn't touch files outside its source manifest, so the file survives.
+  if [ "$in_head" = "0" ] && [ "$in_floor" = "0" ]; then
+    COUNT_USER_ONLY=$((COUNT_USER_ONLY + 1))
     if [ "$DRY_RUN" = "1" ]; then
-      echo "    skip ($reason, matches staging history): $rel"
+      echo "    user-only (leave in place): $rel"
     fi
     return 0
   fi
 
-  if [ "$DRY_RUN" = "1" ]; then
-    echo "    drift ($reason):   $rel  ->  $(map_rescue_target "$rel")"
+  # Path is/was in upstream. Determine if user edited it.
+  local user_edited=0
+  if [ "$BASELINE_MODE" = "history_floor" ] && [ "$in_floor" = "1" ]; then
+    # Compare local blob SHA against the blob at floor:rel.
+    local local_sha baseline_sha
+    local_sha="$(git hash-object "$local_path" 2>/dev/null || true)"
+    baseline_sha="$(cd "$TMPDIR/src" && git rev-parse "$HISTORY_FLOOR:$rel" 2>/dev/null || true)"
+    if [ -z "$local_sha" ] || [ -z "$baseline_sha" ] || [ "$local_sha" != "$baseline_sha" ]; then
+      user_edited=1
+    fi
+  elif [ "$in_head" = "1" ]; then
+    # head_compare fallback: cmp against current upstream copy.
+    cmp -s "$local_path" "$src_path" || user_edited=1
   else
-    rescue_one "$rel"
+    # in_floor=1 but in_head=0: upstream removed the file since last
+    # sync. Without a floor compare we can't tell if the user touched
+    # it; conservative default is to treat as USER-EDIT and rescue.
+    user_edited=1
   fi
+
+  if [ "$user_edited" = "1" ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      if [ "$rel" = ".claude/CLAUDE.md" ]; then
+        echo "    user-edit (diff-append): $rel  ->  personal/CLAUDE.md"
+      else
+        echo "    user-edit (rescue): $rel  ->  $(map_rescue_target "$rel")"
+      fi
+      COUNT_USER_EDIT=$((COUNT_USER_EDIT + 1))
+    else
+      rescue_one "$rel"
+    fi
+  else
+    # UNCHANGED — overlay will replace cleanly.
+    COUNT_UNCHANGED=$((COUNT_UNCHANGED + 1))
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "    unchanged (delete + replace): $rel"
+    else
+      rm -f "$local_path"
+    fi
+  fi
+}
+
+# Walk a wipe-set root, processing each file. companies/_template is
+# special-cased: always wholesale-replace (it's a template, never
+# user-authored), so we just rm it here and let the overlay re-create.
+walk_and_process() {
+  local root_rel="$1"
+  local root_abs="$HQ_ROOT/$root_rel"
+  [ -e "$root_abs" ] || [ -L "$root_abs" ] || return 0
+
+  # companies/_template — wholesale-replace.
+  if [ "$root_rel" = "companies/_template" ]; then
+    if [ "$DRY_RUN" = "1" ]; then
+      echo "    wholesale-replace: companies/_template (template carve-out)"
+    else
+      rm -rf "$HQ_ROOT/companies/_template"
+    fi
+    return 0
+  fi
+
+  # Top-level symlinks (AGENTS.md, MIGRATION.md, etc.): leave alone.
+  # Overlay will overwrite if source provides them (rsync -a preserves
+  # link semantics from source). Master-sync regenerates personal-overlay
+  # symlinks after the run.
+  if [ -L "$root_abs" ]; then
+    return 0
+  fi
+
+  # Top-level regular file.
+  if [ -f "$root_abs" ]; then
+    process_one "$root_rel"
+    return
+  fi
+
+  # Top-level directory: walk recursively, pruning node_modules + nested
+  # .git (v0.1.103 perf + correctness guard). `-type f` skips symlinks
+  # and (under -P, the default) doesn't descend into directory symlinks.
+  while IFS= read -r -d '' f; do
+    local rel="${f#"$HQ_ROOT/"}"
+    process_one "$rel"
+  done < <(find "$root_abs" \( -type d \( -name node_modules -o -name .git \) -prune \) -o \( -type f -print0 \))
 }
 
 echo ""
 if [ "${#WIPE_TOPLEVEL[@]}" -eq 0 ]; then
-  echo "==> Wipe set is empty; nothing to rescue or overlay."
+  echo "==> Wipe set is empty; nothing to process or overlay."
 else
-  echo "==> Scanning wipe set for drifts vs. $SOURCE_REPO@$REF ..."
+  echo "==> Walking wipe set, classifying vs. $SOURCE_REPO@$REF ..."
   for root_rel in "${WIPE_TOPLEVEL[@]}"; do
-    # companies/_template is always overwritten from staging — never rescue it.
-    [ "$root_rel" = "companies/_template" ] && continue
-    walk_and_rescue "$root_rel"
+    walk_and_process "$root_rel"
   done
 fi
 
 if [ "$DRY_RUN" = "1" ]; then
   echo ""
-  if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
-    echo "==> DRY RUN: would delete these top-level entries from $HQ_ROOT:"
-    for n in "${NARROW_PATHS[@]}"; do
-      if [ -e "$HQ_ROOT/$n" ]; then
-        echo "  - ./$n"
-      else
-        echo "  - ./$n  (does not exist locally; rsync will create from source if present)"
-      fi
-    done
-    echo ""
-    echo "==> DRY RUN: would copy these top-level entries from source:"
-    for n in "${NARROW_PATHS[@]}"; do
-      if [ -e "$TMPDIR/src/$n" ]; then
-        echo "  + ./$n"
-      else
-        echo "  + ./$n  (NOT PRESENT in source — local copy will simply be deleted)"
-      fi
-    done
-  else
-    echo "==> DRY RUN: would delete these top-level entries from $HQ_ROOT:"
-    ( cd "$HQ_ROOT" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" | sed 's|^\./|  - |' )
-    if [ -d "$HQ_ROOT/companies/_template" ]; then
-      echo "  - ./companies/_template  (carve-out: re-pulled from source)"
-    fi
-    echo ""
-    echo "==> DRY RUN: would copy these top-level entries from source:"
-    ( cd "$TMPDIR/src" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" | sed 's|^\./|  + |' )
-    if [ -d "$TMPDIR/src/companies/_template" ]; then
-      echo "  + ./companies/_template  (carve-out from $SOURCE_REPO@$REF)"
-    fi
+  echo "==> DRY RUN classification summary:"
+  echo "  user-only (leave in place):       $COUNT_USER_ONLY files"
+  echo "  unchanged (delete + replace):     $COUNT_UNCHANGED files"
+  echo "  user-edit (rescue / diff-append): $COUNT_USER_EDIT files"
+  if [ "$COUNT_CLAUDE_DIFF_APPEND" -gt 0 ]; then
+    echo "    of which .claude/CLAUDE.md would diff-append to personal/CLAUDE.md"
   fi
   if [ "${#PRESERVE_SUBPATHS[@]}" -ne 0 ]; then
     echo ""
@@ -693,6 +793,20 @@ if [ "$DRY_RUN" = "1" ]; then
         echo "  ~ ./$sp  (not present locally — no-op)"
       fi
     done
+  fi
+  echo ""
+  echo "==> DRY RUN: would copy these top-level entries from source on overlay:"
+  if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
+    for n in "${NARROW_PATHS[@]}"; do
+      if [ -e "$TMPDIR/src/$n" ]; then
+        echo "  + ./$n"
+      fi
+    done
+  else
+    ( cd "$TMPDIR/src" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" | sed 's|^\./|  + |' )
+    if [ -d "$TMPDIR/src/companies/_template" ]; then
+      echo "  + ./companies/_template  (carve-out from $SOURCE_REPO@$REF)"
+    fi
   fi
   echo ""
   echo "==> DRY RUN complete. No filesystem changes made."
@@ -715,22 +829,13 @@ for sp in "${PRESERVE_SUBPATHS[@]+"${PRESERVE_SUBPATHS[@]}"}"; do
 done
 
 echo ""
-if [ "${#NARROW_PATHS[@]}" -ne 0 ]; then
-  echo "==> Wiping listed top-level entries (${NARROW_PATHS[*]}) ..."
-  for n in "${NARROW_PATHS[@]}"; do
-    if [ -e "$HQ_ROOT/$n" ]; then
-      rm -rf "$HQ_ROOT/$n"
-    fi
-  done
-else
-  echo "==> Wiping HQ root (preserving .git, companies, personal, workspace, repos, .github, .leak-scan, .hq-sync-journal.json, .hq, .hq-conflicts${EXTRA_PRESERVE[*]+, ${EXTRA_PRESERVE[*]}}) ..."
-  ( cd "$HQ_ROOT" && find . -mindepth 1 -maxdepth 1 "${PRUNE_ARGS[@]}" -exec rm -rf {} + )
-
-  if [ -d "$HQ_ROOT/companies/_template" ]; then
-    echo "==> Wiping companies/_template (will be re-pulled from source) ..."
-    rm -rf "$HQ_ROOT/companies/_template"
-  fi
-fi
+echo "==> Walk complete (user-only: $COUNT_USER_ONLY, unchanged-deleted: $COUNT_UNCHANGED, user-edit-rescued: $COUNT_USER_EDIT)"
+# Note: v0.1.103-and-earlier did a wholesale `rm -rf` of every wipe-set
+# top-level entry here. The new walk_and_process does per-file deletion
+# (only files that exist in upstream + are unchanged are deleted; user-only
+# files survive). The wholesale wipe step is intentionally gone — keep
+# the no-delete semantics of the rsync overlay below to preserve files
+# the walk left alone.
 
 echo "==> Overlaying source onto HQ root ..."
 rsync -a "${RSYNC_EXCLUDES[@]}" "$TMPDIR/src/" "$HQ_ROOT/"
@@ -806,13 +911,21 @@ for root_rel in "${WIPE_TOPLEVEL[@]}"; do
     echo "    $root_rel: $n_files files"
   fi
 done
-n_bucket="$(find "$HQ_ROOT/$RESCUE_BUCKET" -type f 2>/dev/null | wc -l | tr -d ' ')"
-echo "    $RESCUE_BUCKET: $n_bucket files (drifts that had no personal/ home)"
-if [ "$HISTORY_CHECK" = "1" ]; then
-  echo "    skipped by history gate: $SKIPPED_BY_HISTORY (local content matched a past staging blob)"
+echo ""
+echo "==> Classification:"
+echo "    user-only (left in place):        $COUNT_USER_ONLY files"
+echo "    unchanged (deleted + overlaid):   $COUNT_UNCHANGED files"
+echo "    user-edits (rescued):             $COUNT_USER_EDIT files"
+if [ "$COUNT_CLAUDE_DIFF_APPEND" -gt 0 ]; then
+  echo "      of which .claude/CLAUDE.md diff-appended to personal/CLAUDE.md"
+fi
+if [ "$BASELINE_MODE" = "history_floor" ]; then
+  echo "    baseline:                          last-sync floor $HISTORY_FLOOR"
+else
+  echo "    baseline:                          upstream HEAD (no stamp; first run / floor unreachable)"
 fi
 
 echo ""
 echo "==> Done. Source: $SOURCE_REPO@$REF ($SRC_SHA)"
-echo "    Drifts moved into personal/ (see scan output above)."
-echo "    Review $RESCUE_BUCKET/ for files that need manual reconciliation."
+echo "    User-edited files were rescued under personal/ (see scan output above)."
+echo "    User-only files (created by you, unknown to upstream) were left untouched."
