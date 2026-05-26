@@ -16,6 +16,7 @@ pub mod hq_core_staging;
 pub mod hq_core_update;
 pub mod meetings;
 pub mod new_files;
+pub mod notifications;
 pub mod oauth;
 pub mod personal;
 pub mod prewarm;

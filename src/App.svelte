@@ -997,6 +997,11 @@
     // users. Cheap (one GH API call when eligible), fire-and-forget.
     loadStagingReplace();
     setupTrayListeners();
+    // One-time OS notification permission prompt. macOS only shows the system
+    // dialog while status is `prompt` (not determined); once granted/denied it
+    // returns silently, so calling this every launch never re-nags. Fire-and-
+    // forget — errors are non-fatal (the Settings monitor lets the user retry).
+    requestNotificationPermissionOnce();
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
     invoke<boolean>('meetings_feature_enabled')
@@ -1012,6 +1017,22 @@
       unlisteners = [];
     };
   });
+
+  // Ask macOS for notification authorization once. The Rust command wraps
+  // tauri-plugin-notification's request_permission(); macOS shows the system
+  // dialog only when the status is `prompt`, so this is safe to call on every
+  // launch (no re-nag). We skip the request entirely when already determined
+  // to avoid a needless IPC round-trip.
+  async function requestNotificationPermissionOnce() {
+    try {
+      const state = await invoke<string>('notification_permission_state');
+      if (state === 'prompt') {
+        await invoke<string>('notification_request_permission');
+      }
+    } catch (err) {
+      console.error('notification permission request failed', err);
+    }
+  }
 
   async function checkAuth() {
     try {
