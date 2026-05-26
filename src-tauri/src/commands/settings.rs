@@ -1,37 +1,23 @@
 use crate::commands::config::MenubarPrefs;
-use crate::util::feature_gate;
 use crate::util::paths;
-use crate::util::release_channel::{effective_channel, ReleaseChannel};
-
-/// Resolve the `release_channel` field for the Settings UI. Returns the
-/// SAME value the updater's resolver will use, so the toggle the user
-/// sees always matches the channel that will actually be polled.
-///
-/// - `Some("stable" | "beta" | "alpha")` reflects an explicit prior
-///   choice (or the indigo-default of `"beta"` for users who haven't
-///   touched the picker yet).
-/// - Non-indigo users always see `"stable"`, regardless of what's stored
-///   — matching the defense-in-depth coercion in `updater.rs`.
-async fn resolved_release_channel(stored: Option<&str>) -> String {
-    let is_indigo = feature_gate::is_indigo_user().await;
-    let resolved: ReleaseChannel = effective_channel(stored, is_indigo);
-    resolved.as_str().to_string()
-}
 
 /// Read settings from ~/.hq/menubar.json.
 /// Returns current prefs with defaults applied for missing fields.
+///
+/// `release_channel` is returned RAW (the value as stored on disk; `None`
+/// when the user has never explicitly chosen a channel). The Settings UI
+/// is responsible for resolving `None` into a displayed default via
+/// `available_channels`; resolution-for-the-updater lives in
+/// `updater::read_stored_release_channel` + `effective_channel` so this
+/// boundary stays a pure pass-through. Persisting the resolved value
+/// here would lock indigo users into "beta" the first time they touch
+/// any unrelated toggle, defeating the "no preference" state the
+/// effective_channel gate is designed to honor (Codex P1 review on #120).
 #[tauri::command]
 pub async fn get_settings() -> Result<MenubarPrefs, String> {
     let path = paths::menubar_json_path()?;
 
     if !path.exists() {
-        // Fresh install: no menubar.json yet. Resolve the channel
-        // against the (possibly cached) indigo gate so the Settings UI
-        // shows the right default — `"beta"` for `@getindigo.ai` users
-        // (auto-opt-in to dogfood), `"stable"` for everyone else. This
-        // value is NOT written back here; save_settings will persist
-        // when the user touches a toggle.
-        let channel = resolved_release_channel(None).await;
         return Ok(MenubarPrefs {
             hq_path: None,
             sync_on_launch: Some(false),
@@ -43,7 +29,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             instant_sync: Some(true),
             drift_staging_repo: None,
             share_notifications: Some(true),
-            release_channel: Some(channel),
+            release_channel: None,
         });
     }
 
@@ -51,11 +37,6 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         .map_err(|e| format!("Failed to read menubar.json: {}", e))?;
     let prefs: MenubarPrefs = serde_json::from_str(&contents)
         .map_err(|e| format!("Failed to parse menubar.json: {}", e))?;
-
-    // Resolve channel through the same effective_channel logic the
-    // updater uses, so the Settings UI cannot drift from the
-    // background-update behavior.
-    let resolved_channel = resolved_release_channel(prefs.release_channel.as_deref()).await;
 
     // Apply defaults for missing fields. `realtime_sync` defaults ON — it
     // mirrors `is_realtime_sync_enabled` in daemon.rs so the Settings toggle
@@ -79,7 +60,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // toggle takes effect without restart. Only active for @getindigo.ai
         // users (dogfood gate checked separately in share_notify.rs).
         share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
-        release_channel: Some(resolved_channel),
+        // Pass-through (NOT resolved) — see fn-level comment.
+        release_channel: prefs.release_channel,
     })
 }
 

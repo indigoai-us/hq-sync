@@ -112,11 +112,19 @@ impl ReleaseChannel {
 /// Classify a release tag (e.g. `v0.1.109`, `v0.1.109-beta.1`) into a
 /// channel. Returns `None` for unparseable tags — the caller skips them.
 ///
-/// We strip the leading `v` and feed the rest to [`semver::Version`],
-/// then look at the pre-release identifiers. The first pre-release
-/// identifier MUST be `beta` or `alpha` for the tag to count as a
-/// prerelease channel; anything else is rejected so a future
-/// `vX.Y.Z-rc.1` doesn't accidentally pollute the alpha/beta streams.
+/// Strict tag shapes (must match `release.yml` classifier exactly —
+/// drift between this and CI silently strands a channel; see
+/// `hq-sync-release-channels-client-gating`):
+///
+///   - `vX.Y.Z`            → Stable
+///   - `vX.Y.Z-beta.N`     → Beta   (N is a numeric build number)
+///   - `vX.Y.Z-alpha.N`    → Alpha
+///
+/// Other pre-release shapes are rejected:
+///   - `vX.Y.Z-rc.1`, `-pre.1`, `-dev` — unknown channel identifier
+///   - `vX.Y.Z-beta`        — missing the numeric `.N` suffix (CI rejects
+///     this; a manually-pushed unnumbered tag must NOT be picked up)
+///   - `vX.Y.Z-beta.1.2`    — extra identifier past the build number
 pub fn parse_channel_from_tag(tag: &str) -> Option<(ReleaseChannel, semver::Version)> {
     let stripped = tag.strip_prefix('v').unwrap_or(tag);
     let version = semver::Version::parse(stripped).ok()?;
@@ -126,16 +134,23 @@ pub fn parse_channel_from_tag(tag: &str) -> Option<(ReleaseChannel, semver::Vers
     }
 
     // semver::Prerelease is one string with dot-separated identifiers.
-    // We only treat the FIRST identifier as the channel marker, so
-    // `1.0.0-beta.3` is Beta and `1.0.0-alpha.5` is Alpha.
-    let first_id = version.pre.as_str().split('.').next().unwrap_or("");
-    let channel = match first_id {
+    // Require EXACTLY two identifiers: a channel marker (`beta` or
+    // `alpha`) followed by a non-negative integer build number. This
+    // mirrors `release.yml`'s `^v[0-9]+\.[0-9]+\.[0-9]+-(beta|alpha)\.[0-9]+$`
+    // regex so the client and the workflow march in lockstep.
+    let pre_ids: Vec<&str> = version.pre.as_str().split('.').collect();
+    if pre_ids.len() != 2 {
+        return None;
+    }
+    let channel = match pre_ids[0] {
         "alpha" => ReleaseChannel::Alpha,
         "beta" => ReleaseChannel::Beta,
-        // Unknown pre-release (e.g. `-rc`, `-pre`, `-dev`) — refuse to
-        // classify. The caller skips this tag rather than guessing.
         _ => return None,
     };
+    // Reject non-numeric / negative build numbers.
+    if pre_ids[1].is_empty() || pre_ids[1].parse::<u64>().is_err() {
+        return None;
+    }
     Some((channel, version))
 }
 
@@ -268,10 +283,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_beta_without_number() {
-        // `v1.0.0-beta` (no `.N`) is still beta.
-        let (channel, _) = parse_channel_from_tag("v1.0.0-beta").unwrap();
-        assert_eq!(channel, ReleaseChannel::Beta);
+    fn parse_beta_without_number_rejected() {
+        // CI's `release.yml` rejects `v1.0.0-beta` (no `.N`) — the
+        // client parser MUST reject the same shape so a manually-pushed
+        // unnumbered tag never gets routed onto Beta. Lockstep with the
+        // workflow's `^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$` regex.
+        assert!(parse_channel_from_tag("v1.0.0-beta").is_none());
+        assert!(parse_channel_from_tag("v1.0.0-alpha").is_none());
+    }
+
+    #[test]
+    fn parse_beta_with_non_numeric_suffix_rejected() {
+        // `-beta.x` parses as a valid SemVer prerelease but doesn't
+        // match the strict shape we accept.
+        assert!(parse_channel_from_tag("v1.0.0-beta.x").is_none());
+        assert!(parse_channel_from_tag("v1.0.0-alpha.foo").is_none());
+    }
+
+    #[test]
+    fn parse_beta_with_extra_identifiers_rejected() {
+        // Three-segment prerelease (e.g. `-beta.1.2`) is also rejected
+        // — the CI regex requires exactly `-beta.N`.
+        assert!(parse_channel_from_tag("v1.0.0-beta.1.2").is_none());
+        assert!(parse_channel_from_tag("v1.0.0-alpha.3.hotfix").is_none());
     }
 
     #[test]

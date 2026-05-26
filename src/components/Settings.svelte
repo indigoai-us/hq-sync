@@ -42,14 +42,24 @@
   // re-applies the gate at every check (see updater::resolve_endpoint_url
   // -> util::release_channel::effective_channel).
   //
-  // Values are lowercase strings ("stable" | "beta" | "alpha") matching
-  // `util::release_channel::ReleaseChannel::as_str`. The initial value is
-  // the resolved channel returned by get_settings, which already runs the
-  // indigo-aware defaulting (indigo + no stored pref => "beta"; everyone
-  // else => "stable").
+  // Two-state model (Codex P1 review on PR #120):
+  //   - `storedChannel` is the raw value persisted in menubar.json.
+  //     `null` = the user has never explicitly chosen a channel; the
+  //     updater will resolve it identity-aware on the Rust side. This
+  //     gets round-tripped through save_settings UNTOUCHED on non-picker
+  //     toggles, so flipping e.g. Auto-sync doesn't lock an indigo user
+  //     into "beta" by side effect.
+  //   - `displayedChannel` is what the picker shows. Derived from
+  //     `storedChannel` when set, otherwise falls back to the first
+  //     non-stable option (`beta` for indigo users, `stable` for
+  //     everyone — same defaulting the Rust `effective_channel` does).
   type Channel = 'stable' | 'beta' | 'alpha';
-  let releaseChannel = $state<Channel>('stable');
+  let storedChannel = $state<Channel | null>(null);
   let availableChannels = $state<Channel[]>(['stable']);
+  // Derived: what the user sees in the segmented control.
+  let displayedChannel = $derived<Channel>(
+    storedChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable')
+  );
 
   // OS-level macOS notification authorization, distinct from the in-app
   // `notifications` preference above. `'unknown'` = not yet read (renders
@@ -110,9 +120,10 @@
       availableChannels = (channels.filter(
         (c) => c === 'stable' || c === 'beta' || c === 'alpha'
       ) as Channel[]) ?? ['stable'];
-      const resolved = settings.releaseChannel as Channel | null;
-      releaseChannel =
-        resolved && availableChannels.includes(resolved) ? resolved : 'stable';
+      // Raw on-disk value: `null` when the user has never touched the
+      // picker. The displayed channel is derived in `displayedChannel`.
+      const raw = settings.releaseChannel as Channel | null;
+      storedChannel = raw && availableChannels.includes(raw) ? raw : null;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -140,12 +151,13 @@
           personalSyncEnabled,
           instantSync,
           shareNotifications,
-          // Only persist a non-default channel choice — sending "stable"
-          // explicitly is fine (it's the safe value), but for indigo users
-          // the absence of the field also resolves to "beta" via the
-          // indigo-aware default in get_settings. Persisting whatever the
-          // user has selected keeps the round-trip honest.
-          releaseChannel,
+          // Round-trip the RAW stored value (null when never explicitly
+          // chosen). The Rust side serializes `null` -> absent via
+          // skip_serializing_if=None, so an indigo user toggling Auto-sync
+          // never accidentally writes `releaseChannel: "beta"` to disk
+          // and locks in the resolved default. Only `handleChannelChange`
+          // mutates `storedChannel`.
+          releaseChannel: storedChannel,
         },
       });
       showSaved();
@@ -155,9 +167,10 @@
   }
 
   async function handleChannelChange(next: Channel) {
-    if (next === releaseChannel) return;
+    if (next === displayedChannel) return;
     if (!availableChannels.includes(next)) return;
-    releaseChannel = next;
+    // Explicit user choice — persist the raw value going forward.
+    storedChannel = next;
     await saveAll();
   }
 
@@ -560,9 +573,9 @@
           <div class="setting-info">
             <span class="setting-label">Release channel</span>
             <span class="setting-desc">
-              {#if releaseChannel === 'stable'}
+              {#if displayedChannel === 'stable'}
                 Stable updates only
-              {:else if releaseChannel === 'beta'}
+              {:else if displayedChannel === 'beta'}
                 Includes beta builds — early access, mostly stable
               {:else}
                 Includes alpha builds — bleeding edge, may break
@@ -574,9 +587,9 @@
               <button
                 type="button"
                 class="channel-segment"
-                class:active={releaseChannel === channel}
+                class:active={displayedChannel === channel}
                 role="radio"
-                aria-checked={releaseChannel === channel}
+                aria-checked={displayedChannel === channel}
                 onclick={() => handleChannelChange(channel)}
               >
                 {channel === 'stable' ? 'Stable' : channel === 'beta' ? 'Beta' : 'Alpha'}
