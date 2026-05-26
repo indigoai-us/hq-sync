@@ -265,6 +265,12 @@ fn main() {
             }
 
             tray::setup_tray(app.handle())?;
+            // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
+            // updater at 10s) so a known-bad release can be yanked before the
+            // user touches anything sensitive. Server-side source of truth is
+            // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
+            // See `commands::version_gate` for the rationale.
+            commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
 
             // Share-notification poller: fires 5s after launch and after
