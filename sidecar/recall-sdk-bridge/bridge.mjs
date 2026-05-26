@@ -94,7 +94,12 @@ if (!apiKey) {
   process.exit(3);
 }
 
-const apiUrl = process.env.RECALL_API_URL || "https://us-east-1.recall.ai";
+// Region must match the API key's region. The Indigo Recall account is
+// in us-west-2 (the bot path under hq-pro hits us-west-2 too); a deploy
+// briefly targeted us-east-1 on 2026-05-26 and Recall rejected with
+// HTTP 401 + "Invalid API token … might be for another Recall region".
+// Override via RECALL_API_URL env if the account is ever migrated.
+const apiUrl = process.env.RECALL_API_URL || "https://us-west-2.recall.ai";
 const dev = process.env.RECALL_SDK_DEV === "1";
 
 emitLog("info", `starting SDK init (apiUrl=${apiUrl} dev=${dev})`);

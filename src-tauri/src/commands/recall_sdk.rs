@@ -143,15 +143,18 @@ fn write_bridge_command(value: &serde_json::Value) -> Result<(), String> {
 // Eligibility gate
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Phase-0 allowlist for the meeting-detect-notify feature. Currently only
-/// the project owner — the SDK still has unresolved TCC stability issues on
-/// dev builds (see scripts/fix-recall-framework-symlinks.sh and the deep-sign
-/// reverts in the project journal), so we don't want every signed-in user to
-/// see permission prompts on launch yet.
+/// Feature flag for the meeting-detect-notify + Desktop SDK recording
+/// feature. **`@getindigo.ai` only for v1** — matches the broader
+/// `meetings_feature_enabled` gate so the full meeting-pipeline UX
+/// (calendar + bot + SDK recording) lights up together for Indigo
+/// teammates and stays dark for everyone else.
 ///
-/// Lifted to `@getindigo.ai` (matching `meetings_feature_enabled`) once the
-/// signing pipeline lands a stable Developer ID build. Universal after that.
-const MEETING_DETECT_ALLOWLIST: &[&str] = &["stefan@getindigo.ai"];
+/// Was a single-user allowlist (`stefan@getindigo.ai`) during the
+/// 2026-05-26 dogfood; widened once the end-to-end flow shipped (PRs
+/// indigoai-us/hq-pro#145, #147, #148, #149, and the menubar feature
+/// branch). Universal rollout happens after the SDK webhook handler
+/// lands a real transcript pipeline.
+const ALLOWED_DOMAIN: &str = "@getindigo.ai";
 
 /// Env-var override for QA: when set to `1`, force-enable the feature
 /// regardless of the signed-in email. Lets a tester exercise the SDK on a
@@ -166,11 +169,11 @@ const FORCE_ENV: &str = "HQ_SYNC_MEETING_DETECT_FORCE";
 /// `meetings::CACHED_FLAG`.
 static CACHED_ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// Returns true iff this user/process should run meeting detection in Phase 0.
+/// Returns true iff this user/process should run meeting detection.
 ///
 /// Decision order:
 ///   1. `HQ_SYNC_MEETING_DETECT_FORCE=1` → true (QA override).
-///   2. Signed-in email in `MEETING_DETECT_ALLOWLIST` → true.
+///   2. Signed-in email ends in `@getindigo.ai` → true.
 ///   3. Otherwise → false.
 ///
 /// Quiet on missing/malformed tokens (returns false rather than erroring) so a
@@ -207,16 +210,13 @@ async fn compute_meeting_detect_eligible() -> bool {
     is_meeting_detect_allowed_email(claims.email.as_deref())
 }
 
-/// Pure helper — public for unit testing. Case-insensitive exact match
-/// against the allowlist. Empty / `None` / malformed strings are rejected.
+/// Pure helper — public for unit testing. Case-insensitive suffix match
+/// on the `@getindigo.ai` domain. The leading `@` is what prevents
+/// look-alike domains like `forgetindigo.ai` from matching. Empty /
+/// `None` / malformed strings are rejected.
 pub fn is_meeting_detect_allowed_email(email: Option<&str>) -> bool {
     match email {
-        Some(s) if !s.is_empty() => {
-            let lc = s.to_ascii_lowercase();
-            MEETING_DETECT_ALLOWLIST
-                .iter()
-                .any(|allowed| allowed.eq_ignore_ascii_case(&lc))
-        }
+        Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(ALLOWED_DOMAIN),
         _ => false,
     }
 }
@@ -399,14 +399,17 @@ fn parse_sdk_line(line: &str) -> Option<RecallSdkEvent> {
 pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     log(LOG_TAG, "start_recall_sdk: initialising");
 
-    // ── 0. Phase-0 eligibility gate ──────────────────────────────────────────
-    // The feature is locked to the project owner until the dev-build TCC
-    // stability work lands. Skip silently for everyone else — no SDK process,
-    // no Recall API call, no permission prompts.
+    // ── 0. @getindigo.ai eligibility gate ─────────────────────────────────────
+    // Feature is gated to @getindigo.ai users — matches
+    // `meetings_feature_enabled` so the full meeting-pipeline UX lights up
+    // together. Skip silently for everyone else: no SDK process, no Recall
+    // API call, no permission prompts. (Was a single-user Phase-0 allowlist
+    // during the 2026-05-26 dogfood; widened once the end-to-end flow
+    // landed on hq-prod.)
     if !meeting_detect_eligible().await {
         log(
             LOG_TAG,
-            "start_recall_sdk: user not in Phase-0 allowlist — skipping (set HQ_SYNC_MEETING_DETECT_FORCE=1 to override)",
+            "start_recall_sdk: user not in @getindigo.ai allowlist — skipping (set HQ_SYNC_MEETING_DETECT_FORCE=1 to override)",
         );
         return Ok(());
     }
@@ -759,7 +762,7 @@ async fn fetch_sdk_upload_token() -> Result<(String, String), String> {
 /// Start a local recording for the given SDK window.
 ///
 /// Pre-conditions checked before the bridge command is sent:
-/// - The user is in the Phase-0 allowlist (same gate as detection)
+/// - The user is in the `@getindigo.ai` allowlist (same gate as detection)
 /// - The bridge is running (stdin handle present)
 ///
 /// Side effects on success:
@@ -773,7 +776,7 @@ async fn fetch_sdk_upload_token() -> Result<(String, String), String> {
 #[tauri::command]
 pub async fn start_recording(window_id: String) -> Result<String, String> {
     if !meeting_detect_eligible().await {
-        return Err("user not in Phase-0 allowlist".to_string());
+        return Err("user not in @getindigo.ai allowlist".to_string());
     }
     if window_id.trim().is_empty() {
         return Err("window_id is required".to_string());
@@ -784,7 +787,23 @@ pub async fn start_recording(window_id: String) -> Result<String, String> {
         &format!("start_recording: requested for windowId={window_id}"),
     );
 
-    let (recording_id, upload_token) = fetch_sdk_upload_token().await?;
+    let (recording_id, upload_token) = match fetch_sdk_upload_token().await {
+        Ok(v) => v,
+        Err(e) => {
+            // Without this log line the Rust-side failure was opaque to
+            // debugging — the user saw an "Error" badge but no visible
+            // reason. Surface the upstream HTTP status + body verbatim so
+            // post-deploy issues (route 404, auth 401, Recall 5xx) are
+            // diagnosable from `~/.hq/logs/hq-sync.log` alone.
+            log(
+                LOG_TAG,
+                &format!(
+                    "start_recording: upload-token fetch failed for windowId={window_id}: {e}"
+                ),
+            );
+            return Err(e);
+        }
+    };
     log(
         LOG_TAG,
         &format!(
@@ -810,7 +829,7 @@ pub async fn start_recording(window_id: String) -> Result<String, String> {
 #[tauri::command]
 pub async fn stop_recording(window_id: String) -> Result<(), String> {
     if !meeting_detect_eligible().await {
-        return Err("user not in Phase-0 allowlist".to_string());
+        return Err("user not in @getindigo.ai allowlist".to_string());
     }
     if window_id.trim().is_empty() {
         return Err("window_id is required".to_string());
@@ -931,11 +950,19 @@ mod tests {
         let _ = find_sdk_binary(); // must not panic
     }
 
-    // ── Eligibility gate (Phase-0 allowlist) ──────────────────────────────────
+    // ── Eligibility gate (@getindigo.ai feature flag) ─────────────────────────
+    //
+    // Gate widened from `stefan@getindigo.ai` exact-match to the
+    // `@getindigo.ai` suffix on 2026-05-26 once the end-to-end SDK
+    // recording flow shipped to hq-prod. Tests below cover the suffix
+    // semantics + look-alike defence; the leading `@` in ALLOWED_DOMAIN
+    // is what blocks `forgetindigo.ai` and friends.
 
     #[test]
-    fn meeting_detect_allowlist_accepts_stefan_exact() {
+    fn meeting_detect_allowlist_accepts_any_getindigo_user() {
         assert!(is_meeting_detect_allowed_email(Some("stefan@getindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some("teammate@getindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some("anyone@getindigo.ai")));
     }
 
     #[test]
@@ -943,24 +970,24 @@ mod tests {
         // Cognito sometimes returns emails with non-canonical casing.
         assert!(is_meeting_detect_allowed_email(Some("Stefan@GetIndigo.ai")));
         assert!(is_meeting_detect_allowed_email(Some("STEFAN@GETINDIGO.AI")));
+        assert!(is_meeting_detect_allowed_email(Some("Teammate@GetIndigo.AI")));
     }
 
     #[test]
-    fn meeting_detect_allowlist_rejects_domain_only() {
-        // Domain match is NOT enough — Phase 0 is exact-address-only. Lifted
-        // to a suffix match (matching `meetings::is_allowed_email`) when the
-        // signing pipeline lands.
-        assert!(!is_meeting_detect_allowed_email(Some("teammate@getindigo.ai")));
+    fn meeting_detect_allowlist_accepts_plus_addressing() {
+        // Common `+tag` pattern used for filtering — still a real
+        // `@getindigo.ai` mailbox, should be allowed.
+        assert!(is_meeting_detect_allowed_email(Some("stefan+test@getindigo.ai")));
     }
 
     #[test]
-    fn meeting_detect_allowlist_rejects_lookalike() {
-        // Defense against substring/lookalike attacks if the allowlist is
-        // later widened to a suffix match — keep these asserts so the
-        // regression coverage is in place ahead of the change.
+    fn meeting_detect_allowlist_rejects_lookalike_domains() {
+        // The leading `@` in ALLOWED_DOMAIN is the load-bearing piece —
+        // it blocks any domain that ends in `getindigo.ai` without the
+        // explicit `@` boundary.
         assert!(!is_meeting_detect_allowed_email(Some("stefan@forgetindigo.ai")));
-        assert!(!is_meeting_detect_allowed_email(Some("stefan+test@getindigo.ai")));
-        assert!(!is_meeting_detect_allowed_email(Some("notstefan@getindigo.ai")));
+        assert!(!is_meeting_detect_allowed_email(Some("stefan@notgetindigo.ai")));
+        assert!(!is_meeting_detect_allowed_email(Some("stefan@evil-getindigo.ai")));
     }
 
     #[test]
@@ -973,6 +1000,34 @@ mod tests {
     fn meeting_detect_allowlist_rejects_other_domains() {
         assert!(!is_meeting_detect_allowed_email(Some("stefan@example.com")));
         assert!(!is_meeting_detect_allowed_email(Some("stefan@gmail.com")));
+        assert!(!is_meeting_detect_allowed_email(Some("admin@indigo.ai")));
+    }
+
+    #[test]
+    fn meeting_detect_allowlist_matches_meetings_feature_enabled() {
+        // The two gates should agree — they're parallel checks of the
+        // same `@getindigo.ai` flag, just from different sites in the
+        // codebase. If the broader `meetings_feature_enabled` ever
+        // diverges from this one, the menubar UI surfaces and the SDK
+        // boot will disagree about who's an Indigo user.
+        use crate::commands::meetings::is_allowed_email;
+        for email in [
+            "stefan@getindigo.ai",
+            "Anyone@GetIndigo.AI",
+            "stefan@gmail.com",
+            "stefan@forgetindigo.ai",
+            "",
+        ] {
+            assert_eq!(
+                is_meeting_detect_allowed_email(Some(email)),
+                is_allowed_email(Some(email)),
+                "gate disagreement for {email}",
+            );
+        }
+        assert_eq!(
+            is_meeting_detect_allowed_email(None),
+            is_allowed_email(None),
+        );
     }
 
     // ── Recording event parsing ────────────────────────────────────────────

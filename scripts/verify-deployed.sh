@@ -93,7 +93,7 @@ check "GStreamer.framework symlink: top-level GStreamer mach-O" \
 echo ""
 
 # ── Rust code symbols (proves the feature is compiled in) ────────────────
-echo "Rust code (proves the Phase-0 gate + permissions plumbing is compiled in):"
+echo "Rust code (proves the @getindigo.ai gate + permissions plumbing is compiled in):"
 
 MENUBAR="$APP/Contents/MacOS/hq-sync-menubar"
 if [ ! -f "$MENUBAR" ]; then
@@ -108,8 +108,8 @@ else
   # the function name itself misses real positives, as we hit on the
   # first run of this script). These strings are baked into the binary
   # via the `log()` macro and only appear in their respective modules.
-  check "Phase-0 gate compiled in (meeting_detect: log signature)" \
-    bash -c "strings '$MENUBAR' | grep -q 'start_recall_sdk: user not in Phase-0 allowlist'"
+  check "@getindigo.ai gate compiled in (meeting_detect: log signature)" \
+    bash -c "strings '$MENUBAR' | grep -q 'start_recall_sdk: user not in @getindigo.ai allowlist'"
   check "Permission registration compiled in (CGRequestScreenCaptureAccess log)" \
     bash -c "strings '$MENUBAR' | grep -q 'CGRequestScreenCaptureAccess'"
   check "Recall SDK lifecycle compiled in (start_recall_sdk: initialising log)" \
