@@ -907,6 +907,53 @@
         // events list can hook here without needing a second registration.
       })
     );
+
+    // --- Share-notification action handler (Fix D, 2026-05-26) ---
+    // Rust spawns a thread per macOS notification that blocks on
+    // mac-notification-sys `wait_for_click(true).send()`. When the user
+    // hovers the notification and picks "Copy prompt" / "Open details"
+    // from the Actions dropdown (or body-clicks for the open path), the
+    // thread emits `notification:share-action` with the full event payload.
+    //
+    // "copy" → write the templated prompt to the system clipboard.
+    // "open" → invoke open_share_detail with this single event so the
+    //          ShareDetail window focuses or opens with the right context.
+    unlisteners.push(
+      await listen<{
+        action: 'copy' | 'open';
+        eventId: string;
+        event: {
+          eventId: string;
+          issuerEmail: string;
+          issuerDisplayName: string;
+          paths: string[];
+          note: string | null;
+          permission: string;
+          createdAt: string;
+        };
+      }>('notification:share-action', async (e) => {
+        const { action, event: evt } = e.payload;
+        if (action === 'copy') {
+          // Same prompt template as ShareDetail.svelte::buildPrompt — keep
+          // these two in sync. (Centralizing to a shared module is a TODO
+          // once another consumer appears.)
+          const pathList = evt.paths.join(', ');
+          const note = evt.note?.trim() || '(no note)';
+          const text = `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (err) {
+            console.error('share-notify: clipboard write failed', err);
+          }
+        } else if (action === 'open') {
+          try {
+            await invoke('open_share_detail', { events: [evt] });
+          } catch (err) {
+            console.error('share-notify: open_share_detail failed', err);
+          }
+        }
+      })
+    );
   }
 
   $effect(() => {

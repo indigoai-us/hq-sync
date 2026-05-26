@@ -45,7 +45,6 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -53,6 +52,49 @@ use crate::util::client_info::build_client;
 use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
+
+// ── Notification action wiring ────────────────────────────────────────────────
+//
+// We DELIBERATELY bypass tauri-plugin-notification for the share-event
+// notification surface and use mac-notification-sys directly. Rationale:
+//
+//   * tauri-plugin-notification (2.3.3) on macOS routes through notify-rust,
+//     which DOES NOT support action buttons on desktop. `register_action_types`
+//     is mobile-only and there's no `on_action` callback for desktop.
+//   * mac-notification-sys (already a transitive dep via notify-rust) exposes
+//     `MainButton::DropdownActions(title, &[...])` + `wait_for_click(true)`
+//     which on modern macOS (Sonoma/Sequoia) reveal action buttons on hover.
+//   * Same pattern is used in commands/meetings.rs (proven 2026-05-25 dogfood).
+//
+// On user action (Copy / Open / body click), the spawned thread emits a
+// `notification:share-action` Tauri event to the frontend, which:
+//   * "copy"  → writes the templated prompt to clipboard via navigator.clipboard
+//   * "open"  → invokes the `open_share_detail` command
+//
+// Side effect: pinning to mac-notification-sys means this notification surface
+// is macOS-only. The poller code is also macOS-only in spirit (Tauri menubar
+// app), so this is consistent with the broader app target.
+
+/// Tauri event channel name for `NotificationShareActionEvent`.
+const EVENT_NOTIFICATION_SHARE_ACTION: &str = "notification:share-action";
+
+/// Action dispatched by the frontend listener when the user interacts with a
+/// share-notification banner. `event_id` lets the frontend look up the full
+/// share event from its in-memory pending list (primed by `share:new-events`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotificationShareActionEvent {
+    /// One of: `"copy"`, `"open"`. Any other action is filtered out before emit.
+    action: String,
+    /// Event ID of the share this notification represents — lets the
+    /// frontend route to the right SHARE_EVENT row when multiple
+    /// notifications are stacked.
+    event_id: String,
+    /// Full event payload embedded for offline-from-server convenience —
+    /// the frontend can render Copy prompt without round-tripping
+    /// `/v1/files/shared-with-me` again.
+    event: ShareEvent,
+}
 
 // ── Event name emitted to the Svelte renderer ────────────────────────────────
 
@@ -323,29 +365,114 @@ async fn do_poll(app: &AppHandle) {
                         ),
                     );
 
+                    // Lazily register the bundle identifier with mac-notification-sys
+                    // on the first send per process. Without this, the library calls
+                    // `get_bundle_identifier_or_default("use_default")` internally,
+                    // which triggers a macOS "Choose Application" picker because
+                    // Launch Services can't resolve the literal "use_default" to an
+                    // installed app. Mirrors the fix in commands/meetings.rs.
+                    //
+                    // `set_application` itself is guarded by an internal Once, so
+                    // calling it on every send would be safe — wrapping in our own
+                    // OnceLock keeps the log line at one-per-process.
+                    static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
+                    NOTIFICATION_APP_INIT.get_or_init(|| {
+                        const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+                        match mac_notification_sys::set_application(BUNDLE_ID) {
+                            Ok(()) => log(
+                                LOG_TAG,
+                                &format!("SHARE_NOTIFY_BUNDLE_SET bundle={BUNDLE_ID}"),
+                            ),
+                            Err(e) => log(
+                                LOG_TAG,
+                                &format!("SHARE_NOTIFY_BUNDLE_SET_FAILED bundle={BUNDLE_ID} err={e}"),
+                            ),
+                        }
+                    });
+
                     // Fire one macOS notification per share event (US-005).
-                    // Body: note (truncated to 100 chars) OR comma-joined basenames.
+                    //
+                    // We use mac-notification-sys directly (NOT tauri-plugin-
+                    // notification) so we can attach a `DropdownActions` button
+                    // labelled "Actions" with two options ("Copy prompt", "Open
+                    // details") that reveal on hover. The spawned thread blocks
+                    // on `wait_for_click(true).send()` until the user interacts
+                    // (or macOS auto-dismisses) and emits a Tauri event for the
+                    // frontend listener to handle.
                     for evt in &body.events {
                         let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                         let title = notification_title(&evt.issuer_display_name);
-                        if let Err(e) = app
-                            .notification()
-                            .builder()
-                            .title(&title)
-                            .body(&body_text)
-                            .show()
-                        {
-                            log(
-                                LOG_TAG,
-                                &format!("NOTIFY_PERMISSION_DENIED or error: {e}"),
-                            );
-                        }
+                        let app_for_thread = app.clone();
+                        let event_clone = evt.clone();
+
+                        std::thread::spawn(move || {
+                            let mut notification = mac_notification_sys::Notification::default();
+                            // The dropdown title appears as the visible button
+                            // label; the slice elements are the dropdown items.
+                            // Order = display order.
+                            let response = notification
+                                .title(&title)
+                                .message(&body_text)
+                                .main_button(mac_notification_sys::MainButton::DropdownActions(
+                                    "Actions",
+                                    &["Copy prompt", "Open details"],
+                                ))
+                                .wait_for_click(true)
+                                .send();
+
+                            match response {
+                                Ok(resp) => {
+                                    // Map the macOS response into our two
+                                    // app-meaningful actions. Body-click is treated
+                                    // as "open" (the conventional gesture) — Copy
+                                    // requires the explicit dropdown choice.
+                                    let action: Option<&'static str> = match resp {
+                                        mac_notification_sys::NotificationResponse::ActionButton(name)
+                                            if name.eq_ignore_ascii_case("copy prompt") =>
+                                        {
+                                            Some("copy")
+                                        }
+                                        mac_notification_sys::NotificationResponse::ActionButton(name)
+                                            if name.eq_ignore_ascii_case("open details") =>
+                                        {
+                                            Some("open")
+                                        }
+                                        mac_notification_sys::NotificationResponse::Click => Some("open"),
+                                        // CloseButton / Reply / None — no actionable signal.
+                                        _ => None,
+                                    };
+
+                                    if let Some(action) = action {
+                                        let payload = NotificationShareActionEvent {
+                                            action: action.to_string(),
+                                            event_id: event_clone.event_id.clone(),
+                                            event: event_clone,
+                                        };
+                                        if let Err(e) = app_for_thread
+                                            .emit(EVENT_NOTIFICATION_SHARE_ACTION, &payload)
+                                        {
+                                            log(
+                                                LOG_TAG,
+                                                &format!(
+                                                    "SHARE_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"
+                                                ),
+                                            );
+                                        }
+                                    }
+                                }
+                                Err(e) => log(
+                                    LOG_TAG,
+                                    &format!("SHARE_NOTIFY_SEND_FAILED err={e}"),
+                                ),
+                            }
+                        });
                     }
 
                     // Badge the tray icon with the unacknowledged event count.
                     crate::tray::set_share_badge(app, body.events.len());
 
-                    // Emit to frontend — US-005 listens here.
+                    // Emit to frontend — US-005 listens here (currently no-op
+                    // after the eager-open removal, kept for future popover UI).
                     let _ = app.emit(EVENT_SHARE_NEW_EVENTS, &body.events);
                 }
             }
