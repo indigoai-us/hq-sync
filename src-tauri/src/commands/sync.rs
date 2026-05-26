@@ -280,7 +280,17 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// reproducible-builds clamp value) and negative epochs (pre-1970). See
 /// indigoai-us/hq-cloud#27. The `~5.31` -> `~5.37` bump is required to
 /// pick the whole chain up.
-pub const HQ_CLOUD_VERSION: &str = "~5.37.0";
+///
+/// **5.38.0 (bulk-asymmetry circuit-breaker)** — `computeDeletePlan` now
+/// refuses to convert >=10% / >=10-abs of in-scope journal entries into
+/// remote `DeleteObject` calls when their local files have gone missing
+/// all at once (moved hqRoot, partial restore, fresh clone over inherited
+/// `~/.hq/`, unmounted volume, accidental `rm -rf`). Closes the failure
+/// mode behind the 2026-05-25 indigo vault mass-delete (269 signals/ +
+/// 290 sources/ delete-markers in one afternoon). Bypass paths preserved:
+/// `HQ_SYNC_DELETE_BULK_OVERRIDE=1` env or `propagateDeletePolicy: "all"`.
+/// See indigoai-us/hq-cloud#28.
+pub const HQ_CLOUD_VERSION: &str = "~5.38.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
