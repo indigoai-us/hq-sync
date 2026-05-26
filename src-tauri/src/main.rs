@@ -192,6 +192,7 @@ fn main() {
             tray::set_tray_state,
             updater::check_for_updates,
             updater::install_update,
+            updater::available_channels,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
             commands::hq_core_update::check_hq_core_update,

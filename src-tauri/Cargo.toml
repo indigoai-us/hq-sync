@@ -49,6 +49,20 @@ aws-smithy-types = "1"
 aws-credential-types = "1"
 ulid = "1"
 bytes = "1"
+# Strict SemVer comparison for the release-channel resolver in
+# `util/release_channel.rs`. We need correct pre-release ordering
+# (`1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0`) when picking the newest
+# applicable release per channel — the loose `cmp_semver` in
+# `commands/hq_cli_update.rs` drops pre-release suffixes and would
+# rank `v0.1.109-beta.1` as equal to `v0.1.109`, which would let a
+# stable-channel user pick up a beta. Tiny dep, well-maintained.
+semver = "1"
+# `url::Url` is required by `tauri_plugin_updater::UpdaterBuilder::endpoints`
+# (the plugin re-exports `url::Url` but builds against this exact crate).
+# Already in the dep graph via reqwest + tauri-plugin-updater; declaring it
+# directly so updater.rs can `use url::Url;` without leaning on a
+# transitive re-export that could move.
+url = "2"
 
 [profile.release]
 split-debuginfo = "packed"

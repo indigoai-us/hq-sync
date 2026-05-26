@@ -36,7 +36,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `commands/settings.rs` | Settings persistence |
 | `commands/autostart.rs` | Login-item autostart. `ensure_autostart_on_launch()` (called from `main.rs` `.setup()`, macOS-gated) idempotently reconciles the LaunchAgent plist with the effective `startAtLogin` pref on every launch — **default-on** (a fresh install autostarts without opening Settings), honouring an explicit `"startAtLogin": false` opt-out (stale plist removed). Mirrors the `daemon.rs` `realtime_sync` default-on convention |
 | `tray.rs` | System tray with 4 visual states (idle/syncing/error/conflict) |
-| `updater.rs` | Auto-update checker (10s delay, then every 6h) |
+| `updater.rs` | Auto-update checker (10s delay, then every 6h). **Channel-aware**: resolves a per-user endpoint via `util/release_channel.rs` from `MenubarPrefs.release_channel` × `util/feature_gate::is_indigo_user`. Non-`@getindigo.ai` users are coerced to Stable regardless of stored preference (defense-in-depth). Exposes `available_channels` command for the Settings picker. |
 | `events.rs` | Typed sync event structs (ndjson discriminated union) |
 | `sentry_scrub.rs` | Sentry event scrubber — strips Cognito tokens and home-dir paths before send |
 | `util/paths.rs` | HQ folder resolver (4-tier — see below). Also provides `resolve_bin` + `child_path` for finding `hq` and node-shebang interpreters under launchd's minimal PATH |
