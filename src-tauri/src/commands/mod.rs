@@ -28,4 +28,5 @@ pub mod status;
 pub mod sync;
 pub mod telemetry;
 pub mod vault_client;
+pub mod version_gate;
 pub mod workspaces;
