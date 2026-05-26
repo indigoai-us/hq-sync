@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# replace-from-staging-rescue.sh
+# replace-rescue.sh
 #
-# Variant of replace-from-staging.sh that:
+# Renamed from `replace-from-staging-rescue.sh` in v0.1.104 once the script
+# became channel-agnostic (`--source` + `--ref` drive both the @indigo
+# "Update to Staging" flow and the prod "Update to vX.Y.Z" flow). Old name
+# kept as a backup search path in `hq_core_staging::resolve_rescue_script`
+# so a stale resource dir mid-rebuild doesn't break dev. The persisted
+# `core/core.yaml` stamp key also got renamed (`replaced_from_staging` ->
+# `replaced_from_source`); reads honour both, writes use the new key and
+# `del` the old.
+#
+# Variant of replace-from-staging.sh (the original clobbering version,
+# kept upstream for non-HQ-Sync callers) that:
 #
 #   1. Does NOT require the destination to be a git repo. The `.git/` check is
 #      dropped and git status reporting at the end is replaced with a plain
@@ -63,26 +73,32 @@
 # Sync-point provenance — `core/core.yaml`:
 #
 #   On a successful default-mode (full-replace) run, the script records the
-#   staging commit it synced to under `core/core.yaml`'s
-#   `replaced_from_staging:` key (source / ref / last_sync_sha / last_sync_at).
+#   source commit it synced to under `core/core.yaml`'s
+#   `replaced_from_source:` key (source / ref / last_sync_sha / last_sync_at).
 #   On the NEXT run, this is read before the clone and — if the source repo
 #   matches and the SHA is reachable in the new clone — used as the
 #   **history floor**: the index walks `git log <last_sync_sha>` instead of
-#   `git log --all`, scoping it to "blobs staging knew about at our last
+#   `git log --all`, scoping it to "blobs the source knew about at our last
 #   sync point". A local file whose content matches one of those blobs is
 #   provably lag (user had it via prior sync). A local file whose content
 #   only matches blobs from AFTER the last sync — i.e. blobs the user
 #   couldn't have copied from a sync — is treated as user-authored even if
-#   it happens to coincide with a recent staging commit.
+#   it happens to coincide with a recent source commit.
+#
+#   Backwards compat: pre-v0.1.104 runs stamped under the old key
+#   `replaced_from_staging`. The read block tries the new key first and
+#   falls back to the old one so a user's history-floor benefit survives
+#   the rename. The write block stamps the new key AND deletes the old
+#   one in the same yq pass so post-migration only one stamp exists.
 #
 # Usage:
-#   replace-from-staging-rescue.sh [--ref REF] [--source OWNER/REPO]
-#                                  [--paths PATH1,PATH2,...]
-#                                  [--preserve PATH]...
-#                                  [--preserve-subpath REL]...
-#                                  [--hq-root DIR]
-#                                  [--no-history-check]
-#                                  [--dry-run] [--yes]
+#   replace-rescue.sh [--ref REF] [--source OWNER/REPO]
+#                     [--paths PATH1,PATH2,...]
+#                     [--preserve PATH]...
+#                     [--preserve-subpath REL]...
+#                     [--hq-root DIR]
+#                     [--no-history-check]
+#                     [--dry-run] [--yes]
 #
 # Defaults:
 #   --ref     main
@@ -219,19 +235,26 @@ RESCUE_BUCKET=".hq-conflicts/rescue-$RESCUE_TS"
 
 # --- Read prior sync-point metadata (must happen BEFORE the wipe) -----------
 # If the user has run this script before in default mode, core/core.yaml
-# carries the staging SHA we last synced to. We use that SHA later (after
+# carries the source SHA we last synced to. We use that SHA later (after
 # the clone) as the history-floor: scope the index walk to commits reachable
 # from <last_sync_sha> instead of all branches. Only honored when the
 # previously-recorded source matches the current --source.
+#
+# Try the new key (`replaced_from_source`) first, fall back to the old
+# (`replaced_from_staging`) so a user whose last sync ran on v0.1.103-or-
+# earlier still gets the history-floor benefit on the next run. The yq
+# `//` alternative operator returns the left side when non-null, else the
+# right; the trailing `// ""` collapses null to empty string so the bash
+# checks below stay simple.
 PREV_SYNC_SHA=""
 PREV_SYNC_SOURCE=""
 PREV_SYNC_REF=""
 PREV_SYNC_AT=""
 if [ -f "$HQ_ROOT/core/core.yaml" ] && command -v yq >/dev/null 2>&1; then
-  PREV_SYNC_SHA="$(yq -r '.replaced_from_staging.last_sync_sha // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
-  PREV_SYNC_SOURCE="$(yq -r '.replaced_from_staging.source // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
-  PREV_SYNC_REF="$(yq -r '.replaced_from_staging.ref // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
-  PREV_SYNC_AT="$(yq -r '.replaced_from_staging.last_sync_at // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
+  PREV_SYNC_SHA="$(yq -r '.replaced_from_source.last_sync_sha // .replaced_from_staging.last_sync_sha // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
+  PREV_SYNC_SOURCE="$(yq -r '.replaced_from_source.source // .replaced_from_staging.source // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
+  PREV_SYNC_REF="$(yq -r '.replaced_from_source.ref // .replaced_from_staging.ref // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
+  PREV_SYNC_AT="$(yq -r '.replaced_from_source.last_sync_at // .replaced_from_staging.last_sync_at // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
 fi
 
 echo "==> HQ root:    $HQ_ROOT"
@@ -735,14 +758,18 @@ fi
 if [ "${#NARROW_PATHS[@]}" -eq 0 ] && [ -f "$HQ_ROOT/core/core.yaml" ]; then
   NOW_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if command -v yq >/dev/null 2>&1; then
+    # Write the new key AND delete the old (pre-v0.1.104) one in the same
+    # pass so post-migration the file holds only the new stamp. `del(...)`
+    # is a no-op when the key is absent, so this is safe for fresh installs.
     SHA="$SRC_SHA" SOURCE="$SOURCE_REPO" THE_REF="$REF" AT="$NOW_UTC" \
       yq -i '
-        .replaced_from_staging.source       = strenv(SOURCE) |
-        .replaced_from_staging.ref          = strenv(THE_REF) |
-        .replaced_from_staging.last_sync_sha = strenv(SHA) |
-        .replaced_from_staging.last_sync_at  = strenv(AT)
+        .replaced_from_source.source       = strenv(SOURCE) |
+        .replaced_from_source.ref          = strenv(THE_REF) |
+        .replaced_from_source.last_sync_sha = strenv(SHA) |
+        .replaced_from_source.last_sync_at  = strenv(AT) |
+        del(.replaced_from_staging)
       ' "$HQ_ROOT/core/core.yaml"
-    echo "==> Stamped core/core.yaml: replaced_from_staging.last_sync_sha=$SRC_SHA"
+    echo "==> Stamped core/core.yaml: replaced_from_source.last_sync_sha=$SRC_SHA"
   elif command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
     SHA="$SRC_SHA" SOURCE="$SOURCE_REPO" THE_REF="$REF" AT="$NOW_UTC" CORE="$HQ_ROOT/core/core.yaml" \
       python3 -c '
@@ -753,16 +780,19 @@ try:
         d = yaml.safe_load(f) or {}
 except FileNotFoundError:
     d = {}
-d["replaced_from_staging"] = {
+d["replaced_from_source"] = {
     "source": os.environ["SOURCE"],
     "ref": os.environ["THE_REF"],
     "last_sync_sha": os.environ["SHA"],
     "last_sync_at": os.environ["AT"],
 }
+# Drop the pre-v0.1.104 key on migration. .pop with a default is a no-op
+# when the key is absent.
+d.pop("replaced_from_staging", None)
 with open(path, "w") as f:
     yaml.safe_dump(d, f, default_flow_style=False, sort_keys=False)
 '
-    echo "==> Stamped core/core.yaml: replaced_from_staging.last_sync_sha=$SRC_SHA"
+    echo "==> Stamped core/core.yaml: replaced_from_source.last_sync_sha=$SRC_SHA"
   else
     echo "    WARN: neither yq nor python3+PyYAML available — skipping core/core.yaml stamp" >&2
   fi

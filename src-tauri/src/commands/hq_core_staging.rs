@@ -463,10 +463,11 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
     Some(StagingIndex { main, prs })
 }
 
-// ── Sync-point provenance & full replace-from-staging ─────────────────────────
+// ── Sync-point provenance & full replace-rescue ──────────────────────────────
 //
-// The scripts/replace-from-staging-rescue.sh rescue script stamps
-// `replaced_from_staging.last_sync_sha` into `core/core.yaml` after every
+// The scripts/replace-rescue.sh rescue script (renamed from
+// `replace-from-staging-rescue.sh` in v0.1.104) stamps
+// `replaced_from_source.last_sync_sha` into `core/core.yaml` after every
 // successful default-mode run. The menubar surfaces an "Update from staging"
 // pill (only for `@getindigo.ai` users) when:
 //   * the stamp is missing entirely (never synced), OR
@@ -475,8 +476,7 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
 // Clicking the pill invokes `run_replace_from_staging`, which spawns the
 // bundled bash script against the resolved HQ folder. The script handles
 // drift rescue, history-aware skip gate, carve-outs, and the post-overlay
-// stamp write — see scripts/replace-from-staging-rescue.sh for the full
-// algorithm.
+// stamp write — see scripts/replace-rescue.sh for the full algorithm.
 
 /// What the menubar needs to decide whether to show the "Update from staging"
 /// pill and what to label it with. Serialized to the frontend as JSON.
@@ -517,14 +517,26 @@ struct GhCommit {
     sha: String,
 }
 
+/// Local `core/core.yaml` shape — only the sync-point stamp is parsed.
+///
+/// Two fields are accepted: `replaced_from_source` (v0.1.104+, canonical)
+/// and `replaced_from_staging` (≤v0.1.103, pre-rename). The caller picks
+/// `replaced_from_source` when present and falls back to the legacy field
+/// so a user's history-floor benefit survives the rename across upgrade.
+///
+/// `del(.replaced_from_staging)` on every successful new-key write means
+/// the legacy field only lingers for users who haven't run the new
+/// script yet; once they do, both files converge on the new key.
 #[derive(Debug, Deserialize)]
 struct LocalCoreYaml {
     #[serde(default)]
-    replaced_from_staging: Option<LocalReplacedFromStaging>,
+    replaced_from_source: Option<LocalSourceStamp>,
+    #[serde(default)]
+    replaced_from_staging: Option<LocalSourceStamp>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LocalReplacedFromStaging {
+struct LocalSourceStamp {
     #[serde(default)]
     source: Option<String>,
     #[serde(default)]
@@ -549,8 +561,12 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
     )
 }
 
-/// Read `replaced_from_staging` from local `core/core.yaml`. Falls back to
-/// `core.yaml` (pre-v14 layout) the same way `hq_core_update.rs` does.
+/// Read the sync-point stamp from local `core/core.yaml`. Prefers
+/// `replaced_from_source` (v0.1.104+) and falls back to the legacy
+/// `replaced_from_staging` key for users whose last sync ran on
+/// v0.1.103 or earlier. Falls back to `core.yaml` (pre-v14 layout) the
+/// same way `hq_core_update.rs` does.
+///
 /// Returns the SHA only if the recorded `source` matches `expected_source`
 /// (different sources can't be meaningfully compared).
 fn local_last_sync_sha(expected_source: &str) -> Option<String> {
@@ -561,7 +577,12 @@ fn local_last_sync_sha(expected_source: &str) -> Option<String> {
 
     let bytes = std::fs::read(&core_yaml).ok()?;
     let parsed: LocalCoreYaml = serde_yaml::from_slice(&bytes).ok()?;
-    let rfs = parsed.replaced_from_staging?;
+    // Prefer the new key; fall back to the legacy one. After the user's
+    // next successful rescue run the new-key write also `del`s the legacy
+    // field, so this fallback is read-once-during-migration in practice.
+    let rfs = parsed
+        .replaced_from_source
+        .or(parsed.replaced_from_staging)?;
     // Only honour the stamp when the recorded source matches what we're
     // about to compare against. A stamp from a different fork tells us
     // nothing about how far ahead `indigoai-us/hq-core-staging` is.
@@ -674,7 +695,13 @@ pub async fn check_staging_replace_available() -> Option<StagingReplaceInfo> {
 /// spawn the same rescue script against the released hq-core repo (replaces
 /// the old "open Claude Code with /update-hq" CTA for prod users).
 pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    // New name first (v0.1.104+), old name as fallback so a stale resource
+    // dir mid-rebuild (or any pre-rename hq-sync.app still on disk that
+    // somehow re-invokes this code path) still resolves cleanly. Both
+    // names point at the same script; the rename was purely cosmetic.
     let candidates = [
+        "_up_/scripts/replace-rescue.sh",
+        "scripts/replace-rescue.sh",
         "_up_/scripts/replace-from-staging-rescue.sh",
         "scripts/replace-from-staging-rescue.sh",
     ];
@@ -687,16 +714,17 @@ pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBu
     }
     // Last-resort dev fallback: the cwd may be the repo root when
     // running `cargo run` directly without going through `tauri dev`.
-    let cwd_fallback = std::env::current_dir()
-        .ok()
-        .map(|c| c.join("scripts").join("replace-from-staging-rescue.sh"));
-    if let Some(p) = cwd_fallback {
-        if p.is_file() {
-            return Ok(p);
+    // Try the new name first here too.
+    let cwd = std::env::current_dir().ok();
+    for filename in ["replace-rescue.sh", "replace-from-staging-rescue.sh"] {
+        if let Some(p) = cwd.as_ref().map(|c| c.join("scripts").join(filename)) {
+            if p.is_file() {
+                return Ok(p);
+            }
         }
     }
     Err(format!(
-        "replace-from-staging-rescue.sh not found in resource dir (looked at: {:?})",
+        "replace-rescue.sh not found in resource dir (looked at: {:?})",
         candidates
     ))
 }

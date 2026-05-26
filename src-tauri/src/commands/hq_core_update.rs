@@ -21,11 +21,11 @@
 //! Differences from the CLI nag:
 //!   * Updating hq-core no longer requires opening Claude Code. The
 //!     `install_hq_core_update` Tauri command spawns the bundled
-//!     `replace-from-staging-rescue.sh` against `indigoai-us/hq-core` at the
-//!     latest release tag — the same rescue + overlay engine the staging
-//!     pill uses for `@getindigo.ai` builders, just pointed at the public
-//!     prod repo. Drifts are rescued into `personal/`, the release tree is
-//!     overlaid on top, and `core/core.yaml`'s `replaced_from_staging`
+//!     `replace-rescue.sh` against `indigoai-us/hq-core` at the latest
+//!     release tag — the same rescue + overlay engine the staging pill
+//!     uses for `@getindigo.ai` builders, just pointed at the public prod
+//!     repo. Drifts are rescued into `personal/`, the release tree is
+//!     overlaid on top, and `core/core.yaml`'s `replaced_from_source`
 //!     stamp is updated with the cloned SHA so subsequent checks have a
 //!     valid history floor. The frontend pill swaps its label to
 //!     "Updating…" while the future is pending and surfaces a result chip
@@ -233,9 +233,9 @@ pub fn get_hq_version() -> Option<String> {
 const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 
 /// Tauri command — prod-user "Update" action. Spawns the bundled
-/// `replace-from-staging-rescue.sh` against `indigoai-us/hq-core` at the
-/// latest release tag (`v{latest}`), replacing the old "open Claude Code
-/// with /update-hq" CTA.
+/// `replace-rescue.sh` against `indigoai-us/hq-core` at the latest
+/// release tag (`v{latest}`), replacing the old "open Claude Code with
+/// /update-hq" CTA.
 ///
 /// Shape mirrors `hq_core_staging::run_replace_from_staging`:
 ///   1. Resolve the HQ folder via the standard 4-tier resolver. Bail if it
