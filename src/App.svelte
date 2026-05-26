@@ -877,8 +877,20 @@
 
     // --- Share-notification event listener (US-005) ---
     // Rust emits `share:new-events` after each poll when new events are found.
-    // Opening ShareDetail here (rather than inside the notification click
-    // handler) means the window is ready before the user acts on the notif.
+    // The Rust side has already fired one macOS notification per event AND
+    // primed the pending-events state for the detail-window ready-handshake.
+    //
+    // We deliberately do NOT open the ShareDetail window here. The window
+    // opens only via user-initiated paths:
+    //   1. notification click → `share-notify:detail-requested` listener
+    //   2. notification action button "Open details" → same path
+    //   3. tray click on the share-notify badge
+    //
+    // Auto-opening on every poll was a UX bug discovered during dogfood
+    // (2026-05-26): combined with the cursor re-fire bug, the ShareDetail
+    // window re-appeared every ~20s. Even with the cursor bug fixed, eager
+    // open is wrong UX — the notification is the lightweight surface and
+    // the detail window is opt-in.
     unlisteners.push(
       await listen<Array<{
         eventId: string;
@@ -888,8 +900,11 @@
         note: string | null;
         permission: string;
         createdAt: string;
-      }>>('share:new-events', async (event) => {
-        await invoke('open_share_detail', { events: event.payload });
+      }>>('share:new-events', async (_event) => {
+        // No-op for now — the notification handler in Rust owns the side
+        // effects (notification.show(), pending-events state, tray badge).
+        // This listener stays subscribed so a future in-popover share-
+        // events list can hook here without needing a second registration.
       })
     );
   }

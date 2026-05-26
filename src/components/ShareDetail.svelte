@@ -1,4 +1,11 @@
 <script lang="ts">
+  // popover.css defines `:root --popover-*` tokens with proper light/dark
+  // media queries. Without this import the share-detail window falls back
+  // to in-line var fallbacks AND the default white html/body shows through
+  // the 92%-opacity surface — the "light grey on white" bug surfaced
+  // during dogfood (2026-05-26). Importing the same stylesheet App.svelte
+  // uses gives this window the canonical Liquid Glass palette.
+  import '../styles/popover.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
@@ -129,16 +136,36 @@
 </div>
 
 <style>
+  /* Kill default white html/body bleed inside the share-detail window —
+     scoped via the [data-window] attribute set by main.ts so it only
+     affects this window, not the popover. Without this, the 32%-transparent
+     area of `.detail-window` reveals white desktop chrome behind the
+     content (the "light grey on white" dogfood feedback, 2026-05-26).
+     We deliberately render an opaque near-black behind the translucent
+     surface so the Liquid Glass tint is consistent regardless of what
+     desktop wallpaper is behind the window. */
+  :global([data-window="share-detail"] html),
+  :global([data-window="share-detail"] body) {
+    margin: 0;
+    padding: 0;
+    background: #0d0d10;
+    color-scheme: dark;
+  }
+
   .detail-window {
     display: flex;
     flex-direction: column;
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--popover-bg, rgba(18, 18, 20, 0.92));
+    /* Opaque base (no alpha) so the window is fully painted even without
+       macOS vibrancy. Vibrancy can be opted in later from the Rust side
+       via apply_vibrancy on the share-detail window if we want true
+       desktop-tinted glass. */
+    background: var(--popover-bg, #14141a);
     backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
     -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    color: var(--popover-text, #e0e0e0);
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
     font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     overflow: hidden;
   }
