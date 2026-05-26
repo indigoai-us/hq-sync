@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "share-detail",
+  "description": "Capability set for the share-detail window. Receives event list via IPC; uses window.open() (Web API, no shell plugin needed) for the HQ Console link.",
+  "windows": ["share-detail"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
+}

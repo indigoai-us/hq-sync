@@ -179,6 +179,7 @@ mod tests {
             personal_sync_enabled: None,
             instant_sync: None,
             drift_staging_repo: None,
+            share_notifications: None,
         }
     }
 

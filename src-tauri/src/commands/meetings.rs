@@ -21,8 +21,6 @@
 //!   POST   /v1/bot/invite                            — schedule a new bot
 //!   POST   /v1/bot/{botId}/cancel                    — cancel scheduled bot
 
-use std::sync::OnceLock;
-
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -32,54 +30,15 @@ use crate::util::client_info::build_client;
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
 
-/// `@getindigo.ai` only for v1. Mirrors the hq-console gate. Lifted to a
-/// shared allowlist once the rollout widens.
-const ALLOWED_DOMAIN: &str = "@getindigo.ai";
-
-/// Cached per-session decision so we don't re-decode the id_token on every
-/// popover open. The token is rotated on refresh but the email claim is
-/// stable across rotations (Cognito sub stays the same), so a process-
-/// lifetime cache is safe.
-static CACHED_FLAG: OnceLock<bool> = OnceLock::new();
-
 /// Returns true iff the signed-in user's email ends in `@getindigo.ai`.
-/// Quiet on missing/malformed tokens (returns false rather than erroring) so
-/// the popover never breaks just because the user is signed out.
+///
+/// Delegates to `feature_gate::is_indigo_user()`, which caches the result for
+/// the process lifetime (the Cognito email claim is stable across token
+/// rotations). Quiet on missing/malformed tokens (returns false) so the
+/// popover never breaks because the user is signed out.
 #[tauri::command]
 pub async fn meetings_feature_enabled() -> Result<bool, String> {
-    if let Some(v) = CACHED_FLAG.get() {
-        return Ok(*v);
-    }
-    let enabled = compute_enabled().await;
-    let _ = CACHED_FLAG.set(enabled);
-    Ok(enabled)
-}
-
-async fn compute_enabled() -> bool {
-    let tokens = match cognito::get_tokens().await {
-        Ok(Some(t)) => t,
-        _ => return false,
-    };
-    let id_token = match tokens.id_token.as_deref() {
-        Some(t) if !t.is_empty() => t,
-        _ => return false,
-    };
-    let claims = match cognito::decode_id_token_claims(id_token) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    is_allowed_email(claims.email.as_deref())
-}
-
-/// Pure helper — public for unit testing. Same logic as the hq-console
-/// `isCalendarFeatureEnabled`. Case-insensitive suffix match on the
-/// `@getindigo.ai` domain (the leading `@` prevents look-alike domains
-/// like `forgetindigo.ai` from matching).
-pub fn is_allowed_email(email: Option<&str>) -> bool {
-    match email {
-        Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(ALLOWED_DOMAIN),
-        _ => false,
-    }
+    Ok(crate::util::feature_gate::is_indigo_user().await)
 }
 
 // ── Data types (mirror hq-pro response shapes) ────────────────────────────────
@@ -571,12 +530,14 @@ mod tests {
 
     #[test]
     fn allowlist_matches_indigo_ai() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(is_allowed_email(Some("stefan@getindigo.ai")));
         assert!(is_allowed_email(Some("STEFAN@GetIndigo.AI")));
     }
 
     #[test]
     fn allowlist_rejects_other_domains() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(!is_allowed_email(Some("someone@gmail.com")));
         assert!(!is_allowed_email(Some("admin@notindigo.ai")));
         // Look-alike domain — the leading `@` in ALLOWED_DOMAIN prevents
@@ -586,6 +547,7 @@ mod tests {
 
     #[test]
     fn allowlist_rejects_missing_email() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(!is_allowed_email(None));
         assert!(!is_allowed_email(Some("")));
     }

@@ -9,6 +9,7 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import './styles/popover.css';
 
   interface Config {
@@ -873,6 +874,114 @@
           newFilesList = [...newFilesList, ...incoming];
         }
       )
+    );
+
+    // --- Share-notification event listener (US-005) ---
+    // Rust emits `share:new-events` after each poll when new events are found.
+    // The Rust side has already fired one macOS notification per event AND
+    // primed the pending-events state for the detail-window ready-handshake.
+    //
+    // We deliberately do NOT open the ShareDetail window here. The window
+    // opens only via user-initiated paths:
+    //   1. notification click → `share-notify:detail-requested` listener
+    //   2. notification action button "Open details" → same path
+    //   3. tray click on the share-notify badge
+    //
+    // Auto-opening on every poll was a UX bug discovered during dogfood
+    // (2026-05-26): combined with the cursor re-fire bug, the ShareDetail
+    // window re-appeared every ~20s. Even with the cursor bug fixed, eager
+    // open is wrong UX — the notification is the lightweight surface and
+    // the detail window is opt-in.
+    unlisteners.push(
+      await listen<Array<{
+        eventId: string;
+        issuerEmail: string;
+        issuerDisplayName: string;
+        paths: string[];
+        note: string | null;
+        permission: string;
+        createdAt: string;
+      }>>('share:new-events', async (_event) => {
+        // No-op for now — the notification handler in Rust owns the side
+        // effects (notification.show(), pending-events state, tray badge).
+        // This listener stays subscribed so a future in-popover share-
+        // events list can hook here without needing a second registration.
+      })
+    );
+
+    // --- Share-notification action handler (Fix D, 2026-05-26) ---
+    // Rust spawns a thread per macOS notification that blocks on
+    // mac-notification-sys `wait_for_click(true).send()`. When the user
+    // hovers the notification and picks "Copy prompt" / "Open details"
+    // from the Actions dropdown (or body-clicks for the open path), the
+    // thread emits `notification:share-action` with the full event payload.
+    //
+    // "copy" → write the templated prompt to the system clipboard.
+    // "open" → invoke open_share_detail with this single event so the
+    //          ShareDetail window focuses or opens with the right context.
+    unlisteners.push(
+      await listen<{
+        action: 'claude' | 'copy' | 'open';
+        eventId: string;
+        event: {
+          eventId: string;
+          issuerEmail: string;
+          issuerDisplayName: string;
+          paths: string[];
+          note: string | null;
+          permission: string;
+          createdAt: string;
+        };
+      }>('notification:share-action', async (e) => {
+        const { action, event: evt } = e.payload;
+
+        // Shared prompt-template helper. Kept in sync with
+        // ShareDetail.svelte::buildPrompt (which still owns the in-window
+        // "Copy prompt" button). Moving to a shared module is a TODO once
+        // a third consumer appears.
+        const buildPrompt = () => {
+          const pathList = evt.paths.join(', ');
+          const note = evt.note?.trim() || '(no note)';
+          return `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
+        };
+
+        if (action === 'claude') {
+          // Body-click → open Claude Code with the templated prompt
+          // pre-filled in the input. Mirrors the pattern used by:
+          //   * OpenInClaudeCodeButton (`lib/claude-code-link.ts`)
+          //   * hq-installer's launch_claude_code_link flow
+          //   * Popover.svelte fixHqCliUpdateInHq CTA
+          //
+          // User feedback 2026-05-26: prefer opening Claude Code over a
+          // bare clipboard copy — the recipient almost always wants to
+          // continue the share in an LLM session, so save them the
+          // paste step.
+          const folder = config?.hqFolderPath ?? '';
+          try {
+            const url = buildClaudeCodeUrl({ folder, prompt: buildPrompt() });
+            await invoke('open_claude_code_link', { url });
+          } catch (err) {
+            console.error('share-notify: open_claude_code_link failed', err);
+          }
+        } else if (action === 'copy') {
+          // Dropdown "Copy prompt" → clipboard write (no app launch).
+          // Intentionally redundant with the body-click → Claude path for
+          // users who already have a Claude session running, are pasting
+          // into a different app, or want the literal text without any
+          // side effects (user direction 2026-05-26).
+          try {
+            await navigator.clipboard.writeText(buildPrompt());
+          } catch (err) {
+            console.error('share-notify: clipboard write failed', err);
+          }
+        } else if (action === 'open') {
+          try {
+            await invoke('open_share_detail', { events: [evt] });
+          } catch (err) {
+            console.error('share-notify: open_share_detail failed', err);
+          }
+        }
+      })
     );
   }
 

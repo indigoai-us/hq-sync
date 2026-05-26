@@ -13,6 +13,7 @@ tauri-plugin-http = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
 window-vibrancy = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -57,6 +58,15 @@ split-debuginfo = "packed"
 # any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
 # doesn't expose the panel handle, so we reach into AppKit directly.
 objc2 = "0.6"
+# Direct dep on mac-notification-sys for action-button notifications.
+# tauri-plugin-notification (2.3.3) on macOS uses notify-rust which
+# wraps NSUserNotification but DOES NOT expose action buttons —
+# `register_action_types` is mobile-only and there's no on_action
+# callback for desktop. mac-notification-sys (a transitive dep already)
+# does support MainButton::DropdownActions + wait_for_click for the
+# canonical macOS Sonoma/Sequoia hover-to-reveal action UX.
+# Pattern proven in commands/meetings.rs notification flow.
+mac-notification-sys = "0.6"
 
 [features]
 journal-cli = []

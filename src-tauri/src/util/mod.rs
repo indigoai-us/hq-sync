@@ -1,4 +1,5 @@
 pub mod client_info;
+pub mod feature_gate;
 pub mod hq_resolver;
 pub mod ignore;
 pub mod journal;

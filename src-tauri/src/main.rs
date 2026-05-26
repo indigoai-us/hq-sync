@@ -132,6 +132,7 @@ fn main() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -145,6 +146,7 @@ fn main() {
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
+        .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -215,6 +217,9 @@ fn main() {
             commands::meetings::meetings_invite_bot,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
+            commands::share_notify::poll_shared_with_me,
+            commands::share_notify::open_share_detail,
+            commands::share_notify::share_detail_window_ready,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -261,6 +266,28 @@ fn main() {
 
             tray::setup_tray(app.handle())?;
             updater::setup_update_checker(app.handle());
+
+            // Share-notification poller: fires 5s after launch and after
+            // every sync:all-complete event. Gated to @getindigo.ai users
+            // and the shareNotifications menubar preference (both checked
+            // inside share_notify — not here so the gate is never scattered).
+            {
+                use tauri::Listener;
+                // (a) Launch-time poll — 5s delay matches the updater pattern.
+                commands::share_notify::setup_share_notify_poller(app.handle().clone());
+
+                // (b) Post-sync poll — fires after every complete sync run.
+                let poll_handle = app.handle().clone();
+                app.listen(
+                    crate::events::EVENT_SYNC_ALL_COMPLETE,
+                    move |_event| {
+                        let h = poll_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            commands::share_notify::poll_once(h).await;
+                        });
+                    },
+                );
+            }
 
             // Register Cmd+Shift+H globally so the popover can be summoned
             // from any app. The handler (configured on the plugin builder
