@@ -34,6 +34,23 @@
   let shareNotifications = $state(true);
   let isIndigoUser = $state(false);
 
+  // Release channel picker — only rendered when the backend reports >1
+  // channel (i.e. the signed-in user is @getindigo.ai). The Rust-side
+  // updater.rs coerces non-indigo users to "stable" regardless of what's
+  // stored here, so this UI is purely the convenience surface; a tampered
+  // frontend cannot escalate a user into beta/alpha because the resolver
+  // re-applies the gate at every check (see updater::resolve_endpoint_url
+  // -> util::release_channel::effective_channel).
+  //
+  // Values are lowercase strings ("stable" | "beta" | "alpha") matching
+  // `util::release_channel::ReleaseChannel::as_str`. The initial value is
+  // the resolved channel returned by get_settings, which already runs the
+  // indigo-aware defaulting (indigo + no stored pref => "beta"; everyone
+  // else => "stable").
+  type Channel = 'stable' | 'beta' | 'alpha';
+  let releaseChannel = $state<Channel>('stable');
+  let availableChannels = $state<Channel[]>(['stable']);
+
   // OS-level macOS notification authorization, distinct from the in-app
   // `notifications` preference above. `'unknown'` = not yet read (renders
   // nothing); the backend returns 'granted' | 'denied' | 'prompt'.
@@ -62,7 +79,7 @@
 
   async function loadSettings() {
     try {
-      const [settings, autostart, indigoUser] = await Promise.all([
+      const [settings, autostart, indigoUser, channels] = await Promise.all([
         invoke<{
           hqPath: string | null;
           syncOnLaunch: boolean | null;
@@ -72,9 +89,13 @@
           personalSyncEnabled: boolean | null;
           instantSync: boolean | null;
           shareNotifications: boolean | null;
+          releaseChannel: string | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
         invoke<boolean>('meetings_feature_enabled'),
+        // Returns ["stable"] for non-indigo users, ["stable","beta","alpha"]
+        // for @getindigo.ai. The picker only renders when length > 1.
+        invoke<string[]>('available_channels'),
       ]);
 
       hqPath = settings.hqPath;
@@ -86,6 +107,12 @@
       instantSync = settings.instantSync ?? true;
       shareNotifications = settings.shareNotifications ?? true;
       isIndigoUser = indigoUser;
+      availableChannels = (channels.filter(
+        (c) => c === 'stable' || c === 'beta' || c === 'alpha'
+      ) as Channel[]) ?? ['stable'];
+      const resolved = settings.releaseChannel as Channel | null;
+      releaseChannel =
+        resolved && availableChannels.includes(resolved) ? resolved : 'stable';
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -113,12 +140,25 @@
           personalSyncEnabled,
           instantSync,
           shareNotifications,
+          // Only persist a non-default channel choice — sending "stable"
+          // explicitly is fine (it's the safe value), but for indigo users
+          // the absence of the field also resolves to "beta" via the
+          // indigo-aware default in get_settings. Persisting whatever the
+          // user has selected keeps the round-trip honest.
+          releaseChannel,
         },
       });
       showSaved();
     } catch (err) {
       console.error('Failed to save settings:', err);
     }
+  }
+
+  async function handleChannelChange(next: Channel) {
+    if (next === releaseChannel) return;
+    if (!availableChannels.includes(next)) return;
+    releaseChannel = next;
+    await saveAll();
   }
 
   async function handlePickFolder() {
@@ -506,6 +546,48 @@
 
       <div class="settings-divider"></div>
 
+      <!-- Release channel — only rendered when the backend exposes more than
+           one channel (i.e. signed-in user is @getindigo.ai). Non-indigo
+           users have updates pinned to stable on the Rust side regardless
+           of what's stored, so showing the picker would be misleading.
+
+           The segmented control renders one button per available channel;
+           the selected button is highlighted, the others are click targets.
+           Persisted via save_settings on every change so the next 6-hour
+           updater poll picks up the new endpoint. -->
+      {#if availableChannels.length > 1}
+        <div class="setting-row channel-row">
+          <div class="setting-info">
+            <span class="setting-label">Release channel</span>
+            <span class="setting-desc">
+              {#if releaseChannel === 'stable'}
+                Stable updates only
+              {:else if releaseChannel === 'beta'}
+                Includes beta builds — early access, mostly stable
+              {:else}
+                Includes alpha builds — bleeding edge, may break
+              {/if}
+            </span>
+          </div>
+          <div class="channel-segments" role="radiogroup" aria-label="Release channel">
+            {#each availableChannels as channel (channel)}
+              <button
+                type="button"
+                class="channel-segment"
+                class:active={releaseChannel === channel}
+                role="radio"
+                aria-checked={releaseChannel === channel}
+                onclick={() => handleChannelChange(channel)}
+              >
+                {channel === 'stable' ? 'Stable' : channel === 'beta' ? 'Beta' : 'Alpha'}
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <div class="settings-divider"></div>
+      {/if}
+
       <!-- Check for Updates — manual trigger; background checker runs every 6h -->
       <div class="setting-row">
         <div class="setting-info">
@@ -715,6 +797,50 @@
     color: #5fd27a;
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  /* Release-channel segmented picker. Each segment is a button; the active
+     one is highlighted in the same primary tone as a "Saved" pill. Sized
+     to fit Stable / Beta / Alpha in one row without truncation; the row
+     re-flows to a column on narrow popovers via `.channel-row`. */
+  .channel-segments {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-radius: 9px;
+    flex-shrink: 0;
+  }
+
+  .channel-segment {
+    font-size: 0.6875rem;
+    font-family: inherit;
+    font-weight: 500;
+    padding: 0.1875rem 0.5rem;
+    background: transparent;
+    color: var(--popover-text-muted, #a0a0b0);
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background-color 0.12s ease, color 0.12s ease;
+    white-space: nowrap;
+  }
+
+  .channel-segment:hover {
+    color: var(--popover-text, #e0e0e0);
+  }
+
+  .channel-segment.active {
+    background: var(--popover-primary, #ffffff);
+    color: var(--popover-primary-text, #111113);
+  }
+
+  /* The channel row's value column carries a wider control than the other
+     rows (3 segments, ~140px wide vs. a 36px toggle), so loosen the gap
+     and let the value column shrink the description if needed. */
+  .channel-row {
+    align-items: center;
   }
 
   /* Version value — monospace, subdued, aligned to the right like a
