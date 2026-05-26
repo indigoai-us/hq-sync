@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
+  import { open as openUrl } from '@tauri-apps/plugin-shell';
 
   interface Props {
     onback: () => void;
@@ -32,6 +33,12 @@
   // toggle takes effect immediately without app restart.
   let shareNotifications = $state(true);
   let isIndigoUser = $state(false);
+
+  // OS-level macOS notification authorization, distinct from the in-app
+  // `notifications` preference above. `'unknown'` = not yet read (renders
+  // nothing); the backend returns 'granted' | 'denied' | 'prompt'.
+  let notifPermission = $state<'granted' | 'denied' | 'prompt' | 'unknown'>('unknown');
+  let notifRequesting = $state(false);
   let loading = $state(true);
   let savedFeedback = $state(false);
   let savedTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -141,6 +148,44 @@
     await saveAll();
   }
 
+  // Read the current OS permission without prompting. Called on mount and on
+  // window focus (so returning from System Settings refreshes the pill).
+  async function loadNotifPermission() {
+    try {
+      notifPermission = await invoke<'granted' | 'denied' | 'prompt'>(
+        'notification_permission_state'
+      );
+    } catch (err) {
+      console.error('Failed to read notification permission:', err);
+      notifPermission = 'unknown';
+    }
+  }
+
+  async function handleEnableNotifications() {
+    if (notifRequesting) return;
+    // Once macOS has recorded a denial it will NOT re-show the system dialog,
+    // so request_permission() would be a silent no-op. The only way back is the
+    // System Settings > Notifications pane — deep-link the user straight there.
+    if (notifPermission === 'denied') {
+      try {
+        await openUrl('x-apple.systempreferences:com.apple.preference.notifications');
+      } catch (err) {
+        console.error('Failed to open System Settings:', err);
+      }
+      return;
+    }
+    notifRequesting = true;
+    try {
+      notifPermission = await invoke<'granted' | 'denied' | 'prompt'>(
+        'notification_request_permission'
+      );
+    } catch (err) {
+      console.error('Failed to request notification permission:', err);
+    } finally {
+      notifRequesting = false;
+    }
+  }
+
   async function handleToggleRealtimeSync() {
     realtimeSync = !realtimeSync;
     await saveAll();
@@ -213,12 +258,18 @@
 
   $effect(() => {
     loadSettings();
+    loadNotifPermission();
     getVersion()
       .then((v) => {
         appVersion = v;
       })
       .catch((err) => console.error('Failed to read app version:', err));
+    // Re-read permission whenever the window regains focus — covers the
+    // common flow of granting/blocking in System Settings then returning.
+    const onFocus = () => loadNotifPermission();
+    window.addEventListener('focus', onFocus);
     return () => {
+      window.removeEventListener('focus', onFocus);
       if (savedTimeout) clearTimeout(savedTimeout);
       if (updateResultTimeout) clearTimeout(updateResultTimeout);
     };
@@ -368,6 +419,43 @@
           <span class="toggle-knob"></span>
         </button>
       </div>
+
+      <!-- macOS permission monitor — reflects the OS authorization (separate
+           from the in-app toggle above). Persistent: re-read on focus so it
+           tracks changes made in System Settings. Hidden until first read. -->
+      {#if notifPermission !== 'unknown'}
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">System permission</span>
+            <span class="setting-desc">
+              {#if notifPermission === 'granted'}
+                macOS is allowing notifications from HQ Sync
+              {:else if notifPermission === 'denied'}
+                Blocked in macOS — open System Settings to allow
+              {:else}
+                Not enabled yet — allow to see sync &amp; share alerts
+              {/if}
+            </span>
+          </div>
+          {#if notifPermission === 'granted'}
+            <span class="perm-pill">Enabled</span>
+          {:else}
+            <button
+              class="change-button"
+              onclick={handleEnableNotifications}
+              disabled={notifRequesting}
+            >
+              {#if notifRequesting}
+                Requesting…
+              {:else if notifPermission === 'denied'}
+                Open Settings
+              {:else}
+                Enable
+              {/if}
+            </button>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Share notifications — dogfood gate: only rendered for @getindigo.ai
            users. Persists shareNotifications in menubar.json; the poll in
@@ -609,6 +697,24 @@
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
     color: var(--popover-text, #e0e0e0);
     border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
+  }
+
+  .change-button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  /* Permission status pill — informational, green-tinted "Enabled" state.
+     Mirrors .version-value sizing so the value column stays aligned. */
+  .perm-pill {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.1875rem 0.5rem;
+    border-radius: 9px;
+    background: rgba(52, 199, 89, 0.16);
+    color: #5fd27a;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   /* Version value — monospace, subdued, aligned to the right like a

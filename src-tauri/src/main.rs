@@ -220,6 +220,8 @@ fn main() {
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
+            commands::notifications::notification_permission_state,
+            commands::notifications::notification_request_permission,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
