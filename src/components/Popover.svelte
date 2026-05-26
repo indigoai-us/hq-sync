@@ -776,6 +776,7 @@
           issue={{ kind: 'hq-version-undetectable', payload: { hqFolderPath: config?.hqFolderPath ?? '' } }}
         />
       {:else}
+        <div class="footer-hq-version-actions">
         <!-- Drift pill (notice tone, not primary white) — appears first so
              the eye lands on the diagnostic before the action pill. Hidden
              when count is 0 or null so the row stays calm on healthy
@@ -867,6 +868,7 @@
             {/if}
           </span>
         {/if}
+        </div>
       {/if}
     </div>
 
@@ -1151,6 +1153,26 @@
   .footer-hq-version-label {
     display: flex;
     align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    /* Keep "HQ vX.Y.Z" on a single line — without this the label wraps
+       ("HQ" / "vX.Y.Z") when the action pills crowd the row, and the
+       wrapped text collided with the drifted pill. The pills now live in
+       a wrapping `.footer-hq-version-actions` group that drops to a
+       second line instead, so the label can stay intact. */
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* Right-side action group (drift pill + Update/Update-to-Staging pill +
+     rescue-result chip). Wraps to a second line when the popover is too
+     narrow to fit everything beside the version label, rather than letting
+     fixed-width pills overflow and overlap the label. */
+  .footer-hq-version-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 0.5rem;
     min-width: 0;
   }

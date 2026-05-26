@@ -33,6 +33,16 @@
   // composite key keeps the map shape consistent).
   let restoreState = $state<Record<string, 'idle' | 'in-flight' | 'done' | string>>({});
 
+  // Header/help baseline label. Release reports carry a bare semver
+  // (`14.2.1`) that reads naturally with a `v` prefix; staging reports
+  // carry an `owner/repo@ref` string (e.g. `indigoai-us/hq-core-staging@main`)
+  // where a `v` prefix produces the nonsense `vindigoai-us/...`. The `@` is
+  // the unambiguous tell (same one `recheck()` routes on), so prefix `v`
+  // only for release reports.
+  const versionLabel = $derived(
+    report ? (report.hqVersion.includes('@') ? report.hqVersion : `v${report.hqVersion}`) : '',
+  );
+
   // Manual recheck. The background loop only re-scans every 6h (see
   // hq_core_drift.rs CHECK_INTERVAL), so after resolving drift — or when
   // staging PRs have moved — the report on screen can be stale. This
@@ -312,7 +322,7 @@
       <h1>Core Drift</h1>
       {#if report}
         <span class="drift-meta">
-          v{report.hqVersion} · {report.count} file{report.count === 1 ? '' : 's'} differ
+          {versionLabel} · {report.count} file{report.count === 1 ? '' : 's'} differ
         </span>
       {/if}
     </div>
@@ -357,7 +367,7 @@
           <path d="M5 8.2l2.2 2.2L11 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </span>
-      <p>No drift detected. Locked core files match upstream v{report.hqVersion}.</p>
+      <p>No drift detected. Locked core files match upstream {versionLabel}.</p>
     </div>
   {:else}
     <div class="drift-body">
@@ -367,7 +377,7 @@
             Modified <span class="drift-section-count">{report.modified.length}</span>
           </h2>
           <p class="drift-section-desc">
-            Local content differs from what v{report.hqVersion} shipped. Either restore upstream, or
+            Local content differs from what {versionLabel} shipped. Either restore upstream, or
             review with an agent to decide if the edit should be lifted into a <code>personal/</code> overlay.
           </p>
           {#each report.modified as entry}
