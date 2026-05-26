@@ -9,6 +9,7 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import './styles/popover.css';
 
   interface Config {
@@ -920,7 +921,7 @@
     //          ShareDetail window focuses or opens with the right context.
     unlisteners.push(
       await listen<{
-        action: 'copy' | 'open';
+        action: 'claude' | 'copy' | 'open';
         eventId: string;
         event: {
           eventId: string;
@@ -933,15 +934,43 @@
         };
       }>('notification:share-action', async (e) => {
         const { action, event: evt } = e.payload;
-        if (action === 'copy') {
-          // Same prompt template as ShareDetail.svelte::buildPrompt — keep
-          // these two in sync. (Centralizing to a shared module is a TODO
-          // once another consumer appears.)
+
+        // Shared prompt-template helper. Kept in sync with
+        // ShareDetail.svelte::buildPrompt (which still owns the in-window
+        // "Copy prompt" button). Moving to a shared module is a TODO once
+        // a third consumer appears.
+        const buildPrompt = () => {
           const pathList = evt.paths.join(', ');
           const note = evt.note?.trim() || '(no note)';
-          const text = `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
+          return `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
+        };
+
+        if (action === 'claude') {
+          // Body-click → open Claude Code with the templated prompt
+          // pre-filled in the input. Mirrors the pattern used by:
+          //   * OpenInClaudeCodeButton (`lib/claude-code-link.ts`)
+          //   * hq-installer's launch_claude_code_link flow
+          //   * Popover.svelte fixHqCliUpdateInHq CTA
+          //
+          // User feedback 2026-05-26: prefer opening Claude Code over a
+          // bare clipboard copy — the recipient almost always wants to
+          // continue the share in an LLM session, so save them the
+          // paste step.
+          const folder = config?.hqFolderPath ?? '';
           try {
-            await navigator.clipboard.writeText(text);
+            const url = buildClaudeCodeUrl({ folder, prompt: buildPrompt() });
+            await invoke('open_claude_code_link', { url });
+          } catch (err) {
+            console.error('share-notify: open_claude_code_link failed', err);
+          }
+        } else if (action === 'copy') {
+          // Dropdown "Copy prompt" → clipboard write (no app launch).
+          // Intentionally redundant with the body-click → Claude path for
+          // users who already have a Claude session running, are pasting
+          // into a different app, or want the literal text without any
+          // side effects (user direction 2026-05-26).
+          try {
+            await navigator.clipboard.writeText(buildPrompt());
           } catch (err) {
             console.error('share-notify: clipboard write failed', err);
           }

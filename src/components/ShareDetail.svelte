@@ -8,6 +8,7 @@
   import '../styles/popover.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { buildClaudeCodeUrl } from '../lib/claude-code-link';
 
   interface ShareEvent {
     eventId: string;
@@ -55,10 +56,35 @@
     }
   }
 
-  function openConsole(evt: ShareEvent): void {
-    // URL-encode issuer email for query param.
-    const url = `https://console.getindigo.ai/files/shared-with-me?from=${encodeURIComponent(evt.issuerEmail)}`;
-    window.open(url, '_blank');
+  async function openInClaude(evt: ShareEvent): Promise<void> {
+    // Open Claude Code with the templated prompt pre-filled and cwd at
+    // the user's HQ folder. Same UX as the notification body-click in
+    // App.svelte; we deep-link via the `open_claude_code_link` Tauri
+    // command (which validates the `claude://` scheme).
+    //
+    // We don't have a working hq-console deep-link surface for shared
+    // files yet, and the recipient almost always wants to act on the
+    // share in an LLM session anyway — so "Open in Claude" is the
+    // higher-leverage secondary CTA than the previous "Open in HQ
+    // Console" (user direction 2026-05-26).
+    //
+    // Folder comes from `get_config().hqFolderPath` — fetched lazily
+    // per click so we don't have to wire config state into this
+    // secondary window. If the call fails the URL still parses (folder
+    // defaults to empty) and Claude opens at its last cwd.
+    let folder = '';
+    try {
+      const cfg = await invoke<{ hqFolderPath: string }>('get_config');
+      folder = cfg.hqFolderPath ?? '';
+    } catch {
+      // Best-effort — proceed without folder.
+    }
+    try {
+      const url = buildClaudeCodeUrl({ folder, prompt: buildPrompt(evt) });
+      await invoke('open_claude_code_link', { url });
+    } catch (err) {
+      console.error('share-notify ShareDetail: open_claude_code_link failed', err);
+    }
   }
 
   $effect(() => {
@@ -123,10 +149,10 @@
             </button>
             <button
               class="btn btn-console"
-              onclick={() => openConsole(evt)}
-              aria-label="Open in HQ Console"
+              onclick={() => openInClaude(evt)}
+              aria-label="Open in Claude Code with prompt"
             >
-              Open in HQ Console ↗
+              Open in Claude ↗
             </button>
           </div>
         </div>

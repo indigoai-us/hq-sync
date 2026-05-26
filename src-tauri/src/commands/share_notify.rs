@@ -413,6 +413,22 @@ async fn do_poll(app: &AppHandle) {
                             let response = notification
                                 .title(&title)
                                 .message(&body_text)
+                                // Body-click = primary action (open Claude Code
+                                // with the templated prompt prefilled, see the
+                                // Body-click = primary action: open Claude
+                                // Code with the templated prompt prefilled
+                                // (see "claude" branch in App.svelte).
+                                // Dropdown surfaces two explicit alternatives:
+                                //   * Copy prompt   — clipboard only (no app
+                                //     open) for users who already have a
+                                //     session running or want to paste
+                                //     elsewhere.
+                                //   * Open details  — ShareDetail window with
+                                //     full path list + Open in HQ Console.
+                                // Copy is intentionally redundant w/ body-
+                                // click for the LLM-session case; explicit
+                                // discoverability beats minimalism here
+                                // (user direction 2026-05-26).
                                 .main_button(mac_notification_sys::MainButton::DropdownActions(
                                     "Actions",
                                     &["Copy prompt", "Open details"],
@@ -422,10 +438,22 @@ async fn do_poll(app: &AppHandle) {
 
                             match response {
                                 Ok(resp) => {
-                                    // Map the macOS response into our two
-                                    // app-meaningful actions. Body-click is treated
-                                    // as "open" (the conventional gesture) — Copy
-                                    // requires the explicit dropdown choice.
+                                    // Body-click → "claude": opens Claude
+                                    // Code (`claude://code/new?q=…&folder=…`)
+                                    // with the templated prompt pre-filled
+                                    // and cwd at the user's HQ folder. The
+                                    // recipient lands in an LLM session
+                                    // ready to act on the shared files
+                                    // without a paste step.
+                                    //
+                                    // Dropdown "Open details" → open the
+                                    // ShareDetail window for a UI surface
+                                    // (path list + Copy prompt fallback +
+                                    // Open in HQ Console link).
+                                    //
+                                    // The frontend listener in App.svelte
+                                    // owns the URL build + Tauri-command
+                                    // dispatch.
                                     let action: Option<&'static str> = match resp {
                                         mac_notification_sys::NotificationResponse::ActionButton(name)
                                             if name.eq_ignore_ascii_case("copy prompt") =>
@@ -437,7 +465,7 @@ async fn do_poll(app: &AppHandle) {
                                         {
                                             Some("open")
                                         }
-                                        mac_notification_sys::NotificationResponse::Click => Some("open"),
+                                        mac_notification_sys::NotificationResponse::Click => Some("claude"),
                                         // CloseButton / Reply / None — no actionable signal.
                                         _ => None,
                                     };
