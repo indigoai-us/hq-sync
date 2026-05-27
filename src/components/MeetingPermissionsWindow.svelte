@@ -248,7 +248,14 @@
 </div>
 
 <style>
-  :global(html, body) {
+  /* Scope :global(html, body) to this window's `data-window` attribute
+     (set in src/main.ts on mount). Without the scope, the rule bundles
+     into the shared CSS file and bleeds into the popover — popover font
+     family / background / size all snap to this window's values. See
+     commit acc6bd5 ("scope global html/body styles per-window to stop CSS
+     bleed") for the prior incident this mirrors. */
+  :global(html[data-window='meeting-permissions']),
+  :global(html[data-window='meeting-permissions'] body) {
     margin: 0;
     padding: 0;
     background: #18181b;
@@ -257,6 +264,9 @@
     font-size: 13px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
+  }
+  :global(html[data-window='meeting-permissions'] #app) {
+    height: 100vh;
   }
 
   .window {
