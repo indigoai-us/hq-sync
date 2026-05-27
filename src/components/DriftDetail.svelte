@@ -23,7 +23,14 @@
     missing: DriftEntry[];
     added: DriftEntry[];
     scannedAt: string;
+    // The ref this report was *scanned against* (NOT the local installed
+    // version). Bare version for release ("14.2.1"), "owner/repo@ref"
+    // for staging. Used for display labels and the issue payload.
     hqVersion: string;
+    // Where to fetch / link to the upstream blobs of this report (the
+    // tree whose SHAs are in entry.gitShaUpstream).
+    targetRepo: string; // e.g. "indigoai-us/hq-core"
+    targetRef: string;  // e.g. "v14.2.1" (release) or a 40-char SHA (staging)
   }
 
   let report = $state<DriftReport | null>(null);
@@ -50,18 +57,18 @@
   // back to this window so the $effect listener applies it + resets
   // restoreState, updating the window in place.
   //
-  // Route by report origin so we don't re-check release drift when the
-  // window is showing staging drift (or vice versa). Staging reports carry
-  // an `owner/repo@ref`-shaped `hqVersion`; release reports are a bare
-  // version string like `14.2.1`. The `@` is the unambiguous tell.
+  // Unified recheck — one command for both channels. The Rust side
+  // (`check_core_state` in `commands/hq_core_state.rs`) re-classifies
+  // against whichever channel is active in menubar.json's
+  // `staging_channel` toggle + `is_eligible_email`, and emits a fresh
+  // `core-state:changed` event whose listener pipes the new report
+  // back into this window via `drift:report`.
   let rechecking = $state(false);
   async function recheck() {
     if (rechecking) return;
     rechecking = true;
     try {
-      const isStaging = !!report?.hqVersion?.includes('@');
-      const cmd = isStaging ? 'check_staging_drift' : 'check_hq_core_drift';
-      await invoke(cmd);
+      await invoke('check_core_state');
     } catch (e) {
       console.error('recheck failed:', e);
     } finally {
@@ -126,7 +133,13 @@
   }
 
   function upstreamBlobUrl(entry: DriftEntry): string {
-    return `https://github.com/indigoai-us/hq-core/blob/v${report?.hqVersion ?? 'main'}/${entry.path}`;
+    // Build the link from the *report's* target (the tree this drift
+    // was measured against), not the local installed version. Avoids
+    // a v14.0.0 user clicking "View on GitHub" and landing on the
+    // file at the v14.0.0 tag when the drift is actually vs v14.2.1.
+    const repo = report?.targetRepo ?? 'indigoai-us/hq-core';
+    const ref = report?.targetRef ?? 'main';
+    return `https://github.com/${repo}/blob/${ref}/${entry.path}`;
   }
 
   async function viewUpstream(entry: DriftEntry) {
@@ -166,6 +179,14 @@
       await invoke('restore_from_upstream', {
         path: entry.path,
         expectedUpstreamSha: entry.gitShaUpstream,
+        // Forward the report's target so the Rust side fetches from
+        // the exact tree the drift was scanned against (not the local
+        // hqVersion — those diverge whenever the user is behind on
+        // the channel). Without this the SHA hash-verify in
+        // `restore_from_upstream` rejects every restore for users
+        // who aren't already on `latest`.
+        targetRepo: report?.targetRepo,
+        targetRef: report?.targetRef,
       });
       restoreState = { ...restoreState, [key]: 'done' };
     } catch (e) {

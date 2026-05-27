@@ -151,6 +151,8 @@
         added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
         scannedAt: string;
         hqVersion: string;
+        targetRepo: string;
+        targetRef: string;
       };
       unchangedCount: number;
       userOnlyCount: number;

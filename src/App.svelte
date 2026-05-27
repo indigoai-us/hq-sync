@@ -180,6 +180,8 @@
     added: DriftEntry[];
     scannedAt: string;
     hqVersion: string;
+    targetRepo: string;
+    targetRef: string;
   };
   type CoreState = {
     channel: 'release' | 'staging';

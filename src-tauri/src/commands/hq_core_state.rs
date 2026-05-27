@@ -600,7 +600,26 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 missing,
                 added: user_only,
                 scanned_at: chrono::Utc::now().to_rfc3339(),
-                hq_version: local_version.clone().unwrap_or_default(),
+                // hq_version on the report = the ref this report was
+                // scanned *against*, NOT the local installed version.
+                // The detail window uses this to link to the upstream
+                // blob and `restore_from_upstream` fetches from it, so
+                // it must match the tree whose blob SHAs are in
+                // `entry.git_sha_upstream`. Discriminator on `@`:
+                //   - release: bare version string like "14.2.1"
+                //   - staging: "owner/repo@ref" like "…@a1b2c3d"
+                hq_version: match channel {
+                    Channel::Release => target_version.clone(),
+                    Channel::Staging => format!("{target_repo}@{target_ref}"),
+                },
+                target_repo: target_repo.clone(),
+                target_ref: match channel {
+                    // Restore needs the `v`-prefixed tag for release
+                    // (matches the raw-content URL convention); SHA
+                    // works as-is for staging.
+                    Channel::Release => target_ref.clone(),
+                    Channel::Staging => target_ref.clone(),
+                },
             };
             (report, unchanged_count, user_only_count)
         } else {
@@ -613,7 +632,26 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 missing: Vec::new(),
                 added: Vec::new(),
                 scanned_at: chrono::Utc::now().to_rfc3339(),
-                hq_version: local_version.clone().unwrap_or_default(),
+                // hq_version on the report = the ref this report was
+                // scanned *against*, NOT the local installed version.
+                // The detail window uses this to link to the upstream
+                // blob and `restore_from_upstream` fetches from it, so
+                // it must match the tree whose blob SHAs are in
+                // `entry.git_sha_upstream`. Discriminator on `@`:
+                //   - release: bare version string like "14.2.1"
+                //   - staging: "owner/repo@ref" like "…@a1b2c3d"
+                hq_version: match channel {
+                    Channel::Release => target_version.clone(),
+                    Channel::Staging => format!("{target_repo}@{target_ref}"),
+                },
+                target_repo: target_repo.clone(),
+                target_ref: match channel {
+                    // Restore needs the `v`-prefixed tag for release
+                    // (matches the raw-content URL convention); SHA
+                    // works as-is for staging.
+                    Channel::Release => target_ref.clone(),
+                    Channel::Staging => target_ref.clone(),
+                },
             };
             (report, 0, 0)
         };
