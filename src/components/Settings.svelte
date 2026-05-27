@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
-  import { permissionState } from '../lib/permissionState.svelte';
+  import { permissionState, loadMeetingPermissions } from '../lib/permissionState.svelte';
 
   interface Props {
     onback: () => void;
@@ -349,6 +349,14 @@
     await saveAll();
   }
 
+  async function handleOpenMeetingPermissionsWizard() {
+    try {
+      await invoke('open_meeting_permissions_window');
+    } catch (err) {
+      console.error('open_meeting_permissions_window failed:', err);
+    }
+  }
+
   async function handleCheckForUpdates() {
     if (updateChecking) return;
     updateChecking = true;
@@ -374,14 +382,24 @@
   $effect(() => {
     loadSettings();
     loadNotifPermission();
+    // Read the meeting-permissions snapshot whether or not the user is
+    // currently eligible — the response is non-prompting and cheap. The
+    // row below only renders when `permissionState.meetingDetectEligible`
+    // is true, so non-Indigo users still see nothing.
+    loadMeetingPermissions();
     getVersion()
       .then((v) => {
         appVersion = v;
       })
       .catch((err) => console.error('Failed to read app version:', err));
-    // Re-read permission whenever the window regains focus — covers the
-    // common flow of granting/blocking in System Settings then returning.
-    const onFocus = () => loadNotifPermission();
+    // Re-read permission state whenever the window regains focus —
+    // covers the common flow of granting/blocking in System Settings
+    // then returning. Both notification permission AND meeting
+    // permissions refresh on focus so the pills track macOS reality.
+    const onFocus = () => {
+      loadNotifPermission();
+      loadMeetingPermissions();
+    };
     window.addEventListener('focus', onFocus);
     return () => {
       window.removeEventListener('focus', onFocus);
@@ -684,6 +702,39 @@
             </div>
           </div>
         {/if}
+
+        <!-- Meeting permissions monitor — single-row summary of the four
+             macOS TCC grants the SDK needs (accessibility + screen-recording
+             + microphone; system-audio is granted as part of screen-recording
+             on Sequoia+). When all are granted shows "Enabled"; otherwise
+             surfaces "Setup needed" with a button that opens the
+             meeting-permissions wizard window so the user can grant each
+             one with deep-linked System Settings panes.
+
+             Mirrors the macOS notification permission row above in shape;
+             differs only in that we compose four TCC grants into one
+             at-a-glance pill instead of a single OS authorization state. -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <span class="setting-label">Meeting permissions</span>
+            <span class="setting-desc">
+              {#if !permissionState.meetingPermissions}
+                Checking macOS privacy grants…
+              {:else if permissionState.meetingPermissions.allRequiredGranted}
+                Accessibility, screen recording &amp; microphone all granted
+              {:else}
+                One or more macOS permissions need attention
+              {/if}
+            </span>
+          </div>
+          {#if permissionState.meetingPermissions?.allRequiredGranted}
+            <span class="perm-pill">Enabled</span>
+          {:else}
+            <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
+              Set up
+            </button>
+          {/if}
+        </div>
       {/if}
 
       <div class="settings-divider"></div>

@@ -1,4 +1,5 @@
-//! Permissions commands — open System Settings to specific Privacy panes.
+//! Permissions commands — open System Settings to specific Privacy panes,
+//! and read the current TCC status for the meeting-detect permission set.
 //!
 //! macOS supports the `x-apple.systempreferences:` URL scheme for deep-linking
 //! into individual Privacy & Security panes. The mapping below is the public
@@ -8,9 +9,13 @@
 //! Recall Desktop SDK requires 5 macOS permissions: accessibility,
 //! screen-capture, microphone, system-audio (tied to screen-capture in
 //! Sequoia+), and full-disk-access. The Svelte UI deep-links each to the
-//! right pane so the user goes straight there.
+//! right pane so the user goes straight there. `meetings_permissions_state`
+//! returns the current TCC status for each so Settings + the wizard window
+//! can render an at-a-glance "Enabled / Setup needed" pill.
 
 use std::process::Command;
+
+use serde::Serialize;
 
 use crate::util::logfile::log;
 
@@ -70,6 +75,30 @@ mod macos {
     // (see `request_microphone_access`), not via these extern declarations.
     #[link(name = "AVFoundation", kind = "framework")]
     extern "C" {}
+
+    /// Returns the current AVAuthorizationStatus for the given media type
+    /// WITHOUT prompting. Maps to:
+    ///   0 = NotDetermined (we report as `Prompt`)
+    ///   1 = Restricted    (we report as `Denied` — user can't grant)
+    ///   2 = Denied
+    ///   3 = Authorized
+    /// Safe to call from any thread; takes no Rust-owned references.
+    pub fn authorization_status_for_audio() -> i64 {
+        use objc2::{class, msg_send, runtime::{AnyClass, AnyObject}};
+        unsafe {
+            let ns_string_cls: &AnyClass = class!(NSString);
+            let audio_type: *mut AnyObject = msg_send![
+                ns_string_cls,
+                stringWithUTF8String: b"soun\0".as_ptr() as *const i8
+            ];
+            if audio_type.is_null() {
+                return 0; // NotDetermined as a safe default
+            }
+            let av_cls: &AnyClass = class!(AVCaptureDevice);
+            let status: i64 = msg_send![av_cls, authorizationStatusForMediaType: audio_type];
+            status
+        }
+    }
 }
 
 /// Register the .app bundle with macOS TCC for Microphone (and System Audio
@@ -219,6 +248,225 @@ fn settings_url(permission: &str) -> Option<&'static str> {
         ),
         _ => None,
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Permission status enumeration
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Status of a single TCC permission, as surfaced to the frontend.
+///
+/// `unknown` is the carve-out for permissions where macOS has no public API
+/// to read the current state (Full Disk Access is the live case — Apple
+/// only exposes a private SPI, and we'd rather show "Open Settings to
+/// check" than guess).
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PermStatus {
+    /// User has granted the permission.
+    Granted,
+    /// User has denied the permission. macOS will NOT re-prompt — the only
+    /// path back is the System Settings pane (the wizard's CTA).
+    Denied,
+    /// User has not yet been asked. The native macOS prompt will fire the
+    /// first time we call the corresponding API; this is the lightest-touch
+    /// state to be in.
+    Prompt,
+    /// No programmatic check is available for this permission. The
+    /// frontend should render "Open Settings to check" rather than a
+    /// false-positive Granted / Denied pill.
+    Unknown,
+}
+
+/// At-a-glance status of every permission the meeting-detect-notify feature
+/// needs. The Settings row collapses the four required permissions to a
+/// single Enabled/Setup-needed pill; the wizard window renders one row per
+/// permission with this struct's fields.
+///
+/// `system_audio` is intentionally aliased to `screen_capture` on macOS
+/// Sequoia+: the system collapses both grants into the Screen & System
+/// Audio Recording pane. Pre-Sequoia they were distinct; we report the
+/// best-available status from either source.
+///
+/// `all_required_granted` is true iff `accessibility`, `screen_capture`, and
+/// `microphone` are all `Granted`. Full Disk Access is reported but NOT
+/// gating — the SDK gracefully degrades without it for the meeting-detect
+/// path (FDA is only needed for some on-disk capture modes we don't use).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingPermissionsState {
+    pub accessibility: PermStatus,
+    pub screen_capture: PermStatus,
+    pub microphone: PermStatus,
+    pub system_audio: PermStatus,
+    pub full_disk_access: PermStatus,
+    pub all_required_granted: bool,
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_status() -> PermStatus {
+    match macos::authorization_status_for_audio() {
+        // 0 = NotDetermined → we haven't asked yet.
+        0 => PermStatus::Prompt,
+        // 1 = Restricted (parental controls / MDM) — user cannot grant.
+        // 2 = Denied — user denied, only recoverable via System Settings.
+        1 | 2 => PermStatus::Denied,
+        // 3 = Authorized.
+        3 => PermStatus::Granted,
+        // Future status codes — treat as unknown so the wizard offers
+        // "Open Settings" rather than asserting a bogus pill.
+        _ => PermStatus::Unknown,
+    }
+}
+
+/// Read all five TCC statuses WITHOUT prompting. Idempotent and safe to
+/// call on every Settings open.
+///
+/// macOS specifics:
+/// - Accessibility: `AXIsProcessTrusted()` returns the current state.
+///   It does NOT prompt. (`AXIsProcessTrustedWithOptions(..prompt: true)`
+///   is the prompting variant; we use the prompt-less form here.)
+/// - Screen Recording: `CGPreflightScreenCaptureAccess()` is the
+///   prompt-less read. Returns the cached TCC verdict; `prompt` is not
+///   distinguishable from `denied` at the API level, so we report
+///   `Granted` / `Denied` only (the frontend can still surface "Enable"
+///   for both cases — the deep-linked System Settings pane shows the
+///   right state once opened).
+/// - Microphone: `AVCaptureDevice.authorizationStatusForMediaType:` returns
+///   the four-state enum (NotDetermined/Restricted/Denied/Authorized).
+/// - System Audio: aliased to Screen Recording on macOS 13+ — the user
+///   grants both in one pane.
+/// - Full Disk Access: no public read API. Always reports `Unknown`; the
+///   wizard surfaces an "Open Settings" CTA so the user can verify
+///   manually.
+#[tauri::command]
+pub fn meetings_permissions_state() -> Result<MeetingPermissionsState, String> {
+    #[cfg(target_os = "macos")]
+    {
+        use macos::*;
+
+        // SAFETY: AXIsProcessTrusted and CGPreflightScreenCaptureAccess
+        // are documented thread-safe C functions; they take no Rust
+        // references and never panic on the FFI boundary.
+        let ax_trusted = unsafe { AXIsProcessTrusted() };
+        let sc_authorized = unsafe { CGPreflightScreenCaptureAccess() };
+
+        let accessibility = if ax_trusted {
+            PermStatus::Granted
+        } else {
+            // CGPreflightScreenCaptureAccess doesn't distinguish prompt
+            // from denied. AXIsProcessTrusted has the same limitation —
+            // the binary returns `false` for both "not yet asked" and
+            // "user said no". Report Denied so the wizard shows "Open
+            // Settings" (which works for both cases); a true Prompt
+            // state would be surfaced by the first SDK call anyway.
+            PermStatus::Denied
+        };
+        let screen_capture = if sc_authorized {
+            PermStatus::Granted
+        } else {
+            PermStatus::Denied
+        };
+        // Sequoia+: System Audio is granted in the Screen Recording pane.
+        // On older macOS, they had separate panes — but we ship the
+        // meeting-detect feature only on modern systems, so the alias is
+        // safe in practice.
+        let system_audio = screen_capture;
+
+        let microphone = microphone_status();
+
+        // No public API for FDA; the wizard surfaces an "Open Settings"
+        // CTA so the user can verify manually.
+        let full_disk_access = PermStatus::Unknown;
+
+        let all_required_granted = accessibility == PermStatus::Granted
+            && screen_capture == PermStatus::Granted
+            && microphone == PermStatus::Granted;
+
+        log(
+            LOG_TAG,
+            &format!(
+                "meetings_permissions_state: ax={:?} sc={:?} mic={:?} sa={:?} fda={:?} all_required={}",
+                accessibility,
+                screen_capture,
+                microphone,
+                system_audio,
+                full_disk_access,
+                all_required_granted,
+            ),
+        );
+
+        Ok(MeetingPermissionsState {
+            accessibility,
+            screen_capture,
+            microphone,
+            system_audio,
+            full_disk_access,
+            all_required_granted,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Non-macOS: feature is macOS-only; report everything as Unknown
+        // so the UI hides the row entirely (frontend gates on
+        // all_required_granted = false AND any non-Granted status).
+        Ok(MeetingPermissionsState {
+            accessibility: PermStatus::Unknown,
+            screen_capture: PermStatus::Unknown,
+            microphone: PermStatus::Unknown,
+            system_audio: PermStatus::Unknown,
+            full_disk_access: PermStatus::Unknown,
+            all_required_granted: false,
+        })
+    }
+}
+
+/// Open (or focus) the meeting-permissions wizard window. Same handshake
+/// pattern as `open_meetings_window` / `open_share_detail`: if the window
+/// already exists, just bring it to the front; otherwise build it fresh.
+///
+/// The wizard is a single-page Svelte view at the `meeting-permissions`
+/// window label. It calls `meetings_permissions_state` on mount + window
+/// focus, and surfaces an "Open Settings" CTA per permission via
+/// `permissions_open_settings`. No event handshake needed — the view
+/// self-fetches.
+#[tauri::command]
+pub async fn open_meeting_permissions_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    const LABEL: &str = "meeting-permissions";
+
+    if let Some(window) = app.get_webview_window(LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Re-use the bundled HQ app icon so the wizard window has the right
+    // dock / Cmd-Tab / window-switcher representation. Same comment as
+    // `open_meetings_window` — composite badge skipped for legibility-at-
+    // small-sizes reasons.
+    const HQ_ICON_PNG: &[u8] = include_bytes!("../../icons/128x128@2x.png");
+    let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
+        .map_err(|e| format!("load window icon: {e}"))?;
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Meeting Permissions")
+    .inner_size(520.0, 540.0)
+    .min_inner_size(440.0, 420.0)
+    .resizable(true)
+    .decorations(true)
+    .icon(icon)
+    .map_err(|e| format!("attach window icon: {e}"))?
+    .visible(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 /// Open System Settings to the privacy pane for `permission`.

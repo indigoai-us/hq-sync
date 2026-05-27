@@ -223,6 +223,8 @@ fn main() {
             commands::meetings::meetings_clear_prompt_badge,
             commands::permissions::permissions_open_settings,
             commands::permissions::permissions_force_native_register,
+            commands::permissions::meetings_permissions_state,
+            commands::permissions::open_meeting_permissions_window,
             commands::recall_sdk::meeting_detect_feature_enabled,
             commands::recall_sdk::start_recording,
             commands::recall_sdk::stop_recording,
