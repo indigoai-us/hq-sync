@@ -444,6 +444,58 @@ pub async fn meetings_invite_bot(
     serde_json::from_str(&text).map_err(|e| format!("bot/invite parse: {e} — body: {text}"))
 }
 
+/// `POST /v1/bot/join-now` — force the Recall.ai bot to join NOW for
+/// `meeting_url`, regardless of any pre-scheduled `join_at`. Backs the
+/// MeetingsWindow row's bot-join-now icon button. Server-side
+/// (`bot.service.ts::joinBotNow`) decides the right path:
+///
+///   - existing `scheduled` bot → PATCH Recall `join_at = now`
+///   - existing `joining`/`recording` bot → no-op, return as-is
+///   - otherwise → flip any `completed` siblings to `failed`, then create
+///     a fresh bot with no `join_at` so Recall joins immediately
+///
+/// Same request shape as `meetings_invite_bot` so the UI handler can
+/// hand off the same `meeting_url` + `calendar_event_id` + `company_id`
+/// triple without re-derivation.
+#[tauri::command]
+pub async fn meetings_join_bot_now(
+    meeting_url: String,
+    calendar_event_id: Option<String>,
+    company_id: Option<String>,
+) -> Result<ScheduledBot, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let mut url = format!("{base}/v1/bot/join-now");
+    if let Some(cid) = company_id.as_ref() {
+        if !cid.is_empty() {
+            url.push_str(&format!("?companyId={cid}"));
+        }
+    }
+
+    let body = InviteBotBody {
+        meeting_url,
+        calendar_event_id,
+    };
+    let res = build_client()
+        .post(url)
+        .header("authorization", &auth)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("bot/join-now fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/join-now read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("bot/join-now HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
+}
+
 /// `GET /membership/me` — caller's memberships, enriched with `companyName`.
 /// Used by the modal to render human-readable company badges instead of
 /// raw `cmp_…` UIDs.
