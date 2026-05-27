@@ -128,6 +128,46 @@ fn strip_v_prefix(s: &str) -> &str {
     s.strip_prefix('v').unwrap_or(s)
 }
 
+/// Resolve a ref (typically `v{X.Y.Z}`) to its 40-char commit SHA in `repo`.
+///
+/// Used by `install_hq_core_update` to derive the history floor passed
+/// to the rescue script (`--floor-sha`). Returns `None` on any failure
+/// (404, network, parse) rather than `Err` — the caller treats the SHA
+/// as a best-effort hint: when present the rescue runs in
+/// `history_floor` mode (correct vs. installed baseline); when absent
+/// it falls back to `head_compare` (safe but loses USER-EDIT precision
+/// for files changed upstream since the install).
+async fn fetch_tag_sha(repo: &str, git_ref: &str) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{repo}/commits/{git_ref}");
+    let client = reqwest::Client::builder()
+        .default_headers(crate::util::client_info::client_headers())
+        .timeout(REQUEST_TIMEOUT)
+        .build()
+        .ok()?;
+    let resp = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    #[derive(serde::Deserialize)]
+    struct GhCommit {
+        sha: String,
+    }
+    let parsed: GhCommit = resp.json().await.ok()?;
+    let sha = parsed.sha.trim();
+    // Defensive: GitHub returns a 40-char hex SHA. Validate to match the
+    // script's `--floor-sha` regex so we don't pass through garbage.
+    if sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
+        Some(sha.to_string())
+    } else {
+        None
+    }
+}
+
 async fn fetch_latest() -> Result<String, String> {
     // GitHub returns 403 with the message "Request forbidden by
     // administrative rules" when User-Agent is missing. The client_info
@@ -231,6 +271,55 @@ pub async fn install_hq_core_update(
     // re-add it here for the git ref.
     let git_ref = format!("v{latest}");
 
+    // History-floor SHA for the rescue baseline (Codex P1 review on PR
+    // #110). Resolve the user's installed `v{hqVersion}` tag to its commit
+    // SHA in the prod repo and pass to the script as `--floor-sha`. The
+    // script uses this when `core/core.yaml` has no
+    // `replaced_from_source.last_sync_sha` stamp (i.e. the user has never
+    // run a rescue before — exactly the population shipping this prod
+    // Update button targets).
+    //
+    // Without this:
+    //   * No stamp + no override → `BASELINE_MODE=head_compare` → every
+    //     file changed upstream between the user's installed version and
+    //     latest is classified USER-EDIT and moved to `personal/`, leaving
+    //     a tree full of stale overrides that mask the upstream update.
+    //
+    // With this:
+    //   * No stamp + override = `v{hqVersion}`'s SHA → `BASELINE_MODE=
+    //     history_floor` against the user's actual installed tree → only
+    //     files the user themselves modified get rescued; everything else
+    //     converges cleanly to latest.
+    //
+    // Best-effort: if `get_local_version` is None (broken install — would
+    // surface as "version unknown" in the popover, the user's already
+    // seeing the copy-prompt path) or the SHA fetch fails (network /
+    // missing tag), we omit `--floor-sha` and the script falls through to
+    // `head_compare` — the same behavior shipped before this fix, no
+    // regression vs. baseline.
+    let floor_sha = match get_local_version() {
+        Some(ver) => {
+            let user_tag = format!("v{ver}");
+            let resolved = fetch_tag_sha(PROD_HQ_CORE_REPO, &user_tag).await;
+            if resolved.is_none() {
+                log(
+                    "hq-core-update",
+                    &format!(
+                        "floor-sha lookup failed for {PROD_HQ_CORE_REPO}@{user_tag}; rescue will use head_compare fallback"
+                    ),
+                );
+            }
+            resolved
+        }
+        None => {
+            log(
+                "hq-core-update",
+                "local hqVersion unreadable; rescue will use head_compare fallback (no --floor-sha)",
+            );
+            None
+        }
+    };
+
     let log_path = std::env::temp_dir().join(format!(
         "hq-sync-install-hq-core-update-{}.log",
         std::process::id()
@@ -244,11 +333,12 @@ pub async fn install_hq_core_update(
     log(
         "hq-core-update",
         &format!(
-            "spawning rescue (prod): script={} hq_root={} repo={} ref={} log={}",
+            "spawning rescue (prod): script={} hq_root={} repo={} ref={} floor_sha={} log={}",
             script.display(),
             hq_folder.display(),
             PROD_HQ_CORE_REPO,
             git_ref,
+            floor_sha.as_deref().unwrap_or("(none — head_compare fallback)"),
             log_path.display()
         ),
     );
@@ -265,6 +355,9 @@ pub async fn install_hq_core_update(
         .arg("--yes")
         .stdout(std::process::Stdio::from(log_file_for_stdout))
         .stderr(std::process::Stdio::from(log_file_for_stderr));
+    if let Some(sha) = floor_sha.as_deref() {
+        cmd.arg("--floor-sha").arg(sha);
+    }
 
     // GH token is optional for the public repo. Forward when present so
     // the history-index walk doesn't hit anonymous rate limits.

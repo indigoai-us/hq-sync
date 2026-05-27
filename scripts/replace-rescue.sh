@@ -152,6 +152,17 @@ PRESERVE_SUBPATHS=()
 NARROW_PATHS_CSV=""
 HQ_ROOT_OVERRIDE=""
 HISTORY_CHECK=1
+# Caller-supplied history-floor SHA. When set (40-char hex), overrides
+# the value read from `core/core.yaml`'s `replaced_from_source.last_sync_sha`
+# stamp. Use case: a user whose `core/core.yaml` is unstamped (pre-rescue
+# install — e.g. existing v14.0.0 → v14.2.1 prod upgrade) should still
+# get `history_floor` mode rather than the `head_compare` fallback, which
+# misclassifies every upstream change since their installed version as a
+# USER-EDIT and shoves it into `personal/`. The hq-sync caller resolves
+# `v<installed-hqVersion>` against `--source` via the GitHub API and
+# passes it here so the rescue baselines against the user's actual
+# installed tree, not "any blob in main's history."
+FLOOR_SHA_OVERRIDE=""
 
 # Paths that are ALWAYS preserved across the wipe+overlay, regardless of
 # mode or user flags. Each entry is shuttled to a mktemp area pre-wipe and
@@ -180,6 +191,15 @@ while [ $# -gt 0 ]; do
     --paths) NARROW_PATHS_CSV="$2"; shift 2 ;;
     --hq-root) HQ_ROOT_OVERRIDE="$2"; shift 2 ;;
     --no-history-check) HISTORY_CHECK=0; shift ;;
+    --floor-sha)
+      FLOOR_SHA_OVERRIDE="$2"
+      # Fail fast on obviously bad input (the rescue is destructive — better
+      # to abort here than silently fall through to head_compare halfway in).
+      if ! printf '%s' "$FLOOR_SHA_OVERRIDE" | grep -qE '^[0-9a-f]{40}$'; then
+        echo "error: --floor-sha must be a 40-char lowercase hex SHA, got: $FLOOR_SHA_OVERRIDE" >&2
+        exit 2
+      fi
+      shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage ;;
@@ -285,6 +305,23 @@ if [ -f "$HQ_ROOT/core/core.yaml" ] && command -v yq >/dev/null 2>&1; then
   PREV_SYNC_SOURCE="$(yq -r '.replaced_from_source.source // .replaced_from_staging.source // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
   PREV_SYNC_REF="$(yq -r '.replaced_from_source.ref // .replaced_from_staging.ref // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
   PREV_SYNC_AT="$(yq -r '.replaced_from_source.last_sync_at // .replaced_from_staging.last_sync_at // ""' "$HQ_ROOT/core/core.yaml" 2>/dev/null || true)"
+fi
+
+# Caller override (--floor-sha) wins when the on-disk stamp is empty.
+# Set PREV_SYNC_SOURCE to the current --source so the source-match check
+# below ("only honor the floor when the previously-recorded source
+# matches the current --source") trivially passes — the caller has
+# already verified the SHA resolves to a commit in `--source`.
+#
+# We intentionally do NOT overwrite a non-empty stamp: a real prior-sync
+# SHA is strictly more accurate than a caller's "best guess" floor
+# derived from the installed `hqVersion` tag (the user may have run a
+# rescue since the version stamp was written, advancing the floor).
+if [ -z "$PREV_SYNC_SHA" ] && [ -n "$FLOOR_SHA_OVERRIDE" ]; then
+  PREV_SYNC_SHA="$FLOOR_SHA_OVERRIDE"
+  PREV_SYNC_SOURCE="$SOURCE_REPO"
+  PREV_SYNC_REF="(caller-supplied floor)"
+  PREV_SYNC_AT="(unstamped install)"
 fi
 
 echo "==> HQ root:    $HQ_ROOT"
