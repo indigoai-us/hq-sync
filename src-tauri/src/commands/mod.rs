@@ -13,6 +13,7 @@ pub mod git_mirror;
 pub mod hq_cli_update;
 pub mod hq_core_drift;
 pub mod hq_core_staging;
+pub mod hq_core_state;
 pub mod hq_core_update;
 pub mod meetings;
 pub mod new_files;

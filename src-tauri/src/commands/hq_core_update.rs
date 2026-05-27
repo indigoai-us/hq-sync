@@ -41,11 +41,10 @@
 
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use serde::Deserialize;
+use tauri::AppHandle;
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
-use crate::commands::hq_cli_update::cmp_semver;
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -57,28 +56,8 @@ const RELEASES_URL: &str =
     "https://api.github.com/repos/indigoai-us/hq-core/releases/latest";
 
 /// HTTP request timeout — keep tight so a flaky network doesn't stall the
-/// background loop.
+/// `install_hq_core_update` handler.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Offset from app launch before the first check fires. 20s vs. the app
-/// updater's 10s and the CLI nag's 15s so all three don't spike CPU +
-/// network in lockstep on launch.
-const INITIAL_DELAY: Duration = Duration::from_secs(20);
-
-/// Re-check cadence. Matches `updater::setup_update_checker` and
-/// `hq_cli_update::setup_hq_cli_update_checker` (6h).
-const CHECK_INTERVAL: Duration = Duration::from_secs(21600);
-
-/// Payload emitted to the frontend and returned by `check_hq_core_update`.
-#[derive(Debug, Clone, Serialize)]
-pub struct HqCoreUpdateInfo {
-    /// Locally-installed `hqVersion` from `core.yaml` (None when HQ
-    /// hasn't been set up yet or `core.yaml` is unreadable).
-    pub local: Option<String>,
-    /// GitHub release `tag_name`, with any leading `v` stripped so it
-    /// compares cleanly against the YAML's bare semver string.
-    pub latest: String,
-}
 
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
@@ -173,38 +152,6 @@ async fn fetch_latest() -> Result<String, String> {
         .await
         .map_err(|e| format!("parse GitHub release JSON: {e}"))?;
     Ok(strip_v_prefix(parsed.tag_name.trim()).to_string())
-}
-
-/// Perform one check. Returns `Some(info)` when an upgrade is available,
-/// `None` when the user is already on the latest (or `core.yaml` isn't
-/// readable — we don't pester users without a working HQ install).
-pub async fn check_once(app: &AppHandle) -> Result<Option<HqCoreUpdateInfo>, String> {
-    let latest = fetch_latest().await?;
-    let local = get_local_version();
-    let update_available = match local.as_deref() {
-        Some(l) => cmp_semver(l, &latest) == std::cmp::Ordering::Less,
-        None => false,
-    };
-    log(
-        "hq-core-update",
-        &format!(
-            "check: local={:?} latest={} update_available={}",
-            local, latest, update_available
-        ),
-    );
-    if !update_available {
-        return Ok(None);
-    }
-    let info = HqCoreUpdateInfo { local, latest };
-    let _ = app.emit("hq-core-update:available", &info);
-    Ok(Some(info))
-}
-
-/// Tauri command — synchronous one-shot check used by the Settings panel
-/// and any future "Check for Updates" surface.
-#[tauri::command]
-pub async fn check_hq_core_update(app: AppHandle) -> Result<Option<HqCoreUpdateInfo>, String> {
-    check_once(&app).await
 }
 
 /// Tauri command — cheap on-disk read of the local hq-core `hqVersion`.
@@ -349,23 +296,6 @@ pub async fn install_hq_core_update(
         log_tail,
         log_path: log_path.display().to_string(),
     })
-}
-
-/// Background loop: first check 20s after launch, then every 6h.
-/// Mirrors `updater::setup_update_checker` and
-/// `hq_cli_update::setup_hq_cli_update_checker`. Logs but does not
-/// propagate errors — a flaky network shouldn't kill the loop.
-pub fn setup_hq_core_update_checker(app: &AppHandle) {
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(INITIAL_DELAY).await;
-        loop {
-            if let Err(e) = check_once(&handle).await {
-                log("hq-core-update", &format!("background check failed: {e}"));
-            }
-            tokio::time::sleep(CHECK_INTERVAL).await;
-        }
-    });
 }
 
 #[cfg(test)]
