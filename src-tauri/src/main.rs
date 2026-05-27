@@ -220,6 +220,7 @@ fn main() {
             commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
+            commands::desktop_alt::open_desktop_alt_window,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,

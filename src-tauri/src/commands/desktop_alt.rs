@@ -17,9 +17,49 @@
 //! Result type is `Result<bool, String>` to match the established gate
 //! command shape, but `is_indigo_user()` itself never errors — the Ok arm
 //! is always taken.
+use tauri::{AppHandle, Manager};
+
+const WINDOW_LABEL: &str = "desktop-alt";
+
 #[tauri::command]
 pub async fn desktop_alt_enabled() -> Result<bool, String> {
     Ok(crate::util::feature_gate::is_indigo_user().await)
+}
+
+/// Open or focus the Indigo-only alternate desktop UX window.
+///
+/// The window is declared in `tauri.conf.json` as hidden, so normal app
+/// startup does not surface it. This command is still defensive and can
+/// rebuild the window if it was closed earlier in the session.
+#[tauri::command]
+pub async fn open_desktop_alt_window(app: AppHandle) -> Result<(), String> {
+    if !desktop_alt_enabled().await? {
+        return Err("desktop-alt is Indigo-only".to_string());
+    }
+
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        WINDOW_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("HQ")
+    .inner_size(1180.0, 760.0)
+    .min_inner_size(960.0, 600.0)
+    .resizable(true)
+    .decorations(true)
+    .title_bar_style(tauri::TitleBarStyle::Overlay)
+    .transparent(false)
+    .visible(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 #[cfg(test)]
