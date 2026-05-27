@@ -513,22 +513,36 @@
     {/if}
 
     {#if desktopAltEnabled}
-      <button
-        class="header-icon-button desktop-alt-toggle"
-        type="button"
-        onclick={openDesktopAltWindow}
-        title="Open desktop view"
-        aria-label="Open desktop view (Indigo dogfood)"
-        data-testid="desktop-alt-toggle"
-      >
-        <!-- Window/dashboard icon, intentionally distinct from the Settings gear. -->
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5" />
-          <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          <path d="M6 6v7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          <path d="M9 9h2.5M9 11.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        </svg>
-      </button>
+      <div class="header-utility-actions">
+        <button
+          class="header-icon-button desktop-alt-toggle"
+          type="button"
+          onclick={openDesktopAltWindow}
+          title="Open desktop view"
+          aria-label="Open desktop view (Indigo dogfood)"
+          data-testid="desktop-alt-toggle"
+        >
+          <!-- Window/dashboard icon, intentionally distinct from the Settings gear. -->
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5" />
+            <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <path d="M6 6v7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <path d="M9 9h2.5M9 11.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+        </button>
+        <button
+          class="header-icon-button header-settings-toggle"
+          type="button"
+          onclick={onsettings}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5" />
+            <path d="M8 1v1.5M8 13.5V15M14.5 8H13M3 8H1.5M12.6 3.4l-1.06 1.06M4.46 11.54l-1.06 1.06M12.6 12.6l-1.06-1.06M4.46 4.46L3.4 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
     {/if}
 
     <!-- Sync button — right-aligned in the header so it's always visible
@@ -1055,6 +1069,13 @@
     text-overflow: ellipsis;
   }
 
+  .header-utility-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-shrink: 0;
+  }
+
   .header-icon-button {
     flex-shrink: 0;
     display: inline-flex;
@@ -1068,7 +1089,13 @@
     border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
     border-radius: 8px;
     cursor: pointer;
-    transition: background-color 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+    transform: translateY(0);
+    transition:
+      background-color 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease,
+      box-shadow 0.12s ease,
+      transform 0.12s ease;
     -webkit-app-region: no-drag;
   }
 
@@ -1076,10 +1103,21 @@
     color: var(--popover-text-heading, #ffffff);
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
   .header-icon-button:active {
     background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    transform: translateY(0);
+    transition-duration: 0.08s;
+  }
+
+  .header-icon-button:focus-visible {
+    outline: 2px solid var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    outline-offset: 2px;
+    color: var(--popover-text-heading, #ffffff);
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
   .header-inline-error {
@@ -1156,6 +1194,22 @@
   @keyframes header-sync-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .header-icon-button {
+      transition:
+        background-color 0.12s ease,
+        color 0.12s ease,
+        border-color 0.12s ease,
+        box-shadow 0.12s ease;
+    }
+
+    .header-icon-button,
+    .header-icon-button:hover,
+    .header-icon-button:active {
+      transform: none;
     }
   }
 
