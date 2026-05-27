@@ -493,7 +493,7 @@
 
 <div class="popover">
   <!-- Header -->
-  <header class="popover-header" data-tauri-drag-region>
+  <header class="popover-header" class:has-desktop-alt-controls={desktopAltEnabled} data-tauri-drag-region>
     <div class="header-icon">
       <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <rect width="48" height="48" rx="12" fill="currentColor" opacity="0.92" />
@@ -1031,6 +1031,11 @@
     padding: 0.625rem 1rem;
   }
 
+  .popover-header.has-desktop-alt-controls {
+    flex-wrap: wrap;
+    row-gap: 0.375rem;
+  }
+
   .header-icon {
     display: flex;
     align-items: center;
@@ -1049,6 +1054,11 @@
     /* flex: 1 lets the title/path block soak up the spare horizontal space
        so the Sync button sits flush against the right edge of the header. */
     flex: 1;
+  }
+
+  .popover-header.has-desktop-alt-controls .header-text {
+    order: 2;
+    flex: 1 0 100%;
   }
 
   .header-text h1 {
@@ -1152,6 +1162,10 @@
     cursor: pointer;
     transition: background-color 0.15s ease, opacity 0.15s ease, color 0.15s ease;
     -webkit-app-region: no-drag;
+  }
+
+  .popover-header.has-desktop-alt-controls .header-sync {
+    margin-left: auto;
   }
 
   .header-sync:hover:not(:disabled) {

@@ -83,4 +83,15 @@ describe('US-004: Toggle icon button in the classic popover header', () => {
     expect(compactSource).toMatch(/},\s*5000\)/);
     expect(compactSource).toContain('clearDesktopAltErrorTimer()');
   });
+
+  it('gates the two-row header layout to the desktop-alt header state', () => {
+    const compactSource = normalize(popoverSource);
+
+    expect(compactSource).toContain(
+      '<header class="popover-header" class:has-desktop-alt-controls={desktopAltEnabled} data-tauri-drag-region>',
+    );
+    expect(compactSource).toContain('.popover-header.has-desktop-alt-controls { flex-wrap: wrap;');
+    expect(compactSource).toContain('.popover-header.has-desktop-alt-controls .header-text { order: 2; flex: 1 0 100%;');
+    expect(compactSource).toContain('.popover-header.has-desktop-alt-controls .header-sync { margin-left: auto;');
+  });
 });
