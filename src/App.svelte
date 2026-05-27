@@ -1144,6 +1144,7 @@
       onrunreplacefromstaging={handleRunReplaceFromStaging}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
+      {desktopAltEnabled}
       onmeetingsclick={() => {
         // Spawn the detached Upcoming Meetings window (label: meetings-window).
         // Fire-and-forget — the Rust handler focuses an existing window if

@@ -215,6 +215,8 @@
     /** Click handler for the meeting icon — toggles the modal open state
      *  in App.svelte (where the modal itself is rendered). */
     onmeetingsclick?: () => void;
+    /** Indigo-only dogfood gate for the desktop alternate window toggle. */
+    desktopAltEnabled?: boolean;
   }
 
   let {
@@ -267,7 +269,45 @@
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
+    desktopAltEnabled = false,
   }: Props = $props();
+
+  let desktopAltError = $state('');
+  let desktopAltErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearDesktopAltErrorTimer() {
+    if (desktopAltErrorTimer) {
+      clearTimeout(desktopAltErrorTimer);
+      desktopAltErrorTimer = null;
+    }
+  }
+
+  function showDesktopAltError(message: string) {
+    clearDesktopAltErrorTimer();
+    desktopAltError = message;
+    desktopAltErrorTimer = setTimeout(() => {
+      desktopAltError = '';
+      desktopAltErrorTimer = null;
+    }, 5000);
+  }
+
+  async function openDesktopAltWindow() {
+    desktopAltError = '';
+    clearDesktopAltErrorTimer();
+
+    try {
+      await invoke('open_desktop_alt_window');
+    } catch (e) {
+      console.error('open_desktop_alt_window failed:', e);
+      showDesktopAltError('Could not open desktop view.');
+    }
+  }
+
+  $effect(() => {
+    return () => {
+      clearDesktopAltErrorTimer();
+    };
+  });
 
   // Instance ref for SyncStats so parent can trigger refresh
   let statsEl: SyncStats | undefined = $state();
@@ -472,6 +512,25 @@
       <MeetingIcon onclick={onmeetingsclick} />
     {/if}
 
+    {#if desktopAltEnabled}
+      <button
+        class="header-icon-button desktop-alt-toggle"
+        type="button"
+        onclick={openDesktopAltWindow}
+        title="Open desktop view"
+        aria-label="Open desktop view (Indigo dogfood)"
+        data-testid="desktop-alt-toggle"
+      >
+        <!-- Window/dashboard icon, intentionally distinct from the Settings gear. -->
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5" />
+          <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          <path d="M6 6v7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          <path d="M9 9h2.5M9 11.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+      </button>
+    {/if}
+
     <!-- Sync button — right-aligned in the header so it's always visible
          regardless of how long the workspaces list grows. Same visual
          weight + icon as the original body button; just labelled "Sync"
@@ -526,6 +585,10 @@
       {/if}
     </button>
   </header>
+
+  {#if desktopAltError}
+    <p class="header-inline-error" role="status">{desktopAltError}</p>
+  {/if}
 
   <div class="popover-divider"></div>
 
@@ -987,6 +1050,43 @@
     color: var(--popover-text-muted, #a0a0b0);
     margin: 0.125rem 0 0 0;
     line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .header-icon-button {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    color: var(--popover-text, #e0e0e0);
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.1s ease, color 0.1s ease, border-color 0.1s ease;
+    -webkit-app-region: no-drag;
+  }
+
+  .header-icon-button:hover {
+    color: var(--popover-text-heading, #ffffff);
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  .header-icon-button:active {
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+  }
+
+  .header-inline-error {
+    margin: -0.1875rem 1rem 0.5rem 3.625rem;
+    color: var(--popover-notice-strong, #ffffff);
+    font-size: 0.75rem;
+    line-height: 1.35;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
