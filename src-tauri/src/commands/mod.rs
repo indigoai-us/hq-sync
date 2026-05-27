@@ -6,6 +6,7 @@ pub mod cognito;
 pub mod config;
 pub mod conflicts;
 pub mod daemon;
+pub mod desktop_alt;
 pub mod drift_detail;
 pub mod first_push;
 pub mod folder_picker;

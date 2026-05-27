@@ -210,6 +210,7 @@ fn main() {
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
             commands::meetings::meetings_feature_enabled,
+            commands::desktop_alt::desktop_alt_enabled,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,

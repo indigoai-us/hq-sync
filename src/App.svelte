@@ -116,6 +116,14 @@
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
 
+  // Desktop-alt UX feature flag (US-001) — driven by `desktop_alt_enabled`
+  // (Rust side delegates to the same `@getindigo.ai` gate as
+  // `meetings_feature_enabled`; the OnceLock cache is shared). Defaults
+  // false so non-Indigo users never see the alt UX surface even if the
+  // gate command hasn't resolved yet. Subsequent stories (US-003/US-004)
+  // gate the toggle button + alt popover render path on this flag.
+  let desktopAltEnabled = $state(false);
+
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -1010,6 +1018,19 @@
       })
       .catch(() => {
         meetingsEnabled = false;
+      });
+
+    // Desktop-alt UX gate (US-001). Same OnceLock-cached @getindigo.ai
+    // check as `meetings_feature_enabled` — separate invoke keeps the
+    // flags decoupled so we can flip one without the other if we ever
+    // promote the alt UX past dogfood. Errors fall back to false so a
+    // misfiring gate command can never accidentally expose the alt UX.
+    invoke<boolean>('desktop_alt_enabled')
+      .then((v) => {
+        desktopAltEnabled = v;
+      })
+      .catch(() => {
+        desktopAltEnabled = false;
       });
 
     return () => {
