@@ -2,33 +2,26 @@
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
+  import {
+    DESKTOP_SHELL_LAYOUT,
+    getDesktopCompanies,
+    getDesktopHotkeyRoute,
+    getDesktopPage,
+    getDesktopRouteKey,
+    initialDesktopRoute,
+    type DesktopRoute,
+  } from './route';
   import DesktopSidebar from './DesktopSidebar.svelte';
   import DesktopStatusBar from './DesktopStatusBar.svelte';
   import './styles/desktop-alt.css';
 
-  type DesktopRoute = { kind: 'sync' | 'meetings' | 'company'; slug?: string };
-
-  let route = $state<DesktopRoute>({ kind: 'sync' });
+  let route = $state<DesktopRoute>(initialDesktopRoute);
   let workspaces = $state<Workspace[]>([]);
   let workspaceError = $state<string | null>(null);
 
-  const companies = $derived(workspaces.filter((workspace) => workspace.kind === 'company'));
-  const routeKey = $derived(route.kind === 'company' ? `company:${route.slug ?? ''}` : route.kind);
-  const activeCompany = $derived(
-    route.kind === 'company'
-      ? companies.find((company) => company.slug === route.slug) ?? null
-      : null
-  );
-  const pageTitle = $derived.by(() => {
-    if (route.kind === 'sync') return 'Sync';
-    if (route.kind === 'meetings') return 'Meetings';
-    return activeCompany?.displayName ?? 'Company';
-  });
-  const pagePlaceholder = $derived.by(() => {
-    if (route.kind === 'sync') return 'Sync page - wired in US-005';
-    if (route.kind === 'meetings') return 'Meetings page - wired in US-005';
-    return 'Company page - wired in US-005';
-  });
+  const companies = $derived(getDesktopCompanies(workspaces));
+  const routeKey = $derived(getDesktopRouteKey(route));
+  const page = $derived(getDesktopPage(route, companies));
 
   function navigate(nextRoute: DesktopRoute) {
     route = nextRoute;
@@ -46,27 +39,11 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (!(event.metaKey || event.ctrlKey)) return;
+    const nextRoute = getDesktopHotkeyRoute(event, companies);
+    if (!nextRoute) return;
 
-    if (event.key === '1') {
-      event.preventDefault();
-      navigate({ kind: 'sync' });
-      return;
-    }
-
-    if (event.key === '2') {
-      event.preventDefault();
-      navigate({ kind: 'meetings' });
-      return;
-    }
-
-    if (['3', '4', '5', '6'].includes(event.key)) {
-      const company = companies[Number.parseInt(event.key, 10) - 3];
-      if (company) {
-        event.preventDefault();
-        navigate({ kind: 'company', slug: company.slug });
-      }
-    }
+    event.preventDefault();
+    navigate(nextRoute);
   }
 
   onMount(() => {
@@ -79,7 +56,10 @@
   });
 </script>
 
-<div class="desktop-shell">
+<div
+  class="desktop-shell"
+  style={`--desktop-sidebar-width: ${DESKTOP_SHELL_LAYOUT.sidebarWidthPx}px; --desktop-status-bar-height: ${DESKTOP_SHELL_LAYOUT.statusBarHeightPx}px;`}
+>
   <DesktopSidebar {route} {companies} onnavigate={navigate} />
 
   <div class="desktop-content">
@@ -88,12 +68,12 @@
         {#key routeKey}
           <section class="page" aria-labelledby="desktop-page-title">
             <div class="page-header">
-              <h1 id="desktop-page-title">{pageTitle}</h1>
+              <h1 id="desktop-page-title">{page.title}</h1>
             </div>
             <div class="placeholder-panel">
-              <p>{pagePlaceholder}</p>
-              {#if route.kind === 'company' && activeCompany}
-                <span>{activeCompany.slug}</span>
+              <p>{page.placeholder}</p>
+              {#if route.kind === 'company' && page.activeCompany}
+                <span>{page.activeCompany.slug}</span>
               {/if}
               {#if workspaceError}
                 <span class="workspace-error">{workspaceError}</span>

@@ -25,7 +25,7 @@
 
 .desktop-shell {
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: var(--desktop-sidebar-width, 216px) minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -36,8 +36,8 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
-  width: 216px;
-  min-width: 216px;
+  width: var(--desktop-sidebar-width, 216px);
+  min-width: var(--desktop-sidebar-width, 216px);
   height: 100%;
   padding: 18px 10px 10px;
   border-right: 1px solid #e4e4e7;
@@ -140,7 +140,7 @@
 
 .desktop-main {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 26px;
+  grid-template-rows: minmax(0, 1fr) var(--desktop-status-bar-height, 26px);
   width: 100%;
   height: 100%;
   background: #fafafa;
@@ -221,11 +221,11 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 26px;
+  height: var(--desktop-status-bar-height, 26px);
   padding: 0 10px;
   border-top: 1px solid #e4e4e7;
   background: #f4f4f5;
   color: #71717a;
   font-size: 11px;
-  line-height: 26px;
+  line-height: var(--desktop-status-bar-height, 26px);
 }

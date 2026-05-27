@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { Workspace } from '../lib/workspaces';
-
-  type DesktopRoute = { kind: 'sync' | 'meetings' | 'company'; slug?: string };
+  import { getDesktopSidebarRows, isDesktopRouteActive, type DesktopRoute } from './route';
 
   interface Props {
     route: DesktopRoute;
@@ -11,48 +10,41 @@
 
   let { route, companies, onnavigate }: Props = $props();
 
-  function isCompanyActive(slug: string) {
-    return route.kind === 'company' && route.slug === slug;
-  }
+  const rows = $derived(getDesktopSidebarRows(route, companies));
+  const primaryRows = $derived(rows.slice(0, 2));
+  const companyRows = $derived(rows.slice(2));
 </script>
 
 <aside class="desktop-sidebar" aria-label="Desktop navigation">
   <div class="sidebar-title">HQ</div>
 
   <nav class="sidebar-nav" aria-label="Primary">
-    <button
-      type="button"
-      class:active={route.kind === 'sync'}
-      aria-current={route.kind === 'sync' ? 'page' : undefined}
-      onclick={() => onnavigate({ kind: 'sync' })}
-    >
-      <span>Sync</span>
-      <kbd>⌘1</kbd>
-    </button>
-    <button
-      type="button"
-      class:active={route.kind === 'meetings'}
-      aria-current={route.kind === 'meetings' ? 'page' : undefined}
-      onclick={() => onnavigate({ kind: 'meetings' })}
-    >
-      <span>Meetings</span>
-      <kbd>⌘2</kbd>
-    </button>
+    {#each primaryRows as row (row.label)}
+      <button
+        type="button"
+        class:active={row.active}
+        aria-current={row.active ? 'page' : undefined}
+        onclick={() => onnavigate(row.route)}
+      >
+        <span>{row.label}</span>
+        <kbd>{row.shortcut}</kbd>
+      </button>
+    {/each}
   </nav>
 
   <div class="company-section">
     <div class="section-label">Companies</div>
     <nav class="sidebar-nav company-list" aria-label="Companies">
-      {#each companies as company, index (company.slug)}
+      {#each companyRows as row (row.route.slug)}
         <button
           type="button"
-          class:active={isCompanyActive(company.slug)}
-          aria-current={isCompanyActive(company.slug) ? 'page' : undefined}
-          onclick={() => onnavigate({ kind: 'company', slug: company.slug })}
+          class:active={isDesktopRouteActive(route, row.route)}
+          aria-current={isDesktopRouteActive(route, row.route) ? 'page' : undefined}
+          onclick={() => onnavigate(row.route)}
         >
-          <span>{company.displayName}</span>
-          {#if index < 4}
-            <kbd>⌘{index + 3}</kbd>
+          <span>{row.label}</span>
+          {#if row.shortcut}
+            <kbd>{row.shortcut}</kbd>
           {/if}
         </button>
       {:else}
