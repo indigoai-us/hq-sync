@@ -175,7 +175,14 @@ FLOOR_SHA_OVERRIDE=""
 # full-replace would clobber the local pack tree.
 # Why .claude/state: runtime session state — `.claude/state/active-session-*`
 # changes every session; shuttling preserves it across the overlay.
-CARVE_OUT_PATHS=( "core/packages" "packages" ".claude/state" )
+# Why core/workers/registry.yaml: generated locally by
+# `core/scripts/generate-workers-registry.sh` from the union of core +
+# personal + installed-pack workers. Its content is a function of the
+# user's install state, not the upstream tree, so an overlay that
+# replaces it produces a registry that doesn't match what's on disk
+# (and `master-sync` regenerates it on the next Stop hook anyway).
+# Shuttling preserves the up-to-date local version across the rescue.
+CARVE_OUT_PATHS=( "core/packages" "packages" ".claude/state" "core/workers/registry.yaml" )
 
 usage() {
   sed -n '2,55p' "$0"
