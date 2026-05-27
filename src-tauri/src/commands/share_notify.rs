@@ -8,12 +8,14 @@
 //!
 //! ## Feature gating
 //!
-//! Two independent checks must pass before a poll fires:
-//!   1. **Dogfood gate** — `feature_gate::is_indigo_user()` (cached for the
-//!      process lifetime; email claim is stable across Cognito rotations).
-//!   2. **User preference** — `shareNotifications` in `~/.hq/menubar.json`
-//!      (re-read on every poll cycle so the Settings toggle takes effect
-//!      immediately after the next sync without an app restart).
+//! A single check gates a poll: the **`shareNotifications`** preference in
+//! `~/.hq/menubar.json` (re-read on every poll cycle so the Settings toggle
+//! takes effect immediately after the next sync without an app restart;
+//! defaults ON when absent or unreadable).
+//!
+//! The former `@getindigo.ai` dogfood gate was removed 2026-05-26 — see
+//! `should_poll` for the full rationale (it silently suppressed notifications
+//! for recipients signed in under a non-getindigo Cognito identity).
 //!
 //! ## Cursor
 //!
@@ -49,7 +51,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
-use crate::util::feature_gate;
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -204,17 +205,32 @@ fn write_cursor(machine_id: &str, since: &str) {
 
 // ── Gate check ───────────────────────────────────────────────────────────────
 
-/// Returns true when both the dogfood gate AND the user preference allow polling.
-/// Re-reads menubar.json on every call so toggling the setting takes effect
-/// on the next poll without an app restart.
+/// Returns true when the user preference allows polling. Re-reads menubar.json
+/// on every call so toggling the setting takes effect on the next poll without
+/// an app restart.
+///
+/// NOTE: the former `@getindigo.ai` dogfood gate (`feature_gate::is_indigo_user`)
+/// was removed 2026-05-26 once the share-notify feature was proven in production.
+/// Gating the poller to indigo emails silently suppressed macOS notifications for
+/// any recipient whose HQ Sync was signed in under a non-`@getindigo.ai` Cognito
+/// identity: the grant resolves to the recipient's canonical personUid and the
+/// `SHARE_EVENT` row + email fallback are written correctly, but the poller never
+/// ran, so the events sat unacked forever and no notification fired. The
+/// `shareNotifications` pref is now the only gate. (Other features — meetings,
+/// staging-drift, release-channel — keep their own independent indigo gates.)
 async fn should_poll() -> bool {
-    if !feature_gate::is_indigo_user().await {
-        return false;
-    }
-    match crate::commands::settings::get_settings().await {
-        Ok(prefs) => prefs.share_notifications.unwrap_or(true),
-        Err(_) => true, // default ON when settings unreadable
-    }
+    let pref = match crate::commands::settings::get_settings().await {
+        Ok(prefs) => prefs.share_notifications,
+        Err(_) => None, // settings unreadable → fall through to default
+    };
+    share_notifications_enabled(pref)
+}
+
+/// Pure gating decision for the share-notify poller. Notifications are ON unless
+/// the user explicitly turned the `shareNotifications` pref off. A missing pref
+/// (`None`) or unreadable settings default to ON.
+pub fn share_notifications_enabled(share_notifications: Option<bool>) -> bool {
+    share_notifications.unwrap_or(true)
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -837,5 +853,27 @@ mod tests {
     fn test_notification_title_format() {
         let title = notification_title("Stefan Johnson");
         assert_eq!(title, "Stefan Johnson shared files with you");
+    }
+
+    // ── should_poll gating (post indigo-gate removal, 2026-05-26) ─────────────
+
+    #[test]
+    fn test_share_notifications_enabled_defaults_on_when_pref_absent() {
+        // Missing pref (None) → ON. A fresh install with no explicit toggle must
+        // poll so recipients get notifications without opening Settings.
+        assert!(share_notifications_enabled(None));
+    }
+
+    #[test]
+    fn test_share_notifications_enabled_when_pref_true() {
+        assert!(share_notifications_enabled(Some(true)));
+    }
+
+    #[test]
+    fn test_share_notifications_disabled_only_when_pref_explicitly_false() {
+        // The ONLY way the poller is gated off is an explicit opt-out. This is
+        // the regression guard for dropping the `@getindigo.ai` gate: a
+        // non-getindigo recipient (None / Some(true) pref) must still poll.
+        assert!(!share_notifications_enabled(Some(false)));
     }
 }
