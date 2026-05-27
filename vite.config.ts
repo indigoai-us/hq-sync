@@ -3,6 +3,10 @@ import { defineConfig } from 'vite';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { sentryVitePlugin } from "@sentry/vite-plugin";
 import pkg from "./package.json" with { type: "json" };
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const rootDir = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   plugins: [
@@ -27,6 +31,12 @@ export default defineConfig({
     target: "safari13",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: process.env.TAURI_ENV_DEBUG ? true : "hidden",
+    rollupOptions: {
+      input: {
+        main: resolve(rootDir, "index.html"),
+        desktopAlt: resolve(rootDir, "desktop-alt.html"),
+      },
+    },
   },
   test: {
     environment: "node",

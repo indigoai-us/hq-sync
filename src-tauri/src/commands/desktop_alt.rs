@@ -46,7 +46,7 @@ pub async fn open_desktop_alt_window(app: AppHandle) -> Result<(), String> {
     tauri::WebviewWindowBuilder::new(
         &app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
+        tauri::WebviewUrl::App("desktop-alt.html".into()),
     )
     .title("HQ")
     .inner_size(1180.0, 760.0)

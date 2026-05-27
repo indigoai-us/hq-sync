@@ -35,6 +35,7 @@
         "decorations": true,
         "transparent": false,
         "titleBarStyle": "overlay",
+        "url": "desktop-alt.html",
         "visible": false,
         "create": false
       }
