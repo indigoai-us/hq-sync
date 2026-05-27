@@ -75,6 +75,9 @@
   font: inherit;
   text-align: left;
   cursor: default;
+  transition:
+    background-color 120ms cubic-bezier(.2, .7, .2, 1),
+    color 120ms cubic-bezier(.2, .7, .2, 1);
 }
 
 .sidebar-nav button:hover {
@@ -94,7 +97,7 @@
   white-space: nowrap;
 }
 
-kbd {
+.desktop-sidebar kbd {
   flex: 0 0 auto;
   color: currentColor;
   font-family: inherit;
@@ -153,6 +156,7 @@ kbd {
   min-height: 100%;
   padding: 28px 32px;
   animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
+  will-change: transform;
 }
 
 @keyframes pageEnter {
@@ -166,6 +170,17 @@ kbd {
 
 .page .page {
   animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-nav button {
+    transition: none;
+  }
+
+  .page {
+    animation: none;
+    will-change: auto;
+  }
 }
 
 .page-header {
