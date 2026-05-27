@@ -567,13 +567,55 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
             }
             for path in local_paths.difference(&target_paths) {
                 let (sha_local, size_local) = &local[*path];
-                user_only.push(DriftEntry {
-                    path: (*path).clone(),
-                    size: *size_local,
-                    git_sha_local: Some(sha_local.clone()),
-                    git_sha_upstream: None,
-                    staging_status: None,
-                });
+                // Codex P2 review on PR #110: "Classify removed floor
+                // files against the floor". A path missing from
+                // `target_paths` isn't automatically USER-ONLY — if it
+                // existed in the floor tree (the user's installed
+                // baseline) and was removed upstream since then,
+                // ownership depends on whether the local copy still
+                // matches the floor:
+                //
+                //   * sha_local == floor_sha → upstream deleted a file
+                //     the user hadn't touched. Not drift — count it
+                //     UNCHANGED (the rescue overlay will delete the
+                //     local copy cleanly). Mirrors the rescue script's
+                //     "removed upstream, unchanged locally" handling.
+                //
+                //   * sha_local != floor_sha → user edited a file
+                //     upstream later removed. Real work — surface as
+                //     USER-EDIT (with `git_sha_upstream = None` since
+                //     target has no copy) so the rescue moves the edit
+                //     to personal/ instead of silently dropping it.
+                //
+                //   * floor doesn't know this path → genuinely
+                //     locally-authored under a locked scope. USER-ONLY,
+                //     same as before.
+                let floor_sha_at_path = floor_in_scope
+                    .as_ref()
+                    .and_then(|f| f.get(*path));
+                match floor_sha_at_path {
+                    Some(fsha) if sha_local == fsha => {
+                        unchanged_count += 1;
+                    }
+                    Some(_) => {
+                        user_edit.push(DriftEntry {
+                            path: (*path).clone(),
+                            size: *size_local,
+                            git_sha_local: Some(sha_local.clone()),
+                            git_sha_upstream: None,
+                            staging_status: None,
+                        });
+                    }
+                    None => {
+                        user_only.push(DriftEntry {
+                            path: (*path).clone(),
+                            size: *size_local,
+                            git_sha_local: Some(sha_local.clone()),
+                            git_sha_upstream: None,
+                            staging_status: None,
+                        });
+                    }
+                }
             }
 
             // Staging-aware classification (decorates USER-EDIT +

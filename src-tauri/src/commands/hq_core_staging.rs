@@ -179,6 +179,26 @@ fn is_staging_channel_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// True when `~/.hq/menubar.json` carries an explicit non-empty
+/// `driftStagingRepo`. The toggle's intent is "indigo opt-out of the
+/// DEFAULT staging channel"; a user who manually configured a custom
+/// staging repo has already made an explicit choice that takes
+/// precedence (Codex P2 review on PR #110). `resolve_channel` in
+/// `hq_core_state.rs` already shortcircuits to Staging on this path
+/// before reading the toggle, so the spawn-side gate needs the same
+/// carve-out to stay consistent with what the popover renders.
+fn has_explicit_staging_repo() -> bool {
+    let prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    prefs
+        .and_then(|p| p.drift_staging_repo)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
 /// Resolve the staging repo (`owner/name`) to classify against:
 ///   1. explicit `driftStagingRepo` in `~/.hq/menubar.json` (any team can
 ///      point this at their own staging repo), else
@@ -550,13 +570,19 @@ pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBu
 /// the future is pending.
 #[tauri::command]
 pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult, String> {
-    // Settings toggle: @indigo user opted out of the staging channel. The
-    // pill should already be hidden (`check_staging_replace_available`
-    // returns None when the toggle is off), so reaching this command means
-    // the frontend is stale or a custom caller is invoking us — either way,
-    // honour the toggle and refuse the spawn so the user doesn't get a
-    // surprise rescue against a channel they disabled.
-    if !is_staging_channel_enabled() {
+    // Settings toggle: @indigo user opted out of the DEFAULT staging
+    // channel. The pill should already be hidden when the toggle is
+    // off, so reaching this command means the frontend is stale or a
+    // custom caller is invoking us — refuse the spawn unless the user
+    // also carved out an explicit `driftStagingRepo` override.
+    //
+    // The carve-out matters because `resolve_channel` treats an
+    // explicit repo as Staging *regardless* of the toggle. Without
+    // this guard a user with a custom staging repo would see the
+    // popover render Staging + click the pill + hit "staging channel
+    // disabled" — exactly the inconsistency Codex flagged in the
+    // round-5 review on PR #110.
+    if !is_staging_channel_enabled() && !has_explicit_staging_repo() {
         return Err(
             "staging channel disabled in Settings — re-enable to run replace-from-staging"
                 .to_string(),
