@@ -1,5 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import type { UnlistenFn } from '@tauri-apps/api/event';
+  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount } from 'svelte';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import {
@@ -47,10 +49,29 @@
   }
 
   onMount(() => {
+    let mounted = true;
+    let unlistenFocus: UnlistenFn | undefined;
+
     loadWorkspaces();
     window.addEventListener('keydown', handleKeydown);
 
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (focused) {
+          loadWorkspaces();
+        }
+      })
+      .then((unlisten) => {
+        if (mounted) {
+          unlistenFocus = unlisten;
+        } else {
+          unlisten();
+        }
+      });
+
     return () => {
+      mounted = false;
+      unlistenFocus?.();
       window.removeEventListener('keydown', handleKeydown);
     };
   });
