@@ -210,6 +210,29 @@
     onstartrecording?: (windowId: string) => void | Promise<void>;
     /** Triggers `stop_recording(windowId)` on the Rust side. */
     onstoprecording?: (windowId: string) => void | Promise<void>;
+    /**
+     * Company memberships the user can attribute new recordings to.
+     * Empty when the user is Personal-only or memberships are still
+     * loading — the row still renders with "Personal" as the only
+     * option in that case.
+     */
+    recordingCompanies?: Array<{
+      companyUid: string;
+      companyName: string | null;
+      role: string | null;
+      status: string;
+    }>;
+    /**
+     * Fires when the user picks a different company in the row's
+     * dropdown (pre-recording only). `companyUid = null` means
+     * Personal. The Rust upload-token mint reads the snapshot at
+     * `start_recording` time, so changes made post-recording are
+     * frontend-only.
+     */
+    onchangerecordingcompany?: (
+      windowId: string,
+      companyUid: string | null,
+    ) => void;
   }
 
   /** Mirror of `App.svelte`'s `ActiveMeeting` interface — duplicated here
@@ -222,6 +245,8 @@
     state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
     recordingId?: string;
     error?: string;
+    /** Company UID to attribute the recording to. `null` = Personal. */
+    companyUid: string | null;
   }
 
   let {
@@ -274,6 +299,8 @@
     activeMeetings = [],
     onstartrecording,
     onstoprecording,
+    recordingCompanies = [],
+    onchangerecordingcompany,
   }: Props = $props();
 
   /** Title-case a platform string for display ("zoom" → "Zoom"). */
@@ -540,6 +567,10 @@
   {#if activeMeetings.length > 0}
     <section class="active-meetings" aria-label="Active meetings">
       {#each activeMeetings as meeting (meeting.windowId)}
+        {@const pickerDisabled =
+          meeting.state === 'recording' ||
+          meeting.state === 'starting' ||
+          meeting.state === 'stopping'}
         <div class="meeting-row" data-state={meeting.state}>
           <div class="meeting-info">
             <span class="meeting-platform">{platformLabel(meeting.platform)} meeting</span>
@@ -558,6 +589,28 @@
               <span class="meeting-status">Detected</span>
             {/if}
           </div>
+          <!-- Company-attribution dropdown. Pre-recording: interactive,
+               selection rides into the upload-token mint on Record.
+               Recording / stopping / starting: locked — Recall's
+               upload-token metadata is baked in at start_recording and
+               isn't currently mutable in-flight. Personal (null) is
+               always available; per-recording overrides aren't
+               persisted as the new default (that lives in Settings). -->
+          <select
+            class="meeting-company"
+            aria-label="Attribute recording to"
+            value={meeting.companyUid ?? ''}
+            disabled={pickerDisabled}
+            onchange={(e) => {
+              const v = (e.currentTarget as HTMLSelectElement).value;
+              onchangerecordingcompany?.(meeting.windowId, v === '' ? null : v);
+            }}
+          >
+            <option value="">Personal</option>
+            {#each recordingCompanies as c (c.companyUid)}
+              <option value={c.companyUid}>{c.companyName ?? c.companyUid}</option>
+            {/each}
+          </select>
           {#if meeting.state === 'recording'}
             <button
               type="button"
@@ -1613,5 +1666,42 @@
   .meeting-action.stop {
     background: rgba(255, 255, 255, 0.06);
     border-color: rgba(255, 255, 255, 0.16);
+  }
+
+  /* Company-attribution dropdown — same height/typography as
+     `.meeting-action` so the row reads as a single control strip.
+     Width capped at 110px so longer org names ellipsize rather than
+     pushing the action button off the edge; native chevron suppressed
+     in favour of a chevron SVG that matches the popover's muted ink. */
+  .meeting-company {
+    flex: 0 0 auto;
+    max-width: 110px;
+    font-size: 0.6875rem;
+    font-family: inherit;
+    padding: 0.25rem 1.25rem 0.25rem 0.5rem;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--popover-text, #e7e7eb);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+    cursor: pointer;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+  }
+  .meeting-company:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+  .meeting-company:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+  .meeting-company:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 </style>

@@ -149,6 +149,18 @@ pub struct MenubarPrefs {
     /// configured; `get_settings` supplies defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meeting_detect_notify: Option<MeetingDetectNotifyPrefs>,
+    /// Default company UID for SDK-local recordings (US-010). The popover
+    /// active-meetings row presets its company dropdown to this value
+    /// when a meeting is detected; the user can override per-recording.
+    /// Same shape as the URL-invite picker in MeetingsWindow:
+    ///   - `None` (absent) → "Personal" (no company attribution)
+    ///   - `Some("co_…")` → that company's vault
+    /// Validation that the UID matches an active membership lives in
+    /// hq-pro (`/v1/recall/upload-token?companyId=…`); the client doesn't
+    /// re-check so stale values just degrade to a "company-access-denied"
+    /// 403 the user can resolve by picking a different option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_recording_company_uid: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

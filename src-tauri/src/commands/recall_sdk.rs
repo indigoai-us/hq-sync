@@ -716,7 +716,9 @@ struct SdkUploadTokenResponse {
 /// Returns `(recordingId, uploadToken)` on success. Errors when hq-pro
 /// rejects (`recall-not-provisioned`, upstream Recall failure, network) —
 /// caller surfaces the message to the UI.
-async fn fetch_sdk_upload_token() -> Result<(String, String), String> {
+async fn fetch_sdk_upload_token(
+    company_uid: Option<&str>,
+) -> Result<(String, String), String> {
     let base = resolve_vault_api_url()
         .map(|u| u.trim_end_matches('/').to_string())
         .map_err(|e| format!("vault url: {e}"))?;
@@ -725,13 +727,26 @@ async fn fetch_sdk_upload_token() -> Result<(String, String), String> {
         .await
         .map_err(|e| format!("auth: {e}"))?;
 
+    // The bot-* routes use ?companyId=… as the canonical company-context
+    // query param (see `bot.controller.ts` router). Mirror that here so
+    // the SDK-recording path's attribution slot lines up with the rest of
+    // the recording surface — hq-pro reads it from the same place, validates
+    // the membership, and bakes companyUid+slug+name into the Recall
+    // recording's `metadata` so the webhook handler can route it later.
+    //
+    // Empty body is preserved — `recording_config` belongs there if/when we
+    // expose transcript-provider knobs to the UI. Company context goes on
+    // the URL because it's a request-scope parameter, not a Recall API
+    // payload field.
+    let mut url = format!("{base}/v1/recall/upload-token");
+    if let Some(uid) = company_uid.filter(|u| !u.is_empty()) {
+        url = format!("{url}?companyId={uid}");
+    }
+
     let res = build_client()
-        .post(format!("{base}/v1/recall/upload-token"))
+        .post(url)
         .header("authorization", format!("Bearer {token}"))
         .header("content-type", "application/json")
-        // Empty body — v1 of the endpoint takes no per-call recording
-        // config (Recall account defaults apply). Add config here when
-        // we expose transcript-provider knobs to the UI.
         .body("{}")
         .send()
         .await
@@ -774,7 +789,10 @@ async fn fetch_sdk_upload_token() -> Result<(String, String), String> {
 /// Returns the Recall.ai `recordingId` so the caller can stash it
 /// alongside the windowId for later transcript fetch.
 #[tauri::command]
-pub async fn start_recording(window_id: String) -> Result<String, String> {
+pub async fn start_recording(
+    window_id: String,
+    company_uid: Option<String>,
+) -> Result<String, String> {
     if !meeting_detect_eligible().await {
         return Err("user not in @getindigo.ai allowlist".to_string());
     }
@@ -782,28 +800,40 @@ pub async fn start_recording(window_id: String) -> Result<String, String> {
         return Err("window_id is required".to_string());
     }
 
+    // Normalise empty / whitespace-only values to None so the URL query
+    // doesn't get an empty `?companyId=`. The frontend defaults to
+    // `null` for Personal and the user-picked dropdown can also produce
+    // `""` if the membership list races empty on first render.
+    let company_uid = company_uid
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     log(
         LOG_TAG,
-        &format!("start_recording: requested for windowId={window_id}"),
+        &format!(
+            "start_recording: requested for windowId={window_id}, company={}",
+            company_uid.as_deref().unwrap_or("(personal)"),
+        ),
     );
 
-    let (recording_id, upload_token) = match fetch_sdk_upload_token().await {
-        Ok(v) => v,
-        Err(e) => {
-            // Without this log line the Rust-side failure was opaque to
-            // debugging — the user saw an "Error" badge but no visible
-            // reason. Surface the upstream HTTP status + body verbatim so
-            // post-deploy issues (route 404, auth 401, Recall 5xx) are
-            // diagnosable from `~/.hq/logs/hq-sync.log` alone.
-            log(
-                LOG_TAG,
-                &format!(
-                    "start_recording: upload-token fetch failed for windowId={window_id}: {e}"
-                ),
-            );
-            return Err(e);
-        }
-    };
+    let (recording_id, upload_token) =
+        match fetch_sdk_upload_token(company_uid.as_deref()).await {
+            Ok(v) => v,
+            Err(e) => {
+                // Without this log line the Rust-side failure was opaque to
+                // debugging — the user saw an "Error" badge but no visible
+                // reason. Surface the upstream HTTP status + body verbatim so
+                // post-deploy issues (route 404, auth 401, Recall 5xx) are
+                // diagnosable from `~/.hq/logs/hq-sync.log` alone.
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "start_recording: upload-token fetch failed for windowId={window_id}: {e}"
+                    ),
+                );
+                return Err(e);
+            }
+        };
     log(
         LOG_TAG,
         &format!(

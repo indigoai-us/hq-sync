@@ -36,6 +36,23 @@
   // section entirely when the user isn't eligible.
   let meetingDetectEnabled = $state(true);
   let meetingDetectPlatforms = $state<string[]>([...ALL_PLATFORMS]);
+  // Default company UID for SDK-local recordings (US-010). `null` means
+  // Personal (no company attribution). Mirrors the URL-invite dropdown in
+  // MeetingsWindow where `null` is the Personal option. The popover's
+  // active-meetings row reads this on detection and presets its own
+  // dropdown; per-recording overrides don't write back here.
+  let defaultRecordingCompanyUid = $state<string | null>(null);
+  // Memberships for the dropdown, loaded via `meetings_list_memberships`
+  // (same Tauri command MeetingsWindow uses). Empty for non-Indigo users —
+  // the row still renders so they can confirm "Personal" is the implicit
+  // destination, but the only option is Personal.
+  type CompanyMembership = {
+    companyUid: string;
+    companyName: string | null;
+    role: string | null;
+    status: string;
+  };
+  let memberships = $state<CompanyMembership[]>([]);
   // Share notifications — dogfood gate: section only rendered for @getindigo.ai
   // users. Same gate as meetings_feature_enabled (both call is_indigo_user()
   // on the Rust side). Re-read on each poll cycle in share_notify.rs so the
@@ -111,7 +128,7 @@
 
   async function loadSettings() {
     try {
-      const [settings, autostart, indigoUser, channels] = await Promise.all([
+      const [settings, autostart, indigoUser, channels, memberships_] = await Promise.all([
         invoke<{
           hqPath: string | null;
           syncOnLaunch: boolean | null;
@@ -127,6 +144,7 @@
             enabled: boolean | null;
             platforms: string[] | null;
           } | null;
+          defaultRecordingCompanyUid?: string | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
         // Shared @getindigo.ai gate for share-notify section AND
@@ -137,6 +155,11 @@
         // Returns ["stable"] for non-indigo users, ["stable","beta","alpha"]
         // for @getindigo.ai. The picker only renders when length > 1.
         invoke<string[]>('available_channels'),
+        // Memberships drive the default-recording-company dropdown. Same
+        // Tauri command MeetingsWindow uses for its URL-invite picker.
+        // Errors degrade to an empty list (Personal-only); we never want
+        // a vault hiccup to block the rest of Settings from rendering.
+        invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => []),
       ]);
 
       hqPath = settings.hqPath;
@@ -158,6 +181,18 @@
       storedChannel = raw && availableChannels.includes(raw) ? raw : null;
       meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
       meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...ALL_PLATFORMS];
+      // Keep only active memberships for the dropdown — pending / revoked
+      // memberships are filtered server-side too, but defense-in-depth
+      // here lets the UI degrade gracefully if a stale row sneaks through.
+      memberships = (memberships_ ?? []).filter((m) => m.status === 'active');
+      // Validate the stored default against the live membership list. If
+      // the user's lost access (or never had a default), drop to null
+      // (Personal) — same fallback shape as MeetingsWindow's company
+      // picker after a stale invite is revoked.
+      const storedUid = settings.defaultRecordingCompanyUid ?? null;
+      defaultRecordingCompanyUid = storedUid && memberships.some((m) => m.companyUid === storedUid)
+        ? storedUid
+        : null;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -197,6 +232,11 @@
             enabled: meetingDetectEnabled,
             platforms: meetingDetectPlatforms,
           },
+          // Round-trip the raw value — `null` is Personal, a `co_…` uid
+          // is a specific company. Rust skip_serializing_if=None drops
+          // `null` from disk so older builds reading the file don't
+          // see an unknown key.
+          defaultRecordingCompanyUid,
         },
       });
       showSaved();
@@ -355,6 +395,14 @@
     } catch (err) {
       console.error('open_meeting_permissions_window failed:', err);
     }
+  }
+
+  async function handleChangeDefaultRecordingCompany(next: string | null) {
+    // The `<select>` binds via `bind:value`; this is just the persistence
+    // hook so the change lands in menubar.json on selection (no save
+    // button — same pattern as every other toggle in this view).
+    defaultRecordingCompanyUid = next;
+    await saveAll();
   }
 
   async function handleCheckForUpdates() {
@@ -703,17 +751,48 @@
           </div>
         {/if}
 
-        <!-- Meeting permissions monitor — single-row summary of the four
-             macOS TCC grants the SDK needs (accessibility + screen-recording
-             + microphone; system-audio is granted as part of screen-recording
-             on Sequoia+). When all are granted shows "Enabled"; otherwise
-             surfaces "Setup needed" with a button that opens the
-             meeting-permissions wizard window so the user can grant each
-             one with deep-linked System Settings panes.
+        <!-- Default recording company — preselects the company-attribution
+             dropdown in the popover's active-meetings row. The user can
+             still override per-recording via that dropdown. Empty / no
+             selection = Personal vault (no company tag on the Recall
+             metadata). Memberships come from `meetings_list_memberships`
+             — same source as MeetingsWindow's URL-invite picker, so the
+             two surfaces stay in lockstep when a membership is added or
+             revoked. -->
+        <div class="setting-row">
+          <div class="setting-info">
+            <label class="setting-label" for="default-recording-company">Default recording</label>
+            <span class="setting-desc">
+              Where new meeting recordings get attributed by default. You can change this per-recording from the popover.
+            </span>
+          </div>
+          <select
+            id="default-recording-company"
+            class="default-recording-company"
+            aria-label="Default recording company"
+            value={defaultRecordingCompanyUid}
+            onchange={(e) => {
+              const v = (e.currentTarget as HTMLSelectElement).value;
+              void handleChangeDefaultRecordingCompany(v === '' ? null : v);
+            }}
+          >
+            <option value="">Personal</option>
+            {#each memberships as m (m.companyUid)}
+              <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
+            {/each}
+          </select>
+        </div>
 
-             Mirrors the macOS notification permission row above in shape;
-             differs only in that we compose four TCC grants into one
-             at-a-glance pill instead of a single OS authorization state. -->
+        <!-- Meeting permissions monitor — opens the wizard window where the
+             user can grant (or revoke) each macOS TCC permission the SDK
+             needs. The button label stays "Manage" regardless of current
+             state, since the wizard handles both directions:
+             - all granted  → user may want to audit / revoke
+             - some missing → user grants the missing ones
+
+             The descriptive text below the label still reflects the
+             current state so the Settings overview reads correctly at a
+             glance without opening the wizard. -->
         <div class="setting-row">
           <div class="setting-info">
             <span class="setting-label">Meeting permissions</span>
@@ -727,13 +806,9 @@
               {/if}
             </span>
           </div>
-          {#if permissionState.meetingPermissions?.allRequiredGranted}
-            <span class="perm-pill">Enabled</span>
-          {:else}
-            <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
-              Set up
-            </button>
-          {/if}
+          <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
+            Manage
+          </button>
         </div>
       {/if}
 
@@ -998,6 +1073,39 @@
   .change-button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* Mirrors `.change-button` sizing so the default-recording row reads
+     visually consistent with adjacent change/manage controls — same
+     height pill on the right column, just with the native <select>
+     chevron. Caret colour follows the muted text so the control reads
+     as inactive until hovered/focused. */
+  .default-recording-company {
+    font-size: 0.75rem;
+    font-family: inherit;
+    padding: 0.25rem 1.5rem 0.25rem 0.625rem;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    color: var(--popover-text, #e0e0e0);
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-radius: 9px;
+    cursor: pointer;
+    max-width: 140px;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    flex-shrink: 0;
+  }
+  .default-recording-company:hover {
+    background-color: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
+  }
+  .default-recording-company:focus {
+    outline: none;
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
   /* Permission status pill — informational, green-tinted "Enabled" state.

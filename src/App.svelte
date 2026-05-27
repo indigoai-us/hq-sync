@@ -117,6 +117,23 @@
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
 
+  // Memberships drive the company picker in the active-meetings row.
+  // Loaded once on mount (same source as MeetingsWindow's URL-invite
+  // dropdown). Errors degrade to an empty list — the row still renders
+  // with Personal as the only option, never blocking detection or
+  // recording on a vault hiccup.
+  interface MembershipRow {
+    companyUid: string;
+    companyName: string | null;
+    role: string | null;
+    status: string;
+  }
+  let memberships = $state<MembershipRow[]>([]);
+  // Default company UID for new recordings — read from menubar.json on
+  // mount. Per-recording overrides happen in the popover row dropdown
+  // and never write back here; that mutation belongs to Settings.
+  let defaultRecordingCompanyUid = $state<string | null>(null);
+
   /**
    * Active meeting detections — populated as the Recall Desktop SDK fires
    * `meeting:detected` events. Lives only in-memory: we don't persist
@@ -147,6 +164,14 @@
     recordingId?: string;
     /** Last error message from a failed start/stop, if any. */
     error?: string;
+    /**
+     * Company attribution for this recording. `null` = Personal vault.
+     * Filled from `defaultRecordingCompanyUid` at detection; the user
+     * can override via the row's dropdown BEFORE recording starts.
+     * After `state === 'recording'`, the dropdown is read-only — the
+     * Recall recording's metadata is already baked at that point.
+     */
+    companyUid: string | null;
   }
   let activeMeetings = $state<ActiveMeeting[]>([]);
 
@@ -172,8 +197,17 @@
 
   async function handleStartRecording(windowId: string) {
     updateActiveMeeting(windowId, { state: 'starting', error: undefined });
+    // Snapshot the current company selection so a mid-flight dropdown
+    // change doesn't race with the upload-token mint. The Recall recording
+    // metadata is set on the upload-token; once minted, the attribution
+    // is fixed for the life of the recording.
+    const row = activeMeetings.find((m) => m.windowId === windowId);
+    const companyUid = row?.companyUid ?? null;
     try {
-      const recordingId = await invoke<string>('start_recording', { windowId });
+      const recordingId = await invoke<string>('start_recording', {
+        windowId,
+        companyUid,
+      });
       updateActiveMeeting(windowId, { recordingId });
       // The actual flip to `recording` happens on the `recording:started`
       // event listener below — that confirms the SDK accepted the start,
@@ -184,6 +218,40 @@
         state: 'error',
         error: typeof err === 'string' ? err : String(err),
       });
+    }
+  }
+
+  function handleChangeRecordingCompany(windowId: string, companyUid: string | null) {
+    // Pre-recording override of the company attribution. We deliberately
+    // DO NOT update the recording metadata once `state === 'recording'`
+    // — the Recall upload-token's metadata is fixed at mint time. The
+    // Popover-side dropdown is disabled in that state to match.
+    updateActiveMeeting(windowId, { companyUid });
+  }
+
+  /**
+   * Load the memberships list + the persisted default-recording-company
+   * UID into module state. Called once on mount when the meeting-detect
+   * feature is enabled for this user. Best-effort — both reads degrade
+   * to empty / null on error so a vault hiccup never blocks the popover
+   * from rendering or the user from recording (the row just shows
+   * Personal as the only option, which is the safe default).
+   */
+  async function loadRecordingCompanyContext() {
+    try {
+      const [list, settings] = await Promise.all([
+        invoke<MembershipRow[]>('meetings_list_memberships').catch(() => []),
+        invoke<{ defaultRecordingCompanyUid?: string | null }>('get_settings').catch(
+          () => ({} as { defaultRecordingCompanyUid?: string | null }),
+        ),
+      ]);
+      memberships = (list ?? []).filter((m) => m.status === 'active');
+      const storedUid = settings?.defaultRecordingCompanyUid ?? null;
+      defaultRecordingCompanyUid = storedUid && memberships.some((m) => m.companyUid === storedUid)
+        ? storedUid
+        : null;
+    } catch (err) {
+      console.warn('loadRecordingCompanyContext failed (non-blocking):', err);
     }
   }
   async function handleStopRecording(windowId: string) {
@@ -945,12 +1013,23 @@
             : (meetingUrl ?? ''));
 
         if (windowId) {
+          // Validate the stored default against the current memberships
+          // list (which might be empty if the load hasn't completed yet,
+          // or if the user lost access). Fall back to Personal (null) so
+          // we never pre-select a stale uid the user can't actually
+          // record to — that would cause a 403 from hq-pro at start.
+          const liveDefault =
+            defaultRecordingCompanyUid &&
+            memberships.some((m) => m.companyUid === defaultRecordingCompanyUid)
+              ? defaultRecordingCompanyUid
+              : null;
           upsertActiveMeeting({
             windowId,
             platform: platform ?? 'other',
             meetingUrl: meetingUrl ?? '',
             detectedAt: new Date().toISOString(),
             state: 'detected',
+            companyUid: liveDefault,
           });
         }
 
@@ -1211,6 +1290,12 @@
     invoke<boolean>('meetings_feature_enabled')
       .then((v) => {
         meetingsEnabled = v;
+        // Lazy-load the recording-company picker data only for users who
+        // can actually trigger a detection. Saves a vault round-trip for
+        // non-eligible accounts and keeps the cold-start trace cleaner.
+        if (v) {
+          void loadRecordingCompanyContext();
+        }
       })
       .catch(() => {
         meetingsEnabled = false;
@@ -1338,6 +1423,8 @@
       {activeMeetings}
       onstartrecording={handleStartRecording}
       onstoprecording={handleStopRecording}
+      recordingCompanies={memberships}
+      onchangerecordingcompany={handleChangeRecordingCompany}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />

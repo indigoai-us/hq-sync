@@ -35,6 +35,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             staging_channel: Some(true),
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
+            default_recording_company_uid: None,
         });
     }
 
@@ -87,6 +88,10 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
                     .unwrap_or_else(|| DEFAULT_PLATFORMS.iter().map(|s| s.to_string()).collect()),
             ),
         }),
+        // Pass-through — `None` means Personal; the Settings dropdown
+        // surfaces this as the "Personal" option (same shape as the
+        // URL-invite picker in MeetingsWindow).
+        default_recording_company_uid: prefs.default_recording_company_uid,
     })
 }
 
@@ -141,6 +146,7 @@ mod tests {
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
+            default_recording_company_uid: None,
         }
     }
 
@@ -164,6 +170,7 @@ mod tests {
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
+            default_recording_company_uid: prefs.default_recording_company_uid,
         }
     }
 
@@ -219,6 +226,7 @@ mod tests {
             staging_channel: Some(false),
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
+            default_recording_company_uid: Some("co_xyz".to_string()),
         };
 
         let result = apply_defaults(prefs);
@@ -253,6 +261,7 @@ mod tests {
             staging_channel: Some(true),
             release_channel: Some("beta".to_string()),
             meeting_detect_notify: None,
+            default_recording_company_uid: None,
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();

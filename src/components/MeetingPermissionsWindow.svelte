@@ -219,15 +219,25 @@
         </div>
         <div class="perm-controls">
           <span class={pillClass(status)}>{pillLabel(status)}</span>
-          {#if status !== 'granted'}
-            <button
-              class="open-btn"
-              onclick={() => handleOpen(perm.id)}
-              disabled={opening === perm.id}
-            >
-              {opening === perm.id ? 'Opening…' : 'Open Settings'}
-            </button>
-          {/if}
+          <!-- Always render the Open Settings button — granted users may want
+               to revoke or re-grant after a TCC reset, so we shouldn't hide
+               the path forward. The button label adapts to whether the
+               action is grant-flavoured ("Open Settings") or
+               revoke-flavoured ("Manage in Settings") so the user knows
+               what to expect on the other side. -->
+          <button
+            class="open-btn"
+            onclick={() => handleOpen(perm.id)}
+            disabled={opening === perm.id}
+          >
+            {#if opening === perm.id}
+              Opening…
+            {:else if status === 'granted'}
+              Manage in Settings
+            {:else}
+              Open Settings
+            {/if}
+          </button>
         </div>
       </li>
     {/each}

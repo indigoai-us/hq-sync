@@ -183,6 +183,7 @@ mod tests {
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
+            default_recording_company_uid: None,
         }
     }
 
