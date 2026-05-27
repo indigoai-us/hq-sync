@@ -576,14 +576,22 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
                 });
             }
 
-            // Staging-aware classification (decorates USER-EDIT + USER-ONLY
-            // rows with `staging_status` so the detail window can show
-            // "this file already exists in PR #182"). Fail-quiet: ineligible
-            // users see None.
-            if let Some(index) = hq_core_staging::build_index_if_eligible().await {
-                for entry in user_edit.iter_mut().chain(user_only.iter_mut()) {
-                    if let Some(sha) = entry.git_sha_local.as_deref() {
-                        entry.staging_status = Some(index.classify(&entry.path, sha));
+            // Staging-aware classification (decorates USER-EDIT +
+            // USER-ONLY rows with `staging_status` so the detail window
+            // can show "this file already exists in PR #182"). Only run
+            // when the user is actively on the Staging channel — for
+            // Release-channel reports the staging tags would be
+            // misleading noise (the user opted out of staging via
+            // Settings, or never had access). Also avoids hitting the
+            // staging repo for a release-only user (Codex P2 review on
+            // PR #110: "Respect the staging-channel opt-out for
+            // badges"). Fail-quiet: ineligible users see None.
+            if matches!(channel, Channel::Staging) {
+                if let Some(index) = hq_core_staging::build_index_if_eligible().await {
+                    for entry in user_edit.iter_mut().chain(user_only.iter_mut()) {
+                        if let Some(sha) = entry.git_sha_local.as_deref() {
+                            entry.staging_status = Some(index.classify(&entry.path, sha));
+                        }
                     }
                 }
             }

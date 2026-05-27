@@ -83,7 +83,13 @@
   // treated as a regular user (who gets the personal/-overlay framing, with
   // no mention of hq-core-staging they can't access).
   const allDriftIssue = $derived.by<Issue | null>(() => {
-    if (!report || report.count === 0) return null;
+    if (!report) return null;
+    // Gate on combined list lengths, not `report.count` — see the
+    // empty-state comment below for why count alone misses reports
+    // that have only missing/user-only entries.
+    if (report.modified.length === 0 && report.missing.length === 0 && report.added.length === 0) {
+      return null;
+    }
     const files = [
       ...report.modified.map((e) => ({ path: e.path, kind: 'modified', staging: e.stagingStatus ?? null })),
       ...report.missing.map((e) => ({ path: e.path, kind: 'missing', staging: null })),
@@ -380,7 +386,14 @@
       <span class="drift-spinner" aria-hidden="true"></span>
       <p>Scanning locked core files…</p>
     </div>
-  {:else if report.count === 0}
+  {:else if report.modified.length === 0 && report.missing.length === 0 && report.added.length === 0}
+    <!-- Empty state must consider ALL three list lengths, not just
+         `report.count` — `count` is USER-EDIT only by design (it
+         drives the pill), so a report that's purely missing files
+         (upstream added things that haven't been overlaid yet) or
+         purely user-only files (locally-added under a locked
+         scope) carries count=0 but is *not* empty. Gating on count
+         alone would hide those sections entirely. -->
     <div class="drift-empty">
       <span class="drift-empty-check" aria-hidden="true">
         <svg width="32" height="32" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
