@@ -62,7 +62,7 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
 /// Channel the user is tracking. Drives target selection + the action-pill
 /// label. Carries the resolving repo + ref so the frontend can render
 /// "Update to v14.2.0" vs "Update to Staging" without re-parsing.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum Channel {
     Release,
@@ -367,7 +367,15 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
     let local_version = get_local_version();
 
     let locked = read_locked_paths(&hq_folder);
-    if locked.is_empty() {
+    // Hard bail only when there's NOTHING to surface. If we still know the
+    // local version we can compute `version_behind` even without a drift
+    // scope and render the Update pill (preserves the legacy
+    // `check_hq_core_update` behavior for users whose `core.yaml` lost
+    // `rules.locked` — the old path only needed `hqVersion`, and Codex's
+    // P2 review on PR #110 flagged the unconditional bail as a regression
+    // that would strand those users on an older hq-core).
+    let drift_scan_possible = !locked.is_empty();
+    if !drift_scan_possible && local_version.is_none() {
         return Ok(None);
     }
 
@@ -416,127 +424,199 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
     // Floor. Only honoured if the stamped source matches our target repo;
     // mismatched stamps mean the user last rescued from a different source
     // and the SHA tells us nothing about the current channel's history.
-    let floor_sha = local_last_sync_sha(&hq_folder, &target_repo);
-
-    // Fetch trees. Target always; floor only if available + matches source.
-    let target_tree = fetch_tree(&client, &target_repo, &target_ref).await?;
-    let floor_tree = match floor_sha.as_deref() {
-        Some(sha) => match fetch_tree(&client, &target_repo, sha).await {
-            Ok(t) => Some(t),
-            Err(e) => {
-                // Fall back to head_compare. Floor unreachable (force-push,
-                // git-gc, repo rename) is a soft failure.
-                log(
-                    "hq-core-state",
-                    &format!("floor tree unreachable ({e}); falling back to head_compare"),
-                );
-                None
+    //
+    // Codex P2 review on PR #110: when the stamp is empty (pre-rescue
+    // install — common for prod users seeing the new Update pill for the
+    // first time), fall through to `v{local_version}`'s SHA on the
+    // release channel. Without this fallback the classifier baselines
+    // against the latest tag's blobs, so every upstream file changed
+    // since the user's installed version reads as USER-EDIT and the pill
+    // shows phantom drift before they've touched anything. Mirrors the
+    // spawn-side `--floor-sha` derivation in `install_hq_core_update` so
+    // the popover count and the rescue behavior agree.
+    let floor_sha: Option<String> = match local_last_sync_sha(&hq_folder, &target_repo) {
+        Some(sha) => Some(sha),
+        None => match (channel, local_version.as_deref()) {
+            (Channel::Release, Some(ver)) => {
+                let tag = format!("v{ver}");
+                match fetch_commit_sha(&client, &target_repo, &tag).await {
+                    Ok(sha) => {
+                        log(
+                            "hq-core-state",
+                            &format!(
+                                "no stamp; using {tag} as derived floor (sha={sha}) for {target_repo}"
+                            ),
+                        );
+                        Some(sha)
+                    }
+                    Err(e) => {
+                        log(
+                            "hq-core-state",
+                            &format!(
+                                "no stamp + {tag} lookup failed ({e}); falling back to head_compare"
+                            ),
+                        );
+                        None
+                    }
+                }
             }
+            _ => None,
         },
-        None => None,
     };
 
-    // Local files under locked scopes.
-    let excluded = excluded_scope_paths();
-    let local = walk_local_under_scope(&hq_folder, &locked);
-    let local: BTreeMap<String, (String, u64)> = local
-        .into_iter()
-        .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
-        .filter(|(p, _)| !is_conflict_artifact(p))
-        .collect();
-
-    let target_in_scope: BTreeMap<String, (String, u64)> = target_tree
-        .into_iter()
-        .filter(|(p, _)| path_in_locked_scope(p, &locked))
-        .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
-        .collect();
-
-    let floor_in_scope: Option<BTreeMap<String, String>> = floor_tree.map(|t| {
-        t.into_iter()
-            .filter(|(p, _)| path_in_locked_scope(p, &locked))
-            .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
-            .map(|(p, (sha, _))| (p, sha))
-            .collect()
-    });
-
-    // Three-way classify each path (USER-EDIT goes to `modified`, MISSING
-    // goes to `missing`, USER-ONLY goes to `added` — preserves the
-    // DriftReport shape the detail window already renders).
-    let mut user_edit: Vec<DriftEntry> = Vec::new();
-    let mut missing: Vec<DriftEntry> = Vec::new();
-    let mut user_only: Vec<DriftEntry> = Vec::new();
-    let mut unchanged_count: u32 = 0;
-
-    let target_paths: BTreeSet<&String> = target_in_scope.keys().collect();
-    let local_paths: BTreeSet<&String> = local.keys().collect();
-
-    for path in target_paths.intersection(&local_paths) {
-        let (sha_target, _) = &target_in_scope[*path];
-        let (sha_local, size_local) = &local[*path];
-
-        let classification_sha = match &floor_in_scope {
-            Some(floor) => floor.get(*path).cloned().unwrap_or_else(|| sha_target.clone()),
-            None => sha_target.clone(),
+    // Fetch trees. Target only if we're actually going to scan drift.
+    // Floor only if available + matches source.
+    let (target_tree, floor_tree) = if drift_scan_possible {
+        let target_tree = fetch_tree(&client, &target_repo, &target_ref).await?;
+        let floor_tree = match floor_sha.as_deref() {
+            Some(sha) => match fetch_tree(&client, &target_repo, sha).await {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    // Fall back to head_compare. Floor unreachable
+                    // (force-push, git-gc, repo rename) is a soft failure.
+                    log(
+                        "hq-core-state",
+                        &format!("floor tree unreachable ({e}); falling back to head_compare"),
+                    );
+                    None
+                }
+            },
+            None => None,
         };
-
-        if sha_local == &classification_sha {
-            unchanged_count += 1;
-        } else {
-            user_edit.push(DriftEntry {
-                path: (*path).clone(),
-                size: *size_local,
-                git_sha_local: Some(sha_local.clone()),
-                git_sha_upstream: Some(sha_target.clone()),
-                staging_status: None,
-            });
-        }
-    }
-    for path in target_paths.difference(&local_paths) {
-        let (sha_target, size_target) = &target_in_scope[*path];
-        missing.push(DriftEntry {
-            path: (*path).clone(),
-            size: *size_target,
-            git_sha_local: None,
-            git_sha_upstream: Some(sha_target.clone()),
-            staging_status: None,
-        });
-    }
-    for path in local_paths.difference(&target_paths) {
-        let (sha_local, size_local) = &local[*path];
-        user_only.push(DriftEntry {
-            path: (*path).clone(),
-            size: *size_local,
-            git_sha_local: Some(sha_local.clone()),
-            git_sha_upstream: None,
-            staging_status: None,
-        });
-    }
-
-    // Staging-aware classification (decorates USER-EDIT + USER-ONLY rows
-    // with `staging_status` so the detail window can show "this file
-    // already exists in PR #182"). Fail-quiet: ineligible users see None.
-    if let Some(index) = hq_core_staging::build_index_if_eligible().await {
-        for entry in user_edit.iter_mut().chain(user_only.iter_mut()) {
-            if let Some(sha) = entry.git_sha_local.as_deref() {
-                entry.staging_status = Some(index.classify(&entry.path, sha));
-            }
-        }
-    }
-
-    let user_only_count = user_only.len() as u32;
-
-    let drift_report = DriftReport {
-        // PILL TOTAL is USER-EDIT only — drift = work the user has done.
-        // Missing files (overlay would install) + user-only files (overlay
-        // would leave alone) are listed in the detail window but don't
-        // contribute to the count.
-        count: user_edit.len(),
-        modified: user_edit,
-        missing,
-        added: user_only,
-        scanned_at: chrono::Utc::now().to_rfc3339(),
-        hq_version: local_version.clone().unwrap_or_default(),
+        (Some(target_tree), floor_tree)
+    } else {
+        log(
+            "hq-core-state",
+            "no `rules.locked` in core.yaml; skipping drift scan and reporting empty drift report (version_behind still computed)",
+        );
+        (None, None)
     };
+
+    // Drift classification — only when `rules.locked` was non-empty AND
+    // the target tree fetched. Otherwise we surface an empty drift
+    // report and rely on the `version_behind` half below to still render
+    // the Update pill (the legacy `check_hq_core_update` codepath did
+    // exactly this).
+    let (drift_report, unchanged_count, user_only_count): (DriftReport, u32, u32) =
+        if let Some(target_tree) = target_tree {
+            // Local files under locked scopes.
+            let excluded = excluded_scope_paths();
+            let local = walk_local_under_scope(&hq_folder, &locked);
+            let local: BTreeMap<String, (String, u64)> = local
+                .into_iter()
+                .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
+                .filter(|(p, _)| !is_conflict_artifact(p))
+                .collect();
+
+            let target_in_scope: BTreeMap<String, (String, u64)> = target_tree
+                .into_iter()
+                .filter(|(p, _)| path_in_locked_scope(p, &locked))
+                .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
+                .collect();
+
+            let floor_in_scope: Option<BTreeMap<String, String>> = floor_tree.map(|t| {
+                t.into_iter()
+                    .filter(|(p, _)| path_in_locked_scope(p, &locked))
+                    .filter(|(p, _)| !path_in_excluded_scope(p, &excluded))
+                    .map(|(p, (sha, _))| (p, sha))
+                    .collect()
+            });
+
+            // Three-way classify each path (USER-EDIT goes to `modified`,
+            // MISSING goes to `missing`, USER-ONLY goes to `added` —
+            // preserves the DriftReport shape the detail window already
+            // renders).
+            let mut user_edit: Vec<DriftEntry> = Vec::new();
+            let mut missing: Vec<DriftEntry> = Vec::new();
+            let mut user_only: Vec<DriftEntry> = Vec::new();
+            let mut unchanged_count: u32 = 0;
+
+            let target_paths: BTreeSet<&String> = target_in_scope.keys().collect();
+            let local_paths: BTreeSet<&String> = local.keys().collect();
+
+            for path in target_paths.intersection(&local_paths) {
+                let (sha_target, _) = &target_in_scope[*path];
+                let (sha_local, size_local) = &local[*path];
+
+                let classification_sha = match &floor_in_scope {
+                    Some(floor) => floor.get(*path).cloned().unwrap_or_else(|| sha_target.clone()),
+                    None => sha_target.clone(),
+                };
+
+                if sha_local == &classification_sha {
+                    unchanged_count += 1;
+                } else {
+                    user_edit.push(DriftEntry {
+                        path: (*path).clone(),
+                        size: *size_local,
+                        git_sha_local: Some(sha_local.clone()),
+                        git_sha_upstream: Some(sha_target.clone()),
+                        staging_status: None,
+                    });
+                }
+            }
+            for path in target_paths.difference(&local_paths) {
+                let (sha_target, size_target) = &target_in_scope[*path];
+                missing.push(DriftEntry {
+                    path: (*path).clone(),
+                    size: *size_target,
+                    git_sha_local: None,
+                    git_sha_upstream: Some(sha_target.clone()),
+                    staging_status: None,
+                });
+            }
+            for path in local_paths.difference(&target_paths) {
+                let (sha_local, size_local) = &local[*path];
+                user_only.push(DriftEntry {
+                    path: (*path).clone(),
+                    size: *size_local,
+                    git_sha_local: Some(sha_local.clone()),
+                    git_sha_upstream: None,
+                    staging_status: None,
+                });
+            }
+
+            // Staging-aware classification (decorates USER-EDIT + USER-ONLY
+            // rows with `staging_status` so the detail window can show
+            // "this file already exists in PR #182"). Fail-quiet: ineligible
+            // users see None.
+            if let Some(index) = hq_core_staging::build_index_if_eligible().await {
+                for entry in user_edit.iter_mut().chain(user_only.iter_mut()) {
+                    if let Some(sha) = entry.git_sha_local.as_deref() {
+                        entry.staging_status = Some(index.classify(&entry.path, sha));
+                    }
+                }
+            }
+
+            let user_only_count = user_only.len() as u32;
+
+            let report = DriftReport {
+                // PILL TOTAL is USER-EDIT only — drift = work the user has done.
+                // Missing files (overlay would install) + user-only files (overlay
+                // would leave alone) are listed in the detail window but don't
+                // contribute to the count.
+                count: user_edit.len(),
+                modified: user_edit,
+                missing,
+                added: user_only,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                hq_version: local_version.clone().unwrap_or_default(),
+            };
+            (report, unchanged_count, user_only_count)
+        } else {
+            // No `rules.locked` → no drift to scan. Empty report. Caller
+            // sees `count=0`, but `version_behind` (computed below) still
+            // surfaces the Update pill so the user isn't stranded.
+            let report = DriftReport {
+                count: 0,
+                modified: Vec::new(),
+                missing: Vec::new(),
+                added: Vec::new(),
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                hq_version: local_version.clone().unwrap_or_default(),
+            };
+            (report, 0, 0)
+        };
 
     let version_behind = match channel {
         Channel::Release => {
