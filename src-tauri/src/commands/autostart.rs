@@ -180,6 +180,7 @@ mod tests {
             instant_sync: None,
             drift_staging_repo: None,
             share_notifications: None,
+            staging_channel: None,
             release_channel: None,
         }
     }

@@ -152,26 +152,21 @@
   // (typical failure: EACCES against a system-prefix npm that needs sudo).
   let hqCliUpdateError = $state<string | null>(null);
 
-  // hq-core release notifier state — populated by `hq-core-update:available`
-  // from the Rust background checker (launch+20s, then every 6h). Non-null
-  // means the user's `core.yaml` `hqVersion` lags the latest GitHub release
-  // of indigoai-us/hq-core. The banner CTA opens Claude Code at the HQ
-  // folder with `/update-hq` pre-filled in the prompt (same
-  // `claude://code/new` deep-link mechanism as `fixHqCliUpdateInHq`).
-  let hqCoreUpdateAvailable = $state<{
-    local: string | null;
-    latest: string;
-  } | null>(null);
-
-  // Drift summary — populated by `hq-core-drift:available` from the Rust
-  // background checker (launch+30s, then every 6h). `count` is the total
-  // of modified+missing+added files within `rules.locked` scope. The
-  // popover footer renders an "N drifted" pill on the right of the
-  // HQ-version row when count > 0; clicking opens a detail window. The
-  // full report is needed by the pill click handler (not just count) so
-  // the detail window receives the same payload the listener saw —
-  // re-fetching client-side would double-spend the rate limit and risk a
-  // count mismatch between pill and window.
+  // Unified HQ-core state — replaces the pre-refactor quad
+  // (hqCoreUpdateAvailable + hqCoreDrift + stagingDrift + stagingReplace)
+  // with one struct emitted on `core-state:changed` from the Rust
+  // background checker (see commands/hq_core_state.rs). The pill labels +
+  // visibility derive entirely from this one source of truth.
+  //
+  // `channel` chooses the comparison target:
+  //   * "release" → drift vs latest tag on indigoai-us/hq-core
+  //   * "staging" → drift vs main HEAD on hq-core-staging
+  //
+  // `driftReport.count` is THE drift count (USER-EDIT files only); MISSING +
+  // USER-ONLY are listed in modified/missing/added but don't add to count.
+  // `versionBehind` is true when the user is on an older release/SHA than
+  // the target. `needsUpdate = versionBehind || driftReport.count > 0` —
+  // i.e. the Update pill shows whenever the rescue would do something.
   type DriftEntry = {
     path: string;
     size: number;
@@ -185,57 +180,44 @@
     added: DriftEntry[];
     scannedAt: string;
     hqVersion: string;
+    targetRepo: string;
+    targetRef: string;
   };
-  let hqCoreDrift = $state<DriftReport | null>(null);
-
-  // Staging-flavored drift report — same DriftReport shape, but computed
-  // against hq-core-staging@main instead of the released v{hqVersion} tag.
-  // Populated by `hq-core-staging-drift:available` from the Rust background
-  // checker (launch+40s, then every 6h). @getindigo.ai-only on the Rust
-  // side; non-eligible users always see `null` here and fall back to
-  // `hqCoreDrift` for the pill.
-  //
-  // For eligible users this REPLACES the release drift count: a staging-
-  // user's "drift" should be measured against where they're actually
-  // headed (staging) rather than the released tag they're already past.
-  let stagingDrift = $state<DriftReport | null>(null);
-
-  // Locally-installed hq-core `hqVersion` (or null when core.yaml is
-  // missing/unparseable). Always populated by a cheap on-disk read at app
-  // mount — independent of the 6h GitHub-release check above. Drives the
-  // "HQ v14.2.1" footer row in Popover; null surfaces the repair affordance
-  // instead of silently hiding the row, so a broken install becomes visible
-  // rather than masked. Refreshed after the user re-tethers the HQ folder
-  // in Settings (handleBackFromSettings), since the resolver may now find a
-  // different `core.yaml`.
-  let hqVersion = $state<string | null>(null);
-
-  // "Update from staging" pill state. Populated by `check_staging_replace_available`
-  // (commands/hq_core_staging.rs). Gated to `@getindigo.ai` users on the Rust
-  // side — non-eligible users always see `null` and the pill stays hidden.
-  // `available=true` means local `core/core.yaml`'s
-  // `replaced_from_staging.last_sync_sha` is either missing or behind staging
-  // main's HEAD SHA. Refreshed at mount, after `handleBackFromSettings`, and
-  // after a successful rescue run.
-  type StagingReplaceInfo = {
-    available: boolean;
-    localSha: string | null;
-    latestSha: string;
-    latestShort: string;
-    repo: string;
+  type CoreState = {
+    channel: 'release' | 'staging';
+    targetRepo: string;
+    targetVersion: string;
+    targetRef: string;
+    localVersion: string | null;
+    floorSha: string | null;
+    isEligible: boolean;
+    versionBehind: boolean;
+    driftReport: DriftReport;
+    unchangedCount: number;
+    userOnlyCount: number;
+    scannedAt: string;
   };
-  let stagingReplace = $state<StagingReplaceInfo | null>(null);
-  // Spinner / disable flag for the pill while the rescue script is running.
-  let stagingReplaceRunning = $state<boolean>(false);
-  // Last rescue-run summary (success or error message). Cleared at start of
-  // a new run. Surfaced via Popover so the user gets immediate feedback in
-  // the same row the pill lives in.
-  let stagingReplaceLastResult = $state<{
+  let coreState = $state<CoreState | null>(null);
+  // Spinner / disable flag for the Update pill while the rescue script
+  // (release `install_hq_core_update` or staging `run_replace_from_staging`)
+  // is running.
+  let coreInstalling = $state<boolean>(false);
+  // Last install-run summary (success or error). Surfaced via Popover so
+  // the user sees ✓ / ✗ in the same row the pill lives in. Cleared at the
+  // start of a new run.
+  let coreInstallLastResult = $state<{
     kind: 'ok' | 'err';
     exitCode: number;
     logTail: string;
     logPath: string;
   } | null>(null);
+
+  // Locally-installed hq-core `hqVersion` (or null when core.yaml is
+  // missing/unparseable). Always populated by a cheap on-disk read at app
+  // mount — independent of the unified state's 6h cadence. Drives the
+  // "HQ v14.2.1" footer row in Popover; null surfaces the repair affordance
+  // instead of silently hiding the row.
+  let hqVersion = $state<string | null>(null);
 
   // Collected unlisten handles for cleanup
   let unlisteners: UnlistenFn[] = [];
@@ -261,76 +243,69 @@
     }
   }
 
-  // Refresh the "Update from staging" pill state. Eligibility + token +
-  // GH-API failures all collapse to `null` on the Rust side (feature dark),
-  // so callers don't need to distinguish them. Errors thrown locally are
-  // logged but don't surface — same posture as `loadHqVersion`.
-  async function loadStagingReplace() {
+  // Refresh the unified core state on demand (mount, post-settings,
+  // post-rescue). Errors swallowed — the background listener will
+  // repopulate on the next 6h tick. Maps snake_case Rust → camelCase JS.
+  async function loadCoreState() {
     try {
-      // Rust returns snake_case; map to camelCase for the Svelte side.
-      const info = await invoke<{
-        available: boolean;
-        local_sha: string | null;
-        latest_sha: string;
-        latest_short: string;
-        repo: string;
-      } | null>('check_staging_replace_available');
-      stagingReplace = info
-        ? {
-            available: info.available,
-            localSha: info.local_sha,
-            latestSha: info.latest_sha,
-            latestShort: info.latest_short,
-            repo: info.repo,
-          }
-        : null;
+      const s = await invoke<CoreState | null>('check_core_state');
+      coreState = s;
     } catch (err) {
-      console.error('check_staging_replace_available failed:', err);
-      stagingReplace = null;
+      console.error('check_core_state failed:', err);
     }
   }
 
-  // Invoke the rescue script. Long-running (30-90s on first run because of
-  // the full-history clone + scan). The pill is disabled while the promise
-  // is pending; the result (exit code + log tail + log path) lands in
-  // `stagingReplaceLastResult` for the Popover to surface. After completion
-  // we re-check `loadStagingReplace` so the pill swings to hidden on success
-  // (the script wrote a fresh stamp matching HEAD).
-  async function handleRunReplaceFromStaging() {
-    if (stagingReplaceRunning) return;
-    stagingReplaceRunning = true;
-    stagingReplaceLastResult = null;
+  // Unified "Update" action — dispatches to the right rescue command based
+  // on the active channel. Release channel runs `install_hq_core_update`
+  // (overlays the latest hq-core release tag); staging channel runs
+  // `run_replace_from_staging` (overlays staging main). Both return the
+  // same RescueRunResult shape so the surface is identical.
+  //
+  // Long-running (30-90s on first run because of the full-history clone +
+  // scan). The pill is disabled while the promise is pending; the result
+  // lands in `coreInstallLastResult` for Popover to surface. On success we
+  // refresh `hqVersion` + re-run the state check so drift + version pills
+  // both swing to the post-rescue truth without waiting for the 6h tick.
+  async function handleInstallCore() {
+    if (coreInstalling) return;
+    if (!coreState) return;
+    coreInstalling = true;
+    coreInstallLastResult = null;
+    const command =
+      coreState.channel === 'staging'
+        ? 'run_replace_from_staging'
+        : 'install_hq_core_update';
     try {
       const result = await invoke<{
         exit_code: number;
         log_tail: string;
         log_path: string;
-      }>('run_replace_from_staging');
-      stagingReplaceLastResult = {
+      }>(command);
+      coreInstallLastResult = {
         kind: result.exit_code === 0 ? 'ok' : 'err',
         exitCode: result.exit_code,
         logTail: result.log_tail,
         logPath: result.log_path,
       };
-      // hqVersion may have advanced; refresh the footer row too.
       await loadHqVersion();
-      await loadStagingReplace();
-      // Re-run staging drift check so the pill reflects the post-rescue state.
       if (result.exit_code === 0) {
-        invoke('check_staging_drift').catch((e) =>
-          console.error('post-rescue staging drift check failed:', e)
+        // Re-run unified state so version_behind + drift both swing to
+        // post-rescue truth. Fire-and-forget — failure leaves the prior
+        // state until the next background tick.
+        invoke('check_core_state').catch((e) =>
+          console.error('post-install core-state refresh failed:', e)
         );
       }
     } catch (err) {
-      console.error('run_replace_from_staging failed:', err);
-      stagingReplaceLastResult = {
+      console.error(`${command} failed:`, err);
+      coreInstallLastResult = {
         kind: 'err',
         exitCode: -1,
         logTail: String(err),
         logPath: '',
       };
     } finally {
-      stagingReplaceRunning = false;
+      coreInstalling = false;
     }
   }
 
@@ -417,7 +392,10 @@
     loadConfig();
     loadWorkspaces();
     loadHqVersion();
-    loadStagingReplace();
+    // User may have just flipped the staging-channel toggle — re-run the
+    // unified state check so channel + target + drift all swing without
+    // waiting for the 6h background tick.
+    loadCoreState();
   }
 
   function handleSignOut() {
@@ -808,46 +786,15 @@
       )
     );
 
-    // --- hq-core release notifier event listener ---
-    // Protocol (see src-tauri/src/commands/hq_core_update.rs):
-    //   hq-core-update:available — payload { local: string | null, latest: string }
-    //     `local` is null when core.yaml is missing/unparseable; the
-    //     checker doesn't emit in that case, but we type it permissively.
-    //   No `:cleared` event — clicking Update launches Claude Code
-    //     out-of-process (via `claude://code/new`), so we have no way
-    //     to know in-app when the user finishes /update-hq. The banner
-    //     clears naturally on the next background check after
-    //     core.yaml's hqVersion has advanced.
+    // --- unified hq-core state listener ---
+    // Protocol (see src-tauri/src/commands/hq_core_state.rs):
+    //   core-state:changed — full CoreState payload. Emitted on every
+    //   background tick + every on-demand `check_core_state` invoke,
+    //   including the "no drift, on latest" case so the pill can swing
+    //   back to "in sync" after the user resolves.
     unlisteners.push(
-      await listen<{
-        local: string | null;
-        latest: string;
-      }>('hq-core-update:available', (event) => {
-        hqCoreUpdateAvailable = event.payload;
-      })
-    );
-
-    // --- hq-core drift listener ---
-    // Protocol (see src-tauri/src/commands/hq_core_drift.rs):
-    //   hq-core-drift:available — full DriftReport payload, emitted both
-    //   on detected drift AND on a re-check that finds zero (so the pill
-    //   can swing back to hidden after the user resolves).
-    unlisteners.push(
-      await listen<DriftReport>('hq-core-drift:available', (event) => {
-        hqCoreDrift = event.payload;
-      })
-    );
-
-    // --- staging drift listener ---
-    // Protocol (see src-tauri/src/commands/hq_core_staging.rs::check_staging_drift_once):
-    //   hq-core-staging-drift:available — same DriftReport shape as the
-    //   release drift, but computed against hq-core-staging@main. Emitted
-    //   only for eligible users; non-eligible users never see this event.
-    //   The popover routes the pill to staging count when stagingDrift is
-    //   non-null, falling back to hqCoreDrift otherwise.
-    unlisteners.push(
-      await listen<DriftReport>('hq-core-staging-drift:available', (event) => {
-        stagingDrift = event.payload;
+      await listen<CoreState>('core-state:changed', (event) => {
+        coreState = event.payload;
       })
     );
 
@@ -993,9 +940,10 @@
     loadConfig();
     loadWorkspaces();
     loadHqVersion();
-    // Eligibility-gated on the Rust side — `null` for non-@getindigo.ai
-    // users. Cheap (one GH API call when eligible), fire-and-forget.
-    loadStagingReplace();
+    // Fire-and-forget — background listener will overwrite on the next
+    // tick. Calling here gives the popover a populated state on first
+    // open instead of waiting 30s for the bg checker.
+    loadCoreState();
     setupTrayListeners();
     // One-time OS notification permission prompt. macOS only shows the system
     // dialog while status is `prompt` (not determined); once granted/denied it
@@ -1104,13 +1052,10 @@
       {hqCliUpdateAvailable}
       {hqCliUpdateInstalling}
       {hqCliUpdateError}
-      {hqCoreUpdateAvailable}
-      {hqCoreDrift}
-      {stagingDrift}
+      {coreState}
+      {coreInstalling}
+      {coreInstallLastResult}
       {hqVersion}
-      {stagingReplace}
-      {stagingReplaceRunning}
-      {stagingReplaceLastResult}
       onsync={handleSyncNow}
       oncancel={handleCancel}
       onsettings={handleSettings}
@@ -1120,7 +1065,7 @@
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
-      onrunreplacefromstaging={handleRunReplaceFromStaging}
+      oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
       onmeetingsclick={() => {
