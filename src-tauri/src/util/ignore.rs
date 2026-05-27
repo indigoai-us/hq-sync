@@ -7,6 +7,12 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 pub const DEFAULT_IGNORES: &[&str] = &[
     // VCS + OS
     ".git/", ".git", ".DS_Store", "Thumbs.db",
+    // Claude Code per-Agent worktree sandboxes. Each `agent-<id>/` is a
+    // git worktree snapshot of the HQ root containing thousands of files
+    // (companies/, core/, conflict artifacts) — purely local, never
+    // authored content, never useful in the cloud. Drift exclusion lives
+    // alongside in hq_core_drift::excluded_scope_paths().
+    ".claude/worktrees/", ".claude/worktrees",
     // Node / JS
     "node_modules/", "dist/", "build/", ".next/", ".nuxt/",
     ".svelte-kit/", ".turbo/", ".parcel-cache/", ".vite/", "coverage/",

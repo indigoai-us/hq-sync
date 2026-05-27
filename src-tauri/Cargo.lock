@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "hq-sync-menubar"
-version = "0.1.97"
+version = "0.2.0-beta.1"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -2606,6 +2606,7 @@ dependencies = [
  "objc2",
  "reqwest 0.12.28",
  "rfd",
+ "semver",
  "sentry",
  "serde",
  "serde_json",
@@ -2623,6 +2624,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "ulid",
+ "url",
  "uuid",
  "walkdir",
  "window-vibrancy",

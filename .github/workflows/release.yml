@@ -22,13 +22,42 @@ jobs:
       contents: write
 
     steps:
-      - name: Validate tag format
+      # Tag must be either:
+      #   vX.Y.Z              → Stable channel
+      #   vX.Y.Z-beta.N       → Beta channel (prerelease)
+      #   vX.Y.Z-alpha.N      → Alpha channel (prerelease)
+      #
+      # Other pre-release patterns (`-rc.N`, `-pre`, `-dev`, raw `-beta`
+      # without a number) are REJECTED at validation time so they can't
+      # silently produce releases that the client-side resolver in
+      # `util/release_channel.rs::parse_channel_from_tag` won't classify.
+      # Strict here = typos fail fast in CI rather than producing a
+      # published release that the auto-updater never advertises.
+      #
+      # `is_prerelease` is wired into the tauri-action `prerelease:` input
+      # below. The GitHub /releases/latest/ alias already filters to
+      # non-prereleases, so flipping this is what keeps a stable-channel
+      # user's static-endpoint poll from accidentally picking up a beta.
+      - name: Validate tag format + classify channel
+        id: classify
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "::error::Tag must match vX.Y.Z format, got: $TAG"
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            CHANNEL="stable"
+            IS_PRE="false"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            CHANNEL="beta"
+            IS_PRE="true"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            CHANNEL="alpha"
+            IS_PRE="true"
+          else
+            echo "::error::Tag must match vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N — got: $TAG"
             exit 1
           fi
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
+          echo "Tag $TAG classified as channel=$CHANNEL prerelease=$IS_PRE"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -114,7 +143,14 @@ jobs:
           releaseName: "HQ Sync ${{ github.event.inputs.tag || github.ref_name }}"
           releaseBody: "See the [changelog](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details."
           releaseDraft: true
-          prerelease: false
+          # Driven by the classify step above: stable tags ship as
+          # `prerelease: false` (default user-facing channel), beta/alpha
+          # tags ship as `prerelease: true` so the GitHub UI labels them
+          # as such AND the /releases/latest/ redirect skips them. The
+          # client tag-suffix filter is authoritative for which release a
+          # given channel sees — this flag is the second line of defense
+          # for stable users who poll the static endpoint.
+          prerelease: ${{ steps.classify.outputs.is_prerelease }}
           args: --target universal-apple-darwin
 
       # Sentry symbol upload is best-effort — must never gate a release. The

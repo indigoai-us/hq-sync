@@ -85,6 +85,11 @@ static MODAL_DEPTH: AtomicUsize = AtomicUsize::new(0);
 /// user opens MeetingsWindow or acts on a notification.
 static PROMPT_PENDING: AtomicUsize = AtomicUsize::new(0);
 
+/// Count of unacknowledged share events. When > 0, the tray tooltip
+/// gains a " · N new share(s)" suffix as a lightweight visual badge
+/// (avoids needing a new tray icon PNG for the share-notify feature).
+static SHARE_BADGE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 /// Whether at least one native modal is currently open.
 pub fn is_modal_open() -> bool {
     MODAL_DEPTH.load(Ordering::SeqCst) > 0
@@ -287,9 +292,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // while a picker is in flight; we check it and skip the hide.
     if let Some(window) = app.get_webview_window("main") {
         let win_clone = window.clone();
+        let disable_blur_hide = std::env::var("HQ_DISABLE_BLUR_HIDE").ok().as_deref() == Some("1");
         window.on_window_event(move |event| {
             if let WindowEvent::Focused(false) = event {
-                if !is_modal_open() {
+                if !is_modal_open() && !disable_blur_hide {
                     let _ = win_clone.hide();
                 }
             }
@@ -313,6 +319,25 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // Listen for sync events to auto-update tray state
     setup_sync_listeners(app);
+
+    // Dev helper: open popover at launch when HQ_DEV_SHOW_ON_LAUNCH=1
+    if std::env::var("HQ_DEV_SHOW_ON_LAUNCH").ok().as_deref() == Some("1") {
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Some(window) = app_handle.get_webview_window("main") {
+                eprintln!("[dev-show] showing main window");
+                let _ = window.center();
+                let _ = window.set_always_on_top(true);
+                let _ = window.show();
+                let _ = window.set_focus();
+                let visible = window.is_visible().unwrap_or(false);
+                eprintln!("[dev-show] is_visible={}", visible);
+            } else {
+                eprintln!("[dev-show] main window not found");
+            }
+        });
+    }
 
     Ok(())
 }
@@ -431,11 +456,11 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
         *current = state;
     }
 
-    // Update the actual tray icon
+    // Update icon + badge-aware tooltip
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(icon_for_state(state)));
-        let _ = tray.set_tooltip(Some(state.tooltip()));
     }
+    refresh_tray_tooltip(app);
 }
 
 /// Get the current tray state.
@@ -468,7 +493,7 @@ fn reassert_tray(app: &AppHandle) {
             let _ = tray.set_visible(true);
             let state = get_current_state();
             let _ = tray.set_icon(Some(icon_for_state(state)));
-            let _ = tray.set_tooltip(Some(state.tooltip()));
+            refresh_tray_tooltip(&handle);
             log("tray", "reassert_tray: completed");
         } else {
             log("tray", "reassert_tray: tray not found");
@@ -503,6 +528,41 @@ fn setup_sync_listeners(app: &AppHandle) {
     app.listen(EVENT_SYNC_CONFLICT, move |_event| {
         update_tray_icon(&app4, TrayState::Conflict);
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Share-notification badge
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compose the current tray tooltip from global state + badge count and
+/// apply it to the tray icon. Called by `update_tray_icon`,
+/// `set_share_badge`, and `clear_share_badge` so the tooltip is always
+/// consistent with both the tray state and the share badge.
+fn refresh_tray_tooltip(app: &AppHandle) {
+    let state = get_current_state();
+    let count = SHARE_BADGE_COUNT.load(Ordering::SeqCst);
+    let tooltip = if count > 0 {
+        format!("{} · {} new share(s)", state.tooltip(), count)
+    } else {
+        state.tooltip().to_string()
+    };
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(tooltip.as_str()));
+    }
+}
+
+/// Mark N unacknowledged share events. Updates the tray tooltip suffix.
+/// Call from `share_notify::do_poll` after emitting new events.
+pub fn set_share_badge(app: &AppHandle, count: usize) {
+    SHARE_BADGE_COUNT.store(count, Ordering::SeqCst);
+    refresh_tray_tooltip(app);
+}
+
+/// Clear the share badge. Call from `share_notify::share_detail_window_ready`
+/// after the ack POST fires (best-effort).
+pub fn clear_share_badge(app: &AppHandle) {
+    SHARE_BADGE_COUNT.store(0, Ordering::SeqCst);
+    refresh_tray_tooltip(app);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -610,6 +670,21 @@ mod tests {
         // Caller is responsible for keeping the popover on-screen if needed.
         let (x, _) = compute_popover_position(10.0, 0.0, 24.0, 24.0, 320.0, 4.0);
         assert_eq!(x, 10 + 12 - 160); // = -138
+    }
+
+    #[test]
+    fn test_share_badge_count_atomic() {
+        // AppHandle isn't constructible in unit tests, but we can verify
+        // the AtomicUsize counter itself. `refresh_tray_tooltip` / `set_share_badge`
+        // / `clear_share_badge` wrap this counter; the tray interaction is
+        // exercised in integration/e2e contexts.
+        let before = SHARE_BADGE_COUNT.load(Ordering::SeqCst);
+        SHARE_BADGE_COUNT.store(5, Ordering::SeqCst);
+        assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 5);
+        SHARE_BADGE_COUNT.store(0, Ordering::SeqCst);
+        assert_eq!(SHARE_BADGE_COUNT.load(Ordering::SeqCst), 0);
+        // Restore — best-effort in parallel test runs.
+        SHARE_BADGE_COUNT.store(before, Ordering::SeqCst);
     }
 
     #[test]

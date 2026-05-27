@@ -97,6 +97,54 @@ pub struct MenubarPrefs {
     /// unchanged drift panel. See `commands/hq_core_staging.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift_staging_repo: Option<String>,
+    /// Share notifications: when true (default), HQ Sync polls
+    /// `/v1/files/shared-with-me` on launch and after each sync, fires a
+    /// macOS notification per new share event, and opens a ShareDetail window
+    /// on click (US-004 / US-005). Only ever active for `@getindigo.ai` users
+    /// (dogfood gate in `commands/share_notify.rs`). Absent in pre-share-notify
+    /// menubar.json files → treated as true (see `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub share_notifications: Option<bool>,
+    /// Rescue-source channel for @getindigo.ai builders. When `true`
+    /// (default), the Settings toggle is ON → the popover's `CoreState`
+    /// runs against `indigoai-us/hq-core-staging` (drift vs staging main,
+    /// rescue spawned against staging main). When `false`, the toggle is
+    /// OFF → the staging code paths short-circuit (feature dark) and the
+    /// popover falls through to the prod release channel, comparing
+    /// against `indigoai-us/hq-core@v{latest}` like every non-@indigo
+    /// user sees.
+    ///
+    /// Distinct from `release_channel` below: that field controls which
+    /// hq-sync release the auto-updater pulls (stable/beta/alpha);
+    /// `staging_channel` controls which hq-core source tree the in-app
+    /// rescue + drift classifier targets. The two are orthogonal — a
+    /// @indigo user can be on the beta hq-sync channel while keeping the
+    /// rescue pointed at the prod hq-core release.
+    ///
+    /// Setting visibility is gated by `staging_channel_setting_visible`
+    /// (returns true only for `@getindigo.ai` emails). Non-@indigo users
+    /// never see the toggle and always get the prod release channel; their
+    /// menubar.json `stagingChannel` field, if set, is read but has no
+    /// effect (the staging eligibility gate dominates).
+    ///
+    /// Defaults to true so existing @indigo builders see no behaviour change
+    /// across upgrade — explicit `false` flips them to the prod channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub staging_channel: Option<bool>,
+    /// Auto-updater release channel: `"stable"`, `"beta"`, or `"alpha"`.
+    /// Mapped to a GitHub-tag-suffix filter by
+    /// `util::release_channel::ReleaseChannel::from_pref` and gated by
+    /// `util::feature_gate::is_indigo_user()` — non-`@getindigo.ai` users
+    /// are coerced to `"stable"` at the resolver in `updater.rs`
+    /// regardless of what's stored here, so a hand-edited menubar.json
+    /// cannot escape stable.
+    ///
+    /// Absent in pre-channel-rollout menubar.json files → defaulted in
+    /// `get_settings` to `"beta"` for indigo users (auto-opt-in to
+    /// dogfood the freshest build) and `"stable"` for everyone else.
+    /// See `util::release_channel::effective_channel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<String>,
     /// Meeting detect-notify settings (US-007). Absent when not yet
     /// configured; `get_settings` supplies defaults.
     #[serde(default, skip_serializing_if = "Option::is_none")]

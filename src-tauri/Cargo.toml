@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.1.97"
+version = "0.2.0-beta.1"
 edition = "2021"
 
 [build-dependencies]
@@ -49,6 +49,20 @@ aws-smithy-types = "1"
 aws-credential-types = "1"
 ulid = "1"
 bytes = "1"
+# Strict SemVer comparison for the release-channel resolver in
+# `util/release_channel.rs`. We need correct pre-release ordering
+# (`1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0`) when picking the newest
+# applicable release per channel — the loose `cmp_semver` in
+# `commands/hq_cli_update.rs` drops pre-release suffixes and would
+# rank `v0.1.109-beta.1` as equal to `v0.1.109`, which would let a
+# stable-channel user pick up a beta. Tiny dep, well-maintained.
+semver = "1"
+# `url::Url` is required by `tauri_plugin_updater::UpdaterBuilder::endpoints`
+# (the plugin re-exports `url::Url` but builds against this exact crate).
+# Already in the dep graph via reqwest + tauri-plugin-updater; declaring it
+# directly so updater.rs can `use url::Url;` without leaning on a
+# transitive re-export that could move.
+url = "2"
 
 [profile.release]
 split-debuginfo = "packed"
@@ -64,15 +78,18 @@ objc2 = "0.6"
 # need block2 to construct one (Apple's API contract — passing nil
 # completion handler crashes).
 block2 = "0.6"
-# Used by commands/meetings.rs to fire macOS notifications with clickable
-# action buttons. `tauri-plugin-notification` 2.3.3's desktop path consumes
-# only title/body/icon/sound — the shared `action_type_id` field is ignored
-# outside mobile. Going one layer down to `mac-notification-sys` (already a
-# transitive dep via notify-rust) gives us `MainButton::SingleAction` for a
-# "Record" button on the notification AND a blocking `wait_for_click` that
+# Direct dep on mac-notification-sys for action-button notifications.
+# tauri-plugin-notification (2.3.3) on macOS uses notify-rust which wraps
+# NSUserNotification but DOES NOT expose action buttons —
+# `register_action_types` is mobile-only and there's no on_action callback
+# for desktop. Going one layer down to mac-notification-sys (already a
+# transitive dep via notify-rust) gives us MainButton::SingleAction for a
+# "Record" button on the meeting-detect notification, MainButton::DropdownActions
+# for the share-notify dropdown UX, AND a blocking wait_for_click that
 # returns the response (Click / ActionButton(name) / Reply / Dismiss). We
 # spawn one thread per notification to await the response so the async
-# Tauri command itself never blocks.
+# Tauri command itself never blocks. Pattern shared between
+# commands/meetings.rs and commands/share_notify.rs.
 mac-notification-sys = "0.6"
 
 [features]

@@ -10,6 +10,7 @@
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
+  import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import './styles/popover.css';
 
   interface Config {
@@ -237,26 +238,21 @@
   // (typical failure: EACCES against a system-prefix npm that needs sudo).
   let hqCliUpdateError = $state<string | null>(null);
 
-  // hq-core release notifier state — populated by `hq-core-update:available`
-  // from the Rust background checker (launch+20s, then every 6h). Non-null
-  // means the user's `core.yaml` `hqVersion` lags the latest GitHub release
-  // of indigoai-us/hq-core. The banner CTA opens Claude Code at the HQ
-  // folder with `/update-hq` pre-filled in the prompt (same
-  // `claude://code/new` deep-link mechanism as `fixHqCliUpdateInHq`).
-  let hqCoreUpdateAvailable = $state<{
-    local: string | null;
-    latest: string;
-  } | null>(null);
-
-  // Drift summary — populated by `hq-core-drift:available` from the Rust
-  // background checker (launch+30s, then every 6h). `count` is the total
-  // of modified+missing+added files within `rules.locked` scope. The
-  // popover footer renders an "N drifted" pill on the right of the
-  // HQ-version row when count > 0; clicking opens a detail window. The
-  // full report is needed by the pill click handler (not just count) so
-  // the detail window receives the same payload the listener saw —
-  // re-fetching client-side would double-spend the rate limit and risk a
-  // count mismatch between pill and window.
+  // Unified HQ-core state — replaces the pre-refactor quad
+  // (hqCoreUpdateAvailable + hqCoreDrift + stagingDrift + stagingReplace)
+  // with one struct emitted on `core-state:changed` from the Rust
+  // background checker (see commands/hq_core_state.rs). The pill labels +
+  // visibility derive entirely from this one source of truth.
+  //
+  // `channel` chooses the comparison target:
+  //   * "release" → drift vs latest tag on indigoai-us/hq-core
+  //   * "staging" → drift vs main HEAD on hq-core-staging
+  //
+  // `driftReport.count` is THE drift count (USER-EDIT files only); MISSING +
+  // USER-ONLY are listed in modified/missing/added but don't add to count.
+  // `versionBehind` is true when the user is on an older release/SHA than
+  // the target. `needsUpdate = versionBehind || driftReport.count > 0` —
+  // i.e. the Update pill shows whenever the rescue would do something.
   type DriftEntry = {
     path: string;
     size: number;
@@ -270,17 +266,43 @@
     added: DriftEntry[];
     scannedAt: string;
     hqVersion: string;
+    targetRepo: string;
+    targetRef: string;
   };
-  let hqCoreDrift = $state<DriftReport | null>(null);
+  type CoreState = {
+    channel: 'release' | 'staging';
+    targetRepo: string;
+    targetVersion: string;
+    targetRef: string;
+    localVersion: string | null;
+    floorSha: string | null;
+    isEligible: boolean;
+    versionBehind: boolean;
+    driftReport: DriftReport;
+    unchangedCount: number;
+    userOnlyCount: number;
+    scannedAt: string;
+  };
+  let coreState = $state<CoreState | null>(null);
+  // Spinner / disable flag for the Update pill while the rescue script
+  // (release `install_hq_core_update` or staging `run_replace_from_staging`)
+  // is running.
+  let coreInstalling = $state<boolean>(false);
+  // Last install-run summary (success or error). Surfaced via Popover so
+  // the user sees ✓ / ✗ in the same row the pill lives in. Cleared at the
+  // start of a new run.
+  let coreInstallLastResult = $state<{
+    kind: 'ok' | 'err';
+    exitCode: number;
+    logTail: string;
+    logPath: string;
+  } | null>(null);
 
   // Locally-installed hq-core `hqVersion` (or null when core.yaml is
   // missing/unparseable). Always populated by a cheap on-disk read at app
-  // mount — independent of the 6h GitHub-release check above. Drives the
+  // mount — independent of the unified state's 6h cadence. Drives the
   // "HQ v14.2.1" footer row in Popover; null surfaces the repair affordance
-  // instead of silently hiding the row, so a broken install becomes visible
-  // rather than masked. Refreshed after the user re-tethers the HQ folder
-  // in Settings (handleBackFromSettings), since the resolver may now find a
-  // different `core.yaml`.
+  // instead of silently hiding the row.
   let hqVersion = $state<string | null>(null);
 
   // Collected unlisten handles for cleanup
@@ -304,6 +326,72 @@
     } catch (err) {
       console.error('Failed to load hq version:', err);
       hqVersion = null;
+    }
+  }
+
+  // Refresh the unified core state on demand (mount, post-settings,
+  // post-rescue). Errors swallowed — the background listener will
+  // repopulate on the next 6h tick. Maps snake_case Rust → camelCase JS.
+  async function loadCoreState() {
+    try {
+      const s = await invoke<CoreState | null>('check_core_state');
+      coreState = s;
+    } catch (err) {
+      console.error('check_core_state failed:', err);
+    }
+  }
+
+  // Unified "Update" action — dispatches to the right rescue command based
+  // on the active channel. Release channel runs `install_hq_core_update`
+  // (overlays the latest hq-core release tag); staging channel runs
+  // `run_replace_from_staging` (overlays staging main). Both return the
+  // same RescueRunResult shape so the surface is identical.
+  //
+  // Long-running (30-90s on first run because of the full-history clone +
+  // scan). The pill is disabled while the promise is pending; the result
+  // lands in `coreInstallLastResult` for Popover to surface. On success we
+  // refresh `hqVersion` + re-run the state check so drift + version pills
+  // both swing to the post-rescue truth without waiting for the 6h tick.
+  async function handleInstallCore() {
+    if (coreInstalling) return;
+    if (!coreState) return;
+    coreInstalling = true;
+    coreInstallLastResult = null;
+    const command =
+      coreState.channel === 'staging'
+        ? 'run_replace_from_staging'
+        : 'install_hq_core_update';
+    try {
+      const result = await invoke<{
+        exit_code: number;
+        log_tail: string;
+        log_path: string;
+      }>(command);
+      coreInstallLastResult = {
+        kind: result.exit_code === 0 ? 'ok' : 'err',
+        exitCode: result.exit_code,
+        logTail: result.log_tail,
+        logPath: result.log_path,
+      };
+      await loadHqVersion();
+      if (result.exit_code === 0) {
+        // Re-run unified state so version_behind + drift both swing to
+        // post-rescue truth. Fire-and-forget — failure leaves the prior
+        // state until the next background tick.
+        invoke('check_core_state').catch((e) =>
+          console.error('post-install core-state refresh failed:', e)
+        );
+      }
+    } catch (err) {
+      console.error(`${command} failed:`, err);
+      coreInstallLastResult = {
+        kind: 'err',
+        exitCode: -1,
+        logTail: String(err),
+        logPath: '',
+      };
+    } finally {
+      coreInstalling = false;
     }
   }
 
@@ -390,6 +478,10 @@
     loadConfig();
     loadWorkspaces();
     loadHqVersion();
+    // User may have just flipped the staging-channel toggle — re-run the
+    // unified state check so channel + target + drift all swing without
+    // waiting for the 6h background tick.
+    loadCoreState();
   }
 
   function handleSignOut() {
@@ -780,33 +872,15 @@
       )
     );
 
-    // --- hq-core release notifier event listener ---
-    // Protocol (see src-tauri/src/commands/hq_core_update.rs):
-    //   hq-core-update:available — payload { local: string | null, latest: string }
-    //     `local` is null when core.yaml is missing/unparseable; the
-    //     checker doesn't emit in that case, but we type it permissively.
-    //   No `:cleared` event — clicking Update launches Claude Code
-    //     out-of-process (via `claude://code/new`), so we have no way
-    //     to know in-app when the user finishes /update-hq. The banner
-    //     clears naturally on the next background check after
-    //     core.yaml's hqVersion has advanced.
+    // --- unified hq-core state listener ---
+    // Protocol (see src-tauri/src/commands/hq_core_state.rs):
+    //   core-state:changed — full CoreState payload. Emitted on every
+    //   background tick + every on-demand `check_core_state` invoke,
+    //   including the "no drift, on latest" case so the pill can swing
+    //   back to "in sync" after the user resolves.
     unlisteners.push(
-      await listen<{
-        local: string | null;
-        latest: string;
-      }>('hq-core-update:available', (event) => {
-        hqCoreUpdateAvailable = event.payload;
-      })
-    );
-
-    // --- hq-core drift listener ---
-    // Protocol (see src-tauri/src/commands/hq_core_drift.rs):
-    //   hq-core-drift:available — full DriftReport payload, emitted both
-    //   on detected drift AND on a re-check that finds zero (so the pill
-    //   can swing back to hidden after the user resolves).
-    unlisteners.push(
-      await listen<DriftReport>('hq-core-drift:available', (event) => {
-        hqCoreDrift = event.payload;
+      await listen<CoreState>('core-state:changed', (event) => {
+        coreState = event.payload;
       })
     );
 
@@ -998,6 +1072,114 @@
         },
       ),
     );
+
+    // --- Share-notification event listener (US-005) ---
+    // Rust emits `share:new-events` after each poll when new events are found.
+    // The Rust side has already fired one macOS notification per event AND
+    // primed the pending-events state for the detail-window ready-handshake.
+    //
+    // We deliberately do NOT open the ShareDetail window here. The window
+    // opens only via user-initiated paths:
+    //   1. notification click → `share-notify:detail-requested` listener
+    //   2. notification action button "Open details" → same path
+    //   3. tray click on the share-notify badge
+    //
+    // Auto-opening on every poll was a UX bug discovered during dogfood
+    // (2026-05-26): combined with the cursor re-fire bug, the ShareDetail
+    // window re-appeared every ~20s. Even with the cursor bug fixed, eager
+    // open is wrong UX — the notification is the lightweight surface and
+    // the detail window is opt-in.
+    unlisteners.push(
+      await listen<Array<{
+        eventId: string;
+        issuerEmail: string;
+        issuerDisplayName: string;
+        paths: string[];
+        note: string | null;
+        permission: string;
+        createdAt: string;
+      }>>('share:new-events', async (_event) => {
+        // No-op for now — the notification handler in Rust owns the side
+        // effects (notification.show(), pending-events state, tray badge).
+        // This listener stays subscribed so a future in-popover share-
+        // events list can hook here without needing a second registration.
+      })
+    );
+
+    // --- Share-notification action handler (Fix D, 2026-05-26) ---
+    // Rust spawns a thread per macOS notification that blocks on
+    // mac-notification-sys `wait_for_click(true).send()`. When the user
+    // hovers the notification and picks "Copy prompt" / "Open details"
+    // from the Actions dropdown (or body-clicks for the open path), the
+    // thread emits `notification:share-action` with the full event payload.
+    //
+    // "copy" → write the templated prompt to the system clipboard.
+    // "open" → invoke open_share_detail with this single event so the
+    //          ShareDetail window focuses or opens with the right context.
+    unlisteners.push(
+      await listen<{
+        action: 'claude' | 'copy' | 'open';
+        eventId: string;
+        event: {
+          eventId: string;
+          issuerEmail: string;
+          issuerDisplayName: string;
+          paths: string[];
+          note: string | null;
+          permission: string;
+          createdAt: string;
+        };
+      }>('notification:share-action', async (e) => {
+        const { action, event: evt } = e.payload;
+
+        // Shared prompt-template helper. Kept in sync with
+        // ShareDetail.svelte::buildPrompt (which still owns the in-window
+        // "Copy prompt" button). Moving to a shared module is a TODO once
+        // a third consumer appears.
+        const buildPrompt = () => {
+          const pathList = evt.paths.join(', ');
+          const note = evt.note?.trim() || '(no note)';
+          return `${evt.issuerDisplayName} shared these files with me: ${pathList}\n\nTheir note: ${note}.`;
+        };
+
+        if (action === 'claude') {
+          // Body-click → open Claude Code with the templated prompt
+          // pre-filled in the input. Mirrors the pattern used by:
+          //   * OpenInClaudeCodeButton (`lib/claude-code-link.ts`)
+          //   * hq-installer's launch_claude_code_link flow
+          //   * Popover.svelte fixHqCliUpdateInHq CTA
+          //
+          // User feedback 2026-05-26: prefer opening Claude Code over a
+          // bare clipboard copy — the recipient almost always wants to
+          // continue the share in an LLM session, so save them the
+          // paste step.
+          const folder = config?.hqFolderPath ?? '';
+          try {
+            const url = buildClaudeCodeUrl({ folder, prompt: buildPrompt() });
+            await invoke('open_claude_code_link', { url });
+          } catch (err) {
+            console.error('share-notify: open_claude_code_link failed', err);
+          }
+        } else if (action === 'copy') {
+          // Dropdown "Copy prompt" → clipboard write (no app launch).
+          // Intentionally redundant with the body-click → Claude path for
+          // users who already have a Claude session running, are pasting
+          // into a different app, or want the literal text without any
+          // side effects (user direction 2026-05-26).
+          try {
+            await navigator.clipboard.writeText(buildPrompt());
+          } catch (err) {
+            console.error('share-notify: clipboard write failed', err);
+          }
+        } else if (action === 'open') {
+          try {
+            await invoke('open_share_detail', { events: [evt] });
+          } catch (err) {
+            console.error('share-notify: open_share_detail failed', err);
+          }
+        }
+      })
+    );
   }
 
   $effect(() => {
@@ -1008,6 +1190,10 @@
     loadConfig();
     loadWorkspaces();
     loadHqVersion();
+    // Fire-and-forget — background listener will overwrite on the next
+    // tick. Calling here gives the popover a populated state on first
+    // open instead of waiting 30s for the bg checker.
+    loadCoreState();
     setupTrayListeners();
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
     // Settings.svelte hides the meeting-detect toggle when this is false.
@@ -1015,6 +1201,11 @@
     // permissionState.svelte.ts for why; native macOS prompts are
     // sufficient.)
     loadMeetingDetectEligible();
+    // One-time OS notification permission prompt. macOS only shows the system
+    // dialog while status is `prompt` (not determined); once granted/denied it
+    // returns silently, so calling this every launch never re-nags. Fire-and-
+    // forget — errors are non-fatal (the Settings monitor lets the user retry).
+    requestNotificationPermissionOnce();
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
     invoke<boolean>('meetings_feature_enabled')
@@ -1030,6 +1221,22 @@
       unlisteners = [];
     };
   });
+
+  // Ask macOS for notification authorization once. The Rust command wraps
+  // tauri-plugin-notification's request_permission(); macOS shows the system
+  // dialog only when the status is `prompt`, so this is safe to call on every
+  // launch (no re-nag). We skip the request entirely when already determined
+  // to avoid a needless IPC round-trip.
+  async function requestNotificationPermissionOnce() {
+    try {
+      const state = await invoke<string>('notification_permission_state');
+      if (state === 'prompt') {
+        await invoke<string>('notification_request_permission');
+      }
+    } catch (err) {
+      console.error('notification permission request failed', err);
+    }
+  }
 
   async function checkAuth() {
     try {
@@ -1101,8 +1308,9 @@
       {hqCliUpdateAvailable}
       {hqCliUpdateInstalling}
       {hqCliUpdateError}
-      {hqCoreUpdateAvailable}
-      {hqCoreDrift}
+      {coreState}
+      {coreInstalling}
+      {coreInstallLastResult}
       {hqVersion}
       onsync={handleSyncNow}
       oncancel={handleCancel}
@@ -1113,6 +1321,7 @@
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
+      oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
       onmeetingsclick={() => {

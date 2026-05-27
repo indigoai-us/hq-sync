@@ -494,6 +494,95 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] Inject a `meeting:detected` event with no existing bot
 - [ ] Verify **no** macOS notification fires and **no** tray badge appears
 
+### US-004 / US-005 / US-006 / US-007 (Share Notifications): End-to-End Walkthrough
+
+> **Prerequisite:** Logged-in user must have an `@getindigo.ai` email (dogfood gate). All steps
+> assume HQ Sync is built from the `feature/hq-sync-share-notify` branch. A second
+> Indigo account (the "sharer") is needed to trigger share events from hq-console.
+
+#### SN-001: Poll fires 5 seconds after app launch
+
+- [ ] 1. With `~/.hq/share-notify-cursor.json` deleted (fresh cursor), launch HQ Sync.app
+- [ ] 2. Inspect `~/.hq/logs/hq-sync.log` after 10 seconds
+- [ ] 3. Verify a `SHARE_NOTIFY_POLL_START` log line appears (confirms launch-time poll fired)
+
+#### SN-002: Poll fires after sync:complete
+
+- [ ] 1. Click "Sync Now" in the menubar popover and wait for completion
+- [ ] 2. Inspect `~/.hq/logs/hq-sync.log`
+- [ ] 3. Verify a second `SHARE_NOTIFY_POLL_START` line appears after the sync-complete log entry
+
+#### SN-003: macOS notification displayed for a new share event
+
+- [ ] 1. From the sharer's hq-console, create a new share-session targeting the test user's account with a short note (e.g., "Please review before Friday")
+- [ ] 2. Wait up to 60 seconds for the next poll cycle (or click "Sync Now" to trigger immediately)
+- [ ] 3. Verify a macOS notification appears:
+  - Title: `<SharerDisplayName> shared files with you`
+  - Body: the first ~100 characters of the note (or comma-joined filenames if no note)
+- [ ] 4. Verify no crash or error in `~/.hq/logs/hq-sync.log`
+
+#### SN-004: Clicking the notification (or the tray badge) opens the ShareDetail window
+
+- [ ] 1. With a pending share:new-events notification visible, click it (or click the tray icon)
+- [ ] 2. Verify the **ShareDetail** window opens with:
+  - Sharer name + email
+  - Full list of shared paths
+  - Full note text
+  - "Copy prompt" button
+  - "Open in HQ Console" link
+- [ ] 3. Verify window is focused and the app is brought to the foreground
+
+#### SN-005: Copy prompt button puts correct template on clipboard
+
+- [ ] 1. In the ShareDetail window, click **Copy prompt**
+- [ ] 2. Paste into a text editor
+- [ ] 3. Verify clipboard contains:
+  ```
+  <SharerDisplayName> shared these files with me:
+  <path 1>
+  <path 2>
+  ...
+
+  Their note: <note text or "(no note)">
+  ```
+  (No action verb — recipient supplies their own framing)
+- [ ] 4. Verify no error toast or console error when clicking the button
+
+#### SN-006: Post-ack fires and suppresses duplicate email
+
+- [ ] 1. Within 5 minutes of receiving the share event (before the SQS delayed worker fires), open the ShareDetail window
+- [ ] 2. Inspect `~/.hq/logs/hq-sync.log` — verify `SHARE_NOTIFY_ACK_OK` log line appears
+- [ ] 3. After 5+ minutes, check the recipient email inbox — verify **no share-notification email** arrived (first-surface-wins suppression)
+
+#### SN-007: Tray badge dot appears and clears
+
+- [ ] 1. Before opening the ShareDetail window, hover over the tray icon
+- [ ] 2. Verify the tooltip includes "· N new share(s)" (badge suffix, e.g., "HQ Sync · 1 new share(s)")
+- [ ] 3. Open and close the ShareDetail window
+- [ ] 4. Hover over the tray icon again — verify the badge suffix is **gone** (tooltip back to plain "HQ Sync")
+
+#### SN-008: Dogfood gate prevents poll for non-Indigo users
+
+- [ ] 1. Log out and log in with a non-`@getindigo.ai` account (e.g., a personal Gmail)
+- [ ] 2. Trigger a sync
+- [ ] 3. Inspect `~/.hq/logs/hq-sync.log` — verify `SHARE_NOTIFY_POLL_SKIP` appears and **no** `SHARE_NOTIFY_POLL_START` line follows
+
+#### SN-009: Settings toggle disables notifications without restart
+
+- [ ] 1. Open Settings (right-click tray → Settings)
+- [ ] 2. Verify "Share notifications" toggle is present and ON (visible only for `@getindigo.ai` accounts)
+- [ ] 3. Toggle it **OFF** and close Settings
+- [ ] 4. Trigger a sync — verify `SHARE_NOTIFY_POLL_SKIP` in logs (no poll fired)
+- [ ] 5. Toggle it **ON** again — trigger a sync — verify `SHARE_NOTIFY_POLL_START` reappears
+
+#### SN-010: Notification permission denial is handled gracefully
+
+- [ ] 1. In macOS System Settings → Notifications, find "HQ Sync" and set to "Off"
+- [ ] 2. Trigger a poll that returns at least one share event (repeat SN-003 setup)
+- [ ] 3. Verify **no crash** — app continues running
+- [ ] 4. Inspect `~/.hq/logs/hq-sync.log` — verify `NOTIFY_PERMISSION_DENIED` log line appears
+- [ ] 5. Verify the ShareDetail window still opens (tray event path unaffected by notification denial)
+
 ---
 
 ### US-015: Code Signing + Notarization CI

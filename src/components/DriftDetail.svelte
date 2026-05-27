@@ -23,7 +23,14 @@
     missing: DriftEntry[];
     added: DriftEntry[];
     scannedAt: string;
+    // The ref this report was *scanned against* (NOT the local installed
+    // version). Bare version for release ("14.2.1"), "owner/repo@ref"
+    // for staging. Used for display labels and the issue payload.
     hqVersion: string;
+    // Where to fetch / link to the upstream blobs of this report (the
+    // tree whose SHAs are in entry.gitShaUpstream).
+    targetRepo: string; // e.g. "indigoai-us/hq-core"
+    targetRef: string;  // e.g. "v14.2.1" (release) or a 40-char SHA (staging)
   }
 
   let report = $state<DriftReport | null>(null);
@@ -33,21 +40,37 @@
   // composite key keeps the map shape consistent).
   let restoreState = $state<Record<string, 'idle' | 'in-flight' | 'done' | string>>({});
 
+  // Header/help baseline label. Release reports carry a bare semver
+  // (`14.2.1`) that reads naturally with a `v` prefix; staging reports
+  // carry an `owner/repo@ref` string (e.g. `indigoai-us/hq-core-staging@main`)
+  // where a `v` prefix produces the nonsense `vindigoai-us/...`. The `@` is
+  // the unambiguous tell (same one `recheck()` routes on), so prefix `v`
+  // only for release reports.
+  const versionLabel = $derived(
+    report ? (report.hqVersion.includes('@') ? report.hqVersion : `v${report.hqVersion}`) : '',
+  );
+
   // Manual recheck. The background loop only re-scans every 6h (see
   // hq_core_drift.rs CHECK_INTERVAL), so after resolving drift — or when
   // staging PRs have moved — the report on screen can be stale. This
-  // button forces a fresh `check_once` via the existing
-  // `check_hq_core_drift` command, which re-emits `drift:report` back to
-  // this window (our $effect listener applies it + resets restoreState),
-  // so the window updates in place. No need to read the return value.
+  // button forces a fresh check; both Rust commands re-emit `drift:report`
+  // back to this window so the $effect listener applies it + resets
+  // restoreState, updating the window in place.
+  //
+  // Unified recheck — one command for both channels. The Rust side
+  // (`check_core_state` in `commands/hq_core_state.rs`) re-classifies
+  // against whichever channel is active in menubar.json's
+  // `staging_channel` toggle + `is_eligible_email`, and emits a fresh
+  // `core-state:changed` event whose listener pipes the new report
+  // back into this window via `drift:report`.
   let rechecking = $state(false);
   async function recheck() {
     if (rechecking) return;
     rechecking = true;
     try {
-      await invoke('check_hq_core_drift');
+      await invoke('check_core_state');
     } catch (e) {
-      console.error('recheck (check_hq_core_drift) failed:', e);
+      console.error('recheck failed:', e);
     } finally {
       rechecking = false;
     }
@@ -60,7 +83,13 @@
   // treated as a regular user (who gets the personal/-overlay framing, with
   // no mention of hq-core-staging they can't access).
   const allDriftIssue = $derived.by<Issue | null>(() => {
-    if (!report || report.count === 0) return null;
+    if (!report) return null;
+    // Gate on combined list lengths, not `report.count` — see the
+    // empty-state comment below for why count alone misses reports
+    // that have only missing/user-only entries.
+    if (report.modified.length === 0 && report.missing.length === 0 && report.added.length === 0) {
+      return null;
+    }
     const files = [
       ...report.modified.map((e) => ({ path: e.path, kind: 'modified', staging: e.stagingStatus ?? null })),
       ...report.missing.map((e) => ({ path: e.path, kind: 'missing', staging: null })),
@@ -110,7 +139,13 @@
   }
 
   function upstreamBlobUrl(entry: DriftEntry): string {
-    return `https://github.com/indigoai-us/hq-core/blob/v${report?.hqVersion ?? 'main'}/${entry.path}`;
+    // Build the link from the *report's* target (the tree this drift
+    // was measured against), not the local installed version. Avoids
+    // a v14.0.0 user clicking "View on GitHub" and landing on the
+    // file at the v14.0.0 tag when the drift is actually vs v14.2.1.
+    const repo = report?.targetRepo ?? 'indigoai-us/hq-core';
+    const ref = report?.targetRef ?? 'main';
+    return `https://github.com/${repo}/blob/${ref}/${entry.path}`;
   }
 
   async function viewUpstream(entry: DriftEntry) {
@@ -150,6 +185,14 @@
       await invoke('restore_from_upstream', {
         path: entry.path,
         expectedUpstreamSha: entry.gitShaUpstream,
+        // Forward the report's target so the Rust side fetches from
+        // the exact tree the drift was scanned against (not the local
+        // hqVersion — those diverge whenever the user is behind on
+        // the channel). Without this the SHA hash-verify in
+        // `restore_from_upstream` rejects every restore for users
+        // who aren't already on `latest`.
+        targetRepo: report?.targetRepo,
+        targetRef: report?.targetRef,
       });
       restoreState = { ...restoreState, [key]: 'done' };
     } catch (e) {
@@ -306,7 +349,7 @@
       <h1>Core Drift</h1>
       {#if report}
         <span class="drift-meta">
-          v{report.hqVersion} · {report.count} file{report.count === 1 ? '' : 's'} differ
+          {versionLabel} · {report.count} file{report.count === 1 ? '' : 's'} differ
         </span>
       {/if}
     </div>
@@ -343,7 +386,14 @@
       <span class="drift-spinner" aria-hidden="true"></span>
       <p>Scanning locked core files…</p>
     </div>
-  {:else if report.count === 0}
+  {:else if report.modified.length === 0 && report.missing.length === 0 && report.added.length === 0}
+    <!-- Empty state must consider ALL three list lengths, not just
+         `report.count` — `count` is USER-EDIT only by design (it
+         drives the pill), so a report that's purely missing files
+         (upstream added things that haven't been overlaid yet) or
+         purely user-only files (locally-added under a locked
+         scope) carries count=0 but is *not* empty. Gating on count
+         alone would hide those sections entirely. -->
     <div class="drift-empty">
       <span class="drift-empty-check" aria-hidden="true">
         <svg width="32" height="32" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -351,7 +401,7 @@
           <path d="M5 8.2l2.2 2.2L11 6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </span>
-      <p>No drift detected. Locked core files match upstream v{report.hqVersion}.</p>
+      <p>No drift detected. Locked core files match upstream {versionLabel}.</p>
     </div>
   {:else}
     <div class="drift-body">
@@ -361,7 +411,7 @@
             Modified <span class="drift-section-count">{report.modified.length}</span>
           </h2>
           <p class="drift-section-desc">
-            Local content differs from what v{report.hqVersion} shipped. Either restore upstream, or
+            Local content differs from what {versionLabel} shipped. Either restore upstream, or
             review with an agent to decide if the edit should be lifted into a <code>personal/</code> overlay.
           </p>
           {#each report.modified as entry}

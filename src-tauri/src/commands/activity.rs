@@ -51,6 +51,15 @@ pub struct ActivityEntry {
     /// each file they received.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub author: Option<String>,
+    /// `Some(true)` if the download was a *new* file (first time this drive saw
+    /// it), `Some(false)` if it was an *update* to an existing file, `None` when
+    /// not yet known. Back-filled by [`record_new_files`] when the runner's
+    /// per-company `new-files` event arrives (it lands *after* the file's
+    /// `progress` event, so the entry is created with `None` and reconciled
+    /// later). Drives the activity log's "added" vs "updated" verb on download
+    /// rows. Always `None` on uploads/deletions.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub is_new: Option<bool>,
     /// Epoch milliseconds when the menubar observed the change.
     pub at: u64,
 }
@@ -122,6 +131,9 @@ pub fn record_progress(app: &AppHandle, p: &SyncProgressEvent) {
         bytes: p.bytes,
         direction: direction_for(p),
         author: p.author.clone(),
+        // Unknown at progress time — the `new-files` event that distinguishes
+        // added-vs-updated arrives later and back-fills this via record_new_files.
+        is_new: None,
         at: now_millis(),
     };
     state.push(entry.clone());
@@ -130,6 +142,47 @@ pub fn record_progress(app: &AppHandle, p: &SyncProgressEvent) {
     // pulls the full snapshot on ready, so a missed append is recoverable).
     if app.get_webview_window(ACTIVITY_WINDOW_LABEL).is_some() {
         let _ = app.emit_to(ACTIVITY_WINDOW_LABEL, "activity:append", &entry);
+    }
+}
+
+/// Reconcile a runner `new-files` event into the session log: mark the matching
+/// download entries as *new* so the activity log can render "added" (vs the
+/// default "updated") and, where the per-file progress event carried no author,
+/// back-fill attribution from the new-files `addedBy`.
+///
+/// The `new-files` event lands once per company *after* that company's
+/// `progress` events, so the entries already exist with `is_new: None`. We match
+/// on (company, path) over download rows and flip the flag in place, then push a
+/// fresh `activity:list` snapshot to the window (if open) so the verb updates
+/// live. Entries the event doesn't name stay `None` → rendered as "updated".
+pub fn record_new_files(app: &AppHandle, e: &crate::events::SyncNewFilesEvent) {
+    let Some(state) = app.try_state::<SessionActivity>() else {
+        return;
+    };
+    {
+        let mut log = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        apply_new_files(&mut log, e);
+    }
+
+    // Re-emit the full snapshot so an open window re-renders verbs/authors.
+    if app.get_webview_window(ACTIVITY_WINDOW_LABEL).is_some() {
+        let _ = app.emit_to(ACTIVITY_WINDOW_LABEL, "activity:list", state.snapshot());
+    }
+}
+
+/// Pure reconciliation step (extracted for testability): flip `is_new` and
+/// back-fill `author` on the matching download rows. Matches newest-first within
+/// each company+path so a same-session re-download attributes the latest row.
+fn apply_new_files(log: &mut [ActivityEntry], e: &crate::events::SyncNewFilesEvent) {
+    for file in &e.files {
+        if let Some(entry) = log.iter_mut().rev().find(|entry| {
+            entry.direction == "down" && entry.company == e.company && entry.path == file.path
+        }) {
+            entry.is_new = Some(true);
+            if entry.author.is_none() {
+                entry.author = file.added_by.clone();
+            }
+        }
     }
 }
 
@@ -278,6 +331,7 @@ mod tests {
             bytes: p.bytes,
             direction: direction_for(&p),
             author: p.author.clone(),
+            is_new: None,
             at: 0,
         };
         assert_eq!(entry.author, Some("alice@example.com".to_string()));
@@ -297,6 +351,7 @@ mod tests {
                 bytes: 1,
                 direction: "down".to_string(),
                 author: None,
+                is_new: None,
                 at: i as u64,
             });
         }
@@ -305,5 +360,66 @@ mod tests {
         // Oldest dropped: first retained entry is f50.md (at=50).
         assert_eq!(snap.first().unwrap().at, 50);
         assert_eq!(snap.last().unwrap().path, format!("f{}.md", MAX_ENTRIES + 49));
+    }
+
+    fn down(company: &str, path: &str, author: Option<&str>) -> ActivityEntry {
+        ActivityEntry {
+            company: company.to_string(),
+            path: path.to_string(),
+            bytes: 1,
+            direction: "down".to_string(),
+            author: author.map(|s| s.to_string()),
+            is_new: None,
+            at: 0,
+        }
+    }
+
+    fn new_files(company: &str, files: &[(&str, Option<&str>)]) -> crate::events::SyncNewFilesEvent {
+        crate::events::SyncNewFilesEvent {
+            company: company.to_string(),
+            files: files
+                .iter()
+                .map(|(path, added_by)| crate::events::SyncNewFileEntry {
+                    path: path.to_string(),
+                    bytes: 1,
+                    added_by: added_by.map(|s| s.to_string()),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn new_files_marks_added_and_backfills_author() {
+        let mut log = vec![
+            down("indigo", "a.md", None),               // named new, no author yet
+            down("indigo", "b.md", Some("x@e.com")),    // named new, already attributed
+            down("indigo", "c.md", None),               // NOT named -> stays an update
+        ];
+        apply_new_files(&mut log, &new_files("indigo", &[("a.md", Some("tom@e.com")), ("b.md", Some("y@e.com"))]));
+
+        // a.md: flagged new + author back-filled from addedBy
+        assert_eq!(log[0].is_new, Some(true));
+        assert_eq!(log[0].author.as_deref(), Some("tom@e.com"));
+        // b.md: flagged new, existing author preserved (not overwritten)
+        assert_eq!(log[1].is_new, Some(true));
+        assert_eq!(log[1].author.as_deref(), Some("x@e.com"));
+        // c.md: untouched -> renders as "updated"
+        assert_eq!(log[2].is_new, None);
+        assert_eq!(log[2].author, None);
+    }
+
+    #[test]
+    fn new_files_only_matches_same_company_and_downloads() {
+        let mut log = vec![
+            ActivityEntry { direction: "up".to_string(), ..down("indigo", "a.md", None) }, // upload — skip
+            down("acme", "a.md", None),  // other company — skip
+            down("indigo", "a.md", None),// the real match
+        ];
+        apply_new_files(&mut log, &new_files("indigo", &[("a.md", Some("tom@e.com"))]));
+
+        assert_eq!(log[0].is_new, None, "uploads are never marked new");
+        assert_eq!(log[1].is_new, None, "other-company rows are not matched");
+        assert_eq!(log[2].is_new, Some(true));
+        assert_eq!(log[2].author.as_deref(), Some("tom@e.com"));
     }
 }

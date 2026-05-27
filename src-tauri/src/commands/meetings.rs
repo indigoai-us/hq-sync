@@ -32,54 +32,15 @@ use crate::util::client_info::build_client;
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
 
-/// `@getindigo.ai` only for v1. Mirrors the hq-console gate. Lifted to a
-/// shared allowlist once the rollout widens.
-const ALLOWED_DOMAIN: &str = "@getindigo.ai";
-
-/// Cached per-session decision so we don't re-decode the id_token on every
-/// popover open. The token is rotated on refresh but the email claim is
-/// stable across rotations (Cognito sub stays the same), so a process-
-/// lifetime cache is safe.
-static CACHED_FLAG: OnceLock<bool> = OnceLock::new();
-
 /// Returns true iff the signed-in user's email ends in `@getindigo.ai`.
-/// Quiet on missing/malformed tokens (returns false rather than erroring) so
-/// the popover never breaks just because the user is signed out.
+///
+/// Delegates to `feature_gate::is_indigo_user()`, which caches the result for
+/// the process lifetime (the Cognito email claim is stable across token
+/// rotations). Quiet on missing/malformed tokens (returns false) so the
+/// popover never breaks because the user is signed out.
 #[tauri::command]
 pub async fn meetings_feature_enabled() -> Result<bool, String> {
-    if let Some(v) = CACHED_FLAG.get() {
-        return Ok(*v);
-    }
-    let enabled = compute_enabled().await;
-    let _ = CACHED_FLAG.set(enabled);
-    Ok(enabled)
-}
-
-async fn compute_enabled() -> bool {
-    let tokens = match cognito::get_tokens().await {
-        Ok(Some(t)) => t,
-        _ => return false,
-    };
-    let id_token = match tokens.id_token.as_deref() {
-        Some(t) if !t.is_empty() => t,
-        _ => return false,
-    };
-    let claims = match cognito::decode_id_token_claims(id_token) {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    is_allowed_email(claims.email.as_deref())
-}
-
-/// Pure helper — public for unit testing. Same logic as the hq-console
-/// `isCalendarFeatureEnabled`. Case-insensitive suffix match on the
-/// `@getindigo.ai` domain (the leading `@` prevents look-alike domains
-/// like `forgetindigo.ai` from matching).
-pub fn is_allowed_email(email: Option<&str>) -> bool {
-    match email {
-        Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(ALLOWED_DOMAIN),
-        _ => false,
-    }
+    Ok(crate::util::feature_gate::is_indigo_user().await)
 }
 
 // ── Data types (mirror hq-pro response shapes) ────────────────────────────────
@@ -567,6 +528,66 @@ pub async fn meetings_invite_bot(
     serde_json::from_str(&text).map_err(|e| format!("bot/invite parse: {e} — body: {text}"))
 }
 
+/// `POST /v1/bot/join-now` — force the Recall.ai bot to join NOW for
+/// `meeting_url`, regardless of any pre-scheduled `join_at`. Backs the
+/// MeetingsWindow row's bot-join-now icon button. Server-side
+/// (`bot.service.ts::joinBotNow`) decides the right path:
+///
+///   - existing `scheduled` bot → PATCH Recall `join_at = now`
+///   - existing `joining`/`recording` bot → no-op, return as-is
+///   - otherwise → flip any `completed` siblings to `failed`, then create
+///     a fresh bot with no `join_at` so Recall joins immediately
+///
+/// Same request shape as `meetings_invite_bot` so the UI handler can
+/// hand off the same `meeting_url` + `calendar_event_id` + `company_id`
+/// triple without re-derivation.
+#[tauri::command]
+pub async fn meetings_join_bot_now(
+    meeting_url: String,
+    calendar_event_id: Option<String>,
+    company_id: Option<String>,
+) -> Result<ScheduledBot, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let mut url = format!("{base}/v1/bot/join-now");
+    if let Some(cid) = company_id.as_ref() {
+        if !cid.is_empty() {
+            url.push_str(&format!("?companyId={cid}"));
+        }
+    }
+
+    let body = InviteBotBody {
+        meeting_url,
+        calendar_event_id,
+        // join-now reuses an existing bot record when one already exists
+        // for the meeting; if not, the server creates a fresh one. We
+        // don't have ontology participants in scope here (we'd need a
+        // calendar event id resolvable to the meeting), so let the server
+        // either reuse the existing bot's `participants` array or accept
+        // an empty list for the fresh-create case. Best-effort enrichment
+        // for the bot-invite path lives in `meetings_invite_bot`.
+        participants: Vec::new(),
+    };
+    let res = build_client()
+        .post(url)
+        .header("authorization", &auth)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("bot/join-now fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/join-now read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("bot/join-now HTTP {status}: {text}"));
+    }
+    serde_json::from_str(&text)
+        .map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
+}
+
 /// `GET /membership/me` — caller's memberships, enriched with `companyName`.
 /// Used by the modal to render human-readable company badges instead of
 /// raw `cmp_…` UIDs.
@@ -956,12 +977,14 @@ mod tests {
 
     #[test]
     fn allowlist_matches_indigo_ai() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(is_allowed_email(Some("stefan@getindigo.ai")));
         assert!(is_allowed_email(Some("STEFAN@GetIndigo.AI")));
     }
 
     #[test]
     fn allowlist_rejects_other_domains() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(!is_allowed_email(Some("someone@gmail.com")));
         assert!(!is_allowed_email(Some("admin@notindigo.ai")));
         // Look-alike domain — the leading `@` in ALLOWED_DOMAIN prevents
@@ -971,6 +994,7 @@ mod tests {
 
     #[test]
     fn allowlist_rejects_missing_email() {
+        use crate::util::feature_gate::is_allowed_email;
         assert!(!is_allowed_email(None));
         assert!(!is_allowed_email(Some("")));
     }

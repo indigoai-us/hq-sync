@@ -35,38 +35,28 @@
 //! `.claude/skills/`) are intentionally excluded — they're expected to
 //! diverge.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
-use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
-use crate::commands::hq_core_staging::{self, StagingStatus};
+use crate::commands::hq_core_staging::StagingStatus;
 use crate::commands::hq_core_update::get_local_version;
 use crate::util::logfile::log;
 use crate::util::paths;
 
-/// GitHub trees-API endpoint template for the hq-core repo. `{tag}` is
-/// substituted at call time with the user's local `hqVersion`, e.g.
-/// `v14.2.1`. The recursive=1 query expands the entire subtree in a
-/// single response (capped at 7000 entries by GitHub — hq-core is
-/// ~hundreds of files, comfortably under).
-const TREES_URL: &str =
-    "https://api.github.com/repos/indigoai-us/hq-core/git/trees/v{tag}?recursive=1";
-
-/// Raw-content fetch endpoint for restore actions. Uses the codeload
-/// CDN (raw.githubusercontent.com) rather than the API to avoid burning
-/// the 60/hr rate limit on bulk restores. `{tag}` and `{path}` are
-/// substituted at call time.
-const RAW_URL: &str =
-    "https://raw.githubusercontent.com/indigoai-us/hq-core/v{tag}/{path}";
+// Restore endpoint: built inline in `restore_from_upstream` as
+// `https://raw.githubusercontent.com/{repo}/{ref}/{path}` from the
+// caller-supplied `target_repo` + `target_ref`. Uses the codeload CDN
+// rather than the API to avoid burning the 60/hr rate limit on bulk
+// restores. (The old `RAW_URL` constant hard-coded
+// `indigoai-us/hq-core@v{tag}` — dropped when the restore became
+// channel-aware in PR #110 / Codex P2 round.)
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-const INITIAL_DELAY: Duration = Duration::from_secs(30);
-const CHECK_INTERVAL: Duration = Duration::from_secs(21600); // 6h
 
 /// One drift entry. `git_sha_upstream` is `None` for ADDED (no upstream
 /// counterpart); `git_sha_local` is `None` for MISSING (no local copy).
@@ -116,32 +106,36 @@ pub struct DriftReport {
     pub added: Vec<DriftEntry>,
     /// ISO-8601 timestamp of when the scan ran.
     pub scanned_at: String,
-    /// The hqVersion the report was computed against. Mirrored so the
-    /// frontend can detect a stale cached report after `/update-hq` runs.
+    /// The version/ref this report was *built against* (the target tree's
+    /// version, NOT the local installed version). On the release channel
+    /// this is the latest release tag without the `v` prefix
+    /// (e.g. `"14.2.1"`); on staging it's an `owner/repo@ref`-shaped
+    /// string (e.g. `"indigoai-us/hq-core-staging@a1b2c3d"`).
+    ///
+    /// Used by the detail window for the "files differ from vX.Y.Z"
+    /// header label and the per-file upstream-blob URL. The `@`
+    /// substring is the discriminator the Svelte side uses to format
+    /// staging vs release.
+    ///
+    /// NOTE: this is NOT the same as the local installed `hqVersion`
+    /// surfaced in the popover footer — pre-update, those differ when
+    /// the user is behind. Keeping them separate is what lets the detail
+    /// window link to (and `restore_from_upstream` fetch from) the tree
+    /// the drift was *measured against*, so the SHA check in the restore
+    /// path actually passes.
     pub hq_version: String,
-}
-
-/// GitHub trees-API response shape. We only care about `tree[].path` and
-/// `tree[].sha`; the rest is ignored.
-#[derive(Debug, Deserialize)]
-struct GhTreesResponse {
-    tree: Vec<GhTreeEntry>,
-    /// True when the recursive listing was truncated at the 7000-entry
-    /// cap. Logged as a warning if hit — should never happen for hq-core
-    /// at current size, but if it does the drift count is a lower bound.
-    #[serde(default)]
-    truncated: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct GhTreeEntry {
-    path: String,
-    /// `"blob"` for files, `"tree"` for directories. We only diff blobs.
-    #[serde(rename = "type")]
-    kind: String,
-    sha: String,
-    #[serde(default)]
-    size: Option<u64>,
+    /// `owner/repo` the report was built against. Forwarded to
+    /// `restore_from_upstream` so it knows where to fetch raw blob
+    /// content from. Pre-unification this was always
+    /// `indigoai-us/hq-core` (hard-coded in `RAW_URL`); after
+    /// unification staging reports land here too with the staging
+    /// repo, so the restore endpoint can't keep the hard-code.
+    pub target_repo: String,
+    /// Git ref the report was built against — branch, tag, or SHA the
+    /// caller should pass back to `restore_from_upstream`. For release
+    /// reports this is the `v`-prefixed tag (e.g. `"v14.2.1"`); for
+    /// staging it's the 40-char SHA of `main`'s HEAD at scan time.
+    pub target_ref: String,
 }
 
 /// Read `rules.locked` from the user's local `core.yaml`. Returns an empty
@@ -152,7 +146,7 @@ struct GhTreeEntry {
 /// `.claude/CLAUDE.md`, `core/policies/`). Trailing-slash convention
 /// indicates "this directory and everything under it"; leaf paths are
 /// single-file scopes.
-fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
+pub(crate) fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
     let canonical = hq_folder.join("core").join("core.yaml");
     let legacy = hq_folder.join("core.yaml");
     let core_yaml = if canonical.is_file() { canonical } else { legacy };
@@ -173,10 +167,81 @@ fn read_locked_paths(hq_folder: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Paths excluded from drift detection (both release and staging).
+///
+/// Hardcoded in the app rather than read from `core.yaml` so it survives
+/// every staging overlay (which rewrites `core/core.yaml`). The list covers
+/// four categories of false-positive drift:
+///
+///   - master-sync symlinks (target content differs from the staging blob,
+///     which is the symlink-target path string)
+///   - self-stamping meta-files (`core/core.yaml` carries the rescue stamp)
+///   - user-curated trees not sourced from staging (`core/packages` for
+///     hq-packs installs)
+///   - runtime / overwrite-only state (`.claude/state`, `companies/_template`)
+///
+/// Always interpreted as a directory-prefix match (see
+/// `path_in_excluded_scope`), so leaf entries here also cover files under
+/// the same name without needing a trailing slash.
+pub(crate) fn excluded_scope_paths() -> Vec<String> {
+    [
+        ".claude/settings.local.json",
+        ".claude/state",
+        ".claude/audit",     // runtime audit logs; not authored content
+        ".claude/worktrees", // Claude Code per-Agent worktree sandboxes
+        ".claude/commands",  // legacy — consolidated into .claude/skills/
+        ".agents/skills",
+        ".codex/claude",
+        ".codex/output-style.md",
+        "AGENTS.md",
+        "core/core.yaml",
+        "core/packages",
+        "core/workspace", // runtime markers (e.g. .last-archive-run)
+        // Generated by `core/scripts/generate-workers-registry.sh` from
+        // whatever workers the local HQ has installed (core + personal +
+        // packs). Content is a function of the user's install state, not
+        // the upstream tree — so every machine has a different file and
+        // every upstream-vs-local comparison reports false drift. Mirrors
+        // the `core/core.yaml` exclusion's rationale: a meta-file that
+        // the rescue regenerates anyway.
+        "core/workers/registry.yaml",
+        "companies/_template",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect()
+}
+
+/// True iff the path is an HQ-Sync conflict-resolution artifact
+/// (e.g. `.claude/CLAUDE.md.conflict-2026-05-15T15-11-53Z-unknown.md`).
+/// These are auto-generated when sync detects a local-vs-cloud divergence
+/// and renames the local copy — never authored content, never in staging.
+pub(crate) fn is_conflict_artifact(path: &str) -> bool {
+    // Match `.conflict-` anywhere in the basename (covers both
+    // `file.txt.conflict-...` and `dir.conflict-...` forms).
+    path.rsplit('/')
+        .next()
+        .map(|name| name.contains(".conflict-"))
+        .unwrap_or(false)
+}
+
+/// True iff the path falls under one of the excluded-path entries.
+/// Always does prefix matching (regardless of trailing slash): `core/packages`
+/// and `core/packages/` both exclude files under that directory tree.
+pub(crate) fn path_in_excluded_scope(path: &str, excluded: &[String]) -> bool {
+    for scope in excluded {
+        let prefix = scope.trim_end_matches('/');
+        if path == prefix || path.starts_with(&format!("{}/", prefix)) {
+            return true;
+        }
+    }
+    false
+}
+
 /// True iff the given upstream path (from the GitHub trees response)
 /// falls under one of the locked-path prefixes. Trailing-slash entries
 /// are dir-prefix matches; non-slash entries are exact-path matches.
-fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
+pub(crate) fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
     for scope in locked {
         if let Some(prefix) = scope.strip_suffix('/') {
             // Directory scope: prefix-match on the dir + '/' so
@@ -194,7 +259,7 @@ fn path_in_locked_scope(path: &str, locked: &[String]) -> bool {
 /// Compute git's blob SHA-1 for a byte slice. Git's content-addressable
 /// blob hash is `sha1("blob " + content_length_decimal + "\0" + content)`
 /// — matches what the GitHub trees API returns as `sha` for blob entries.
-fn git_blob_sha(content: &[u8]) -> String {
+pub(crate) fn git_blob_sha(content: &[u8]) -> String {
     let mut hasher = Sha1::new();
     hasher.update(format!("blob {}\0", content.len()).as_bytes());
     hasher.update(content);
@@ -210,7 +275,7 @@ fn git_blob_sha(content: &[u8]) -> String {
 /// return a map of relative-path → (sha1, size). Walks files directly
 /// for leaf scopes; uses walkdir for directory scopes. Symlinks are
 /// followed but never escape the HQ root.
-fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<String, (String, u64)> {
+pub(crate) fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<String, (String, u64)> {
     let mut out = BTreeMap::new();
     for scope in locked {
         let (rel, is_dir) = if let Some(prefix) = scope.strip_suffix('/') {
@@ -242,7 +307,19 @@ fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<Strin
                 let rel_str = rel_path.to_string_lossy().replace('\\', "/");
                 out.insert(rel_str, (sha, size));
             }
-        } else if abs.is_file() {
+        } else {
+            // Leaf scope. Use `symlink_metadata` (NOT `is_file`, which
+            // follows symlinks) so master-sync-generated symlinks like
+            // `AGENTS.md → .claude/CLAUDE.md` are skipped instead of
+            // re-hashed against the target's content. Git stores a symlink
+            // as a content blob of its target-path string, not the target's
+            // content, so following the symlink yields a wrong SHA every
+            // time. Symlinks in directory scopes are already skipped by the
+            // walkdir `is_file()` filter above; this is the leaf-scope twin.
+            let Ok(meta) = abs.symlink_metadata() else { continue; };
+            if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+                continue;
+            }
             if let Ok(content) = std::fs::read(&abs) {
                 let size = content.len() as u64;
                 let sha = git_blob_sha(&content);
@@ -253,203 +330,25 @@ fn walk_local_under_scope(hq_folder: &Path, locked: &[String]) -> BTreeMap<Strin
     out
 }
 
-async fn fetch_upstream_tree(hq_version: &str) -> Result<BTreeMap<String, (String, u64)>, String> {
-    let url = TREES_URL.replace("{tag}", hq_version);
-    let client = reqwest::Client::builder()
-        .default_headers(crate::util::client_info::client_headers())
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|e| format!("build client: {e}"))?;
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-        .map_err(|e| format!("GET {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("GitHub API returned HTTP {}", resp.status()));
-    }
-    let parsed: GhTreesResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("parse trees JSON: {e}"))?;
-    if parsed.truncated {
-        log(
-            "hq-core-drift",
-            "WARNING: GitHub trees response truncated — drift count is a lower bound",
-        );
-    }
-    let mut out = BTreeMap::new();
-    for entry in parsed.tree {
-        if entry.kind != "blob" {
-            continue;
-        }
-        out.insert(entry.path, (entry.sha, entry.size.unwrap_or(0)));
-    }
-    Ok(out)
-}
-
-/// Run one drift check. Returns `Ok(None)` when we can't compute a
-/// report (no hqVersion, network failure) — same fail-quiet posture as
-/// the other notifiers.
-pub async fn check_once(app: &AppHandle) -> Result<Option<DriftReport>, String> {
-    let Some(hq_version) = get_local_version() else {
-        return Ok(None);
-    };
-
-    let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
-        .ok()
-        .filter(|p| p.exists())
-        .and_then(|p| std::fs::read_to_string(&p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok());
-    let config = read_hq_config_lenient().ok().flatten();
-    let hq_folder = paths::resolve_hq_folder(
-        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
-        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
-    );
-
-    let locked = read_locked_paths(&hq_folder);
-    if locked.is_empty() {
-        return Ok(None);
-    }
-
-    let upstream = fetch_upstream_tree(&hq_version).await?;
-    let local = walk_local_under_scope(&hq_folder, &locked);
-
-    let upstream_in_scope: BTreeMap<String, (String, u64)> = upstream
-        .into_iter()
-        .filter(|(path, _)| path_in_locked_scope(path, &locked))
-        .collect();
-
-    let upstream_paths: BTreeSet<&String> = upstream_in_scope.keys().collect();
-    let local_paths: BTreeSet<&String> = local.keys().collect();
-
-    let mut modified = Vec::new();
-    let mut missing = Vec::new();
-    let mut added = Vec::new();
-
-    for path in upstream_paths.intersection(&local_paths) {
-        let (sha_up, size_up) = &upstream_in_scope[*path];
-        let (sha_local, size_local) = &local[*path];
-        if sha_up != sha_local {
-            modified.push(DriftEntry {
-                path: (*path).clone(),
-                size: *size_local,
-                git_sha_local: Some(sha_local.clone()),
-                git_sha_upstream: Some(sha_up.clone()),
-                staging_status: None,
-            });
-            // size_up is unused for modified — we already report local size.
-            let _ = size_up;
-        }
-    }
-    for path in upstream_paths.difference(&local_paths) {
-        let (sha_up, size_up) = &upstream_in_scope[*path];
-        missing.push(DriftEntry {
-            path: (*path).clone(),
-            size: *size_up,
-            git_sha_local: None,
-            git_sha_upstream: Some(sha_up.clone()),
-            staging_status: None,
-        });
-    }
-    for path in local_paths.difference(&upstream_paths) {
-        let (sha_local, size_local) = &local[*path];
-        added.push(DriftEntry {
-            path: (*path).clone(),
-            size: *size_local,
-            git_sha_local: Some(sha_local.clone()),
-            git_sha_upstream: None,
-            staging_status: None,
-        });
-    }
-
-    // Staging-aware classification (@getindigo.ai builders only — see
-    // `hq_core_staging`). Fail-quiet: if the staging index can't be built
-    // (ineligible, no gh token, network/API error) we leave every
-    // `staging_status` as None and the report renders exactly as before.
-    // `count` is intentionally NOT affected — staging status is per-row
-    // metadata only, the pill total still reflects all drift.
-    if let Some(index) = hq_core_staging::build_index_if_eligible().await {
-        for entry in modified.iter_mut().chain(added.iter_mut()) {
-            if let Some(sha) = entry.git_sha_local.as_deref() {
-                entry.staging_status = Some(index.classify(&entry.path, sha));
-            }
-        }
-    }
-
-    let count = modified.len() + missing.len() + added.len();
-    let report = DriftReport {
-        count,
-        modified,
-        missing,
-        added,
-        scanned_at: chrono::Utc::now().to_rfc3339(),
-        hq_version,
-    };
-
-    log(
-        "hq-core-drift",
-        &format!(
-            "check: hq_version={} count={} (modified={}, missing={}, added={})",
-            report.hq_version,
-            report.count,
-            report.modified.len(),
-            report.missing.len(),
-            report.added.len()
-        ),
-    );
-
-    // Always emit so the frontend can update from a stale count back to
-    // zero when the user has since reconciled. Unlike the update nag
-    // which only emits on the unhappy path, drift state can swing in
-    // both directions on a re-check.
-    let _ = app.emit("hq-core-drift:available", &report);
-
-    // Keep an open detail window (and its PendingDrift stash) in sync with
-    // this scan so a Recheck button — or any background re-check — live-
-    // updates the window in place instead of leaving a stale report on
-    // screen. The detail window listens on `drift:report` (see
-    // drift_detail.rs + DriftDetail.svelte); `emit_to` no-ops harmlessly
-    // when the window isn't open, and the stash means a subsequent open
-    // shows this scan rather than the one that first triggered the pill.
-    if let Some(state) = app.try_state::<crate::commands::drift_detail::PendingDrift>() {
-        *state.0.lock().unwrap() = Some(report.clone());
-    }
-    let _ = app.emit_to(
-        crate::commands::drift_detail::WINDOW_LABEL,
-        "drift:report",
-        &report,
-    );
-
-    Ok(Some(report))
-}
-
-/// Tauri command — synchronous one-shot drift check. Used by the popover
-/// pill's "Refresh" affordance and by the detail window on mount.
-#[tauri::command]
-pub async fn check_hq_core_drift(app: AppHandle) -> Result<Option<DriftReport>, String> {
-    check_once(&app).await
-}
-
-/// Background loop: first check 30s after launch (offset from updater
-/// 10s / CLI 15s / core-update 20s), then every 6h. Logs but does not
-/// propagate errors — a flaky network shouldn't kill the loop.
-pub fn setup_hq_core_drift_checker(app: &AppHandle) {
-    let handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(INITIAL_DELAY).await;
-        loop {
-            if let Err(e) = check_once(&handle).await {
-                log("hq-core-drift", &format!("background check failed: {e}"));
-            }
-            tokio::time::sleep(CHECK_INTERVAL).await;
-        }
-    });
-}
-
 /// Tauri command — restore a single file from upstream by overwriting
-/// the local copy with the content at `v{hqVersion}` on GitHub.
+/// the local copy with the content at `{target_repo}@{target_ref}` on
+/// GitHub.
+///
+/// `target_repo` + `target_ref` come from the open drift report (the
+/// detail window forwards them from `DriftReport.target_repo` /
+/// `target_ref`) so the restore fetches from the *same tree the report
+/// was scanned against*. Before Codex P2 review on PR #110 these args
+/// didn't exist and the restore read local `hqVersion` directly +
+/// hard-coded `indigoai-us/hq-core`; that worked only when the user was
+/// already on the release tag the report compared against. After the
+/// unification a v14.0.0 user gets a report measured against v14.2.1,
+/// so the old codepath fetched `v14.0.0`'s content and failed the SHA
+/// check against `entry.gitShaUpstream` (which carries the v14.2.1
+/// blob SHA). The args make the fetch source explicit.
+///
+/// Both args are `Option` for back-compat: legacy callers without a
+/// recent report fall through to the original behavior (local
+/// `hqVersion` + `indigoai-us/hq-core`).
 ///
 /// Safety:
 ///   * `path` is constrained to live under one of `rules.locked` (the
@@ -468,9 +367,18 @@ pub fn setup_hq_core_drift_checker(app: &AppHandle) {
 pub async fn restore_from_upstream(
     path: String,
     expected_upstream_sha: Option<String>,
+    target_repo: Option<String>,
+    target_ref: Option<String>,
 ) -> Result<(), String> {
-    let Some(hq_version) = get_local_version() else {
-        return Err("hqVersion not detectable — cannot resolve upstream tag".into());
+    let repo = target_repo.unwrap_or_else(|| "indigoai-us/hq-core".to_string());
+    let git_ref = match target_ref {
+        Some(r) => r,
+        None => {
+            let Some(v) = get_local_version() else {
+                return Err("hqVersion not detectable — cannot resolve upstream tag".into());
+            };
+            format!("v{v}")
+        }
     };
 
     let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
@@ -495,9 +403,7 @@ pub async fn restore_from_upstream(
         return Err(format!("path {path:?} is not a safe relative path"));
     }
 
-    let url = RAW_URL
-        .replace("{tag}", &hq_version)
-        .replace("{path}", &path);
+    let url = format!("https://raw.githubusercontent.com/{repo}/{git_ref}/{path}");
     let client = reqwest::Client::builder()
         .default_headers(crate::util::client_info::client_headers())
         .timeout(REQUEST_TIMEOUT)

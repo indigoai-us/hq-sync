@@ -133,6 +133,7 @@ fn main() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -146,6 +147,7 @@ fn main() {
         .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
+        .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -191,12 +193,14 @@ fn main() {
             tray::set_tray_state,
             updater::check_for_updates,
             updater::install_update,
+            updater::available_channels,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
-            commands::hq_core_update::check_hq_core_update,
             commands::hq_core_update::get_hq_version,
-            commands::hq_core_drift::check_hq_core_drift,
+            commands::hq_core_update::install_hq_core_update,
             commands::hq_core_drift::restore_from_upstream,
+            commands::hq_core_staging::run_replace_from_staging,
+            commands::hq_core_state::check_core_state,
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
             commands::new_files::open_new_files_detail,
@@ -211,6 +215,7 @@ fn main() {
             commands::meetings::meetings_list_accounts,
             commands::meetings::meetings_list_calendars_for_account,
             commands::meetings::meetings_invite_bot,
+            commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
             commands::meetings::meetings_check_bot_for_url,
@@ -223,6 +228,11 @@ fn main() {
             commands::recall_sdk::stop_recording,
             tray::meetings_set_prompt_badge,
             tray::show_main_window,
+            commands::share_notify::poll_shared_with_me,
+            commands::share_notify::open_share_detail,
+            commands::share_notify::share_detail_window_ready,
+            commands::notifications::notification_permission_state,
+            commands::notifications::notification_request_permission,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -268,7 +278,35 @@ fn main() {
             }
 
             tray::setup_tray(app.handle())?;
+            // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
+            // updater at 10s) so a known-bad release can be yanked before the
+            // user touches anything sensitive. Server-side source of truth is
+            // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
+            // See `commands::version_gate` for the rationale.
+            commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
+
+            // Share-notification poller: fires 5s after launch and after
+            // every sync:all-complete event. Gated to @getindigo.ai users
+            // and the shareNotifications menubar preference (both checked
+            // inside share_notify — not here so the gate is never scattered).
+            {
+                use tauri::Listener;
+                // (a) Launch-time poll — 5s delay matches the updater pattern.
+                commands::share_notify::setup_share_notify_poller(app.handle().clone());
+
+                // (b) Post-sync poll — fires after every complete sync run.
+                let poll_handle = app.handle().clone();
+                app.listen(
+                    crate::events::EVENT_SYNC_ALL_COMPLETE,
+                    move |_event| {
+                        let h = poll_handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            commands::share_notify::poll_once(h).await;
+                        });
+                    },
+                );
+            }
 
             // Register Cmd+Shift+H globally so the popover can be summoned
             // from any app. The handler (configured on the plugin builder
@@ -288,8 +326,7 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
-            commands::hq_core_update::setup_hq_core_update_checker(app.handle());
-            commands::hq_core_drift::setup_hq_core_drift_checker(app.handle());
+            commands::hq_core_state::setup_core_state_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for
             // `@indigoai-us/hq-cloud@<HQ_CLOUD_VERSION>` so the user's

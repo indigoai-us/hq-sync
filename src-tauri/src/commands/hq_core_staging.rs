@@ -30,9 +30,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager};
 
-use crate::commands::config::MenubarPrefs;
+use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::client_info::client_headers;
 use crate::util::logfile::log;
 use crate::util::paths;
@@ -156,6 +158,47 @@ fn signed_in_email() -> Option<String> {
         .and_then(|c| c.email)
 }
 
+/// Read `stagingChannel` from `~/.hq/menubar.json`. Returns `true` (channel
+/// ON) when the field is missing or null — preserves the pre-toggle
+/// behaviour for @indigo builders who haven't touched Settings. Explicit
+/// `false` flips them to the prod release channel.
+///
+/// Non-@indigo users' value is read but has no effect: `is_eligible_email`
+/// gates them out before `is_staging_channel_enabled` is consulted. The
+/// field is only writable for @indigo users via the Settings toggle (which
+/// is hidden behind the shared `meetings_feature_enabled` gate — same
+/// @getindigo.ai predicate the share-notify section uses).
+fn is_staging_channel_enabled() -> bool {
+    let prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    prefs
+        .and_then(|p| p.staging_channel)
+        .unwrap_or(true)
+}
+
+/// True when `~/.hq/menubar.json` carries an explicit non-empty
+/// `driftStagingRepo`. The toggle's intent is "indigo opt-out of the
+/// DEFAULT staging channel"; a user who manually configured a custom
+/// staging repo has already made an explicit choice that takes
+/// precedence (Codex P2 review on PR #110). `resolve_channel` in
+/// `hq_core_state.rs` already shortcircuits to Staging on this path
+/// before reading the toggle, so the spawn-side gate needs the same
+/// carve-out to stay consistent with what the popover renders.
+fn has_explicit_staging_repo() -> bool {
+    let prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    prefs
+        .and_then(|p| p.drift_staging_repo)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+}
+
 /// Resolve the staging repo (`owner/name`) to classify against:
 ///   1. explicit `driftStagingRepo` in `~/.hq/menubar.json` (any team can
 ///      point this at their own staging repo), else
@@ -182,7 +225,13 @@ fn resolve_staging_repo(eligible: bool) -> Option<String> {
 
 /// Resolve a GitHub token via the local `gh` CLI, falling back to parsing
 /// `~/.config/gh/hosts.yml`. Returns `None` (feature dark) on any failure.
-fn resolve_gh_token() -> Option<String> {
+///
+/// Crate-public: `hq_core_update::install_hq_core_update` reuses this to
+/// pass `GH_TOKEN` through to the rescue script when available. The public
+/// hq-core repo doesn't strictly require a token, but threading one through
+/// dodges the anonymous-clone rate limit (60/h) for users who already have
+/// `gh` configured locally.
+pub(crate) fn resolve_gh_token() -> Option<String> {
     // 1. `gh auth token` — the canonical, always-fresh source.
     let gh = paths::resolve_bin("gh");
     if let Ok(output) = Command::new(&gh).args(["auth", "token"]).output() {
@@ -414,6 +463,216 @@ pub async fn build_index_if_eligible() -> Option<StagingIndex> {
         ),
     );
     Some(StagingIndex { main, prs })
+}
+
+// ── Sync-point provenance & full replace-rescue ──────────────────────────────
+//
+// The scripts/replace-rescue.sh rescue script (renamed from
+// `replace-from-staging-rescue.sh` in v0.1.104) stamps
+// `replaced_from_source.last_sync_sha` into `core/core.yaml` after every
+// successful default-mode run. The menubar surfaces an "Update from staging"
+// pill (only for `@getindigo.ai` users) when:
+//   * the stamp is missing entirely (never synced), OR
+//   * the stamped SHA is older than staging `main`'s HEAD SHA.
+//
+// Clicking the pill invokes `run_replace_from_staging`, which spawns the
+// bundled bash script against the resolved HQ folder. The script handles
+// drift rescue, history-aware skip gate, carve-outs, and the post-overlay
+// stamp write — see scripts/replace-rescue.sh for the full algorithm.
+
+/// Output from spawning the rescue script. Wired to the frontend so the
+/// popover can show success / failure + the last few lines of script output
+/// without dumping the whole 700-line scan log into the popover.
+#[derive(Debug, Clone, Serialize)]
+pub struct RescueRunResult {
+    /// Process exit code. `0` is success; non-zero is a script-side error.
+    pub exit_code: i32,
+    /// Last ~40 lines of combined stdout+stderr — enough for the trailing
+    /// summary block without flooding the IPC bridge.
+    pub log_tail: String,
+    /// Full log file path on disk for `Open in Finder` / debug.
+    pub log_path: String,
+}
+
+/// Resolve the user's HQ folder using the same 4-tier resolver the rest of
+/// the app uses (menubar.json → config.json → discovery → ~/HQ).
+///
+/// Crate-public: shared with `hq_core_update::install_hq_core_update` so the
+/// prod-update spawn path doesn't re-implement the resolver tree.
+pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
+    let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let config = read_hq_config_lenient().ok().flatten();
+    paths::resolve_hq_folder(
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
+    )
+}
+
+/// Resolve the bundled rescue script via Tauri's resource API. In dev
+/// (`cargo run` / `tauri dev`) the script ships at `_up_/scripts/...` under
+/// the resource dir (Tauri rewrites `../scripts/...` to `_up_/scripts/...`
+/// during resource staging). In packaged builds the bundler places it in
+/// the .app's `Resources/` directory under the same relative path.
+///
+/// Crate-public: `hq_core_update::install_hq_core_update` reuses this to
+/// spawn the same rescue script against the released hq-core repo (replaces
+/// the old "open Claude Code with /update-hq" CTA for prod users).
+pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    // New name first (v0.1.104+), old name as fallback so a stale resource
+    // dir mid-rebuild (or any pre-rename hq-sync.app still on disk that
+    // somehow re-invokes this code path) still resolves cleanly. Both
+    // names point at the same script; the rename was purely cosmetic.
+    let candidates = [
+        "_up_/scripts/replace-rescue.sh",
+        "scripts/replace-rescue.sh",
+        "_up_/scripts/replace-from-staging-rescue.sh",
+        "scripts/replace-from-staging-rescue.sh",
+    ];
+    for rel in candidates {
+        if let Ok(p) = app.path().resolve(rel, BaseDirectory::Resource) {
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+    // Last-resort dev fallback: the cwd may be the repo root when
+    // running `cargo run` directly without going through `tauri dev`.
+    // Try the new name first here too.
+    let cwd = std::env::current_dir().ok();
+    for filename in ["replace-rescue.sh", "replace-from-staging-rescue.sh"] {
+        if let Some(p) = cwd.as_ref().map(|c| c.join("scripts").join(filename)) {
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
+    Err(format!(
+        "replace-rescue.sh not found in resource dir (looked at: {:?})",
+        candidates
+    ))
+}
+
+/// Tauri command — run the rescue script against the resolved HQ folder.
+/// Eligibility is enforced by `resolve_staging_repo`: ineligible users with
+/// no `driftStagingRepo` override resolve to `None` and get rejected here.
+/// Ineligible users WITH an explicit override are allowed through — they
+/// opted in by configuring the menubar pref, and the same path lets the
+/// pill render for them in `check_staging_replace_available`. Keeping the
+/// two entry points consistent avoids the "visible action that always
+/// errors" pattern Codex flagged.
+///
+/// Long-running (~30-90s on first run because of the full-history clone +
+/// scan). The frontend should show a spinner and disable the pill while
+/// the future is pending.
+#[tauri::command]
+pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult, String> {
+    // Settings toggle: @indigo user opted out of the DEFAULT staging
+    // channel. The pill should already be hidden when the toggle is
+    // off, so reaching this command means the frontend is stale or a
+    // custom caller is invoking us — refuse the spawn unless the user
+    // also carved out an explicit `driftStagingRepo` override.
+    //
+    // The carve-out matters because `resolve_channel` treats an
+    // explicit repo as Staging *regardless* of the toggle. Without
+    // this guard a user with a custom staging repo would see the
+    // popover render Staging + click the pill + hit "staging channel
+    // disabled" — exactly the inconsistency Codex flagged in the
+    // round-5 review on PR #110.
+    if !is_staging_channel_enabled() && !has_explicit_staging_repo() {
+        return Err(
+            "staging channel disabled in Settings — re-enable to run replace-from-staging"
+                .to_string(),
+        );
+    }
+    let eligible = is_eligible_email(signed_in_email().as_deref());
+    let repo = resolve_staging_repo(eligible).ok_or_else(|| {
+        "no staging repo resolved (set driftStagingRepo in ~/.hq/menubar.json, or sign in with an @getindigo.ai account)".to_string()
+    })?;
+    let token = resolve_gh_token()
+        .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
+    let hq_folder = resolve_hq_folder();
+    if !hq_folder.join("companies").is_dir() || !hq_folder.join("personal").is_dir() {
+        return Err(format!(
+            "HQ folder at {} is missing companies/ or personal/ (not a valid HQ root)",
+            hq_folder.display()
+        ));
+    }
+    let script = resolve_rescue_script(&app)?;
+
+    // Stream the combined output to a per-invocation log file so the user
+    // can `tail -f` it during the multi-minute scan and so we have a
+    // post-mortem on failures. The popover gets a 40-line tail.
+    let log_path = std::env::temp_dir().join(format!(
+        "hq-sync-replace-from-staging-{}.log",
+        std::process::id()
+    ));
+    let log_file_for_stdout = std::fs::File::create(&log_path)
+        .map_err(|e| format!("create log file {}: {e}", log_path.display()))?;
+    let log_file_for_stderr = log_file_for_stdout
+        .try_clone()
+        .map_err(|e| format!("dup log file fd: {e}"))?;
+
+    log(
+        "hq-core-staging",
+        &format!(
+            "spawning rescue: script={} hq_root={} repo={} log={}",
+            script.display(),
+            hq_folder.display(),
+            repo,
+            log_path.display()
+        ),
+    );
+
+    // bash <script> --hq-root <folder> --source <repo> --yes
+    // Token is passed via env (never in argv — argv shows up in `ps`).
+    let bash = paths::resolve_bin("bash");
+    let mut cmd = tokio::process::Command::new(&bash);
+    cmd.arg(script.as_os_str())
+        .arg("--hq-root")
+        .arg(hq_folder.as_os_str())
+        .arg("--source")
+        .arg(&repo)
+        .arg("--yes")
+        .env("GH_TOKEN", &token)
+        .stdout(std::process::Stdio::from(log_file_for_stdout))
+        .stderr(std::process::Stdio::from(log_file_for_stderr));
+
+    let status = cmd
+        .status()
+        .await
+        .map_err(|e| format!("spawn rescue script: {e}"))?;
+
+    let exit_code = status.code().unwrap_or(-1);
+    let log_tail = tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+
+    log(
+        "hq-core-staging",
+        &format!("rescue exit={} log={}", exit_code, log_path.display()),
+    );
+
+    Ok(RescueRunResult {
+        exit_code,
+        log_tail,
+        log_path: log_path.display().to_string(),
+    })
+}
+
+/// Read the last N lines of a log file. Pure stdlib so we don't pull in
+/// another dep just for tailing. Reads the whole file into memory — fine
+/// for our use (rescue logs are < 100 KB even in the worst case).
+///
+/// Crate-public so `hq_core_update::install_hq_core_update` can surface the
+/// same trailing-log feedback chip the staging pill uses.
+pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n_lines);
+    Ok(lines[start..].join("\n"))
 }
 
 #[cfg(test)]
