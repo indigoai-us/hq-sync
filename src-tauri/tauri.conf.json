@@ -35,7 +35,8 @@
         "decorations": true,
         "transparent": false,
         "titleBarStyle": "overlay",
-        "visible": false
+        "visible": false,
+        "create": false
       }
     ],
     "security": {
