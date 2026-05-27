@@ -58,6 +58,7 @@ const CHECK_INTERVAL: Duration = Duration::from_secs(21_600);
 /// Field names mirror `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`
 /// exactly — drift here = silent gate failure.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct VersionCheckResponse {
     pub client_id: String,
     pub current_version: String,
