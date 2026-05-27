@@ -192,6 +192,7 @@ fn main() {
             tray::set_tray_state,
             updater::check_for_updates,
             updater::install_update,
+            updater::available_channels,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
             commands::hq_core_update::get_hq_version,
@@ -218,6 +219,8 @@ fn main() {
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
+            commands::notifications::notification_permission_state,
+            commands::notifications::notification_request_permission,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -263,6 +266,12 @@ fn main() {
             }
 
             tray::setup_tray(app.handle())?;
+            // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
+            // updater at 10s) so a known-bad release can be yanked before the
+            // user touches anything sensitive. Server-side source of truth is
+            // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
+            // See `commands::version_gate` for the rationale.
+            commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
 
             // Share-notification poller: fires 5s after launch and after

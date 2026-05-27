@@ -187,6 +187,16 @@ fn file_needs_upload(
 }
 
 pub(crate) fn is_personal_vault_path(rel: &str) -> bool {
+    // companies/manifest.yaml is the routing source-of-truth (which slugs
+    // exist, which are cloud-backed) — included in the personal-vault
+    // scope despite the parent `companies/` top-level exclusion. Mirrors
+    // the TS `computePersonalVaultPaths` special-case shipped in
+    // @indigoai-us/hq-cloud@5.39.0 so the Rust first-push and Node
+    // steady-state push agree on whether manifest.yaml belongs in the
+    // personal vault.
+    if rel == "companies/manifest.yaml" {
+        return true;
+    }
     let top = rel.split('/').next().unwrap_or("");
     if top.is_empty() {
         return false;
@@ -981,6 +991,23 @@ mod tests {
         assert!(!is_personal_vault_path("repos/foo/README.md"), "repos/ have their own remotes");
         assert!(!is_personal_vault_path("workspace/threads/T-1.md"), "workspace/ is local session state");
         assert!(!is_personal_vault_path(".git/HEAD"), ".git/ is never synced");
+        // companies/manifest.yaml is the ONE special-case: routing
+        // source-of-truth, included despite the companies/ exclusion.
+        // Mirrors hq-cloud@5.39.0 computePersonalVaultPaths.
+        assert!(
+            is_personal_vault_path("companies/manifest.yaml"),
+            "manifest.yaml special-cased — routing source-of-truth, included in personal vault",
+        );
+        // Anti-test: ONLY manifest.yaml gets the bypass; other companies/
+        // root files stay excluded.
+        assert!(
+            !is_personal_vault_path("companies/README.md"),
+            "only manifest.yaml is special-cased — other companies/ root files stay excluded",
+        );
+        assert!(
+            !is_personal_vault_path("companies/manifest.yml"),
+            "exact filename match — .yml variant stays excluded",
+        );
         // Empty input still false (no top segment to evaluate).
         assert!(!is_personal_vault_path(""));
     }

@@ -85,13 +85,21 @@ pub struct MenubarPrefs {
     /// menubar.json files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_notifications: Option<bool>,
-    /// Update channel for @getindigo.ai builders. When `true` (default), the
-    /// Settings toggle is ON → the popover renders "Update to Staging" and
-    /// the rescue script targets `indigoai-us/hq-core-staging`. When `false`,
-    /// the toggle is OFF → both the staging-replace check and the staging-
-    /// drift check return None (feature dark), so the popover falls through
-    /// to the prod "Update to vX.Y.Z" pill backed by `install_hq_core_update`
-    /// — the same flow non-@indigo users see.
+    /// Rescue-source channel for @getindigo.ai builders. When `true`
+    /// (default), the Settings toggle is ON → the popover's `CoreState`
+    /// runs against `indigoai-us/hq-core-staging` (drift vs staging main,
+    /// rescue spawned against staging main). When `false`, the toggle is
+    /// OFF → the staging code paths short-circuit (feature dark) and the
+    /// popover falls through to the prod release channel, comparing
+    /// against `indigoai-us/hq-core@v{latest}` like every non-@indigo
+    /// user sees.
+    ///
+    /// Distinct from `release_channel` below: that field controls which
+    /// hq-sync release the auto-updater pulls (stable/beta/alpha);
+    /// `staging_channel` controls which hq-core source tree the in-app
+    /// rescue + drift classifier targets. The two are orthogonal — a
+    /// @indigo user can be on the beta hq-sync channel while keeping the
+    /// rescue pointed at the prod hq-core release.
     ///
     /// Setting visibility is gated by `staging_channel_setting_visible`
     /// (returns true only for `@getindigo.ai` emails). Non-@indigo users
@@ -103,6 +111,20 @@ pub struct MenubarPrefs {
     /// across upgrade — explicit `false` flips them to the prod channel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staging_channel: Option<bool>,
+    /// Auto-updater release channel: `"stable"`, `"beta"`, or `"alpha"`.
+    /// Mapped to a GitHub-tag-suffix filter by
+    /// `util::release_channel::ReleaseChannel::from_pref` and gated by
+    /// `util::feature_gate::is_indigo_user()` — non-`@getindigo.ai` users
+    /// are coerced to `"stable"` at the resolver in `updater.rs`
+    /// regardless of what's stored here, so a hand-edited menubar.json
+    /// cannot escape stable.
+    ///
+    /// Absent in pre-channel-rollout menubar.json files → defaulted in
+    /// `get_settings` to `"beta"` for indigo users (auto-opt-in to
+    /// dogfood the freshest build) and `"stable"` for everyone else.
+    /// See `util::release_channel::effective_channel`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_channel: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

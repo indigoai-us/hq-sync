@@ -4,9 +4,9 @@ title: hq-sync releases ship only via the tag-triggered workflow
 scope: repo
 trigger: Producing a release artifact (DMG, tarball, signature, `latest.json`) for hq-sync
 enforcement: soft
-version: 1
+version: 2
 created: 2026-05-20
-updated: 2026-05-20
+updated: 2026-05-26
 public: false
 source: discover
 learned_from: discover/hq-sync@5aca1cd
@@ -37,6 +37,18 @@ Local-machine `tauri build` outputs are for development and manual testing only 
 - If the workflow fails, fix the failure and retry the tag — never paper over by uploading a local build.
 - Manual `workflow_dispatch` with a tag input is allowed (the workflow recomputes everything from the tag).
 
+## Release channels
+
+The workflow accepts three tag shapes, classified by suffix in the `Validate tag format + classify channel` step:
+
+| Tag pattern | Channel | `prerelease:` |
+|---|---|---|
+| `vX.Y.Z` | Stable | `false` |
+| `vX.Y.Z-beta.N` | Beta | `true` |
+| `vX.Y.Z-alpha.N` | Alpha | `true` |
+
+Any other pre-release pattern (`-rc.N`, `-pre`, `-dev`, raw `-beta` without `.N`) is REJECTED at validation time. The auto-updater's tag-suffix filter (`util/release_channel.rs::parse_channel_from_tag`) only classifies these three shapes, so the workflow rejects anything else to avoid silently shipping a release the client cannot route. See `hq-sync-release-channels-client-gating` for the client-side gating that complements the CI `prerelease` flag.
+
 ## Exceptions
 
-None. A future release channel (e.g. nightly) must add its own workflow rather than bypassing this one.
+None. A future release channel must add its own classifier branch to this workflow AND a matching arm in `parse_channel_from_tag` in the same PR — drift between them silently strands the new channel.

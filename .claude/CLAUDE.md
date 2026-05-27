@@ -4,7 +4,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 
 ## Architecture
 
-**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23). Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, and Connect diagnostics drawer), `Settings` (preferences + folder re-tether). Conflict resolution via `ConflictModal` + `ConflictRow` components. New-file notification via `NewFilesBadge` (in-popover count) + `NewFilesDetail` (secondary window with file list and attribution).
+**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23). Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, and Connect diagnostics drawer), `Settings` (preferences + folder re-tether). Conflict resolution via `ConflictModal` + `ConflictRow` components. New-file notification via `NewFilesBadge` (in-popover count) + `NewFilesDetail` (secondary window with file list and attribution). Recent Changes via `ActivityLog` (secondary window listing the session's per-file syncs, each attributed as "{author} added/updated" — author email + verb — falling back to the company slug when no author).
 
 **Backend:** Tauri 2 Rust commands in `src-tauri/src/commands/`. 29 registered commands in `main.rs`.
 
@@ -32,10 +32,11 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `commands/process.rs` | Generic subprocess lifecycle with SIGTERM->SIGKILL |
 | `commands/conflicts.rs` | Conflict resolution + open-in-editor |
 | `commands/new_files.rs` | New files detail window — creates/focuses a secondary Tauri window showing file list with attribution. Uses managed `PendingNewFiles` state + ready handshake pattern |
+| `commands/activity.rs` | Session activity log (Recent Changes window) — in-memory append-only `Vec<ActivityEntry>` in managed state, one entry per `progress` event. Each entry carries `direction`, `author`, and `is_new`. `record_new_files()` reconciles the per-company `new-files` event onto the matching download rows (flips `is_new` so the UI renders "added" vs "updated", back-fills `author` from `addedBy` where the progress event had none). Renders as "{author} added/updated", falling back to the company slug when no author |
 | `commands/settings.rs` | Settings persistence |
 | `commands/autostart.rs` | Login-item autostart. `ensure_autostart_on_launch()` (called from `main.rs` `.setup()`, macOS-gated) idempotently reconciles the LaunchAgent plist with the effective `startAtLogin` pref on every launch — **default-on** (a fresh install autostarts without opening Settings), honouring an explicit `"startAtLogin": false` opt-out (stale plist removed). Mirrors the `daemon.rs` `realtime_sync` default-on convention |
 | `tray.rs` | System tray with 4 visual states (idle/syncing/error/conflict) |
-| `updater.rs` | Auto-update checker (10s delay, then every 6h) |
+| `updater.rs` | Auto-update checker (10s delay, then every 6h). **Channel-aware**: resolves a per-user endpoint via `util/release_channel.rs` from `MenubarPrefs.release_channel` × `util/feature_gate::is_indigo_user`. Non-`@getindigo.ai` users are coerced to Stable regardless of stored preference (defense-in-depth). Exposes `available_channels` command for the Settings picker. |
 | `events.rs` | Typed sync event structs (ndjson discriminated union) |
 | `sentry_scrub.rs` | Sentry event scrubber — strips Cognito tokens and home-dir paths before send |
 | `util/paths.rs` | HQ folder resolver (4-tier — see below). Also provides `resolve_bin` + `child_path` for finding `hq` and node-shebang interpreters under launchd's minimal PATH |
@@ -127,12 +128,14 @@ Both are best-effort and don't block the sync. Failures log to the diagnostic lo
 `hq sync --json` emits ndjson lines. Types defined in `events.rs`:
 
 ```
-{"type":"progress","phase":"uploading","filesComplete":3,"filesTotal":10}
+{"type":"progress","company":"indigo","path":"docs/a.md","bytes":42,"direction":"down","author":"user@example.com"}
 {"type":"conflict","path":"file.txt","localHash":"aaa","remoteHash":"bbb","canAutoResolve":true}
 {"type":"error","code":"NET_FAIL","message":"Connection reset"}
 {"type":"complete","filesChanged":7,"bytesTransferred":204800,"journalPath":"/tmp/j.log"}
 {"type":"new-files","company":"indigo","files":[{"path":"docs/new.md","bytes":1024,"addedBy":"user@example.com"}]}
 ```
+
+On `progress`, `direction` (`"up"`/`"down"`, hq-cloud ≥5.29) and `author` (download-only, from S3 `created-by`, hq-cloud ≥5.31) are optional — older runners omit them. The activity log uses `author` to attribute each downloaded file ("{author} added/updated") and reconciles the per-company `new-files` event onto the matching download rows to flip the verb from "updated" to "added" and back-fill `addedBy` where `author` was absent (`commands/activity.rs::record_new_files`).
 
 Parsed via `#[serde(tag = "type")]` discriminated union. Unknown types silently skipped.
 

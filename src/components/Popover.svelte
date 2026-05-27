@@ -750,6 +750,11 @@
           issue={{ kind: 'hq-version-undetectable', payload: { hqFolderPath: config?.hqFolderPath ?? '' } }}
         />
       {:else}
+        <!-- `.footer-hq-version-actions` wrapper (from main) makes the
+             pill group wrap to a second line on narrow widths instead of
+             overlapping the "HQ vX.Y.Z" label. Inner rendering is the
+             unified `coreState` block (this branch). -->
+        <div class="footer-hq-version-actions">
         <!-- Unified state badge + action pill. Both derive entirely from
              `coreState` (see commands/hq_core_state.rs). Channel selection
              (release vs staging) is a parameter on the Rust side; this
@@ -843,6 +848,7 @@
             {/if}
           </span>
         {/if}
+        </div>
       {/if}
     </div>
 
@@ -1127,6 +1133,26 @@
   .footer-hq-version-label {
     display: flex;
     align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+    /* Keep "HQ vX.Y.Z" on a single line — without this the label wraps
+       ("HQ" / "vX.Y.Z") when the action pills crowd the row, and the
+       wrapped text collided with the drifted pill. The pills now live in
+       a wrapping `.footer-hq-version-actions` group that drops to a
+       second line instead, so the label can stay intact. */
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+
+  /* Right-side action group (drift pill + Update/Update-to-Staging pill +
+     rescue-result chip). Wraps to a second line when the popover is too
+     narrow to fit everything beside the version label, rather than letting
+     fixed-width pills overflow and overlap the label. */
+  .footer-hq-version-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
     gap: 0.5rem;
     min-width: 0;
   }
