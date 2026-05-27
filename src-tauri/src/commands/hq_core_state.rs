@@ -380,7 +380,7 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
     }
 
     // Channel + target + eligibility (used for frontend gating).
-    let (channel, target_repo) = resolve_channel();
+    let (mut channel, mut target_repo) = resolve_channel();
     let signed_in_email = crate::commands::cognito::read_tokens_from_file()
         .ok()
         .flatten()
@@ -392,15 +392,33 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<CoreState>, String> {
     // Use staging's authed client when on staging — burns gh token for
     // higher rate limits + works with private repos. On release we use
     // an anonymous client (the public hq-core repo doesn't need auth).
+    //
+    // Staging-auth missing → fall back to Release. The popover previously
+    // got the prod release Update pill from the separate
+    // `check_hq_core_update` codepath whenever staging was dark; after
+    // unification we'd have stranded the user with no state at all if
+    // their `gh` token was missing/expired. Falling back keeps the
+    // Update CTA alive on the release channel (Codex P2 review on PR
+    // #110). NOTE: this strictly affects users who have no `gh`
+    // token — eligible @indigo users with a token still get the
+    // staging channel as intended.
     let client = match channel {
-        Channel::Staging => {
-            let Some(token) = hq_core_staging::resolve_gh_token() else {
-                // Staging without a token can't read trees — feature dark.
-                log("hq-core-state", "staging channel selected but no gh token; bailing");
-                return Ok(None);
-            };
-            staging_authed_client(&token)?
-        }
+        Channel::Staging => match hq_core_staging::resolve_gh_token() {
+            Some(token) => staging_authed_client(&token)?,
+            None => {
+                log(
+                    "hq-core-state",
+                    "staging channel selected but no gh token; falling back to Release",
+                );
+                channel = Channel::Release;
+                target_repo = PROD_REPO.to_string();
+                reqwest::Client::builder()
+                    .default_headers(crate::util::client_info::client_headers())
+                    .timeout(REQUEST_TIMEOUT)
+                    .build()
+                    .map_err(|e| format!("build client: {e}"))?
+            }
+        },
         Channel::Release => reqwest::Client::builder()
             .default_headers(crate::util::client_info::client_headers())
             .timeout(REQUEST_TIMEOUT)
