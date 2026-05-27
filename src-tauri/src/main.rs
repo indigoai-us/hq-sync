@@ -216,6 +216,7 @@ fn main() {
             commands::meetings::meetings_list_accounts,
             commands::meetings::meetings_list_calendars_for_account,
             commands::meetings::meetings_invite_bot,
+            commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
             commands::share_notify::poll_shared_with_me,
