@@ -568,7 +568,6 @@
     <section class="active-meetings" aria-label="Active meetings">
       {#each activeMeetings as meeting (meeting.windowId)}
         {@const pickerDisabled =
-          meeting.state === 'recording' ||
           meeting.state === 'starting' ||
           meeting.state === 'stopping'}
         <div class="meeting-row" data-state={meeting.state}>
@@ -589,13 +588,16 @@
               <span class="meeting-status">Detected</span>
             {/if}
           </div>
-          <!-- Company-attribution dropdown. Pre-recording: interactive,
+          <!-- Company-attribution dropdown. Interactive while detected AND
+               while recording (locked only during the starting/stopping
+               transitions to avoid racing the bridge). Pre-recording the
                selection rides into the upload-token mint on Record.
-               Recording / stopping / starting: locked — Recall's
-               upload-token metadata is baked in at start_recording and
-               isn't currently mutable in-flight. Personal (null) is
-               always available; per-recording overrides aren't
-               persisted as the new default (that lives in Settings). -->
+               NB: changing it mid-recording updates intent but does not
+               yet re-attribute the recording — Recall's metadata is baked
+               at mint time; true "company at end" needs the hq-pro
+               /finalize endpoint (tracked follow-up). Personal (null) is
+               always available; per-recording picks aren't persisted as
+               the new default (that lives in Settings). -->
           <select
             class="meeting-company"
             aria-label="Attribute recording to"

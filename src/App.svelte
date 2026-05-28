@@ -166,12 +166,20 @@
     error?: string;
     /**
      * Company attribution for this recording. `null` = Personal vault.
-     * Filled from `defaultRecordingCompanyUid` at detection; the user
-     * can override via the row's dropdown BEFORE recording starts.
-     * After `state === 'recording'`, the dropdown is read-only — the
-     * Recall recording's metadata is already baked at that point.
+     * Seeded from `defaultRecordingCompanyUid` at detection, but the
+     * default may not have loaded yet when a detection fires — so the
+     * authoritative resolution happens at `handleStartRecording` time
+     * (and we back-fill rows when the default finishes loading).
      */
     companyUid: string | null;
+    /**
+     * True once the user has explicitly picked a company for this row via
+     * the dropdown. Distinguishes an intentional "Personal" (companyUid =
+     * null, userSet = true) from "default hasn't loaded yet" (companyUid =
+     * null, userSet = false). Only the latter gets back-filled / resolved
+     * to the default.
+     */
+    companyUserSet?: boolean;
   }
   let activeMeetings = $state<ActiveMeeting[]>([]);
 
@@ -195,14 +203,36 @@
     activeMeetings = activeMeetings.filter((x) => x.windowId !== windowId);
   }
 
+  /**
+   * The persisted default company, but only if it's still a company the
+   * user is an active member of. Returns null (Personal) otherwise — never
+   * pre-select a stale uid the user can't record to (hq-pro would 403).
+   */
+  function resolveValidDefault(): string | null {
+    return defaultRecordingCompanyUid &&
+      memberships.some((m) => m.companyUid === defaultRecordingCompanyUid)
+      ? defaultRecordingCompanyUid
+      : null;
+  }
+
   async function handleStartRecording(windowId: string) {
     updateActiveMeeting(windowId, { state: 'starting', error: undefined });
-    // Snapshot the current company selection so a mid-flight dropdown
-    // change doesn't race with the upload-token mint. The Recall recording
-    // metadata is set on the upload-token; once minted, the attribution
-    // is fixed for the life of the recording.
+    // Resolve the company at START time, not just whatever was frozen on
+    // the row at detection. The detection may have fired before the
+    // default-company context finished loading (it's a fire-and-forget
+    // load after an async feature-gate check), leaving companyUid null on
+    // the row. Unless the user *explicitly* picked a company, fall back to
+    // the current valid default — this is what fixes the notification
+    // "Record" path attributing to Personal even when a default is set.
     const row = activeMeetings.find((m) => m.windowId === windowId);
-    const companyUid = row?.companyUid ?? null;
+    const companyUid = row?.companyUserSet
+      ? (row.companyUid ?? null)
+      : (resolveValidDefault() ?? row?.companyUid ?? null);
+    // Reflect the resolved attribution back onto the row so the popover
+    // dropdown shows what we actually recorded against.
+    if (row && row.companyUid !== companyUid) {
+      updateActiveMeeting(windowId, { companyUid });
+    }
     try {
       const recordingId = await invoke<string>('start_recording', {
         windowId,
@@ -222,11 +252,18 @@
   }
 
   function handleChangeRecordingCompany(windowId: string, companyUid: string | null) {
-    // Pre-recording override of the company attribution. We deliberately
-    // DO NOT update the recording metadata once `state === 'recording'`
-    // — the Recall upload-token's metadata is fixed at mint time. The
-    // Popover-side dropdown is disabled in that state to match.
-    updateActiveMeeting(windowId, { companyUid });
+    // User explicitly picked a company — mark it so the start-time resolver
+    // and the default back-fill both respect this choice (including an
+    // intentional "Personal").
+    //
+    // The dropdown is editable during recording too. NOTE: changing it
+    // mid-recording updates the row's intent but does NOT yet re-attribute
+    // the recording — the Recall metadata is baked at upload-token mint
+    // (start) time. True "company at end" requires the hq-pro `/finalize`
+    // endpoint (a tracked follow-up); until that ships, the START company
+    // is what routes. We still capture the value here so the finalize
+    // wiring is a drop-in once that endpoint exists.
+    updateActiveMeeting(windowId, { companyUid, companyUserSet: true });
   }
 
   /**
@@ -250,6 +287,19 @@
       defaultRecordingCompanyUid = storedUid && memberships.some((m) => m.companyUid === storedUid)
         ? storedUid
         : null;
+      // Back-fill any detections that fired before this load completed:
+      // rows the user hasn't explicitly touched should reflect the default
+      // (or stay Personal if there's no valid default). Without this, a
+      // meeting detected during cold-start keeps companyUid=null and the
+      // notification "Record" path attributes it to Personal.
+      const validDefault = resolveValidDefault();
+      if (validDefault) {
+        for (const m of activeMeetings) {
+          if (!m.companyUserSet && m.companyUid !== validDefault) {
+            updateActiveMeeting(m.windowId, { companyUid: validDefault });
+          }
+        }
+      }
     } catch (err) {
       console.warn('loadRecordingCompanyContext failed (non-blocking):', err);
     }
@@ -1013,23 +1063,20 @@
             : (meetingUrl ?? ''));
 
         if (windowId) {
-          // Validate the stored default against the current memberships
-          // list (which might be empty if the load hasn't completed yet,
-          // or if the user lost access). Fall back to Personal (null) so
-          // we never pre-select a stale uid the user can't actually
-          // record to — that would cause a 403 from hq-pro at start.
-          const liveDefault =
-            defaultRecordingCompanyUid &&
-            memberships.some((m) => m.companyUid === defaultRecordingCompanyUid)
-              ? defaultRecordingCompanyUid
-              : null;
+          // Seed the row with the current valid default. This may be null
+          // if the default-company context hasn't loaded yet — that's fine:
+          // `loadRecordingCompanyContext` back-fills unset rows when it
+          // completes, and `handleStartRecording` re-resolves the default
+          // at start time. `companyUserSet: false` marks this as a
+          // non-explicit seed so both of those can safely overwrite it.
           upsertActiveMeeting({
             windowId,
             platform: platform ?? 'other',
             meetingUrl: meetingUrl ?? '',
             detectedAt: new Date().toISOString(),
             state: 'detected',
-            companyUid: liveDefault,
+            companyUid: resolveValidDefault(),
+            companyUserSet: false,
           });
         }
 
