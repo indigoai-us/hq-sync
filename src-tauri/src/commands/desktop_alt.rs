@@ -125,4 +125,30 @@ mod tests {
         assert!(!is_allowed_email(None));
         assert!(!is_allowed_email(Some("")));
     }
+
+    #[tokio::test]
+    async fn company_summary_returns_placeholder_counts() {
+        let summary = super::get_company_summary("acme".to_string())
+            .await
+            .expect("valid slug should return a summary");
+
+        assert_eq!(summary.board, 0);
+        assert_eq!(summary.activity.last7d, 0);
+        assert_eq!(summary.deployments, 0);
+        assert_eq!(summary.secrets, 0);
+    }
+
+    #[tokio::test]
+    async fn company_summary_rejects_empty_slug() {
+        assert_eq!(
+            super::get_company_summary("".to_string()).await.unwrap_err(),
+            "company slug is required"
+        );
+        assert_eq!(
+            super::get_company_summary("   ".to_string())
+                .await
+                .unwrap_err(),
+            "company slug is required"
+        );
+    }
 }
