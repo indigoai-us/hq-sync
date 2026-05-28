@@ -7,6 +7,26 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+/// Ask the main menubar window to show its existing Settings surface.
+///
+/// Desktop-alt is a separate webview, but Settings still lives in the main
+/// popover App.svelte state. This command keeps the renderer contract simple:
+/// desktop UI invokes `open_settings_window`, Rust shows/focuses the main
+/// window, then emits the same event path the tray menu already uses.
+#[tauri::command]
+pub fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+
+    if let Some(window) = app.get_webview_window("main") {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+
+    app.emit_to("main", "tray:open-settings", ())
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Open a Claude Code deep link (`claude://code/new?...`). The renderer
 /// can't call `@tauri-apps/plugin-shell` `open()` for non-http(s) schemes
 /// without widening `shell:allow-open` to the world; this command keeps

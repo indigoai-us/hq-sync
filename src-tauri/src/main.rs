@@ -164,6 +164,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
+            commands::app::open_settings_window,
             commands::app::open_claude_code_link,
             commands::process::spawn_process,
             commands::process::cancel_process,
