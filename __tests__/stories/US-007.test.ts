@@ -18,10 +18,6 @@ const companyTabs = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/CompanyTabs.svelte'),
   'utf8',
 );
-const companyTabPlaceholder = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/CompanyTabPlaceholder.svelte'),
-  'utf8',
-);
 const companySummary = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/lib/company-summary.svelte.ts'),
   'utf8',
@@ -96,10 +92,10 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
   it('moves the active tab indicator and swaps the selected panel when a tab is selected', () => {
     const page = normalize(companyPage);
     const tabs = normalize(companyTabs);
-    const placeholder = normalize(companyTabPlaceholder);
 
     expect(page).toContain("let activeTab = $state<CompanyTab>('board')");
     expect(page).toContain('function selectTab(tab: CompanyTab) { activeTab = tab; }');
+    expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
     expect(page).toContain('<CompanyTabs {activeTab} summary={summaryState.summary} role={company.role} onselect={selectTab} />');
     expect(tabs).toContain('aria-selected={activeTab === tab.id}');
     expect(tabs).toContain('class:active={activeTab === tab.id}');
@@ -109,8 +105,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(page).toContain('<BoardPanel slug={company.slug} />');
     expect(page).toContain('<ActivityPanel slug={company.slug} />');
     expect(page).toContain('<DeploymentsPanel slug={company.slug} />');
-    expect(page).toContain("<CompanyTabPlaceholder label=\"Secrets panel - wired in US-012\" />");
-    expect(placeholder).toContain('<section class="company-tab-placeholder" aria-label={label}>');
+    expect(page).toContain('<SecretsPanel slug={company.slug} />');
   });
 
   it('resets to the board tab on company navigation and wires summary counts plus workspace role propagation', () => {
