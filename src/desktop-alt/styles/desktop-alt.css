@@ -1,12 +1,12 @@
-:global(html[data-window='desktop-alt']),
-:global(html[data-window='desktop-alt'] body),
-:global(html[data-window='desktop-alt'] #desktop-alt) {
+html[data-window='desktop-alt'],
+html[data-window='desktop-alt'] body,
+html[data-window='desktop-alt'] #desktop-alt {
   width: 100%;
   height: 100%;
   margin: 0;
 }
 
-:global(html[data-window='desktop-alt']) {
+html[data-window='desktop-alt'] {
   /* Dark theme tokens (mirrors prototype index.html :root). */
   --bg: #0a0a0a;
   --bg-subtle: #050505;
@@ -35,32 +35,32 @@
   font-variant-numeric: tabular-nums lining-nums;
 }
 
-:global(html[data-window='desktop-alt'] body) {
+html[data-window='desktop-alt'] body {
   overflow: hidden;
   /* App body sits behind the window surface. */
   background: #131316;
 }
 
-:global(html[data-window='desktop-alt'] *) {
+html[data-window='desktop-alt'] * {
   box-sizing: border-box;
 }
 
 /* Subtle dark scrollbars, scoped to the desktop-alt window. */
-:global(html[data-window='desktop-alt'] ::-webkit-scrollbar) {
+html[data-window='desktop-alt'] ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
-:global(html[data-window='desktop-alt'] ::-webkit-scrollbar-track) {
+html[data-window='desktop-alt'] ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-:global(html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb) {
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.08);
   border-radius: 3px;
 }
 
-:global(html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover) {
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.18);
 }
 
