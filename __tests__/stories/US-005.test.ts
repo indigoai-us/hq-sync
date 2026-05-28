@@ -31,6 +31,8 @@ describe('US-005: Alt Sync page wires to real sync state and events', () => {
       'sync:totals',
       'sync:fanout-plan',
       'sync:error',
+      'sync:personal-first-push-progress',
+      'sync:personal-first-push-complete',
     ]) {
       expect(desktopApp).toContain(`'${eventName}'`);
     }

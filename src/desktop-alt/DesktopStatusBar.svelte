@@ -12,7 +12,7 @@
   const statusLabel = $derived(
     state === 'syncing'
       ? `Syncing ${progress?.company ?? 'workspace'}`
-      : state === 'error' || state === 'auth-error'
+      : state === 'error' || state === 'auth-error' || state === 'conflict'
         ? 'Sync needs attention'
         : 'Ready',
   );

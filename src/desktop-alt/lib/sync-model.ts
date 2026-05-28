@@ -55,7 +55,7 @@ export interface WorkspaceSyncStats {
 }
 
 export type SourceLiveState = 'ok' | 'syncing' | 'warn' | 'paused';
-export type SourceAction = 'Up to date' | 'Syncing' | 'Reauth' | 'Paused';
+export type SourceAction = 'Up to date' | 'Syncing' | 'Reauth' | 'Paused' | 'Needs attention';
 
 export interface SourceViewModel {
   key: string;
@@ -171,6 +171,18 @@ export function needsReauthWorkspace(workspace: Workspace, syncState: SyncState)
   return syncState === 'auth-error' || workspace.state === 'broken';
 }
 
+export function workspaceWarning(
+  stats: WorkspaceSyncStats,
+  workspace: Workspace,
+): string | null {
+  if (stats.errorMessage) return stats.errorMessage;
+  if (stats.conflicts > 0) {
+    return `${stats.conflicts.toLocaleString()} conflict${stats.conflicts === 1 ? '' : 's'} need review.`;
+  }
+  if (stats.aborted) return 'Sync stopped because a conflict needs attention.';
+  return workspace.brokenReason;
+}
+
 export function buildSourceRows(args: {
   workspaces: Workspace[];
   syncState: SyncState;
@@ -184,7 +196,8 @@ export function buildSourceRows(args: {
     const stats = statsBySlug[workspace.slug] ?? emptyWorkspaceStats();
     const syncing = syncState === 'syncing' && progress?.company === workspace.slug;
     const reauth = needsReauthWorkspace(workspace, syncState);
-    const paused = !reauth && isPausedWorkspace(workspace, cloudReachable);
+    const sourceAttention = Boolean(stats.errorMessage) || stats.aborted || stats.conflicts > 0;
+    const paused = !reauth && !sourceAttention && isPausedWorkspace(workspace, cloudReachable);
     const plannedFiles = Math.max(stats.plannedFiles, 0);
     const progressPct =
       syncing && plannedFiles > 0
@@ -212,8 +225,22 @@ export function buildSourceRows(args: {
       key: `${workspace.kind}:${workspace.slug}`,
       name: workspace.displayName,
       detail,
-      liveState: syncing ? 'syncing' : reauth ? 'warn' : paused ? 'paused' : 'ok',
-      action: syncing ? 'Syncing' : reauth ? 'Reauth' : paused ? 'Paused' : 'Up to date',
+      liveState: syncing
+        ? 'syncing'
+        : reauth || sourceAttention
+          ? 'warn'
+          : paused
+            ? 'paused'
+            : 'ok',
+      action: syncing
+        ? 'Syncing'
+        : reauth
+          ? 'Reauth'
+          : sourceAttention
+            ? 'Needs attention'
+            : paused
+              ? 'Paused'
+              : 'Up to date',
       lastSyncLabel:
         workspace.lastSyncedAt != null
           ? timeAgo(workspace.lastSyncedAt)
@@ -222,7 +249,7 @@ export function buildSourceRows(args: {
             : 'Never',
       transferredLabel: formatBytes(completedOrTransferred),
       progressPct,
-      warning: stats.errorMessage ?? workspace.brokenReason,
+      warning: workspaceWarning(stats, workspace),
     };
   });
 }
@@ -234,16 +261,39 @@ export function buildAttentionItems(args: {
   cloudReachable: boolean;
   cloudError: string | null;
   manifestError: string | null;
+  statsBySlug?: Record<string, WorkspaceSyncStats>;
 }): AttentionItem[] {
-  const { workspaces, syncState, syncErrorMessage, cloudReachable, cloudError, manifestError } =
-    args;
+  const {
+    workspaces,
+    syncState,
+    syncErrorMessage,
+    cloudReachable,
+    cloudError,
+    manifestError,
+    statsBySlug = {},
+  } = args;
   const items: AttentionItem[] = [];
+
+  const hasSourceConflict = workspaces.some((workspace) => {
+    const stats = statsBySlug[workspace.slug];
+    return stats ? stats.aborted || stats.conflicts > 0 : false;
+  });
 
   if (syncState === 'auth-error') {
     items.push({
       key: 'auth-error',
       title: 'Sign-in expired',
       detail: syncErrorMessage || 'Reconnect your account before the next sync can run.',
+      tone: 'warn',
+      actionLabel: 'Open settings',
+    });
+  }
+
+  if (syncState === 'conflict' && !hasSourceConflict) {
+    items.push({
+      key: 'sync-conflict',
+      title: 'Sync conflict needs review',
+      detail: syncErrorMessage || 'A sync stopped because a conflict needs attention.',
       tone: 'warn',
       actionLabel: 'Open settings',
     });
@@ -278,7 +328,17 @@ export function buildAttentionItems(args: {
   }
 
   for (const workspace of workspaces) {
-    if (workspace.state === 'broken') {
+    const stats = statsBySlug[workspace.slug] ?? emptyWorkspaceStats();
+    const warning = workspaceWarning(stats, workspace);
+    if (stats.errorMessage || stats.aborted || stats.conflicts > 0) {
+      items.push({
+        key: `source-attention:${workspace.slug}`,
+        title: `${workspace.displayName} needs attention`,
+        detail: warning || 'Review this source before the next sync.',
+        tone: 'warn',
+        actionLabel: 'Open settings',
+      });
+    } else if (workspace.state === 'broken') {
       items.push({
         key: `reauth:${workspace.slug}`,
         title: `${workspace.displayName} needs reconnect`,
@@ -316,4 +376,3 @@ export function latestFullSync(workspaces: Workspace[], status: SyncStatus | nul
   if (times.length === 0) return null;
   return new Date(Math.max(...times)).toISOString();
 }
-

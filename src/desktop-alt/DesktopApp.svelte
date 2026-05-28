@@ -262,6 +262,42 @@
         },
       ),
       listen<{
+        personUid: string;
+        filesDone: number;
+        filesTotal: number;
+        currentFile: string | null;
+      }>('sync:personal-first-push-progress', async (event) => {
+        syncState = 'syncing';
+        syncFilesProgressed = Math.max(syncFilesProgressed, event.payload.filesDone);
+        syncTotalFiles = Math.max(syncTotalFiles, event.payload.filesTotal);
+        if (event.payload.currentFile) {
+          syncProgress = {
+            company: 'personal',
+            path: event.payload.currentFile,
+            bytes: 0,
+          };
+        }
+        updateWorkspaceStats('personal', (stats) => ({
+          ...stats,
+          progressedFiles: Math.max(stats.progressedFiles, event.payload.filesDone),
+          plannedFiles: Math.max(stats.plannedFiles, event.payload.filesTotal),
+          lastEventAt: Date.now(),
+        }));
+        await invoke('set_tray_state', { state: 'syncing' }).catch(() => undefined);
+      }),
+      listen<{ personUid: string; filesUploaded: number; filesSkipped: number }>(
+        'sync:personal-first-push-complete',
+        (event) => {
+          syncFilesProgressed = Math.max(syncFilesProgressed, event.payload.filesUploaded);
+          updateWorkspaceStats('personal', (stats) => ({
+            ...stats,
+            completedFiles: Math.max(stats.completedFiles, event.payload.filesUploaded),
+            skippedFiles: stats.skippedFiles + event.payload.filesSkipped,
+            lastEventAt: Date.now(),
+          }));
+        },
+      ),
+      listen<{
         company: string;
         filesDownloaded: number;
         bytesDownloaded: number;

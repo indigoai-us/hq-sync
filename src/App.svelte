@@ -298,6 +298,14 @@
     }
   }
 
+  async function refreshDesktopAltEnabled() {
+    try {
+      desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled');
+    } catch {
+      desktopAltEnabled = false;
+    }
+  }
+
   // Invoke the rescue script. Long-running (30-90s on first run because of
   // the full-history clone + scan). The pill is disabled while the promise
   // is pending; the result (exit code + log tail + log path) lands in
@@ -1020,18 +1028,10 @@
         meetingsEnabled = false;
       });
 
-    // Desktop-alt UX gate (US-001). Same OnceLock-cached @getindigo.ai
-    // check as `meetings_feature_enabled` — separate invoke keeps the
-    // flags decoupled so we can flip one without the other if we ever
-    // promote the alt UX past dogfood. Errors fall back to false so a
-    // misfiring gate command can never accidentally expose the alt UX.
-    invoke<boolean>('desktop_alt_enabled')
-      .then((v) => {
-        desktopAltEnabled = v;
-      })
-      .catch(() => {
-        desktopAltEnabled = false;
-      });
+    // Desktop-alt UX gate (US-001). Same @getindigo.ai check as
+    // `meetings_feature_enabled`; errors fall back to false so a misfiring
+    // gate command can never accidentally expose the alt UX.
+    refreshDesktopAltEnabled();
 
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
@@ -1074,6 +1074,9 @@
 
       authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
+      if (authenticated) {
+        await refreshDesktopAltEnabled();
+      }
     } catch {
       authenticated = false;
     } finally {
@@ -1084,6 +1087,7 @@
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
+    void refreshDesktopAltEnabled();
   }
 </script>
 

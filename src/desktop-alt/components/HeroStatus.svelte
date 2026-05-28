@@ -56,6 +56,8 @@
       <p class="hero-current">Syncing now {syncNowLabel}</p>
     {:else if syncState === 'auth-error'}
       <p class="hero-current attention">Sign in again to resume syncing.</p>
+    {:else if syncState === 'conflict'}
+      <p class="hero-current attention">Sync conflict needs review.</p>
     {:else if syncState === 'error'}
       <p class="hero-current attention">Sync needs attention.</p>
     {:else}

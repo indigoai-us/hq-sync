@@ -266,6 +266,11 @@
     color: #be123c;
   }
 
+  .action-pill.needs-attention {
+    background: #fff1f2;
+    color: #be123c;
+  }
+
   .action-pill.paused {
     background: #f4f4f5;
     color: #52525b;

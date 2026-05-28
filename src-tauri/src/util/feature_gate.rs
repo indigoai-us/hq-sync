@@ -3,15 +3,21 @@
 //! Extracted from `commands/meetings.rs` so both meeting-detect and
 //! share-notify use one canonical dogfood-email check without duplication.
 //! The gate is cached for the process lifetime because the Cognito email
-//! claim is invariant across token rotations (sub stays constant).
+//! claim is invariant across token rotations (sub stays constant). The cache
+//! is cleared when a new token file is written so a launch that started signed
+//! out can recover after OAuth succeeds in the same process.
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::commands::cognito;
 
 const ALLOWED_DOMAIN: &str = "@getindigo.ai";
 
-static CACHED_GATE: OnceLock<bool> = OnceLock::new();
+static CACHED_GATE: OnceLock<Mutex<Option<bool>>> = OnceLock::new();
+
+fn gate_cache() -> &'static Mutex<Option<bool>> {
+    CACHED_GATE.get_or_init(|| Mutex::new(None))
+}
 
 /// Returns true iff the signed-in user's email ends in `@getindigo.ai`.
 ///
@@ -19,12 +25,29 @@ static CACHED_GATE: OnceLock<bool> = OnceLock::new();
 /// Cognito token rotations. Returns false silently on any error so callers
 /// never crash due to a missing or malformed token.
 pub async fn is_indigo_user() -> bool {
-    if let Some(v) = CACHED_GATE.get() {
-        return *v;
+    {
+        let guard = gate_cache().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(v) = *guard {
+            return v;
+        }
     }
+
     let enabled = compute_gate().await;
-    let _ = CACHED_GATE.set(enabled);
+    let mut guard = gate_cache().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(v) = *guard {
+        return v;
+    }
+    *guard = Some(enabled);
     enabled
+}
+
+/// Clear the process-local gate cache after token writes.
+///
+/// This keeps the cache process-lifetime for steady-state reads while allowing
+/// the first post-OAuth gate check to use the newly persisted ID-token claims.
+pub fn clear_cached_gate() {
+    let mut guard = gate_cache().lock().unwrap_or_else(|e| e.into_inner());
+    *guard = None;
 }
 
 async fn compute_gate() -> bool {

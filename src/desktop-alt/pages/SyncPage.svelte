@@ -68,6 +68,7 @@
       cloudReachable,
       cloudError,
       manifestError,
+      statsBySlug,
     }),
   );
 
