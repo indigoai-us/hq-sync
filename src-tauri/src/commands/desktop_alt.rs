@@ -131,6 +131,20 @@ pub struct DeploymentEntry {
     pub pwd: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecretItem {
+    pub key: String,
+    pub upd: String,
+    pub rot: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SecretEnv {
+    pub env: String,
+    pub count: usize,
+    pub items: Vec<SecretItem>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LiveBoardModel {
@@ -290,6 +304,27 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
     parse_deployments_response(status, &text, &slug)
 }
 
+#[tauri::command]
+pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String> {
+    let slug = normalize_slug(&slug)?;
+    let company_uid = resolve_company_uid(&slug).await?;
+    let url = secrets_url(&vault_base()?, &company_uid)?;
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .get(url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("secrets fetch: {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| format!("secrets read: {e}"))?;
+
+    parse_secrets_response(status, &text)
+}
+
 /// Open or focus the Indigo-only alternate desktop UX window.
 ///
 /// The window is declared in `tauri.conf.json` as hidden, so normal app
@@ -419,6 +454,19 @@ fn deployments_url(base: &str) -> String {
     format!("{}/api/apps/me", base.trim_end_matches('/'))
 }
 
+fn secrets_url(base: &str, company_uid: &str) -> Result<String, String> {
+    if !is_url_safe_id(company_uid) {
+        return Err(format!(
+            "company uid has invalid characters: {company_uid:?}"
+        ));
+    }
+    Ok(format!(
+        "{}/secrets/{}",
+        base.trim_end_matches('/'),
+        company_uid
+    ))
+}
+
 fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, String> {
     if status == StatusCode::NO_CONTENT {
         return Ok(CompanyBoard::default());
@@ -478,6 +526,154 @@ fn parse_company_board(text: &str) -> Result<CompanyBoard, String> {
 
 fn parse_company_activity(text: &str) -> Result<CompanyActivity, String> {
     serde_json::from_str(text).map_err(|e| format!("activity parse: {e}"))
+}
+
+fn parse_secrets_response(status: StatusCode, text: &str) -> Result<Vec<SecretEnv>, String> {
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Vec::new());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return if is_secrets_not_provisioned(text) {
+            Ok(Vec::new())
+        } else {
+            Err(format!("secrets HTTP {status}"))
+        };
+    }
+    if !status.is_success() {
+        return Err(format!("secrets HTTP {status}"));
+    }
+
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    parse_secret_envs(text)
+}
+
+fn parse_secret_envs(text: &str) -> Result<Vec<SecretEnv>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("secrets parse: {e}"))?;
+    let rows =
+        secret_rows(&value).ok_or_else(|| "secrets parse: missing secrets array".to_string())?;
+    let mut grouped: BTreeMap<String, Vec<SecretItem>> = BTreeMap::new();
+
+    for row in rows {
+        let Some(raw_key) = secret_key(row) else {
+            continue;
+        };
+        let (env, key) = secret_env_and_key(row, &raw_key);
+        grouped.entry(env).or_default().push(SecretItem {
+            key,
+            upd: secret_updated_at(row),
+            rot: secret_rotation(row),
+        });
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(|(env, mut items)| {
+            items.sort_by(|a, b| a.key.cmp(&b.key));
+            SecretEnv {
+                env,
+                count: items.len(),
+                items,
+            }
+        })
+        .collect())
+}
+
+fn secret_rows(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    if let Some(rows) = value.as_array() {
+        return Some(rows);
+    }
+    value
+        .get("secrets")
+        .and_then(|v| v.as_array())
+        .or_else(|| {
+            value
+                .get("body")
+                .and_then(|body| body.get("secrets"))
+                .and_then(|v| v.as_array())
+        })
+        .or_else(|| {
+            value
+                .get("data")
+                .and_then(|data| data.get("secrets"))
+                .and_then(|v| v.as_array())
+        })
+        .or_else(|| value.get("items").and_then(|v| v.as_array()))
+}
+
+fn secret_key(value: &serde_json::Value) -> Option<String> {
+    string_field(
+        value,
+        &[
+            "key",
+            "name",
+            "path",
+            "secretPath",
+            "secretName",
+            "parameterName",
+        ],
+    )
+}
+
+fn secret_env_and_key(value: &serde_json::Value, raw_key: &str) -> (String, String) {
+    if let Some(env) = string_field(value, &["env", "environment", "stage"]) {
+        return (env, raw_key.to_string());
+    }
+
+    let key = raw_key.trim_matches('/');
+    if let Some((env, rest)) = key.split_once('/') {
+        if !env.is_empty() && !rest.is_empty() {
+            return (env.to_string(), rest.trim_start_matches('/').to_string());
+        }
+    }
+    if let Some((env, rest)) = key.split_once(':') {
+        if !env.is_empty() && !rest.is_empty() {
+            return (env.to_string(), rest.to_string());
+        }
+    }
+
+    ("default".to_string(), raw_key.to_string())
+}
+
+fn secret_updated_at(value: &serde_json::Value) -> String {
+    string_field(
+        value,
+        &[
+            "lastModifiedDate",
+            "lastModified",
+            "updatedAt",
+            "modifiedAt",
+            "createdAt",
+        ],
+    )
+    .unwrap_or_else(|| "-".to_string())
+}
+
+fn secret_rotation(value: &serde_json::Value) -> String {
+    string_field(
+        value,
+        &[
+            "rotation",
+            "rotationStatus",
+            "rotationSchedule",
+            "nextRotationDate",
+            "rot",
+        ],
+    )
+    .or_else(|| {
+        bool_field(value, &["rotationEnabled"]).map(|enabled| {
+            if enabled {
+                "scheduled".to_string()
+            } else {
+                "manual".to_string()
+            }
+        })
+    })
+    .unwrap_or_else(|| "manual".to_string())
 }
 
 fn parse_deployments_response(
@@ -702,6 +898,29 @@ fn is_deployments_not_provisioned(text: &str) -> bool {
                     | "deployments_missing"
                     | "apps-not-provisioned"
                     | "apps_not_provisioned"
+                    | "not-provisioned"
+                    | "not_provisioned"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn is_secrets_not_provisioned(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    json_code(&value)
+        .map(|code| {
+            matches!(
+                code,
+                "secrets-not-provisioned"
+                    | "secrets_not_provisioned"
+                    | "secrets-missing"
+                    | "secrets_missing"
                     | "not-provisioned"
                     | "not_provisioned"
             )
@@ -1046,6 +1265,16 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn company_secrets_rejects_empty_slug_before_network() {
+        assert_eq!(
+            super::get_company_secrets("   ".to_string())
+                .await
+                .unwrap_err(),
+            "company slug is required"
+        );
+    }
+
     #[test]
     fn company_board_deserializes_missing_columns_as_empty_arrays() {
         let board: super::CompanyBoard = serde_json::from_str(
@@ -1316,6 +1545,91 @@ mod tests {
             .unwrap(),
             Vec::<super::DeploymentEntry>::new()
         );
+    }
+
+    #[test]
+    fn company_secrets_project_metadata_only_from_body_secrets() {
+        let envs = super::parse_secrets_response(
+            reqwest::StatusCode::OK,
+            r#"{
+                "body": {
+                    "secrets": [
+                        {
+                            "key": "prod/DATABASE_URL",
+                            "lastModifiedDate": "2026-05-27T12:00:00Z",
+                            "rotationSchedule": "30d",
+                            "value": "plaintext-ignored"
+                        },
+                        {
+                            "secretPath": "prod/STRIPE_KEY",
+                            "updatedAt": "2026-05-26T12:00:00Z",
+                            "rotationEnabled": false,
+                            "payload": {"value": "ignored"}
+                        },
+                        {
+                            "name": "API_TOKEN",
+                            "environment": "dev",
+                            "rot": "manual",
+                            "secret": "ignored"
+                        }
+                    ]
+                }
+            }"#,
+        )
+        .expect("metadata response should parse");
+
+        assert_eq!(envs.len(), 2);
+        assert_eq!(envs[0].env, "dev");
+        assert_eq!(envs[0].count, 1);
+        assert_eq!(envs[0].items[0].key, "API_TOKEN");
+        assert_eq!(envs[0].items[0].upd, "-");
+        assert_eq!(envs[0].items[0].rot, "manual");
+        assert_eq!(envs[1].env, "prod");
+        assert_eq!(envs[1].count, 2);
+        assert_eq!(envs[1].items[0].key, "DATABASE_URL");
+        assert_eq!(envs[1].items[0].upd, "2026-05-27T12:00:00Z");
+        assert_eq!(envs[1].items[0].rot, "30d");
+        assert_eq!(envs[1].items[1].key, "STRIPE_KEY");
+        assert_eq!(envs[1].items[1].rot, "manual");
+
+        let serialized = serde_json::to_value(&envs).unwrap();
+        let serialized_text = serialized.to_string();
+        assert!(!serialized_text.contains("plaintext-ignored"));
+        assert!(!serialized_text.contains("\"value\""));
+        assert!(!serialized_text.contains("\"secret\""));
+        assert!(serialized.get(0).unwrap().get("items").is_some());
+        assert!(serialized.get(0).unwrap().get("value").is_none());
+    }
+
+    #[test]
+    fn company_secrets_treats_empty_and_not_provisioned_as_empty() {
+        assert_eq!(
+            super::parse_secrets_response(reqwest::StatusCode::NO_CONTENT, "").unwrap(),
+            Vec::<super::SecretEnv>::new()
+        );
+        assert_eq!(
+            super::parse_secrets_response(reqwest::StatusCode::OK, " \n ").unwrap(),
+            Vec::<super::SecretEnv>::new()
+        );
+        assert_eq!(
+            super::parse_secrets_response(
+                reqwest::StatusCode::NOT_FOUND,
+                r#"{"code":"secrets-not-provisioned"}"#,
+            )
+            .unwrap(),
+            Vec::<super::SecretEnv>::new()
+        );
+    }
+
+    #[test]
+    fn company_secrets_rejects_generic_route_not_found() {
+        let err = super::parse_secrets_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"not-found","message":"route not found"}"#,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("secrets HTTP 404"));
     }
 
     #[test]
@@ -1597,6 +1911,14 @@ mod tests {
         );
         assert_eq!(
             super::activity_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
+            "company uid has invalid characters: \"cmp/bad\""
+        );
+        assert_eq!(
+            super::secrets_url("https://hqapi.getindigo.ai/", "cmp_01ABC-def.2").unwrap(),
+            "https://hqapi.getindigo.ai/secrets/cmp_01ABC-def.2"
+        );
+        assert_eq!(
+            super::secrets_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
             "company uid has invalid characters: \"cmp/bad\""
         );
     }
