@@ -33,6 +33,9 @@ importers:
       svelte:
         specifier: ^5.0.0
         version: 5.55.5
+      svelte-check:
+        specifier: ^4.4.8
+        version: 4.4.8(picomatch@4.0.4)(svelte@5.55.5)(typescript@5.9.3)
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -318,66 +321,79 @@ packages:
     resolution: {integrity: sha512-2QxQrM+KQ7DAW4o22j+XZ6RKdxjLD7BOWTP0Bv0tmjdyhXSsr2Ul1oJDQqh9Zf5qOwTuTc7Ek83mOFaKnodPjg==}
     cpu: [arm]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm-musleabihf@4.60.2':
     resolution: {integrity: sha512-TbziEu2DVsTEOPif2mKWkMeDMLoYjx95oESa9fkQQK7r/Orta0gnkcDpzwufEcAO2BLBsD7mZkXGFqEdMRRwfw==}
     cpu: [arm]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-arm64-gnu@4.60.2':
     resolution: {integrity: sha512-bO/rVDiDUuM2YfuCUwZ1t1cP+/yqjqz+Xf2VtkdppefuOFS2OSeAfgafaHNkFn0t02hEyXngZkxtGqXcXwO8Rg==}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-arm64-musl@4.60.2':
     resolution: {integrity: sha512-hr26p7e93Rl0Za+JwW7EAnwAvKkehh12BU1Llm9Ykiibg4uIr2rbpxG9WCf56GuvidlTG9KiiQT/TXT1yAWxTA==}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-loong64-gnu@4.60.2':
     resolution: {integrity: sha512-pOjB/uSIyDt+ow3k/RcLvUAOGpysT2phDn7TTUB3n75SlIgZzM6NKAqlErPhoFU+npgY3/n+2HYIQVbF70P9/A==}
     cpu: [loong64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-loong64-musl@4.60.2':
     resolution: {integrity: sha512-2/w+q8jszv9Ww1c+6uJT3OwqhdmGP2/4T17cu8WuwyUuuaCDDJ2ojdyYwZzCxx0GcsZBhzi3HmH+J5pZNXnd+Q==}
     cpu: [loong64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-ppc64-gnu@4.60.2':
     resolution: {integrity: sha512-11+aL5vKheYgczxtPVVRhdptAM2H7fcDR5Gw4/bTcteuZBlH4oP9f5s9zYO9aGZvoGeBpqXI/9TZZihZ609wKw==}
     cpu: [ppc64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-ppc64-musl@4.60.2':
     resolution: {integrity: sha512-i16fokAGK46IVZuV8LIIwMdtqhin9hfYkCh8pf8iC3QU3LpwL+1FSFGej+O7l3E/AoknL6Dclh2oTdnRMpTzFQ==}
     cpu: [ppc64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-riscv64-gnu@4.60.2':
     resolution: {integrity: sha512-49FkKS6RGQoriDSK/6E2GkAsAuU5kETFCh7pG4yD/ylj9rKhTmO3elsnmBvRD4PgJPds5W2PkhC82aVwmUcJ7A==}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-riscv64-musl@4.60.2':
     resolution: {integrity: sha512-mjYNkHPfGpUR00DuM1ZZIgs64Hpf4bWcz9Z41+4Q+pgDx73UwWdAYyf6EG/lRFldmdHHzgrYyge5akFUW0D3mQ==}
     cpu: [riscv64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-linux-s390x-gnu@4.60.2':
     resolution: {integrity: sha512-ALyvJz965BQk8E9Al/JDKKDLH2kfKFLTGMlgkAbbYtZuJt9LU8DW3ZoDMCtQpXAltZxwBHevXz5u+gf0yA0YoA==}
     cpu: [s390x]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-gnu@4.60.2':
     resolution: {integrity: sha512-UQjrkIdWrKI626Du8lCQ6MJp/6V1LAo2bOK9OTu4mSn8GGXIkPXk/Vsp4bLHCd9Z9Iz2OTEaokUE90VweJgIYQ==}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@rollup/rollup-linux-x64-musl@4.60.2':
     resolution: {integrity: sha512-bTsRGj6VlSdn/XD4CGyzMnzaBs9bsRxy79eTqTCBsA8TMIEky7qg48aPkvJvFe1HyzQ5oMZdg7AnVlWQSKLTnw==}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@rollup/rollup-openbsd-x64@4.60.2':
     resolution: {integrity: sha512-6d4Z3534xitaA1FcMWP7mQPq5zGwBmGbhphh2DwaA1aNIXUu3KTOfwrWpbwI4/Gr0uANo7NTtaykFyO2hPuFLg==}
@@ -561,30 +577,35 @@ packages:
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [glibc]
 
   '@tauri-apps/cli-linux-arm64-musl@2.10.1':
     resolution: {integrity: sha512-MIj78PDDGjkg3NqGptDOGgfXks7SYJwhiMh8SBoZS+vfdz7yP5jN18bNaLnDhsVIPARcAhE1TlsZe/8Yxo2zqg==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
+    libc: [musl]
 
   '@tauri-apps/cli-linux-riscv64-gnu@2.10.1':
     resolution: {integrity: sha512-X0lvOVUg8PCVaoEtEAnpxmnkwlE1gcMDTqfhbefICKDnOTJ5Est3qL0SrWxizDackIOKBcvtpejrSiVpuJI1kw==}
     engines: {node: '>= 10'}
     cpu: [riscv64]
     os: [linux]
+    libc: [glibc]
 
   '@tauri-apps/cli-linux-x64-gnu@2.10.1':
     resolution: {integrity: sha512-2/12bEzsJS9fAKybxgicCDFxYD1WEI9kO+tlDwX5znWG2GwMBaiWcmhGlZ8fi+DMe9CXlcVarMTYc0L3REIRxw==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [glibc]
 
   '@tauri-apps/cli-linux-x64-musl@2.10.1':
     resolution: {integrity: sha512-Y8J0ZzswPz50UcGOFuXGEMrxbjwKSPgXftx5qnkuMs2rmwQB5ssvLb6tn54wDSYxe7S6vlLob9vt0VKuNOaCIQ==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
+    libc: [musl]
 
   '@tauri-apps/cli-win32-arm64-msvc@2.10.1':
     resolution: {integrity: sha512-iSt5B86jHYAPJa/IlYw++SXtFPGnWtFJriHn7X0NFBVunF6zu9+/zOn8OgqIWSl8RgzhLGXQEEtGBdR4wzpVgg==}
@@ -701,6 +722,10 @@ packages:
   chai@6.2.2:
     resolution: {integrity: sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg==}
     engines: {node: '>=18'}
+
+  chokidar@4.0.3:
+    resolution: {integrity: sha512-Qgzu8kfBvo+cA4962jnP1KkS6Dop5NS6g7R5LFYJr4b8Ub94PPQXUksCw9PvXoeXPRRddRNC5C1JQUR2SMGtnA==}
+    engines: {node: '>= 14.16.0'}
 
   clsx@2.1.1:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
@@ -840,6 +865,10 @@ packages:
     resolution: {integrity: sha512-tEBHqDnIoM/1rXME1zgka9g6Q2lcoCkxHLuc7ODJ5BxbP5d4c2Z5cGgtXAku59200Cx7diuHTOYfSBD8n6mm8A==}
     engines: {node: '>=16 || 14 >=14.17'}
 
+  mri@1.2.0:
+    resolution: {integrity: sha512-tzzskb3bG8LvYGFF/mDTpq3jpI6Q9wc3LEmBaghu+DdCssd1FakN7Bc0hVNmEyGq1bq3RgfkCb3cmQLpNPOroA==}
+    engines: {node: '>=4'}
+
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
@@ -900,10 +929,18 @@ packages:
   proxy-from-env@1.1.0:
     resolution: {integrity: sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg==}
 
+  readdirp@4.1.2:
+    resolution: {integrity: sha512-GDhwkLfywWL2s6vEjyhri+eXmfH6j1L7JE27WhqLeYzoh/A3DBaYGEj2H/HFZCn/kMfim73FXxEJTw06WtxQwg==}
+    engines: {node: '>= 14.18.0'}
+
   rollup@4.60.2:
     resolution: {integrity: sha512-J9qZyW++QK/09NyN/zeO0dG/1GdGfyp9lV8ajHnRVLfo/uFsbji5mHnDgn/qYdUHyCkM2N+8VyspgZclfAh0eQ==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
     hasBin: true
+
+  sade@1.8.1:
+    resolution: {integrity: sha512-xal3CZX1Xlo/k4ApwCFrHVACi9fBqJ7V+mwhBsuf/1IOKbBy098Fex+Wa/5QMubw09pSZ/u8EY8PWgevJsXp1A==}
+    engines: {node: '>=6'}
 
   semver@6.3.1:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
@@ -921,6 +958,14 @@ packages:
 
   std-env@4.1.0:
     resolution: {integrity: sha512-Rq7ybcX2RuC55r9oaPVEW7/xu3tj8u4GeBYHBWCychFtzMIr86A7e3PPEBPT37sHStKX3+TiX/Fr/ACmJLVlLQ==}
+
+  svelte-check@4.4.8:
+    resolution: {integrity: sha512-67adfgBox5eNSNIvIIwgFizKGdcRrGpiMoNO2obHcYuLz7iTa8Xgm/NGU3ntMFnNm8K1grFOIG6HhMLX/vcN8w==}
+    engines: {node: '>= 18.0.0'}
+    hasBin: true
+    peerDependencies:
+      svelte: ^4.0.0 || ^5.0.0-next.0
+      typescript: '>=5.0.0'
 
   svelte@5.55.5:
     resolution: {integrity: sha512-2uCs/LZ9us+AktdzYJM8OcxQ8qnPS1kpaO7syGT/MgO+6Qr1Ybl+TqPq+97u7PHqmmMlye5ZkoyXONy5mjjAbw==}
@@ -1631,6 +1676,10 @@ snapshots:
 
   chai@6.2.2: {}
 
+  chokidar@4.0.3:
+    dependencies:
+      readdirp: 4.1.2
+
   clsx@2.1.1: {}
 
   convert-source-map@2.0.0: {}
@@ -1755,6 +1804,8 @@ snapshots:
 
   minipass@7.1.3: {}
 
+  mri@1.2.0: {}
+
   ms@2.1.3: {}
 
   nanoid@3.3.11: {}
@@ -1798,6 +1849,8 @@ snapshots:
 
   proxy-from-env@1.1.0: {}
 
+  readdirp@4.1.2: {}
+
   rollup@4.60.2:
     dependencies:
       '@types/estree': 1.0.8
@@ -1829,6 +1882,10 @@ snapshots:
       '@rollup/rollup-win32-x64-msvc': 4.60.2
       fsevents: 2.3.3
 
+  sade@1.8.1:
+    dependencies:
+      mri: 1.2.0
+
   semver@6.3.1: {}
 
   siginfo@2.0.0: {}
@@ -1838,6 +1895,18 @@ snapshots:
   stackback@0.0.2: {}
 
   std-env@4.1.0: {}
+
+  svelte-check@4.4.8(picomatch@4.0.4)(svelte@5.55.5)(typescript@5.9.3):
+    dependencies:
+      '@jridgewell/trace-mapping': 0.3.31
+      chokidar: 4.0.3
+      fdir: 6.5.0(picomatch@4.0.4)
+      picocolors: 1.1.1
+      sade: 1.8.1
+      svelte: 5.55.5
+      typescript: 5.9.3
+    transitivePeerDependencies:
+      - picomatch
 
   svelte@5.55.5:
     dependencies:
