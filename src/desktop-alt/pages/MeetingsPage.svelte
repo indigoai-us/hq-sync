@@ -8,7 +8,7 @@
     stopRecording,
     type ActiveMeeting,
   } from '../../lib/activeMeetings';
-  import { loadMeetingsCache } from '../../lib/meetingsCache';
+  import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
   import LiveNowCard from '../components/LiveNowCard.svelte';
   import MeetingsToday from '../components/MeetingsToday.svelte';
   import {
@@ -29,15 +29,43 @@
     type ScheduledBot,
   } from '../lib/meetings-model';
 
+  /** Return shape of `meetings_list_calendars_for_account` — the per-account
+   *  calendar list plus the user's enabled selection. Mirrors the inline type
+   *  in the classic MeetingsWindow (not exported from the model). */
+  interface AccountCalendars {
+    calendars: GoogleCalendar[];
+    selectedCalendarIds: string[];
+  }
+
   let events = $state<MeetingEvent[]>([]);
   let accounts = $state<GoogleAccount[]>([]);
   let calendarsByAccount = $state<Map<string, GoogleCalendar[]>>(new Map());
   let enabledCalIdsByAccount = $state<Map<string, Set<string>>>(
     new Map(),
   );
+  // Bot map drives the "recording" pills the alt page surfaces from the
+  // calendar snapshot (distinct from the live `meeting:detected` channel,
+  // which is owned by ensureActiveMeetingListeners and left untouched).
+  let botsByEventId = $state<Map<string, ScheduledBot>>(new Map());
+  // Persisted alongside the rest of the snapshot so the classic window and
+  // the alt window stay in lockstep on the shared meetingsCache key.
+  let companyNamesByUid = $state<Map<string, string>>(new Map());
+  let accountEmailById = $state<Map<string, string>>(new Map());
+  let calendarSummaryByKey = $state<Map<string, string>>(new Map());
   let memberships = $state<CompanyMembership[]>([]);
   let membershipsError = $state('');
-  let cachedActiveRecordings = $state<ActiveMeeting[]>([]);
+  // Surfaced when the live calendar fetch fails outright (vs. cache miss):
+  // we keep the stale paint on screen and show this rather than faking an
+  // empty state. Auth failures are special-cased to a "sign in again" hint.
+  let fetchError = $state('');
+  let loading = $state(false);
+
+  // Recordings inferred from the calendar snapshot's scheduled bots. Derived
+  // (not manually assigned) so it recomputes whenever the cache-first paint or
+  // the live network refresh swaps `events`/`botsByEventId`.
+  const cachedActiveRecordings = $derived(
+    activeRecordingsFromScheduledBots(events, botsByEventId),
+  );
 
   const liveMeeting = $derived(pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]));
   const todayEvents = $derived(events.filter((event) => isToday(event)).sort(sortByStart));
@@ -60,42 +88,185 @@
   );
 
   onMount(() => {
+    // Cache-first: paint the last good snapshot synchronously (instant, even
+    // if stale), then revalidate from the network — same stale-while-revalidate
+    // contract the classic MeetingsWindow uses. The alt window has its own
+    // per-window localStorage, so without the network refresh below the cache
+    // was always empty here (the original bug).
     hydrateFromCache();
     void ensureActiveMeetingListeners();
-    void loadMemberships();
+    void refresh();
 
-    const refreshCachedSchedule = () => hydrateFromCache();
-    window.addEventListener('focus', refreshCachedSchedule);
-    window.addEventListener('storage', refreshCachedSchedule);
+    // Re-hydrate on focus/storage so a refresh in the classic window (or a
+    // prior alt session) reflects here immediately; `refresh()` on focus then
+    // pulls fresh data. The `loading` guard dedupes the mount+focus pair.
+    const onFocus = () => {
+      hydrateFromCache();
+      void refresh();
+    };
+    const onStorage = () => hydrateFromCache();
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('storage', onStorage);
     return () => {
-      window.removeEventListener('focus', refreshCachedSchedule);
-      window.removeEventListener('storage', refreshCachedSchedule);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('storage', onStorage);
     };
   });
 
   function hydrateFromCache() {
     const snapshot = loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>();
-    events = snapshot?.events ?? [];
-    const botsByEventId = new Map(snapshot?.botsByEventId ?? []);
-    cachedActiveRecordings = activeRecordingsFromScheduledBots(events, botsByEventId);
-    accounts = snapshot?.accounts ?? [];
-    calendarsByAccount = new Map(snapshot?.calendarsByAccount ?? []);
+    if (!snapshot) return;
+    events = snapshot.events ?? [];
+    botsByEventId = new Map(snapshot.botsByEventId ?? []);
+    companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
+    accounts = snapshot.accounts ?? [];
+    accountEmailById = new Map(snapshot.accountEmailById ?? []);
+    calendarsByAccount = new Map(snapshot.calendarsByAccount ?? []);
+    calendarSummaryByKey = new Map(snapshot.calendarSummaryByKey ?? []);
     enabledCalIdsByAccount = new Map(
-      (snapshot?.enabledCalIdsByAccount ?? []).map(([accountId, ids]) => [
+      (snapshot.enabledCalIdsByAccount ?? []).map(([accountId, ids]) => [
         accountId,
         new Set(ids),
       ]),
     );
   }
 
-  async function loadMemberships() {
+  /**
+   * Live fetch — mirrors MeetingsWindow.svelte's mount `refresh()`. The alt
+   * window must fetch calendar data itself: it can't piggyback on the classic
+   * window's cache because localStorage is per-WebviewWindow. Fetches
+   * events + bots + memberships + connected accounts in parallel, fans out to
+   * per-account calendars, populates the model, and persists the snapshot.
+   *
+   * Errors are NOT swallowed to a blank state: on failure we keep whatever the
+   * cache already painted, log the error, and surface a message (auth failures
+   * prompt re-sign-in) instead of faking "0 meetings".
+   */
+  async function refresh() {
+    if (loading) return;
+    loading = true;
+    fetchError = '';
     membershipsError = '';
     try {
-      memberships = await invoke<CompanyMembership[]>('meetings_list_memberships');
+      const [evts, bots, members, accts] = await Promise.all([
+        invoke<MeetingEvent[]>('meetings_list_upcoming'),
+        invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+          calendarEventIds: null,
+        }),
+        invoke<CompanyMembership[]>('meetings_list_memberships').catch((err) => {
+          console.error('meetings_list_memberships failed:', err);
+          membershipsError = 'Could not load calendar routing.';
+          return [] as CompanyMembership[];
+        }),
+        invoke<GoogleAccount[]>('meetings_list_accounts').catch(
+          () => [] as GoogleAccount[],
+        ),
+      ]);
+      events = evts ?? [];
+      botsByEventId = buildBotMap(bots ?? []);
+      memberships = members ?? [];
+      companyNamesByUid = buildCompanyNameMap(members ?? []);
+      accounts = accts ?? [];
+      accountEmailById = new Map(
+        (accts ?? []).map((a) => [a.accountId, a.email ?? '']),
+      );
+
+      // Calendar fan-out is a second pass so the events render doesn't block
+      // on calendar metadata; per-account failures are non-fatal.
+      await loadCalendarsForAccounts(accts ?? []);
+
+      // Persist AFTER everything (events + calendars) so the next paint — in
+      // either window — hydrates a complete view.
+      persistSnapshot();
     } catch (err) {
-      console.error('meetings_list_memberships failed:', err);
-      membershipsError = 'Could not load calendar routing.';
+      // Keep the cached paint; surface the failure rather than blanking out.
+      console.error('meetings refresh failed:', err);
+      fetchError = friendlyFetchError(err);
+    } finally {
+      loading = false;
     }
+  }
+
+  async function loadCalendarsForAccounts(accts: GoogleAccount[]) {
+    const nextByAccount = new Map<string, GoogleCalendar[]>();
+    const nextEnabled = new Map<string, Set<string>>();
+    const nextSummaries = new Map<string, string>();
+    await Promise.all(
+      accts.map(async (a) => {
+        try {
+          const resp = await invoke<AccountCalendars>(
+            'meetings_list_calendars_for_account',
+            { accountId: a.accountId },
+          );
+          nextByAccount.set(a.accountId, resp.calendars ?? []);
+          nextEnabled.set(a.accountId, new Set(resp.selectedCalendarIds ?? []));
+          for (const c of resp.calendars ?? []) {
+            nextSummaries.set(`${a.accountId}|${c.id}`, c.summary);
+          }
+        } catch (err) {
+          console.error(
+            `meetings_list_calendars_for_account failed for ${a.accountId}:`,
+            err,
+          );
+          nextByAccount.set(a.accountId, []);
+          nextEnabled.set(a.accountId, new Set());
+        }
+      }),
+    );
+    calendarsByAccount = nextByAccount;
+    enabledCalIdsByAccount = nextEnabled;
+    calendarSummaryByKey = nextSummaries;
+  }
+
+  function persistSnapshot(): void {
+    saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
+      events,
+      botsByEventId: Array.from(botsByEventId.entries()),
+      companyNamesByUid: Array.from(companyNamesByUid.entries()),
+      accounts,
+      accountEmailById: Array.from(accountEmailById.entries()),
+      calendarsByAccount: Array.from(calendarsByAccount.entries()),
+      enabledCalIdsByAccount: Array.from(enabledCalIdsByAccount.entries()).map(
+        ([acct, ids]) => [acct, Array.from(ids)],
+      ),
+      calendarSummaryByKey: Array.from(calendarSummaryByKey.entries()),
+    });
+  }
+
+  function buildBotMap(bots: ScheduledBot[]): Map<string, ScheduledBot> {
+    const m = new Map<string, ScheduledBot>();
+    for (const b of bots) {
+      if (b.calendarEventId && isActiveStatus(b.status)) {
+        m.set(b.calendarEventId, b);
+      }
+    }
+    return m;
+  }
+
+  function buildCompanyNameMap(rows: CompanyMembership[]): Map<string, string> {
+    const m = new Map<string, string>();
+    for (const row of rows) {
+      if (row.companyName) m.set(row.companyUid, row.companyName);
+    }
+    return m;
+  }
+
+  function isActiveStatus(s: string): boolean {
+    return (
+      s === 'scheduled' ||
+      s === 'joining' ||
+      s === 'recording' ||
+      s === 'processing' ||
+      s === 'completed'
+    );
+  }
+
+  function friendlyFetchError(err: unknown): string {
+    const raw = String(err ?? '');
+    if (/\b401\b/.test(raw) || /auth/i.test(raw)) {
+      return 'Sign in again to load meetings.';
+    }
+    return 'Could not refresh meetings — showing the last cached view.';
   }
 </script>
 
@@ -107,6 +278,9 @@
       <p class="hero-current">
         {todayEvents.length} on deck today / {signalTotals.actions + signalTotals.decisions + signalTotals.risks} signals extracted
       </p>
+      {#if fetchError}
+        <p class="hero-error" role="status">{fetchError}</p>
+      {/if}
     </div>
     <div class="hero-metrics" aria-label="Meeting signal counts">
       <div class="metric">
@@ -217,6 +391,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .hero-error {
+    margin: 6px 0 0;
+    color: var(--red);
+    font-size: 12px;
+    line-height: 18px;
   }
 
   .hero-metrics {
