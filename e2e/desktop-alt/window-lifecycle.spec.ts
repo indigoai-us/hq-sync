@@ -1,44 +1,53 @@
 import { describe, expect, it } from 'vitest';
-import { DesktopAltHarness } from './harness';
+import { createDesktopAltHarness } from './live-driver';
 
 describe('desktop-alt window lifecycle', () => {
-  it('opens independently, closes without killing the popover or tray, and reopens', () => {
-    const app = new DesktopAltHarness('qa@getindigo.ai');
-    expect(app.bootPopover().toggleVisible).toBe(true);
+  it('opens independently, closes without killing the popover or tray, and reopens', async () => {
+    const app = await createDesktopAltHarness('qa@getindigo.ai');
 
-    const firstWindow = app.clickDesktopAltToggle();
-    expect(firstWindow.created).toBe(true);
-    expect(app.snapshot()).toMatchObject({
-      popoverAlive: true,
-      trayAlive: true,
-      desktopAltWindow: { id: firstWindow.id, focused: true },
-    });
+    try {
+      expect((await app.bootPopover()).toggleVisible).toBe(true);
 
-    app.closeDesktopAltWindow();
-    expect(app.snapshot()).toEqual({
-      popoverAlive: true,
-      trayAlive: true,
-      desktopAltWindow: null,
-    });
+      const firstWindow = await app.clickDesktopAltToggle();
+      expect(firstWindow.created).toBe(true);
+      expect(await app.snapshot()).toMatchObject({
+        popoverAlive: true,
+        trayAlive: true,
+        desktopAltWindow: { id: firstWindow.id, focused: true },
+      });
 
-    const reopenedWindow = app.clickDesktopAltToggle();
-    expect(reopenedWindow.created).toBe(true);
-    expect(reopenedWindow.id).not.toBe(firstWindow.id);
-    expect(app.snapshot()).toMatchObject({
-      popoverAlive: true,
-      trayAlive: true,
-      desktopAltWindow: { id: reopenedWindow.id, focused: true },
-    });
+      await app.closeDesktopAltWindow();
+      expect(await app.snapshot()).toEqual({
+        popoverAlive: true,
+        trayAlive: true,
+        desktopAltWindow: null,
+      });
+
+      const reopenedWindow = await app.clickDesktopAltToggle();
+      expect(reopenedWindow.created).toBe(true);
+      expect(reopenedWindow.id).not.toBe(firstWindow.id);
+      expect(await app.snapshot()).toMatchObject({
+        popoverAlive: true,
+        trayAlive: true,
+        desktopAltWindow: { id: reopenedWindow.id, focused: true },
+      });
+    } finally {
+      await app.dispose?.();
+    }
   });
 
-  it('focuses an existing desktop-alt window when the toggle is clicked again', () => {
-    const app = new DesktopAltHarness('qa@getindigo.ai');
+  it('focuses an existing desktop-alt window when the toggle is clicked again', async () => {
+    const app = await createDesktopAltHarness('qa@getindigo.ai');
 
-    const firstWindow = app.clickDesktopAltToggle();
-    const focusedWindow = app.clickDesktopAltToggle();
+    try {
+      const firstWindow = await app.clickDesktopAltToggle();
+      const focusedWindow = await app.clickDesktopAltToggle();
 
-    expect(focusedWindow.created).toBe(false);
-    expect(focusedWindow.id).toBe(firstWindow.id);
-    expect(focusedWindow.focused).toBe(true);
+      expect(focusedWindow.created).toBe(false);
+      expect(focusedWindow.id).toBe(firstWindow.id);
+      expect(focusedWindow.focused).toBe(true);
+    } finally {
+      await app.dispose?.();
+    }
   });
 });

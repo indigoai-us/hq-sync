@@ -2,10 +2,34 @@ import { existsSync, readFileSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { expect } from 'vitest';
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export interface RenderedPage {
   route: string;
   text: string[];
   consoleErrors: string[];
+}
+
+export interface DesktopAltWindowState {
+  id: number | string;
+  focused: boolean;
+  created: boolean;
+}
+
+export interface DesktopAltSnapshot {
+  popoverAlive: boolean;
+  trayAlive: boolean;
+  desktopAltWindow: { id: number | string; focused: boolean } | null;
+}
+
+export interface DesktopAltTestHarness {
+  readonly mode: 'live' | 'scripted';
+  bootPopover(): MaybePromise<{ toggleVisible: boolean }>;
+  clickDesktopAltToggle(): MaybePromise<DesktopAltWindowState>;
+  closeDesktopAltWindow(): MaybePromise<void>;
+  snapshot(): MaybePromise<DesktopAltSnapshot>;
+  navigate(route: 'sync' | 'meetings' | 'company'): MaybePromise<RenderedPage>;
+  dispose?(): MaybePromise<void>;
 }
 
 export interface SecretItem {
@@ -23,17 +47,16 @@ export interface SecretEnv {
 const repoRoot = process.cwd();
 let reportedDriverMode = false;
 
-export function reportDriverMode(): void {
+export function reportDriverMode(reason?: string): void {
   if (reportedDriverMode) return;
   reportedDriverMode = true;
 
-  if (commandOnPath('tauri-driver')) {
-    console.log('[desktop-alt-e2e] tauri-driver detected; scripted source-contract checks still run.');
-  } else {
-    console.log(
-      '[desktop-alt-e2e] tauri-driver not found; running deterministic scripted harness.',
-    );
-  }
+  const fallbackReason =
+    reason ??
+    (commandOnPath('tauri-driver')
+      ? 'live mode was not configured with HQ_SYNC_DESKTOP_ALT_APP or HQ_SYNC_DESKTOP_ALT_APP_PATH'
+      : 'tauri-driver was not found on PATH');
+  console.log(`[desktop-alt-e2e] fallback scripted harness active: ${fallbackReason}.`);
 }
 
 export function readRepoFile(path: string): string {
@@ -106,10 +129,11 @@ export function sanitizeSecretsResponse(raw: unknown): SecretEnv[] {
     });
 }
 
-export class DesktopAltHarness {
+export class DesktopAltHarness implements DesktopAltTestHarness {
   private email: string;
   private nextWindowId = 1;
   private desktopAltWindow: { id: number; focused: boolean } | null = null;
+  readonly mode = 'scripted';
   readonly popover = { alive: true };
   readonly tray = { alive: true };
   readonly consoleErrors: string[] = [];
@@ -124,7 +148,7 @@ export class DesktopAltHarness {
     return { toggleVisible: this.isDesktopAltEnabled() };
   }
 
-  clickDesktopAltToggle(): { id: number; focused: boolean; created: boolean } {
+  clickDesktopAltToggle(): DesktopAltWindowState {
     this.assertWindowLifecycleSourceContracts();
 
     if (!this.isDesktopAltEnabled()) {
@@ -145,11 +169,7 @@ export class DesktopAltHarness {
     this.desktopAltWindow = null;
   }
 
-  snapshot(): {
-    popoverAlive: boolean;
-    trayAlive: boolean;
-    desktopAltWindow: { id: number; focused: boolean } | null;
-  } {
+  snapshot(): DesktopAltSnapshot {
     return {
       popoverAlive: this.popover.alive,
       trayAlive: this.tray.alive,
@@ -262,7 +282,7 @@ export class DesktopAltHarness {
   }
 }
 
-function commandOnPath(command: string): boolean {
+export function commandOnPath(command: string): boolean {
   const paths = process.env.PATH?.split(delimiter) ?? [];
   return paths.some((dir) => existsSync(join(dir, command)));
 }
