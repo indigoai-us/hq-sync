@@ -5,6 +5,7 @@
   import { onMount } from 'svelte';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import SyncPage from './pages/SyncPage.svelte';
+  import MeetingsPage from './pages/MeetingsPage.svelte';
   import {
     DESKTOP_SHELL_LAYOUT,
     getDesktopCompanies,
@@ -419,6 +420,10 @@
                 {actionMessage}
                 {actionError}
               />
+            </div>
+          {:else if route.kind === 'meetings'}
+            <div class="page">
+              <MeetingsPage />
             </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
