@@ -10,6 +10,10 @@
     count: number;
     items: SecretItem[];
   }
+
+  export function isSealedSecretEnv(env: string): boolean {
+    return ['prod', 'production'].includes(env.trim().toLowerCase());
+  }
 </script>
 
 <script lang="ts">
@@ -21,7 +25,7 @@
 
   let expanded = $state(false);
 
-  const pill = $derived(secretEnv.env === 'production' ? 'sealed' : 'open');
+  const pill = $derived(isSealedSecretEnv(secretEnv.env) ? 'sealed' : 'open');
   const rowId = $derived(`secret-env-${slugify(secretEnv.env)}`);
 
   function toggleExpanded() {

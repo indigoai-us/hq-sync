@@ -144,6 +144,36 @@ export function pickLiveMeeting(activeMeetings: ActiveMeeting[]): ActiveMeeting 
   );
 }
 
+export function activeRecordingsFromScheduledBots(
+  events: MeetingEvent[],
+  botsByEventId: Map<string, ScheduledBot>,
+): ActiveMeeting[] {
+  const eventsById = new Map(events.map((event) => [event.id, event]));
+  const rows: ActiveMeeting[] = [];
+
+  for (const [eventId, bot] of botsByEventId) {
+    if (bot.status !== 'recording') continue;
+    const event = eventsById.get(eventId);
+    rows.push({
+      windowId: `scheduled-bot:${bot.botId}`,
+      platform: bot.platform,
+      meetingUrl: bot.meetingUrl,
+      detectedAt:
+        bot.scheduledStartTime ??
+        event?.start.dateTime ??
+        event?.start.date ??
+        new Date(0).toISOString(),
+      state: 'recording',
+      recordingId: bot.botId,
+      companyUid: event?.sourceCompanyUid ?? null,
+      summary: bot.meetingTitle ?? event?.summary,
+      sourceEventId: bot.calendarEventId ?? eventId,
+    });
+  }
+
+  return rows.sort((a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt));
+}
+
 export function totalSignalCounts(events: MeetingEvent[]): SignalCounts {
   return events.reduce(
     (totals, event) => {
@@ -191,10 +221,15 @@ export function buildConnectedCalendarRows(
   }
 
   const rows: ConnectedCalendarRow[] = [];
+  const hasCalendarInputs = accounts.some(
+    (account) =>
+      enabledCalIdsByAccount.has(account.accountId) ||
+      (calendarsByAccount.get(account.accountId)?.length ?? 0) > 0,
+  );
   for (const account of accounts) {
-    const enabled = enabledCalIdsByAccount.get(account.accountId) ?? new Set<string>();
+    const enabled = enabledCalIdsByAccount.get(account.accountId);
     for (const calendar of calendarsByAccount.get(account.accountId) ?? []) {
-      if (enabled.size > 0 && !enabled.has(calendar.id)) continue;
+      if (enabled && !enabled.has(calendar.id)) continue;
       const key = `${account.accountId}|${calendar.id}`;
       const companyUid = companyByCalendar.get(key) ?? null;
       const membership = companyUid ? membershipByUid.get(companyUid) : undefined;
@@ -208,7 +243,7 @@ export function buildConnectedCalendarRows(
     }
   }
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && !hasCalendarInputs) {
     return memberships.map((membership) => ({
       key: membership.companyUid,
       email: 'Calendar routing',

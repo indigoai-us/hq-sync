@@ -1,12 +1,19 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
-  import { activeMeetings, ensureActiveMeetingListeners, startRecording, stopRecording } from '../../lib/activeMeetings';
+  import {
+    activeMeetings,
+    ensureActiveMeetingListeners,
+    startRecording,
+    stopRecording,
+    type ActiveMeeting,
+  } from '../../lib/activeMeetings';
   import { loadMeetingsCache } from '../../lib/meetingsCache';
   import LiveNowCard from '../components/LiveNowCard.svelte';
   import MeetingsToday from '../components/MeetingsToday.svelte';
   import {
     buildConnectedCalendarRows,
+    activeRecordingsFromScheduledBots,
     eventEnd,
     eventStart,
     extractedSignalLabels,
@@ -30,8 +37,9 @@
   );
   let memberships = $state<CompanyMembership[]>([]);
   let membershipsError = $state('');
+  let cachedActiveRecordings = $state<ActiveMeeting[]>([]);
 
-  const liveMeeting = $derived(pickLiveMeeting($activeMeetings));
+  const liveMeeting = $derived(pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]));
   const todayEvents = $derived(events.filter((event) => isToday(event)).sort(sortByStart));
   const upNext = $derived(pickUpNext(todayEvents));
   const signalTotals = $derived(totalSignalCounts(todayEvents));
@@ -68,6 +76,8 @@
   function hydrateFromCache() {
     const snapshot = loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>();
     events = snapshot?.events ?? [];
+    const botsByEventId = new Map(snapshot?.botsByEventId ?? []);
+    cachedActiveRecordings = activeRecordingsFromScheduledBots(events, botsByEventId);
     accounts = snapshot?.accounts ?? [];
     calendarsByAccount = new Map(snapshot?.calendarsByAccount ?? []);
     enabledCalIdsByAccount = new Map(

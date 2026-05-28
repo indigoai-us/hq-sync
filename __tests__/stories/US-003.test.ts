@@ -64,8 +64,8 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
       statusBarHeightPx: 26,
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(rows.map((row) => row.label)).toEqual(['Sync', 'Meetings', 'Acme Corp', 'Globex']);
-    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3', '⌘4']);
+    expect(rows.map((row) => row.label)).toEqual(['Sync', 'Meetings', 'Acme Corp']);
+    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3']);
     expect(rows[0]).toMatchObject({ active: true, route: { kind: 'sync' } });
     expect(page).toMatchObject({ title: 'Sync', placeholder: 'Sync page - wired in US-005' });
   });
@@ -107,8 +107,6 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
       active: true,
       shortcut: '⌘3',
     });
-    expect(rowsAfterClick.find((row) => row.label === 'Globex')).toMatchObject({
-      active: false,
-    });
+    expect(rowsAfterClick.find((row) => row.label === 'Globex')).toBeUndefined();
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import {
+  activeRecordingsFromScheduledBots,
   buildConnectedCalendarRows,
   pickLiveMeeting,
   totalSignalCounts,
@@ -121,6 +122,79 @@ describe('meetings-model', () => {
         routingTarget: 'Indigo',
         status: 'active',
       },
+    ]);
+  });
+
+  it('treats an explicitly empty enabled calendar set as no enabled calendars', () => {
+    const rows = buildConnectedCalendarRows(
+      [{ accountId: 'acct_1', email: 'person@example.com' }],
+      new Map([['acct_1', [{ id: 'primary', summary: 'Person' }]]]),
+      new Map([['acct_1', new Set()]]),
+      [
+        {
+          id: 'event_1',
+          status: 'confirmed',
+          start: { dateTime: '2026-05-27T17:00:00.000Z' },
+          end: { dateTime: '2026-05-27T17:30:00.000Z' },
+          sourceAccountId: 'acct_1',
+          sourceCalendarId: 'primary',
+        },
+      ],
+      [{ companyUid: 'cmp_123', companyName: 'Indigo', status: 'active' }],
+    );
+
+    expect(rows).toEqual([]);
+  });
+
+  it('seeds active Live now rows from cached scheduled recordings', () => {
+    const rows = activeRecordingsFromScheduledBots(
+      [
+        {
+          id: 'event_1',
+          summary: 'Product Review',
+          status: 'confirmed',
+          start: { dateTime: '2026-05-27T17:00:00.000Z' },
+          end: { dateTime: '2026-05-27T17:30:00.000Z' },
+          sourceCompanyUid: 'cmp_123',
+        },
+      ],
+      new Map([
+        [
+          'event_1',
+          {
+            botId: 'bot_1',
+            meetingUrl: 'https://meet.google.com/abc-defg-hij',
+            platform: 'google_meet',
+            status: 'recording',
+            calendarEventId: 'event_1',
+            meetingTitle: 'Product Review',
+            scheduledStartTime: '2026-05-27T17:00:00.000Z',
+            autoScheduled: true,
+          },
+        ],
+        [
+          'event_2',
+          {
+            botId: 'bot_2',
+            meetingUrl: 'https://meet.google.com/abc-defg-hij',
+            platform: 'google_meet',
+            status: 'scheduled',
+            calendarEventId: 'event_2',
+            autoScheduled: true,
+          },
+        ],
+      ]),
+    );
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        windowId: 'scheduled-bot:bot_1',
+        state: 'recording',
+        recordingId: 'bot_1',
+        companyUid: 'cmp_123',
+        summary: 'Product Review',
+        sourceEventId: 'event_1',
+      }),
     ]);
   });
 });

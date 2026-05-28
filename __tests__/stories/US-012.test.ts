@@ -87,7 +87,8 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     const row = normalize(secretEnvRow);
 
     expect(row).toContain('let expanded = $state(false);');
-    expect(row).toContain("const pill = $derived(secretEnv.env === 'production' ? 'sealed' : 'open')");
+    expect(row).toContain("return ['prod', 'production'].includes(env.trim().toLowerCase());");
+    expect(row).toContain("const pill = $derived(isSealedSecretEnv(secretEnv.env) ? 'sealed' : 'open')");
     expect(row).toContain('<button class="env-button" type="button" aria-expanded={expanded} aria-controls={rowId} onclick={toggleExpanded} >');
     expect(row).toContain('<span class="env-name" title={secretEnv.env}>{secretEnv.env}</span>');
     expect(row).toContain('<span class={`env-pill ${pill}`}>{pill}</span>');

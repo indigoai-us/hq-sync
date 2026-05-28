@@ -17,7 +17,9 @@ export const DESKTOP_SHELL_LAYOUT = {
 export const initialDesktopRoute: DesktopRoute = { kind: 'sync' };
 
 export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
-  return workspaces.filter((workspace) => workspace.kind === 'company');
+  return workspaces.filter(
+    (workspace) => workspace.kind === 'company' && workspace.state === 'synced',
+  );
 }
 
 export function getDesktopRouteKey(route: DesktopRoute): string {

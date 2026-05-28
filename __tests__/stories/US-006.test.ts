@@ -80,7 +80,10 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     }
 
     expect(meetingsPage).toContain('ensureActiveMeetingListeners()');
-    expect(meetingsPage).toContain('const liveMeeting = $derived(pickLiveMeeting($activeMeetings))');
+    expect(meetingsPage).toContain(
+      'const liveMeeting = $derived(pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]))',
+    );
+    expect(meetingsPage).toContain('activeRecordingsFromScheduledBots(events, botsByEventId)');
     expect(meetingsPage).toContain(
       '<LiveNowCard meeting={liveMeeting} onstart={startRecording} onstop={stopRecording} />',
     );
