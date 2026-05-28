@@ -58,17 +58,19 @@
     onselect={selectTab}
   />
 
-  <div class="company-panel">
-    {#if activeTab === 'board'}
-      <CompanyTabPlaceholder label="Board panel - wired in US-009" />
-    {:else if activeTab === 'activity'}
-      <CompanyTabPlaceholder label="Activity panel - wired in US-010" />
-    {:else if activeTab === 'deployments'}
-      <CompanyTabPlaceholder label="Deployments panel - wired in US-011" />
-    {:else}
-      <CompanyTabPlaceholder label="Secrets panel - wired in US-012" />
-    {/if}
-  </div>
+  {#key activeTab}
+    <div class="company-panel">
+      {#if activeTab === 'board'}
+        <CompanyTabPlaceholder label="Board panel - wired in US-009" />
+      {:else if activeTab === 'activity'}
+        <CompanyTabPlaceholder label="Activity panel - wired in US-010" />
+      {:else if activeTab === 'deployments'}
+        <CompanyTabPlaceholder label="Deployments panel - wired in US-011" />
+      {:else}
+        <CompanyTabPlaceholder label="Secrets panel - wired in US-012" />
+      {/if}
+    </div>
+  {/key}
 </section>
 
 <style>
@@ -93,10 +95,22 @@
     display: flex;
     align-items: center;
     gap: 6px;
+    max-width: 100%;
     margin-bottom: 7px;
+    overflow: hidden;
     color: #71717a;
     font-size: 12px;
     line-height: 16px;
+    white-space: nowrap;
+  }
+
+  .company-crumb span {
+    min-width: 0;
+  }
+
+  .company-crumb span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .company-header h1 {
@@ -112,6 +126,8 @@
 
   .company-header p {
     margin: 5px 0 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
     color: #71717a;
     font-size: 13px;
     line-height: 18px;
@@ -132,7 +148,9 @@
   }
 
   .company-actions button {
+    max-width: 160px;
     height: 30px;
+    overflow: hidden;
     padding: 0 11px;
     border: 1px solid #d4d4d8;
     border-radius: 6px;
@@ -141,16 +159,40 @@
     font: inherit;
     font-size: 12px;
     font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     cursor: default;
+    transition: opacity 120ms cubic-bezier(0.33, 1, 0.68, 1),
+      transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
   .company-actions button:hover {
     border-color: #a1a1aa;
     background: #f4f4f5;
+    transform: translateY(-1px);
+  }
+
+  .company-actions button:active {
+    transform: translateY(0);
+    opacity: 0.72;
   }
 
   .company-panel {
     min-width: 0;
+    animation: panel-enter 220ms cubic-bezier(0.33, 1, 0.68, 1);
+    will-change: opacity, transform;
+  }
+
+  @keyframes panel-enter {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
   }
 
   @media (max-width: 720px) {
@@ -167,7 +209,25 @@
     }
 
     .company-actions button {
+      min-width: 0;
+      max-width: none;
       flex: 1 1 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .company-actions button {
+      transition: none;
+    }
+
+    .company-actions button:hover,
+    .company-actions button:active {
+      transform: none;
+    }
+
+    .company-panel {
+      animation: none;
+      will-change: auto;
     }
   }
 </style>

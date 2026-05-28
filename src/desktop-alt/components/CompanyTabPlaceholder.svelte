@@ -14,6 +14,7 @@
   .company-tab-placeholder {
     display: grid;
     min-height: 260px;
+    min-width: 0;
     place-items: center;
     border: 1px solid #e4e4e7;
     border-radius: 8px;
@@ -23,7 +24,19 @@
 
   .company-tab-placeholder p {
     margin: 0;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 0 16px;
     font-size: 13px;
     line-height: 18px;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (max-width: 520px) {
+    .company-tab-placeholder p {
+      white-space: normal;
+    }
   }
 </style>

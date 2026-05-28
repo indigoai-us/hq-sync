@@ -32,7 +32,7 @@
         class:active={activeTab === tab.id}
         onclick={() => onselect(tab.id)}
       >
-        <span>{tab.label}</span>
+        <span class="tab-label">{tab.label}</span>
         <span class="tab-count" aria-label={`${tab.count} ${tab.label.toLowerCase()}`}>
           {tab.count}
         </span>
@@ -57,17 +57,26 @@
     display: flex;
     min-width: 0;
     overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  .company-tabs::-webkit-scrollbar {
+    display: none;
   }
 
   .company-tabs button {
+    position: relative;
     display: inline-flex;
     align-items: center;
+    flex: 0 0 auto;
     gap: 7px;
+    max-width: 170px;
     height: 38px;
+    min-width: 0;
     padding: 0 2px;
     margin-right: 22px;
     border: 0;
-    border-bottom: 2px solid transparent;
     background: transparent;
     color: #71717a;
     font: inherit;
@@ -76,20 +85,57 @@
     line-height: 38px;
     white-space: nowrap;
     cursor: default;
+    transition: opacity 120ms cubic-bezier(0.33, 1, 0.68, 1),
+      transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  .company-tabs button::after {
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 2px;
+    border-radius: 999px;
+    background: #27272a;
+    content: '';
+    opacity: 0;
+    transform: scaleX(0.3);
+    transform-origin: center;
+    transition: opacity 140ms cubic-bezier(0.33, 1, 0.68, 1),
+      transform 140ms cubic-bezier(0.33, 1, 0.68, 1);
   }
 
   .company-tabs button:hover {
     color: #27272a;
+    transform: translateY(-1px);
+  }
+
+  .company-tabs button:active {
+    opacity: 0.72;
+    transform: translateY(0);
   }
 
   .company-tabs button.active {
-    border-bottom-color: #27272a;
     color: #18181b;
   }
 
+  .company-tabs button.active::after {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+
+  .tab-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .tab-count {
+    flex: 0 0 auto;
     min-width: 20px;
+    max-width: 46px;
     height: 18px;
+    overflow: hidden;
     padding: 0 6px;
     border-radius: 999px;
     background: #e4e4e7;
@@ -98,6 +144,8 @@
     font-weight: 650;
     line-height: 18px;
     text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .company-tabs button.active .tab-count {
@@ -120,6 +168,12 @@
     font-weight: 650;
     line-height: 16px;
     text-transform: capitalize;
+    transition: opacity 120ms cubic-bezier(0.33, 1, 0.68, 1),
+      transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
+  }
+
+  .role-pill:hover {
+    transform: translateY(-1px);
   }
 
   @media (max-width: 820px) {
@@ -131,6 +185,28 @@
 
     .role-pill {
       align-self: flex-start;
+      max-width: 100%;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .company-tabs button {
+      max-width: 136px;
+      margin-right: 16px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .company-tabs button,
+    .company-tabs button::after,
+    .role-pill {
+      transition: none;
+    }
+
+    .company-tabs button:hover,
+    .company-tabs button:active,
+    .role-pill:hover {
+      transform: none;
     }
   }
 </style>
