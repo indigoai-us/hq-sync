@@ -19,6 +19,7 @@
 //! is always taken.
 use std::collections::BTreeMap;
 
+use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -109,11 +110,8 @@ pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
         .map_err(|e| format!("board fetch: {e}"))?;
     let status = res.status();
     let text = res.text().await.map_err(|e| format!("board read: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("board HTTP {status}: {text}"));
-    }
 
-    serde_json::from_str(&text).map_err(|e| format!("board parse: {e}"))
+    parse_board_response(status, &text)
 }
 
 /// Open or focus the Indigo-only alternate desktop UX window.
@@ -187,6 +185,22 @@ fn board_url(base: &str, company_uid: &str) -> Result<String, String> {
         base.trim_end_matches('/'),
         company_uid
     ))
+}
+
+fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, String> {
+    if status == StatusCode::NOT_FOUND || status == StatusCode::NO_CONTENT {
+        return Ok(CompanyBoard::default());
+    }
+    if !status.is_success() {
+        return Err(format!("board HTTP {status}: {text}"));
+    }
+
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(CompanyBoard::default());
+    }
+
+    serde_json::from_str(text).map_err(|e| format!("board parse: {e}"))
 }
 
 /// Allows only `[a-zA-Z0-9._-]+` for a path segment without percent-encoding.
@@ -295,6 +309,21 @@ mod tests {
         assert!(board.doing.is_empty());
         assert!(board.review.is_empty());
         assert!(board.done.is_empty());
+    }
+
+    #[test]
+    fn company_board_treats_missing_or_empty_response_as_empty_board() {
+        let not_found = super::parse_board_response(reqwest::StatusCode::NOT_FOUND, "")
+            .expect("missing board.json should be an empty board");
+        assert_eq!(not_found, super::CompanyBoard::default());
+
+        let no_content = super::parse_board_response(reqwest::StatusCode::NO_CONTENT, "")
+            .expect("204 should be an empty board");
+        assert_eq!(no_content, super::CompanyBoard::default());
+
+        let empty_body = super::parse_board_response(reqwest::StatusCode::OK, " \n ")
+            .expect("empty board.json should be an empty board");
+        assert_eq!(empty_body, super::CompanyBoard::default());
     }
 
     #[test]
