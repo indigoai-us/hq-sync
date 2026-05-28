@@ -107,7 +107,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(tabs).toContain('.company-tabs button.active::after');
     expect(page).toContain("{#if activeTab === 'board'}");
     expect(page).toContain('<BoardPanel slug={company.slug} />');
-    expect(page).toContain("<CompanyTabPlaceholder label=\"Activity panel - wired in US-010\" />");
+    expect(page).toContain('<ActivityPanel slug={company.slug} />');
     expect(page).toContain("<CompanyTabPlaceholder label=\"Deployments panel - wired in US-011\" />");
     expect(page).toContain("<CompanyTabPlaceholder label=\"Secrets panel - wired in US-012\" />");
     expect(placeholder).toContain('<section class="company-tab-placeholder" aria-label={label}>');
