@@ -155,11 +155,20 @@
     font: inherit;
     font-weight: 600;
     cursor: default;
+    transition:
+      opacity 140ms cubic-bezier(.2, .7, .2, 1),
+      transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .action-chip:hover:not(:disabled) {
     background: #f4f4f5;
     color: #18181b;
+    transform: translateY(-1px);
+  }
+
+  .action-chip:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
   }
 
   .action-chip.primary {
@@ -175,6 +184,7 @@
   .hero-feedback {
     grid-column: 1 / -1;
     margin-top: -8px;
+    animation: feedbackIn 160ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .hero-metrics {
@@ -190,6 +200,13 @@
     border: 1px solid #e4e4e7;
     border-radius: 8px;
     background: #ffffff;
+    transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
+  }
+
+  .metric:hover {
+    border-color: #d4d4d8;
+    box-shadow: 0 1px 2px rgb(24 24 27 / 0.05);
+    transform: translateY(-1px);
   }
 
   .metric-label {
@@ -209,6 +226,33 @@
     font-size: 17px;
     font-weight: 680;
     line-height: 24px;
+  }
+
+  @keyframes feedbackIn {
+    from {
+      opacity: 0;
+      transform: translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .action-chip,
+    .metric {
+      transition: none;
+    }
+
+    .action-chip:hover:not(:disabled),
+    .metric:hover {
+      transform: none;
+    }
+
+    .hero-feedback {
+      animation: none;
+    }
   }
 
   @media (max-width: 860px) {

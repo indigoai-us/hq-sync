@@ -192,6 +192,8 @@
   .activity-empty {
     display: grid;
     gap: 3px;
+    min-height: 74px;
+    align-content: center;
     padding: 14px;
   }
 
@@ -220,6 +222,12 @@
     grid-template-columns: 12px minmax(0, 1fr);
     gap: 8px;
     padding: 8px 12px;
+    transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
+  }
+
+  .activity-list li:hover {
+    background: #fafafa;
+    transform: translateX(2px);
   }
 
   .activity-dot {
@@ -228,14 +236,17 @@
     margin-top: 5px;
     border-radius: 999px;
     background: #2563eb;
+    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.12);
   }
 
   .activity-dot.up {
     background: #16a34a;
+    box-shadow: 0 0 0 3px rgb(22 163 74 / 0.12);
   }
 
   .activity-dot.deleted {
     background: #dc2626;
+    box-shadow: 0 0 0 3px rgb(220 38 38 / 0.12);
   }
 
   .activity-copy {
@@ -261,6 +272,16 @@
     color: #71717a;
     font-size: 11px;
     line-height: 16px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .activity-list li {
+      transition: none;
+    }
+
+    .activity-list li:hover {
+      transform: none;
+    }
   }
 
   @media (max-width: 980px) {

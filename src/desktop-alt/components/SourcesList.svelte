@@ -76,7 +76,10 @@
             <span>{stateLabel(row)}</span>
             {#if row.progressPct !== null}
               <div class="progress-track" aria-label={`${Math.round(row.progressPct)}% complete`}>
-                <div class="progress-fill" style={`width: ${row.progressPct}%`}></div>
+                <div
+                  class="progress-fill"
+                  style={`--progress-scale: ${Math.max(0, Math.min(1, row.progressPct / 100))}`}
+                ></div>
               </div>
             {/if}
           </div>
@@ -136,6 +139,7 @@
     border: 1px solid #e4e4e7;
     border-radius: 8px;
     background: #ffffff;
+    transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .source-head {
@@ -148,6 +152,13 @@
     font-weight: 650;
     line-height: 16px;
     text-transform: uppercase;
+    transition: none;
+  }
+
+  .source-row:not(.source-head):hover {
+    border-color: #d4d4d8;
+    box-shadow: 0 1px 2px rgb(24 24 27 / 0.05);
+    transform: translateY(-1px);
   }
 
   .source-name {
@@ -187,19 +198,23 @@
     border-radius: 999px;
     background: #22c55e;
     flex: 0 0 auto;
+    box-shadow: 0 0 0 3px rgb(34 197 94 / 0.12);
   }
 
   .state-dot.syncing {
     background: #2563eb;
+    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.14);
     animation: pulse 1.15s ease-in-out infinite;
   }
 
   .state-dot.warn {
     background: #e11d48;
+    box-shadow: 0 0 0 3px rgb(225 29 72 / 0.12);
   }
 
   .state-dot.paused {
     background: #a1a1aa;
+    box-shadow: 0 0 0 3px rgb(161 161 170 / 0.16);
   }
 
   .progress-track {
@@ -212,10 +227,13 @@
   }
 
   .progress-fill {
+    width: 100%;
     height: 100%;
     border-radius: inherit;
     background: #2563eb;
-    transition: width 160ms cubic-bezier(.2, .7, .2, 1);
+    transform: scaleX(var(--progress-scale, 0));
+    transform-origin: left center;
+    transition: transform 180ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .action-pill {
@@ -279,6 +297,21 @@
     }
     50% {
       opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .source-row,
+    .progress-fill {
+      transition: none;
+    }
+
+    .source-row:not(.source-head):hover {
+      transform: none;
+    }
+
+    .state-dot.syncing {
+      animation: none;
     }
   }
 

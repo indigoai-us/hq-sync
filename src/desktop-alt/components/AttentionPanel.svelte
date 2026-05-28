@@ -73,6 +73,8 @@
   .attention-empty {
     display: grid;
     gap: 3px;
+    min-height: 74px;
+    align-content: center;
     padding: 14px;
   }
 
@@ -103,6 +105,12 @@
     align-items: start;
     gap: 10px;
     padding: 12px;
+    transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
+  }
+
+  .attention-item:hover {
+    box-shadow: 0 1px 2px rgb(24 24 27 / 0.05);
+    transform: translateY(-1px);
   }
 
   .attention-item.warn {
@@ -126,9 +134,28 @@
     font-size: 12px;
     font-weight: 650;
     white-space: nowrap;
+    transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .attention-item button:hover {
     background: #f4f4f5;
+    transform: translateY(-1px);
+  }
+
+  .attention-item button:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .attention-item,
+    .attention-item button {
+      transition: none;
+    }
+
+    .attention-item:hover,
+    .attention-item button:hover {
+      transform: none;
+    }
   }
 </style>
