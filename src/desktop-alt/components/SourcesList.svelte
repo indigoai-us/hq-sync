@@ -127,11 +127,12 @@
   .source-table {
     display: grid;
     gap: 6px;
+    min-width: 0;
   }
 
   .source-row {
     display: grid;
-    grid-template-columns: minmax(190px, 1.8fr) minmax(150px, 1fr) minmax(84px, .7fr) minmax(92px, .8fr) auto;
+    grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr) minmax(0, .7fr) minmax(0, .8fr) minmax(0, auto);
     align-items: center;
     gap: 12px;
     min-height: 54px;
@@ -171,6 +172,23 @@
   .source-name div,
   .source-status {
     min-width: 0;
+  }
+
+  /* Grid cells must be allowed to shrink below their content width so the
+     row's minmax(0, …) tracks never force the table wider than its column.
+     Text cells clip with an ellipsis instead of pushing the table out. */
+  .source-muted {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .source-head span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .source-name strong {

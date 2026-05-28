@@ -646,6 +646,17 @@ fn parse_secrets_response(status: StatusCode, text: &str) -> Result<Vec<SecretEn
 fn parse_secret_envs(text: &str) -> Result<Vec<SecretEnv>, String> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("secrets parse: {e}"))?;
+
+    // STRUCTURE-ONLY diagnostic: logs the JSON shape (top-level kind, top-level
+    // object key names, candidate array lengths, and the FIRST row's key names)
+    // so a real-response shape mismatch is observable. NEVER logs any value —
+    // only the *names* of keys and the *lengths* of arrays. Secret values must
+    // never reach a log (see e2e/desktop-alt/secrets-never-leak.spec.ts).
+    eprintln!(
+        "[desktop-alt] secrets structure: {}",
+        secret_structure_summary(&value)
+    );
+
     let rows =
         secret_rows(&value).ok_or_else(|| "secrets parse: missing secrets array".to_string())?;
     let mut grouped: BTreeMap<String, Vec<SecretItem>> = BTreeMap::new();
@@ -673,6 +684,70 @@ fn parse_secret_envs(text: &str) -> Result<Vec<SecretEnv>, String> {
             }
         })
         .collect())
+}
+
+/// Build a values-free description of a secrets JSON payload for diagnostics.
+///
+/// Reveals the top-level kind, top-level object key names, the lengths of the
+/// candidate arrays `secret_rows` probes, and the key names present on the
+/// first row of whichever array is found. It deliberately emits only key
+/// *names* and array *lengths* — never a value, string contents, or anything
+/// derived from a secret — so it is safe to write to stderr.
+fn secret_structure_summary(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Array(rows) => {
+            format!(
+                "top-level array (len={}); first-row keys=[{}]",
+                rows.len(),
+                first_row_key_names(rows.first())
+            )
+        }
+        serde_json::Value::Object(map) => {
+            let top_keys: Vec<&str> = map.keys().map(String::as_str).collect();
+            // Lengths of the arrays `secret_rows` knows how to read, so a
+            // "found the envelope but it's empty/elsewhere" case is visible.
+            let mut array_lens: Vec<String> = Vec::new();
+            for path in ["secrets", "items", "data", "parameters", "body"] {
+                if let Some(len) = map.get(path).and_then(|v| v.as_array()).map(Vec::len) {
+                    array_lens.push(format!("{path}[]={len}"));
+                }
+            }
+            let first_row_keys = secret_rows(value)
+                .map(|rows| first_row_key_names(rows.first()))
+                .unwrap_or_else(|| "<no array matched secret_rows>".to_string());
+            format!(
+                "top-level object; keys=[{}]; arrays=[{}]; first-row keys=[{}]",
+                top_keys.join(","),
+                array_lens.join(","),
+                first_row_keys
+            )
+        }
+        other => format!("top-level {} (not array/object)", json_kind(other)),
+    }
+}
+
+/// Comma-joined key names of a JSON object row (names only, never values).
+fn first_row_key_names(row: Option<&serde_json::Value>) -> String {
+    match row {
+        Some(serde_json::Value::Object(map)) => map
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(","),
+        Some(other) => format!("<row is {}>", json_kind(other)),
+        None => "<empty>".to_string(),
+    }
+}
+
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "bool",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
 }
 
 fn secret_rows(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -1766,6 +1841,49 @@ mod tests {
         assert!(serialized.get(0).unwrap().get("value").is_none());
     }
 
+    /// The structure diagnostic must describe shape (top-level kind, key
+    /// names, array lengths, first-row key names) and NEVER leak a value.
+    #[test]
+    fn secret_structure_summary_is_values_free() {
+        let object_shape = serde_json::json!({
+            "companyUid": "cmp_01HX",
+            "secrets": [
+                {
+                    "name": "prod/DATABASE_URL",
+                    "type": "SecureString",
+                    "lastModifiedDate": "2026-05-27T12:00:00Z",
+                    "version": 4,
+                    "permission": "admin",
+                    "value": "super-secret-plaintext"
+                }
+            ]
+        });
+        let summary = super::secret_structure_summary(&object_shape);
+        // Shape facts ARE present.
+        assert!(summary.contains("top-level object"));
+        assert!(summary.contains("companyUid"));
+        assert!(summary.contains("secrets[]=1"));
+        // Row key NAMES are present...
+        assert!(summary.contains("name"));
+        assert!(summary.contains("version"));
+        // ...but no value strings ever are.
+        assert!(!summary.contains("super-secret-plaintext"));
+        assert!(!summary.contains("SecureString"));
+        assert!(!summary.contains("prod/DATABASE_URL"));
+
+        let array_shape = serde_json::json!([
+            { "name": "the-secret-name", "value": "leak-me" }
+        ]);
+        let summary = super::secret_structure_summary(&array_shape);
+        assert!(summary.contains("top-level array (len=1)"));
+        // Field NAMES appear...
+        assert!(summary.contains("name"));
+        assert!(summary.contains("value"));
+        // ...but neither the secret value nor the secret's name VALUE leaks.
+        assert!(!summary.contains("leak-me"));
+        assert!(!summary.contains("the-secret-name"));
+    }
+
     #[test]
     fn company_secrets_treats_empty_and_not_provisioned_as_empty() {
         assert_eq!(
@@ -1795,6 +1913,42 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("secrets HTTP 404"));
+    }
+
+    /// Regression for the "0 deployments despite HTTP 200 with data" bug.
+    /// The real `GET /api/apps/me` rows do NOT carry an org-slug field (the
+    /// server already scopes by the `x-org-slug` header), so the client-side
+    /// slug filter must NOT drop them. Uses the exact production row shape.
+    #[test]
+    fn company_deployments_keeps_apps_me_rows_without_org_slug() {
+        let deployments = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"{
+                "apps": [
+                    {
+                        "id": "app_01HX",
+                        "name": "nat-audit-indigo-api-3",
+                        "subdomain": "nat-audit-indigo-api-3",
+                        "type": "static",
+                        "status": "active",
+                        "dnsStatus": "failed",
+                        "active": true,
+                        "passwordProtected": false,
+                        "ownerId": "user_01HX",
+                        "createdAt": "2026-05-27T12:00:00Z",
+                        "url": "https://nat-audit-indigo-api-3.indigo-hq.com"
+                    }
+                ]
+            }"#,
+            "indigo",
+        )
+        .expect("apps/me without orgSlug should parse");
+
+        // The single row has no orgSlug field, so the server-trusted filter
+        // must keep it — a count of 1, not 0.
+        assert_eq!(deployments.len(), 1);
+        assert_eq!(deployments[0].sub, "nat-audit-indigo-api-3");
+        assert_eq!(deployments[0].state, "active");
     }
 
     #[test]
