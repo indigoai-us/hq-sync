@@ -239,6 +239,9 @@ fn resolve_company_uid_from_workspaces(
             .broken_reason
             .as_deref()
             .unwrap_or("workspace cloud mapping is broken");
+        if let Some(live_cloud_uid) = live_cloud_uid_from_broken_reason(reason) {
+            return Ok(live_cloud_uid);
+        }
         return Err(format!("company '{slug}' is not synced: {reason}"));
     }
     if !matches!(
@@ -253,6 +256,20 @@ fn resolve_company_uid_from_workspaces(
     workspace
         .cloud_uid
         .ok_or_else(|| format!("company '{slug}' is not connected to cloud"))
+}
+
+fn live_cloud_uid_from_broken_reason(reason: &str) -> Option<String> {
+    let reason = reason.strip_prefix("manifest cloud_uid ")?;
+    let (manifest_uid, reason) = reason.split_once(" does not match cloud entity ")?;
+    let live_uid = reason.strip_suffix(" for this slug")?;
+    if manifest_uid.is_empty()
+        || live_uid.is_empty()
+        || manifest_uid == live_uid
+        || !is_url_safe_id(live_uid)
+    {
+        return None;
+    }
+    Some(live_uid.to_string())
 }
 
 fn vault_base() -> Result<String, String> {
@@ -626,7 +643,26 @@ mod tests {
     }
 
     #[test]
-    fn company_uid_resolution_rejects_broken_and_states_without_cloud_identity() {
+    fn company_uid_resolution_allows_broken_uid_mismatch_via_live_cloud_uid() {
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(
+                vec![company_workspace(
+                    "acme",
+                    WorkspaceState::Broken,
+                    Some("cmp_OLD"),
+                    Some(
+                        "manifest cloud_uid cmp_OLD does not match cloud entity cmp_NEW for this slug",
+                    ),
+                )],
+                "acme",
+            )
+            .unwrap(),
+            "cmp_NEW"
+        );
+    }
+
+    #[test]
+    fn company_uid_resolution_rejects_broken_without_live_cloud_membership() {
         let broken_err = super::resolve_company_uid_from_workspaces(
             vec![company_workspace(
                 "acme",
