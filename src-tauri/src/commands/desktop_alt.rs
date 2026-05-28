@@ -69,6 +69,24 @@ pub struct CompanyBoard {
     pub done: Vec<BoardCard>,
 }
 
+impl CompanyBoard {
+    /// Total cards across every column — the board count shown in the
+    /// Company header and tab badge.
+    pub fn card_count(&self) -> u32 {
+        let total = self.inbox.len() + self.doing.len() + self.review.len() + self.done.len();
+        u32::try_from(total).unwrap_or(u32::MAX)
+    }
+}
+
+impl CompanyActivity {
+    /// Activity in the last 7 days. The vault activity payload already
+    /// rolls this up as `stats.files7` (files touched in the trailing 7
+    /// days); we surface that directly as the header's `last7d` count.
+    pub fn last7d(&self) -> u32 {
+        self.stats.files7
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CompanyActivity {
@@ -227,12 +245,46 @@ pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>
         return Err("company slug is required".to_string());
     }
 
+    // Aggregate the four real per-panel commands. Each surface is
+    // best-effort: a non-auth failure (404 not-provisioned, network, parse)
+    // contributes 0 so one dead endpoint doesn't zero the others. Auth
+    // failures are different — they must propagate so the UI can route to
+    // sign-in rather than silently rendering empty counts.
+    let board = summary_count_or_auth(get_company_board(slug.clone()).await.map(|b| b.card_count()))?;
+    let last7d =
+        summary_count_or_auth(get_company_activity(slug.clone()).await.map(|a| a.last7d()))?;
+    let deployments = summary_count_or_auth(
+        get_company_deployments(slug.clone())
+            .await
+            .map(|d| u32::try_from(d.len()).unwrap_or(u32::MAX)),
+    )?;
+    let secrets = summary_count_or_auth(
+        get_company_secrets(slug)
+            .await
+            .map(|s| u32::try_from(s.len()).unwrap_or(u32::MAX)),
+    )?;
+
     Ok(CompanySummary {
-        board: 0,
-        activity: CompanyActivitySummary { last7d: 0 },
-        deployments: 0,
-        secrets: 0,
+        board,
+        activity: CompanyActivitySummary { last7d },
+        deployments,
+        secrets,
     })
+}
+
+/// Collapse a per-surface command result into the count for the summary.
+/// Auth-required errors propagate (so the UI routes to sign-in); every
+/// other error degrades to `0` for that surface so the rest still render.
+fn summary_count_or_auth(result: Result<u32, String>) -> Result<u32, String> {
+    match result {
+        Ok(count) => Ok(count),
+        Err(err) if is_auth_required_error(&err) => Err(err),
+        Err(_) => Ok(0),
+    }
+}
+
+fn is_auth_required_error(err: &str) -> bool {
+    err.starts_with("AUTH_REQUIRED:")
 }
 
 #[tauri::command]
@@ -245,13 +297,19 @@ pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
         .map_err(|e| format!("auth: {e}"))?;
 
     let res = build_client()
-        .get(url)
+        .get(&url)
         .header("authorization", format!("Bearer {token}"))
         .send()
         .await
         .map_err(|e| format!("board fetch: {e}"))?;
     let status = res.status();
     let text = res.text().await.map_err(|e| format!("board read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] board GET {url} -> HTTP {} ({} bytes): {}",
+        status,
+        text.len(),
+        text.chars().take(200).collect::<String>()
+    );
 
     parse_board_response(status, &text)
 }
@@ -266,7 +324,7 @@ pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, Strin
         .map_err(|e| format!("auth: {e}"))?;
 
     let res = build_client()
-        .get(url)
+        .get(&url)
         .header("authorization", format!("Bearer {token}"))
         .send()
         .await
@@ -276,6 +334,12 @@ pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, Strin
         .text()
         .await
         .map_err(|e| format!("activity read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] activity GET {url} -> HTTP {} ({} bytes): {}",
+        status,
+        text.len(),
+        text.chars().take(200).collect::<String>()
+    );
 
     parse_activity_response(status, &text)
 }
@@ -289,7 +353,7 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
         .map_err(|e| format!("auth: {e}"))?;
 
     let res = build_client()
-        .get(url)
+        .get(&url)
         .header("authorization", format!("Bearer {token}"))
         .header("x-org-slug", &slug)
         .send()
@@ -300,6 +364,12 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
         .text()
         .await
         .map_err(|e| format!("deployments read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] deployments GET {url} (x-org-slug={slug}) -> HTTP {} ({} bytes): {}",
+        status,
+        text.len(),
+        text.chars().take(200).collect::<String>()
+    );
 
     parse_deployments_response(status, &text, &slug)
 }
@@ -314,13 +384,20 @@ pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String>
         .map_err(|e| format!("auth: {e}"))?;
 
     let res = build_client()
-        .get(url)
+        .get(&url)
         .header("authorization", format!("Bearer {token}"))
         .send()
         .await
         .map_err(|e| format!("secrets fetch: {e}"))?;
     let status = res.status();
     let text = res.text().await.map_err(|e| format!("secrets read: {e}"))?;
+    // Secrets response bodies can carry plaintext secret values, so log
+    // only status + byte length here (never a body snippet).
+    eprintln!(
+        "[desktop-alt] secrets GET {url} -> HTTP {} ({} bytes)",
+        status,
+        text.len()
+    );
 
     parse_secrets_response(status, &text)
 }
@@ -468,11 +545,15 @@ fn secrets_url(base: &str, company_uid: &str) -> Result<String, String> {
 }
 
 fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: board (HTTP {status})"));
+    }
     if status == StatusCode::NO_CONTENT {
         return Ok(CompanyBoard::default());
     }
     if status == StatusCode::NOT_FOUND {
         return if is_board_not_provisioned(text) {
+            eprintln!("[desktop-alt] board 404 not-provisioned -> empty board: {text}");
             Ok(CompanyBoard::default())
         } else {
             Err(format!("board HTTP {status}: {text}"))
@@ -484,6 +565,7 @@ fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, 
 
     let text = text.trim();
     if text.is_empty() {
+        eprintln!("[desktop-alt] board {status} empty body -> empty board");
         return Ok(CompanyBoard::default());
     }
 
@@ -491,11 +573,15 @@ fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, 
 }
 
 fn parse_activity_response(status: StatusCode, text: &str) -> Result<CompanyActivity, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: activity (HTTP {status})"));
+    }
     if status == StatusCode::NO_CONTENT {
         return Ok(CompanyActivity::default());
     }
     if status == StatusCode::NOT_FOUND {
         return if is_activity_not_provisioned(text) {
+            eprintln!("[desktop-alt] activity 404 not-provisioned -> empty activity: {text}");
             Ok(CompanyActivity::default())
         } else {
             Err(format!("activity HTTP {status}: {text}"))
@@ -507,6 +593,7 @@ fn parse_activity_response(status: StatusCode, text: &str) -> Result<CompanyActi
 
     let text = text.trim();
     if text.is_empty() {
+        eprintln!("[desktop-alt] activity {status} empty body -> empty activity");
         return Ok(CompanyActivity::default());
     }
 
@@ -529,11 +616,15 @@ fn parse_company_activity(text: &str) -> Result<CompanyActivity, String> {
 }
 
 fn parse_secrets_response(status: StatusCode, text: &str) -> Result<Vec<SecretEnv>, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: secrets (HTTP {status})"));
+    }
     if status == StatusCode::NO_CONTENT {
         return Ok(Vec::new());
     }
     if status == StatusCode::NOT_FOUND {
         return if is_secrets_not_provisioned(text) {
+            eprintln!("[desktop-alt] secrets 404 not-provisioned -> empty secrets");
             Ok(Vec::new())
         } else {
             Err(format!("secrets HTTP {status}"))
@@ -545,6 +636,7 @@ fn parse_secrets_response(status: StatusCode, text: &str) -> Result<Vec<SecretEn
 
     let text = text.trim();
     if text.is_empty() {
+        eprintln!("[desktop-alt] secrets {status} empty body -> empty secrets");
         return Ok(Vec::new());
     }
 
@@ -681,11 +773,15 @@ fn parse_deployments_response(
     text: &str,
     selected_slug: &str,
 ) -> Result<Vec<DeploymentEntry>, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: deployments (HTTP {status})"));
+    }
     if status == StatusCode::NO_CONTENT {
         return Ok(Vec::new());
     }
     if status == StatusCode::NOT_FOUND {
         return if is_deployments_not_provisioned(text) {
+            eprintln!("[desktop-alt] deployments 404 not-provisioned -> empty deployments: {text}");
             Ok(Vec::new())
         } else {
             Err(format!("deployments HTTP {status}: {text}"))
@@ -697,6 +793,7 @@ fn parse_deployments_response(
 
     let text = text.trim();
     if text.is_empty() {
+        eprintln!("[desktop-alt] deployments {status} empty body -> empty deployments");
         return Ok(Vec::new());
     }
 
@@ -1207,16 +1304,84 @@ mod tests {
         assert!(!is_allowed_email(Some("")));
     }
 
-    #[tokio::test]
-    async fn company_summary_returns_placeholder_counts() {
-        let summary = super::get_company_summary("acme".to_string())
-            .await
-            .expect("valid slug should return a summary");
+    #[test]
+    fn company_board_card_count_sums_all_columns() {
+        let card = |id: &str| super::BoardCard {
+            id: id.to_string(),
+            title: id.to_string(),
+            subtitle: None,
+            href: None,
+            labels: Vec::new(),
+            assignee_initials: None,
+            tag: None,
+            age: None,
+            extra: std::collections::BTreeMap::new(),
+        };
+        let board = super::CompanyBoard {
+            inbox: vec![card("a"), card("b")],
+            doing: vec![card("c")],
+            review: Vec::new(),
+            done: vec![card("d"), card("e"), card("f")],
+        };
 
-        assert_eq!(summary.board, 0);
-        assert_eq!(summary.activity.last7d, 0);
-        assert_eq!(summary.deployments, 0);
-        assert_eq!(summary.secrets, 0);
+        assert_eq!(board.card_count(), 6);
+        assert_eq!(super::CompanyBoard::default().card_count(), 0);
+    }
+
+    #[test]
+    fn company_activity_last7d_reads_files7_stat() {
+        let activity = super::parse_activity_response(
+            reqwest::StatusCode::OK,
+            r#"{"stats":{"files7":9,"edits7":40}}"#,
+        )
+        .expect("activity should parse");
+
+        assert_eq!(activity.last7d(), 9);
+        assert_eq!(super::CompanyActivity::default().last7d(), 0);
+    }
+
+    #[test]
+    fn summary_count_propagates_auth_but_degrades_other_errors_to_zero() {
+        assert_eq!(super::summary_count_or_auth(Ok(7)).unwrap(), 7);
+        // Non-auth failures (404 not-provisioned, network, parse) -> 0 so a
+        // single dead surface doesn't zero the rest.
+        assert_eq!(
+            super::summary_count_or_auth(Err("board HTTP 404: nope".to_string())).unwrap(),
+            0
+        );
+        // Auth failures propagate so the UI can route to sign-in.
+        assert_eq!(
+            super::summary_count_or_auth(Err("AUTH_REQUIRED: board (HTTP 401 Unauthorized)".to_string()))
+                .unwrap_err(),
+            "AUTH_REQUIRED: board (HTTP 401 Unauthorized)"
+        );
+    }
+
+    #[test]
+    fn parse_responses_flag_auth_failures_as_auth_required() {
+        assert!(super::parse_board_response(reqwest::StatusCode::UNAUTHORIZED, "")
+            .unwrap_err()
+            .starts_with("AUTH_REQUIRED: board"));
+        assert!(super::parse_board_response(reqwest::StatusCode::FORBIDDEN, "")
+            .unwrap_err()
+            .starts_with("AUTH_REQUIRED: board"));
+        assert!(
+            super::parse_activity_response(reqwest::StatusCode::UNAUTHORIZED, "")
+                .unwrap_err()
+                .starts_with("AUTH_REQUIRED: activity")
+        );
+        assert!(super::parse_deployments_response(
+            reqwest::StatusCode::FORBIDDEN,
+            "",
+            "test-org"
+        )
+        .unwrap_err()
+        .starts_with("AUTH_REQUIRED: deployments"));
+        assert!(
+            super::parse_secrets_response(reqwest::StatusCode::UNAUTHORIZED, "")
+                .unwrap_err()
+                .starts_with("AUTH_REQUIRED: secrets")
+        );
     }
 
     #[tokio::test]
