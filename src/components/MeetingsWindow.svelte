@@ -10,6 +10,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import * as Sentry from '@sentry/svelte';
   import {
     loadMeetingsCache,
     saveMeetingsCache,
@@ -124,7 +125,23 @@
   );
   let loading = $state(false);
   let listError = $state<string | null>(null);
-  let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
+  /**
+   * Toast surface. `retry` (optional) wires a re-fire callback for the
+   * failed action — when set, the warn toast renders a "Retry" button.
+   * `details` (optional) carries the raw upstream error string so the
+   * "Copy details" affordance can hand the same payload Sentry got to the
+   * user/support, without re-stringifying through `friendlyError`.
+   */
+  let toast = $state<{
+    kind: 'info' | 'warn';
+    text: string;
+    retry?: () => void;
+    details?: string;
+  } | null>(null);
+  /** Per-toast clipboard confirmation — flips to true for ~1.5s after the
+   *  user clicks Copy details, then resets. Scoped to the toast object's
+   *  identity so a new toast clears the prior confirmation. */
+  let copiedDetails = $state(false);
 
   /**
    * Distill an upstream error (Tauri command Result::Err string, fetch
@@ -467,7 +484,24 @@
         flashToast('info', 'Already invited — refreshing.');
         await refresh();
       } else {
-        flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
+        // Real failure path — before today this dead-ended at a generic
+        // toast with zero ops signal. Capture to Sentry tagged with the
+        // call-site so we can slice the "couldn't invite" bucket by
+        // failure mode. Auth token is never in scope here (Tauri command
+        // handles it backend-side), so `rawError` is safe to attach.
+        Sentry.captureException(err instanceof Error ? err : new Error(msg), {
+          tags: { area: 'meetings-invite' },
+          extra: {
+            rawError: msg,
+            meetingUrl: url,
+            calendarEventId: evt.id,
+            companyId: evt.sourceCompanyUid ?? null,
+          },
+        });
+        flashToast('warn', friendlyError(err, "Couldn't invite the bot."), {
+          retry: () => void onInvite(evt),
+          details: msg,
+        });
       }
     } finally {
       const next = new Set(rowPending);
@@ -487,7 +521,19 @@
       flashToast('info', 'Bot uninvited.');
       await refresh();
     } catch (err) {
-      flashToast('warn', friendlyError(err, "Couldn't remove the bot."));
+      const msg = String(err);
+      Sentry.captureException(err instanceof Error ? err : new Error(msg), {
+        tags: { area: 'meetings-cancel' },
+        extra: {
+          rawError: msg,
+          botId: bot.botId,
+          calendarEventId: evt.id,
+        },
+      });
+      flashToast('warn', friendlyError(err, "Couldn't remove the bot."), {
+        retry: () => void onUninvite(evt),
+        details: msg,
+      });
     } finally {
       const next = new Set(rowPending);
       next.delete(key);
@@ -558,7 +604,27 @@
       flashToast('info', `Bot invited — meeting will save to ${destLabel}.`);
       await refresh();
     } catch (err) {
-      flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
+      const msg = String(err);
+      Sentry.captureException(err instanceof Error ? err : new Error(msg), {
+        tags: { area: 'meetings-invite-url' },
+        extra: {
+          rawError: msg,
+          meetingUrl: url,
+          companyId: submittedCompanyId,
+        },
+      });
+      flashToast('warn', friendlyError(err, "Couldn't invite the bot."), {
+        retry: () => {
+          // Re-fire with the same URL + company pick the user just
+          // submitted. Restoring the input lets the retry click re-use
+          // the cleared-on-success state machinery without making the
+          // retry path special-case input handling.
+          urlInput = url;
+          urlInputCompanyId = submittedCompanyId;
+          void onUrlInvite();
+        },
+        details: msg,
+      });
     } finally {
       urlInviting = false;
     }
@@ -574,11 +640,37 @@
     );
   }
 
-  function flashToast(kind: 'info' | 'warn', text: string) {
-    toast = { kind, text };
+  function flashToast(
+    kind: 'info' | 'warn',
+    text: string,
+    opts?: { retry?: () => void; details?: string },
+  ) {
+    // Reset the copy-confirmation pip so a fresh warn toast doesn't
+    // inherit the previous toast's "Copied" state.
+    copiedDetails = false;
+    toast = { kind, text, retry: opts?.retry, details: opts?.details };
     setTimeout(() => {
       if (toast && toast.text === text) toast = null;
     }, 4000);
+  }
+
+  /**
+   * Copy the raw error string (the same payload Sentry got) to the
+   * clipboard and flash a brief inline confirmation. Best-effort —
+   * clipboard API can reject on permission/HTTP-not-secure contexts;
+   * we swallow because the user can always read the error from the
+   * Sentry side and a failed copy isn't worth a second toast.
+   */
+  async function copyErrorDetails(details: string) {
+    try {
+      await navigator.clipboard.writeText(details);
+      copiedDetails = true;
+      setTimeout(() => {
+        copiedDetails = false;
+      }, 1500);
+    } catch {
+      // Clipboard denied — nothing actionable. Leave the toast alone.
+    }
   }
 
   interface DayGroup {
@@ -1022,9 +1114,27 @@
   </div>
 
   {#if toast}
-    <p class="toast" class:toast-warn={toast.kind === 'warn'}>
-      {toast.text}
-    </p>
+    <div class="toast" class:toast-warn={toast.kind === 'warn'}>
+      <span class="toast-text">{toast.text}</span>
+      {#if toast.retry || toast.details}
+        <span class="toast-actions">
+          {#if toast.retry}
+            <button
+              type="button"
+              class="toast-action"
+              onclick={() => toast?.retry?.()}
+            >Retry</button>
+          {/if}
+          {#if toast.details}
+            <button
+              type="button"
+              class="toast-action"
+              onclick={() => toast?.details && void copyErrorDetails(toast.details)}
+            >{copiedDetails ? 'Copied' : 'Copy details'}</button>
+          {/if}
+        </span>
+      {/if}
+    </div>
   {/if}
 
   <!-- Controls row — always present below the URL input. Hosts the
@@ -1462,6 +1572,36 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     color: #f4f4f5;
     font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .toast-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  /* Inline affordances on the toast — Retry / Copy details. Text-only to
+     keep the warn surface visually quiet; only appear on warn toasts that
+     actually carry a retry callback or raw error payload. */
+  .toast-actions {
+    display: inline-flex;
+    gap: 6px;
+    flex: 0 0 auto;
+  }
+  .toast-action {
+    appearance: none;
+    background: transparent;
+    border: 1px solid currentColor;
+    color: inherit;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 500;
+    cursor: pointer;
+    opacity: 0.85;
+  }
+  .toast-action:hover {
+    opacity: 1;
   }
   /* Warn — yellow, used for recoverable user-facing failures (per HQ
      policy: avoid red error states for things the user can retry). Same
