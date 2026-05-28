@@ -119,6 +119,7 @@
   .connected-pill {
     flex: 0 0 auto;
     font-weight: 600;
+    transition: color 160ms ease;
   }
 
   .connected-pill.idle {
@@ -143,6 +144,9 @@
     border-radius: 999px;
     background: currentColor;
     box-shadow: 0 0 6px currentColor;
+    transition:
+      box-shadow 160ms ease,
+      transform 160ms ease;
   }
 
   .status-icon {
@@ -150,6 +154,7 @@
     color: #71717a;
     font-size: 12px;
     line-height: 1;
+    transition: color 160ms ease;
   }
 
   .sparkbars {
@@ -164,10 +169,61 @@
     width: 3px;
     background: #71717a;
     opacity: 0.78;
+    transform-origin: bottom;
   }
 
   .version {
     font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .connected-pill.syncing .status-dot {
+      animation: status-breathe 1.2s ease-in-out infinite;
+    }
+
+    .connected-pill.error .status-dot,
+    .connected-pill.conflict .status-dot {
+      box-shadow: 0 0 8px currentColor;
+      transform: scale(1.18);
+    }
+
+    .sparkbars span {
+      animation: spark-lift 2.8s ease-in-out infinite;
+    }
+
+    .sparkbars span:nth-child(2n) {
+      animation-delay: -0.8s;
+    }
+
+    .sparkbars span:nth-child(3n) {
+      animation-delay: -1.5s;
+    }
+  }
+
+  @keyframes status-breathe {
+    0%,
+    100% {
+      box-shadow: 0 0 4px currentColor;
+      transform: scale(1);
+    }
+
+    50% {
+      box-shadow: 0 0 10px currentColor;
+      transform: scale(1.25);
+    }
+  }
+
+  @keyframes spark-lift {
+    0%,
+    100% {
+      transform: scaleY(0.82);
+      opacity: 0.62;
+    }
+
+    50% {
+      transform: scaleY(1);
+      opacity: 0.9;
+    }
   }
 
   @media (max-width: 760px) {

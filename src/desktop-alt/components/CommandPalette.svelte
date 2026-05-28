@@ -167,6 +167,7 @@
     background: #ffffff;
     box-shadow: 0 22px 60px rgba(24, 24, 27, 0.2);
     color: #18181b;
+    transform-origin: top center;
   }
 
   .command-palette h2 {
@@ -223,6 +224,7 @@
     max-height: min(360px, calc(100vh - 160px));
     overflow-y: auto;
     padding: 6px;
+    scrollbar-color: #d4d4d8 transparent;
   }
 
   .command-list button,
@@ -244,6 +246,11 @@
     font: inherit;
     text-align: left;
     cursor: default;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease,
+      outline-color 120ms ease,
+      transform 120ms ease;
   }
 
   .command-list button.highlighted,
@@ -251,6 +258,10 @@
     background: #e8f0ff;
     color: #18181b;
     outline: 1px solid #93c5fd;
+  }
+
+  .command-list button.highlighted {
+    transform: translateX(2px);
   }
 
   .command-copy {
@@ -283,6 +294,16 @@
     min-width: 22px;
     padding: 0 5px;
     text-align: center;
+    transition:
+      border-color 120ms ease,
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  .command-list button.highlighted kbd {
+    border-color: #bfdbfe;
+    background: #eff6ff;
+    color: #1d4ed8;
   }
 
   .command-empty {
@@ -290,5 +311,28 @@
     align-items: center;
     padding: 0 10px;
     color: #71717a;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .command-backdrop {
+      animation: command-backdrop-in 120ms ease-out;
+    }
+
+    .command-palette {
+      animation: command-palette-in 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+  }
+
+  @keyframes command-backdrop-in {
+    from {
+      background: rgba(24, 24, 27, 0);
+    }
+  }
+
+  @keyframes command-palette-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px) scale(0.985);
+    }
   }
 </style>
