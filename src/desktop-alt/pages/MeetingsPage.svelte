@@ -233,10 +233,15 @@
   }
 
   .metric strong {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
     color: #18181b;
     font-size: 21px;
     font-weight: 680;
     line-height: 28px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .meetings-grid {
@@ -302,6 +307,15 @@
     align-items: center;
     gap: 10px;
     padding: 9px 12px;
+    transition:
+      background 140ms cubic-bezier(.2, .7, .2, 1),
+      transform 140ms cubic-bezier(.2, .7, .2, 1);
+  }
+
+  .routing-list li:not(.empty-row):hover,
+  .timeline-list li:not(.empty-row):hover {
+    background: #fafafa;
+    transform: translateX(2px);
   }
 
   .routing-copy {
@@ -345,6 +359,9 @@
     grid-template-columns: 12px minmax(0, 1fr);
     gap: 8px;
     padding: 9px 12px;
+    transition:
+      background 140ms cubic-bezier(.2, .7, .2, 1),
+      transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .timeline-dot {
@@ -365,6 +382,35 @@
     .meetings-hero,
     .meetings-grid {
       grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .routing-list li,
+    .timeline-list li {
+      transition: none;
+    }
+
+    .routing-list li:not(.empty-row):hover,
+    .timeline-list li:not(.empty-row):hover {
+      transform: none;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .hero-metrics {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .routing-list li {
+      grid-template-columns: minmax(0, 1fr);
+      align-items: start;
+      gap: 6px;
+    }
+
+    .status-pill {
+      justify-self: start;
+      max-width: 100%;
     }
   }
 </style>

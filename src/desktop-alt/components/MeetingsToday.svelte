@@ -127,10 +127,14 @@
     gap: 10px;
     min-height: 46px;
     padding: 8px 12px;
+    transition:
+      background 140ms cubic-bezier(.2, .7, .2, 1),
+      transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .meeting-list li:not(.empty-row):hover {
     background: #fafafa;
+    transform: translateX(2px);
   }
 
   .meeting-list .empty-row {
@@ -163,5 +167,26 @@
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .meeting-list li {
+      transition: none;
+    }
+
+    .meeting-list li:not(.empty-row):hover {
+      transform: none;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .meeting-list li {
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2px;
+    }
+
+    .meeting-list time {
+      padding-top: 0;
+    }
   }
 </style>

@@ -96,6 +96,10 @@
     gap: 14px;
   }
 
+  .live-heading > div {
+    min-width: 0;
+  }
+
   .live-heading p,
   .empty-copy,
   .live-error {
@@ -107,10 +111,12 @@
 
   .live-heading h2 {
     margin: 2px 0 0;
+    overflow: hidden;
     color: #18181b;
     font-size: 18px;
     font-weight: 680;
     line-height: 24px;
+    overflow-wrap: anywhere;
   }
 
   .live-pill {
@@ -183,6 +189,24 @@
     font: inherit;
     font-size: 12px;
     font-weight: 650;
+    cursor: default;
+    transition:
+      background 140ms cubic-bezier(.2, .7, .2, 1),
+      border-color 140ms cubic-bezier(.2, .7, .2, 1),
+      opacity 140ms cubic-bezier(.2, .7, .2, 1),
+      transform 140ms cubic-bezier(.2, .7, .2, 1);
+  }
+
+  .live-actions button:hover:not(:disabled) {
+    border-color: #a1a1aa;
+    background: #f4f4f5;
+    color: #18181b;
+    transform: translateY(-1px);
+  }
+
+  .live-actions button:focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
   }
 
   .live-actions button.primary {
@@ -191,7 +215,23 @@
     color: #fafafa;
   }
 
+  .live-actions button.primary:hover:not(:disabled) {
+    border-color: #18181b;
+    background: #18181b;
+    color: #ffffff;
+  }
+
   .live-actions button:disabled {
     opacity: 0.56;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .live-actions button {
+      transition: none;
+    }
+
+    .live-actions button:hover:not(:disabled) {
+      transform: none;
+    }
   }
 </style>
