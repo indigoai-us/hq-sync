@@ -35,7 +35,16 @@ export function upsertActiveMeeting(meeting: ActiveMeeting): void {
     const idx = rows.findIndex((row) => row.windowId === meeting.windowId);
     if (idx < 0) return [...rows, meeting];
     const next = rows.slice();
-    next[idx] = meeting;
+    const existing = rows[idx];
+    next[idx] =
+      meeting.state === 'detected' && existing.state !== 'detected'
+        ? {
+            ...meeting,
+            state: existing.state,
+            recordingId: existing.recordingId,
+            error: existing.error,
+          }
+        : meeting;
     return next;
   });
 }
@@ -155,15 +164,17 @@ async function handleMeetingDetected(event: { payload: MeetingDetectedPayload })
     (isSyntheticUrl ? meetingUrl.slice('recall-window:'.length) : (meetingUrl ?? ''));
 
   if (windowId) {
+    const existing = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
     upsertActiveMeeting({
+      ...existing,
       windowId,
-      platform: platform ?? 'other',
-      meetingUrl: meetingUrl ?? '',
+      platform: platform ?? existing?.platform ?? 'other',
+      meetingUrl: meetingUrl ?? existing?.meetingUrl ?? '',
       detectedAt: new Date().toISOString(),
-      state: 'detected',
-      companyUid: null,
-      summary,
-      sourceEventId,
+      state: existing?.state ?? 'detected',
+      companyUid: existing?.companyUid ?? null,
+      summary: summary ?? existing?.summary,
+      sourceEventId: sourceEventId ?? existing?.sourceEventId,
     });
   }
 

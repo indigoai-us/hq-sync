@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { get } from 'svelte/store';
 import {
   buildConnectedCalendarRows,
   pickLiveMeeting,
   totalSignalCounts,
   type MeetingEvent,
 } from './meetings-model';
-import type { ActiveMeeting } from '../../lib/activeMeetings';
+import {
+  activeMeetings,
+  upsertActiveMeeting,
+  type ActiveMeeting,
+} from '../../lib/activeMeetings';
 
 describe('meetings-model', () => {
   it('prioritizes recording meetings over newer detections', () => {
@@ -29,6 +34,35 @@ describe('meetings-model', () => {
     ];
 
     expect(pickLiveMeeting(rows)?.windowId).toBe('recording');
+  });
+
+  it('preserves active recording state when the same meeting is detected again', () => {
+    activeMeetings.set([]);
+    upsertActiveMeeting({
+      windowId: 'call-window',
+      platform: 'meet',
+      meetingUrl: 'recall-window:call-window',
+      detectedAt: '2026-05-27T16:00:00.000Z',
+      state: 'recording',
+      recordingId: 'rec_123',
+      companyUid: null,
+    });
+    upsertActiveMeeting({
+      windowId: 'call-window',
+      platform: 'meet',
+      meetingUrl: 'recall-window:call-window',
+      detectedAt: '2026-05-27T17:00:00.000Z',
+      state: 'detected',
+      companyUid: null,
+      summary: 'Updated title',
+    });
+
+    expect(get(activeMeetings)[0]).toMatchObject({
+      windowId: 'call-window',
+      state: 'recording',
+      recordingId: 'rec_123',
+      summary: 'Updated title',
+    });
   });
 
   it('counts action, decision, and risk signals across meetings', () => {
