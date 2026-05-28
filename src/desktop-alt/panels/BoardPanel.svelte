@@ -34,6 +34,11 @@
     return cards.filter((card) => card.title.toLowerCase().includes(normalizedSearch));
   }
 
+  function cardKey(column: BoardColumn, card: CompanyBoardCard, index: number): string {
+    const id = card.id.trim();
+    return id ? id : `${column.id}:${index}:${card.title}`;
+  }
+
   function selectMode(mode: BoardMode) {
     if (mode === 'board') return;
     showToast('Coming soon');
@@ -153,7 +158,7 @@
 
         <div class="column-cards">
           {#if cards.length > 0}
-            {#each cards as card (card.id || card.title)}
+            {#each cards as card, index (cardKey(column, card, index))}
               <BoardCard {card} />
             {/each}
           {:else}

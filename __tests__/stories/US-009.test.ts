@@ -47,6 +47,9 @@ describe('US-009: Board panel reads vault board.json via Tauri command', () => {
     expect(panel).toContain("{ id: 'review', label: 'Review' }");
     expect(panel).toContain("{ id: 'done', label: 'Done' }");
     expect(panel).toContain('{#each columns as column (column.id)}');
+    expect(panel).toContain('function cardKey(column: BoardColumn, card: CompanyBoardCard, index: number): string');
+    expect(panel).toContain('{#each cards as card, index (cardKey(column, card, index))}');
+    expect(panel).not.toContain('{#each cards as card (card.id || card.title)}');
     expect(panel).toContain('<div class="empty-column" aria-label={`${column.label} is empty`}>—</div>');
     expect(card).toContain('card.assigneeInitials?.trim()');
     expect(card).toContain("card.tag?.trim() || card.labels?.find((label) => label.trim()) || 'Untagged'");
