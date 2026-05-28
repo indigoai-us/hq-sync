@@ -19,6 +19,7 @@
 //! is always taken.
 use std::collections::BTreeMap;
 
+use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -29,6 +30,8 @@ use crate::commands::workspaces::{Workspace, WorkspaceState};
 use crate::util::client_info::build_client;
 
 const WINDOW_LABEL: &str = "desktop-alt";
+const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
+const HQ_DEPLOY_APP_DOMAIN: &str = "indigo-hq.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -114,6 +117,18 @@ pub struct ActivityContributor {
     pub who: String,
     #[serde(default)]
     pub edits: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DeploymentEntry {
+    pub sub: String,
+    pub url: String,
+    pub state: String,
+    pub last_deploy: String,
+    pub size: String,
+    pub ver: String,
+    pub pwd: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -251,6 +266,29 @@ pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, Strin
     parse_activity_response(status, &text)
 }
 
+#[tauri::command]
+pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry>, String> {
+    let _slug = normalize_slug(&slug)?;
+    let url = deployments_url(HQ_DEPLOY_API_BASE);
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .get(url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("deployments fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("deployments read: {e}"))?;
+
+    parse_deployments_response(status, &text)
+}
+
 /// Open or focus the Indigo-only alternate desktop UX window.
 ///
 /// The window is declared in `tauri.conf.json` as hidden, so normal app
@@ -376,6 +414,10 @@ fn activity_url(base: &str, company_uid: &str) -> Result<String, String> {
     ))
 }
 
+fn deployments_url(base: &str) -> String {
+    format!("{}/api/apps/me", base.trim_end_matches('/'))
+}
+
 fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, String> {
     if status == StatusCode::NO_CONTENT {
         return Ok(CompanyBoard::default());
@@ -437,6 +479,145 @@ fn parse_company_activity(text: &str) -> Result<CompanyActivity, String> {
     serde_json::from_str(text).map_err(|e| format!("activity parse: {e}"))
 }
 
+fn parse_deployments_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<DeploymentEntry>, String> {
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Vec::new());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return if is_deployments_not_provisioned(text) {
+            Ok(Vec::new())
+        } else {
+            Err(format!("deployments HTTP {status}: {text}"))
+        };
+    }
+    if !status.is_success() {
+        return Err(format!("deployments HTTP {status}: {text}"));
+    }
+
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    parse_deployment_entries(text)
+}
+
+fn parse_deployment_entries(text: &str) -> Result<Vec<DeploymentEntry>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("deployments parse: {e}"))?;
+    let rows = deployment_rows(&value)
+        .ok_or_else(|| "deployments parse: missing apps array".to_string())?;
+    rows.iter().map(deployment_entry_from_value).collect()
+}
+
+fn deployment_rows(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    if let Some(rows) = value.as_array() {
+        return Some(rows);
+    }
+    value
+        .get("apps")
+        .and_then(|v| v.as_array())
+        .or_else(|| value.get("deployments").and_then(|v| v.as_array()))
+        .or_else(|| value.get("data").and_then(|v| v.as_array()))
+}
+
+fn deployment_entry_from_value(value: &serde_json::Value) -> Result<DeploymentEntry, String> {
+    let sub = string_field(value, &["sub", "subdomain", "slug"])
+        .or_else(|| string_field(value, &["url"]).and_then(|url| subdomain_from_url(&url)))
+        .ok_or_else(|| "deployments parse: app missing subdomain".to_string())?;
+    let url = string_field(value, &["url"])
+        .and_then(|url| normalize_deployment_host(&url))
+        .unwrap_or_else(|| format!("{sub}.{HQ_DEPLOY_APP_DOMAIN}"));
+
+    Ok(DeploymentEntry {
+        sub,
+        url,
+        state: normalize_deployment_state(value),
+        last_deploy: deployment_last_deploy(value),
+        size: deployment_size(value),
+        ver: deployment_version(value),
+        pwd: bool_field(
+            value,
+            &["pwd", "passwordProtected", "passwordLocked", "locked"],
+        )
+        .unwrap_or(false),
+    })
+}
+
+fn normalize_deployment_state(value: &serde_json::Value) -> String {
+    if bool_field(value, &["active"]).is_some_and(|active| !active) {
+        return "paused".to_string();
+    }
+
+    let status = string_field(value, &["deployStatus", "status", "state", "dnsStatus"])
+        .or_else(|| nested_string_field(value, "latestDeploy", &["status", "state"]))
+        .or_else(|| nested_string_field(value, "deploy", &["status", "state"]));
+    match normalize_status(status.as_deref()).as_deref() {
+        Some(
+            "uploading" | "extracting" | "syncing" | "invalidating" | "building" | "pushing"
+            | "deploying" | "stabilizing" | "pending" | "inprogress" | "in_progress" | "running",
+        ) => "deploying".to_string(),
+        Some("paused" | "disabled" | "suspended" | "inactive" | "deactivated" | "stopped") => {
+            "paused".to_string()
+        }
+        Some("active" | "live" | "ready" | "healthy" | "deployed" | "complete" | "completed") => {
+            "active".to_string()
+        }
+        _ => "paused".to_string(),
+    }
+}
+
+fn deployment_last_deploy(value: &serde_json::Value) -> String {
+    string_field(
+        value,
+        &[
+            "lastDeploy",
+            "lastDeployedAt",
+            "deployedAt",
+            "updatedAt",
+            "createdAt",
+        ],
+    )
+    .or_else(|| nested_string_field(value, "latestDeploy", &["updatedAt", "createdAt"]))
+    .and_then(|timestamp| format_deployment_age(&timestamp, Utc::now()))
+    .unwrap_or_else(|| "Never".to_string())
+}
+
+fn deployment_size(value: &serde_json::Value) -> String {
+    string_field(value, &["size", "storage", "artifactSize"])
+        .or_else(|| {
+            number_field(value, &["sizeBytes", "bytes", "artifactSizeBytes"])
+                .or_else(|| nested_number_field(value, "manifest", &["size", "sizeBytes"]))
+                .or_else(|| nested_number_field(value, "latestDeploy", &["size", "sizeBytes"]))
+                .map(format_bytes)
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+fn deployment_version(value: &serde_json::Value) -> String {
+    string_field(value, &["ver", "version", "latestVersion"])
+        .or_else(|| nested_string_field(value, "latestDeploy", &["ver", "version"]))
+        .or_else(|| {
+            number_field(value, &["version", "latestVersion"])
+                .or_else(|| nested_number_field(value, "latestDeploy", &["version"]))
+                .map(|version| format!("v{version}"))
+        })
+        .map(|version| {
+            let version = version.trim();
+            if version.is_empty() {
+                "-".to_string()
+            } else if version.bytes().all(|b| b.is_ascii_digit()) {
+                format!("v{version}")
+            } else {
+                version.to_string()
+            }
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
 fn is_board_not_provisioned(text: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
         return false;
@@ -470,6 +651,31 @@ fn is_activity_not_provisioned(text: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_deployments_not_provisioned(text: &str) -> bool {
+    let text = text.trim();
+    if text.is_empty() {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return false;
+    };
+    json_code(&value)
+        .map(|code| {
+            matches!(
+                code,
+                "deployments-not-provisioned"
+                    | "deployments_not_provisioned"
+                    | "deployments-missing"
+                    | "deployments_missing"
+                    | "apps-not-provisioned"
+                    | "apps_not_provisioned"
+                    | "not-provisioned"
+                    | "not_provisioned"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn json_code(value: &serde_json::Value) -> Option<&str> {
     value.get("code").and_then(|v| v.as_str()).or_else(|| {
         value
@@ -477,6 +683,105 @@ fn json_code(value: &serde_json::Value) -> Option<&str> {
             .and_then(|e| e.get("code"))
             .and_then(|v| v.as_str())
     })
+}
+
+fn string_field(value: &serde_json::Value, names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        value.get(*name).and_then(|v| {
+            v.as_str()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+    })
+}
+
+fn nested_string_field(value: &serde_json::Value, key: &str, names: &[&str]) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|nested| string_field(nested, names))
+}
+
+fn bool_field(value: &serde_json::Value, names: &[&str]) -> Option<bool> {
+    names.iter().find_map(|name| {
+        value.get(*name).and_then(|v| {
+            v.as_bool().or_else(|| {
+                v.as_str()
+                    .map(|s| matches!(s.trim().to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
+            })
+        })
+    })
+}
+
+fn number_field(value: &serde_json::Value, names: &[&str]) -> Option<u64> {
+    names.iter().find_map(|name| {
+        value.get(*name).and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_i64().and_then(|n| u64::try_from(n).ok()))
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
+        })
+    })
+}
+
+fn nested_number_field(value: &serde_json::Value, key: &str, names: &[&str]) -> Option<u64> {
+    value
+        .get(key)
+        .and_then(|nested| number_field(nested, names))
+}
+
+fn normalize_deployment_host(url: &str) -> Option<String> {
+    let mut host = url.trim();
+    if host.is_empty() {
+        return None;
+    }
+    host = host
+        .strip_prefix("https://")
+        .or_else(|| host.strip_prefix("http://"))
+        .unwrap_or(host);
+    let host = host.split('/').next().unwrap_or(host).trim();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
+fn subdomain_from_url(url: &str) -> Option<String> {
+    let host = normalize_deployment_host(url)?;
+    host.strip_suffix(&format!(".{HQ_DEPLOY_APP_DOMAIN}"))
+        .map(str::to_string)
+        .or_else(|| host.split('.').next().map(str::to_string))
+        .filter(|sub| !sub.is_empty())
+}
+
+fn format_deployment_age(value: &str, now: DateTime<Utc>) -> Option<String> {
+    let parsed = DateTime::parse_from_rfc3339(value.trim())
+        .ok()?
+        .with_timezone(&Utc);
+    let seconds = now.signed_duration_since(parsed).num_seconds().max(0);
+    Some(if seconds < 60 {
+        "just now".to_string()
+    } else if seconds < 60 * 60 {
+        format!("{}m ago", seconds / 60)
+    } else if seconds < 60 * 60 * 24 {
+        format!("{}h ago", seconds / (60 * 60))
+    } else if seconds < 60 * 60 * 24 * 30 {
+        format!("{}d ago", seconds / (60 * 60 * 24))
+    } else {
+        parsed.format("%b %-d, %Y").to_string()
+    })
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else if value >= 10.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
 }
 
 impl LiveBoardModel {
@@ -594,6 +899,8 @@ fn is_url_safe_id(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use chrono::TimeZone;
+
     use crate::commands::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
     use crate::util::feature_gate::is_allowed_email;
 
@@ -670,6 +977,16 @@ mod tests {
     async fn company_activity_rejects_empty_slug_before_network() {
         assert_eq!(
             super::get_company_activity("   ".to_string())
+                .await
+                .unwrap_err(),
+            "company slug is required"
+        );
+    }
+
+    #[tokio::test]
+    async fn company_deployments_rejects_empty_slug_before_network() {
+        assert_eq!(
+            super::get_company_deployments("   ".to_string())
                 .await
                 .unwrap_err(),
             "company slug is required"
@@ -839,6 +1156,132 @@ mod tests {
         assert_eq!(activity.recent[0].extra["source"], "hq-sync");
         assert_eq!(activity.top[0].edits, 20);
         assert_eq!(activity.top[1].who, "Grace Hopper");
+    }
+
+    #[test]
+    fn company_deployments_parse_hq_deploy_apps_me_shape() {
+        let deployments = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"{
+                "apps": [
+                    {
+                        "id": "app-1",
+                        "subdomain": "console",
+                        "status": "active",
+                        "dnsStatus": "active",
+                        "active": true,
+                        "passwordProtected": true,
+                        "createdAt": "2026-05-27T12:00:00Z",
+                        "url": "https://console.indigo-hq.com"
+                    },
+                    {
+                        "id": "app-2",
+                        "subdomain": "preview",
+                        "status": "deploying",
+                        "active": true,
+                        "createdAt": "2026-05-27T11:00:00Z",
+                        "url": "https://preview.indigo-hq.com/path"
+                    },
+                    {
+                        "id": "app-3",
+                        "subdomain": "paused-app",
+                        "status": "active",
+                        "active": false,
+                        "passwordProtected": false,
+                        "createdAt": "2026-05-27T10:00:00Z"
+                    }
+                ]
+            }"#,
+        )
+        .expect("apps/me response should parse");
+
+        assert_eq!(deployments.len(), 3);
+        assert_eq!(deployments[0].sub, "console");
+        assert_eq!(deployments[0].url, "console.indigo-hq.com");
+        assert_eq!(deployments[0].state, "active");
+        assert_eq!(deployments[0].size, "-");
+        assert_eq!(deployments[0].ver, "-");
+        assert!(deployments[0].pwd);
+        assert_eq!(deployments[1].url, "preview.indigo-hq.com");
+        assert_eq!(deployments[1].state, "deploying");
+        assert_eq!(deployments[2].url, "paused-app.indigo-hq.com");
+        assert_eq!(deployments[2].state, "paused");
+    }
+
+    #[test]
+    fn company_deployments_parse_optional_detail_fields() {
+        let deployments = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"[
+                {
+                    "url": "https://portal.indigo-hq.com/",
+                    "latestDeploy": {
+                        "status": "live",
+                        "version": 7,
+                        "sizeBytes": 1536,
+                        "updatedAt": "2020-01-02T12:00:00Z"
+                    },
+                    "pwd": false
+                }
+            ]"#,
+        )
+        .expect("array response should parse");
+
+        assert_eq!(
+            deployments,
+            vec![super::DeploymentEntry {
+                sub: "portal".to_string(),
+                url: "portal.indigo-hq.com".to_string(),
+                state: "active".to_string(),
+                last_deploy: "Jan 2, 2020".to_string(),
+                size: "1.5 KB".to_string(),
+                ver: "v7".to_string(),
+                pwd: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn company_deployments_treats_empty_and_not_provisioned_as_empty() {
+        assert_eq!(
+            super::parse_deployments_response(reqwest::StatusCode::NO_CONTENT, "").unwrap(),
+            Vec::<super::DeploymentEntry>::new()
+        );
+        assert_eq!(
+            super::parse_deployments_response(reqwest::StatusCode::OK, " \n ").unwrap(),
+            Vec::<super::DeploymentEntry>::new()
+        );
+        assert_eq!(
+            super::parse_deployments_response(
+                reqwest::StatusCode::NOT_FOUND,
+                r#"{"code":"deployments-not-provisioned"}"#
+            )
+            .unwrap(),
+            Vec::<super::DeploymentEntry>::new()
+        );
+    }
+
+    #[test]
+    fn deployment_helpers_normalize_state_url_age_and_size() {
+        let now = chrono::Utc.with_ymd_and_hms(2026, 5, 27, 12, 0, 0).unwrap();
+
+        assert_eq!(
+            super::normalize_deployment_host("https://console.indigo-hq.com/path"),
+            Some("console.indigo-hq.com".to_string())
+        );
+        assert_eq!(
+            super::subdomain_from_url("https://console.indigo-hq.com/path"),
+            Some("console".to_string())
+        );
+        assert_eq!(
+            super::format_deployment_age("2026-05-27T11:57:00Z", now).as_deref(),
+            Some("3m ago")
+        );
+        assert_eq!(
+            super::format_deployment_age("2026-05-25T12:00:00Z", now).as_deref(),
+            Some("2d ago")
+        );
+        assert_eq!(super::format_bytes(25 * 1024 * 1024), "25 MB");
     }
 
     fn company_workspace(
