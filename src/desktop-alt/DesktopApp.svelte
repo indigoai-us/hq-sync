@@ -79,7 +79,8 @@
     route = nextRoute;
   }
 
-  function resetRunState() {
+  function resetRunState(options: { preserveTotalFiles?: boolean } = {}) {
+    const previousTotalFiles = syncTotalFiles;
     syncState = 'syncing';
     syncProgress = null;
     syncFanoutTotal = 0;
@@ -87,7 +88,7 @@
     syncCompanies = [];
     syncFanoutFilesSkipped = 0;
     syncFilesProgressed = 0;
-    syncTotalFiles = 0;
+    syncTotalFiles = options.preserveTotalFiles ? previousTotalFiles : 0;
     syncPlanTotalFiles = 0;
     syncLastSummary = null;
     syncErrorMessage = '';
@@ -206,6 +207,9 @@
 
     void Promise.all([
       listen<{ totalFiles: number }>('sync:totals', (event) => {
+        if (syncState !== 'syncing') {
+          resetRunState();
+        }
         syncTotalFiles = event.payload.totalFiles;
       }),
       listen<{
@@ -230,7 +234,9 @@
         }));
       }),
       listen<{ companies: SyncCompanyRef[] }>('sync:fanout-plan', async (event) => {
-        syncState = 'syncing';
+        if (syncState !== 'syncing') {
+          resetRunState({ preserveTotalFiles: true });
+        }
         syncFanoutTotal = event.payload.companies.length;
         syncFanoutDoneCount = 0;
         syncCompanies = event.payload.companies;
