@@ -59,7 +59,7 @@
     onselect={selectTab}
   />
 
-  {#key activeTab}
+  {#key `${company.slug}:${activeTab}`}
     <div class="company-panel">
       {#if activeTab === 'board'}
         <BoardPanel slug={company.slug} />

@@ -31,7 +31,10 @@ describe('US-009: Board panel reads vault board.json via Tauri command', () => {
     const store = normalize(companyBoard);
 
     expect(page).toContain("import BoardPanel from '../panels/BoardPanel.svelte'");
+    expect(page).toContain("{#key `${company.slug}:${activeTab}`}");
+    expect(page).not.toContain('{#key activeTab}');
     expect(page).toContain('<BoardPanel slug={company.slug} />');
+    expect(page).toContain("if (company.slug !== previousSlug) { previousSlug = company.slug; activeTab = 'board'; }");
     expect(store).toContain("void invoke<CompanyBoard>('get_company_board', { slug })");
     expect(store).toContain('return () => { cancelled = true; };');
     expect(tauriMain).toContain('commands::desktop_alt::get_company_board');
