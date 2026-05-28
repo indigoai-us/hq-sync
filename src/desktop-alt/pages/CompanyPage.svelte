@@ -2,9 +2,9 @@
   import type { Workspace } from '../../lib/workspaces';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import BoardPanel from '../panels/BoardPanel.svelte';
-  import CompanyTabPlaceholder from '../components/CompanyTabPlaceholder.svelte';
   import CompanyTabs, { type CompanyTab } from '../components/CompanyTabs.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
+  import SecretsPanel from '../panels/SecretsPanel.svelte';
   import { useCompanySummary } from '../lib/company-summary.svelte';
 
   interface Props {
@@ -70,7 +70,7 @@
       {:else if activeTab === 'deployments'}
         <DeploymentsPanel slug={company.slug} />
       {:else}
-        <CompanyTabPlaceholder label="Secrets panel - wired in US-012" />
+        <SecretsPanel slug={company.slug} />
       {/if}
     </div>
   {/key}
