@@ -95,6 +95,7 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     expect(palette).toContain('void execute(filteredCommands[highlightedIndex])');
     expect(palette).toContain('await command.action();');
     expect(palette).toContain('onclose();');
+    expect(palette).toContain('onfocus={() => { highlightedIndex = index; }}');
     expect(palette).toContain("if (event.key === 'Escape')");
     expect(palette).toContain('onkeydown={handleKeydown}');
     expect(palette).toContain('bind:this={inputEl}');

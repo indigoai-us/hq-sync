@@ -126,6 +126,9 @@
             type="button"
             role="option"
             aria-selected={index === highlightedIndex}
+            onfocus={() => {
+              highlightedIndex = index;
+            }}
             onmouseenter={() => {
               highlightedIndex = index;
             }}
