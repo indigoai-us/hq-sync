@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Workspace } from '../../lib/workspaces';
+  import BoardPanel from '../panels/BoardPanel.svelte';
   import CompanyTabPlaceholder from '../components/CompanyTabPlaceholder.svelte';
   import CompanyTabs, { type CompanyTab } from '../components/CompanyTabs.svelte';
   import { useCompanySummary } from '../lib/company-summary.svelte';
@@ -61,7 +62,7 @@
   {#key activeTab}
     <div class="company-panel">
       {#if activeTab === 'board'}
-        <CompanyTabPlaceholder label="Board panel - wired in US-009" />
+        <BoardPanel slug={company.slug} />
       {:else if activeTab === 'activity'}
         <CompanyTabPlaceholder label="Activity panel - wired in US-010" />
       {:else if activeTab === 'deployments'}
