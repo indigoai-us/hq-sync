@@ -61,7 +61,10 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     const row = normalize(deploymentRow);
     const command = normalize(desktopAltCommand);
 
-    expect(command).toContain('let url = string_field(value, &["url"]) .and_then(|url| normalize_deployment_host(&url)) .unwrap_or_else(|| format!("{sub}.{HQ_DEPLOY_APP_DOMAIN}"));');
+    expect(command).toContain('if !is_safe_deployment_label(&sub)');
+    expect(command).toContain('Some(url) => normalize_deployment_host(&url) .ok_or_else(|| format!("deployments parse: app has unsafe url: {url:?}"))?');
+    expect(command).toContain('None => format!("{sub}.{HQ_DEPLOY_APP_DOMAIN}")');
+    expect(command).toContain('fn is_safe_deployment_host(host: &str) -> bool');
     expect(command).toContain('state: normalize_deployment_state(value)');
     expect(command).toContain('last_deploy: deployment_last_deploy(value)');
     expect(command).toContain('size: deployment_size(value)');

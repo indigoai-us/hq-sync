@@ -527,10 +527,18 @@ fn deployment_rows(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>>
 fn deployment_entry_from_value(value: &serde_json::Value) -> Result<DeploymentEntry, String> {
     let sub = string_field(value, &["sub", "subdomain", "slug"])
         .or_else(|| string_field(value, &["url"]).and_then(|url| subdomain_from_url(&url)))
+        .map(|sub| sub.to_ascii_lowercase())
         .ok_or_else(|| "deployments parse: app missing subdomain".to_string())?;
-    let url = string_field(value, &["url"])
-        .and_then(|url| normalize_deployment_host(&url))
-        .unwrap_or_else(|| format!("{sub}.{HQ_DEPLOY_APP_DOMAIN}"));
+    if !is_safe_deployment_label(&sub) {
+        return Err(format!(
+            "deployments parse: app has unsafe subdomain: {sub:?}"
+        ));
+    }
+    let url = match string_field(value, &["url"]) {
+        Some(url) => normalize_deployment_host(&url)
+            .ok_or_else(|| format!("deployments parse: app has unsafe url: {url:?}"))?,
+        None => format!("{sub}.{HQ_DEPLOY_APP_DOMAIN}"),
+    };
 
     Ok(DeploymentEntry {
         sub,
@@ -737,16 +745,36 @@ fn normalize_deployment_host(url: &str) -> Option<String> {
         .strip_prefix("https://")
         .or_else(|| host.strip_prefix("http://"))
         .unwrap_or(host);
-    let host = host.split('/').next().unwrap_or(host).trim();
-    (!host.is_empty()).then(|| host.to_string())
+    let host = host
+        .split('/')
+        .next()
+        .unwrap_or(host)
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    is_safe_deployment_host(&host).then_some(host)
 }
 
 fn subdomain_from_url(url: &str) -> Option<String> {
     let host = normalize_deployment_host(url)?;
     host.strip_suffix(&format!(".{HQ_DEPLOY_APP_DOMAIN}"))
         .map(str::to_string)
-        .or_else(|| host.split('.').next().map(str::to_string))
         .filter(|sub| !sub.is_empty())
+}
+
+fn is_safe_deployment_host(host: &str) -> bool {
+    host.strip_suffix(&format!(".{HQ_DEPLOY_APP_DOMAIN}"))
+        .is_some_and(|sub| is_safe_deployment_label(sub))
+}
+
+fn is_safe_deployment_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !label.starts_with('-')
+        && !label.ends_with('-')
 }
 
 fn format_deployment_age(value: &str, now: DateTime<Utc>) -> Option<String> {
@@ -1282,6 +1310,38 @@ mod tests {
             Some("2d ago")
         );
         assert_eq!(super::format_bytes(25 * 1024 * 1024), "25 MB");
+    }
+
+    #[test]
+    fn deployment_helpers_reject_unsafe_hosts_before_shell_open() {
+        assert_eq!(
+            super::normalize_deployment_host("https://evil.example.com"),
+            None
+        );
+        assert_eq!(
+            super::normalize_deployment_host("https://console.indigo-hq.com.evil.test"),
+            None
+        );
+        assert_eq!(
+            super::normalize_deployment_host("https://bad_sub.indigo-hq.com"),
+            None
+        );
+        assert_eq!(
+            super::parse_deployments_response(
+                reqwest::StatusCode::OK,
+                r#"[{"subdomain":"console","url":"https://evil.example.com"}]"#
+            )
+            .unwrap_err(),
+            r#"deployments parse: app has unsafe url: "https://evil.example.com""#
+        );
+        assert_eq!(
+            super::parse_deployments_response(
+                reqwest::StatusCode::OK,
+                r#"[{"subdomain":"../console"}]"#
+            )
+            .unwrap_err(),
+            r#"deployments parse: app has unsafe subdomain: "../console""#
+        );
     }
 
     fn company_workspace(
