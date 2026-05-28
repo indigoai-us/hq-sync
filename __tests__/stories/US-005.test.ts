@@ -16,6 +16,15 @@ const attentionPanel = readFileSync(
   'utf8',
 );
 const syncModel = readFileSync(resolve(process.cwd(), 'src/desktop-alt/lib/sync-model.ts'), 'utf8');
+const appShell = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
+const cognitoCommands = readFileSync(
+  resolve(process.cwd(), 'src-tauri/src/commands/cognito.rs'),
+  'utf8',
+);
+const featureGate = readFileSync(
+  resolve(process.cwd(), 'src-tauri/src/util/feature_gate.rs'),
+  'utf8',
+);
 
 function normalize(source: string): string {
   return source.replace(/\s+/g, ' ');
@@ -62,5 +71,34 @@ describe('US-005: Alt Sync page wires to real sync state and events', () => {
     expect(combined).toContain('Paused');
     expect(combined).toContain('Up to date');
     expect(combined).not.toMatch(/Acme|Volta|Globex|Indigo demo|prototype/i);
+  });
+
+  it('keeps auth success and token writes connected to the desktop-alt gate refresh', () => {
+    const app = normalize(appShell);
+    const cognito = normalize(cognitoCommands);
+    const gate = normalize(featureGate);
+
+    expect(app).toContain("desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled')");
+    expect(app).toContain('function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string })');
+    expect(app).toMatch(/function handleAuthSuccess[\s\S]*void refreshDesktopAltEnabled\(\);/);
+    expect(app).toMatch(/if \(authenticated\) \{ await refreshDesktopAltEnabled\(\); \}/);
+
+    expect(cognito).toMatch(/pub async fn set_tokens[\s\S]*clear_cached_gate\(\);/);
+    expect(gate).toContain('pub fn clear_cached_gate()');
+    expect(gate).toMatch(/pub fn clear_cached_gate\(\) \{[\s\S]*\*guard = None;/);
+  });
+
+  it('pins debugger event regressions in DesktopApp handlers', () => {
+    const app = normalize(desktopApp);
+
+    expect(app).toMatch(
+      /sync:personal-first-push-progress[\s\S]*company: 'personal'[\s\S]*updateWorkspaceStats\('personal'/,
+    );
+    expect(app).toMatch(
+      /sync:complete[\s\S]*aborted: stats\.aborted \|\| event\.payload\.aborted[\s\S]*syncState = 'conflict'/,
+    );
+    expect(app).toMatch(
+      /sync:error[\s\S]*if \(event\.payload\.company\)[\s\S]*errorMessage: event\.payload\.message/,
+    );
   });
 });

@@ -91,4 +91,56 @@ describe('desktop-alt sync model attention states', () => {
       ]),
     );
   });
+
+  it('shows personal first-push progress on the personal source row', () => {
+    const [row] = buildSourceRows({
+      workspaces: [personalWorkspace],
+      syncState: 'syncing',
+      progress: { company: 'personal', path: 'Notes/intro.md', bytes: 0 },
+      statsBySlug: {
+        personal: stats({ progressedFiles: 2, plannedFiles: 5 }),
+      },
+      cloudReachable: true,
+    });
+
+    expect(row.liveState).toBe('syncing');
+    expect(row.action).toBe('Syncing');
+    expect(row.progressPct).toBe(40);
+  });
+
+  it('surfaces reauth, paused, cloud, manifest, and top-level error attention', () => {
+    const brokenWorkspace: Workspace = {
+      ...companyWorkspace,
+      slug: 'broken',
+      displayName: 'Broken Co',
+      state: 'broken',
+      brokenReason: 'Token expired',
+    };
+    const pausedWorkspace: Workspace = {
+      ...companyWorkspace,
+      slug: 'paused',
+      displayName: 'Paused Co',
+      membershipStatus: 'paused',
+    };
+
+    const attention = buildAttentionItems({
+      workspaces: [brokenWorkspace, pausedWorkspace],
+      syncState: 'error',
+      syncErrorMessage: 'Runner failed',
+      cloudReachable: false,
+      cloudError: 'Cloud timeout',
+      manifestError: 'Manifest parse failed',
+      statsBySlug: {},
+    });
+
+    expect(attention).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'sync-error', title: 'Sync needs attention' }),
+        expect.objectContaining({ key: 'cloud-unreachable', detail: 'Cloud timeout' }),
+        expect.objectContaining({ key: 'manifest-error', detail: 'Manifest parse failed' }),
+        expect.objectContaining({ key: 'reauth:broken', title: 'Broken Co needs reconnect' }),
+        expect.objectContaining({ key: 'paused:paused', title: 'Paused Co is paused' }),
+      ]),
+    );
+  });
 });
