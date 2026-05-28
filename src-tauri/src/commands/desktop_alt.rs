@@ -25,6 +25,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
+use crate::commands::workspaces::WorkspaceState;
 use crate::util::client_info::build_client;
 
 const WINDOW_LABEL: &str = "desktop-alt";
@@ -42,6 +43,12 @@ pub struct BoardCard {
     pub href: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
+    #[serde(default)]
+    pub assignee_initials: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub age: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, serde_json::Value>,
 }
@@ -57,6 +64,62 @@ pub struct CompanyBoard {
     pub review: Vec<BoardCard>,
     #[serde(default)]
     pub done: Vec<BoardCard>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveBoardModel {
+    #[serde(default)]
+    projects: Vec<LiveBoardProject>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveBoardProject {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    uid: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    assignee_initials: Option<String>,
+    #[serde(default)]
+    assignee: Option<LiveBoardAssignee>,
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    source_type: Option<String>,
+    #[serde(default)]
+    project_type: Option<String>,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    age: Option<String>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveBoardAssignee {
+    #[serde(default)]
+    initials: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,6 +228,19 @@ async fn resolve_company_uid(slug: &str) -> Result<String, String> {
         .into_iter()
         .find(|workspace| workspace.slug == slug)
         .ok_or_else(|| format!("company '{slug}' was not found"))?;
+    if workspace.state == WorkspaceState::Broken {
+        let reason = workspace
+            .broken_reason
+            .as_deref()
+            .unwrap_or("workspace cloud mapping is broken");
+        return Err(format!("company '{slug}' is not synced: {reason}"));
+    }
+    if workspace.state != WorkspaceState::Synced {
+        return Err(format!(
+            "company '{slug}' is not synced (state: {:?})",
+            workspace.state
+        ));
+    }
     workspace
         .cloud_uid
         .ok_or_else(|| format!("company '{slug}' is not connected to cloud"))
@@ -188,8 +264,15 @@ fn board_url(base: &str, company_uid: &str) -> Result<String, String> {
 }
 
 fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, String> {
-    if status == StatusCode::NOT_FOUND || status == StatusCode::NO_CONTENT {
+    if status == StatusCode::NO_CONTENT {
         return Ok(CompanyBoard::default());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return if is_board_not_provisioned(text) {
+            Ok(CompanyBoard::default())
+        } else {
+            Err(format!("board HTTP {status}: {text}"))
+        };
     }
     if !status.is_success() {
         return Err(format!("board HTTP {status}: {text}"));
@@ -200,7 +283,147 @@ fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, 
         return Ok(CompanyBoard::default());
     }
 
-    serde_json::from_str(text).map_err(|e| format!("board parse: {e}"))
+    parse_company_board(text)
+}
+
+fn parse_company_board(text: &str) -> Result<CompanyBoard, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("board parse: {e}"))?;
+    if value.get("projects").and_then(|v| v.as_array()).is_some() {
+        let live: LiveBoardModel =
+            serde_json::from_value(value).map_err(|e| format!("board parse: {e}"))?;
+        return Ok(live.into_company_board());
+    }
+    serde_json::from_value(value).map_err(|e| format!("board parse: {e}"))
+}
+
+fn is_board_not_provisioned(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return false;
+    };
+    json_code(&value)
+        .map(|code| {
+            matches!(
+                code,
+                "board-not-provisioned" | "board_not_provisioned" | "board-missing"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn json_code(value: &serde_json::Value) -> Option<&str> {
+    value.get("code").and_then(|v| v.as_str()).or_else(|| {
+        value
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|v| v.as_str())
+    })
+}
+
+impl LiveBoardModel {
+    fn into_company_board(self) -> CompanyBoard {
+        let mut board = CompanyBoard::default();
+        for project in self.projects {
+            match project.status_column() {
+                BoardColumn::Inbox => board.inbox.push(project.into_board_card()),
+                BoardColumn::Doing => board.doing.push(project.into_board_card()),
+                BoardColumn::Review => board.review.push(project.into_board_card()),
+                BoardColumn::Done => board.done.push(project.into_board_card()),
+            }
+        }
+        board
+    }
+}
+
+enum BoardColumn {
+    Inbox,
+    Doing,
+    Review,
+    Done,
+}
+
+impl LiveBoardProject {
+    fn status_column(&self) -> BoardColumn {
+        match normalize_status(self.status.as_deref()).as_deref() {
+            Some("active" | "doing" | "inprogress" | "in_progress") => BoardColumn::Doing,
+            Some("review" | "inreview" | "in_review") => BoardColumn::Review,
+            Some("done" | "complete" | "completed" | "shipped") => BoardColumn::Done,
+            Some("inbox" | "backlog" | "todo" | "to_do") | _ => BoardColumn::Inbox,
+        }
+    }
+
+    fn into_board_card(self) -> BoardCard {
+        let title = self
+            .title
+            .clone()
+            .or_else(|| self.name.clone())
+            .unwrap_or_else(|| "Untitled project".to_string());
+        let assignee_initials = self
+            .assignee_initials
+            .clone()
+            .or_else(|| self.assignee.as_ref().and_then(|a| a.initials.clone()))
+            .or_else(|| {
+                self.assignee
+                    .as_ref()
+                    .and_then(|a| derive_initials(a.name.as_deref().or(a.email.as_deref())))
+            });
+        let tag = self
+            .tag
+            .clone()
+            .or_else(|| self.project_type.clone())
+            .or_else(|| self.source_type.clone())
+            .or_else(|| self.kind.clone())
+            .or_else(|| self.labels.first().cloned());
+        let age = self
+            .age
+            .clone()
+            .or_else(|| self.updated_at.as_deref().and_then(format_board_date))
+            .or_else(|| self.created_at.as_deref().and_then(format_board_date))
+            .or_else(|| self.updated_at.clone())
+            .or_else(|| self.created_at.clone());
+
+        BoardCard {
+            id: self.uid.clone().or(self.id.clone()).unwrap_or_default(),
+            title,
+            subtitle: None,
+            href: None,
+            labels: self.labels,
+            assignee_initials,
+            tag,
+            age,
+            extra: self.extra,
+        }
+    }
+}
+
+fn normalize_status(status: Option<&str>) -> Option<String> {
+    status.map(|s| {
+        s.trim()
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect()
+    })
+}
+
+fn derive_initials(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let initials: String = value
+        .split(|c: char| c.is_whitespace() || c == '.' || c == '@' || c == '-' || c == '_')
+        .filter(|part| !part.is_empty())
+        .take(2)
+        .filter_map(|part| part.chars().next())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    (!initials.is_empty()).then_some(initials)
+}
+
+fn format_board_date(value: &str) -> Option<String> {
+    let parsed = chrono::DateTime::parse_from_rfc3339(value.trim()).ok()?;
+    Some(parsed.format("%b %-d, %Y").to_string())
 }
 
 /// Allows only `[a-zA-Z0-9._-]+` for a path segment without percent-encoding.
@@ -313,9 +536,12 @@ mod tests {
 
     #[test]
     fn company_board_treats_missing_or_empty_response_as_empty_board() {
-        let not_found = super::parse_board_response(reqwest::StatusCode::NOT_FOUND, "")
-            .expect("missing board.json should be an empty board");
-        assert_eq!(not_found, super::CompanyBoard::default());
+        let not_provisioned = super::parse_board_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"board-not-provisioned"}"#,
+        )
+        .expect("missing board.json should be an empty board");
+        assert_eq!(not_provisioned, super::CompanyBoard::default());
 
         let no_content = super::parse_board_response(reqwest::StatusCode::NO_CONTENT, "")
             .expect("204 should be an empty board");
@@ -324,6 +550,66 @@ mod tests {
         let empty_body = super::parse_board_response(reqwest::StatusCode::OK, " \n ")
             .expect("empty board.json should be an empty board");
         assert_eq!(empty_body, super::CompanyBoard::default());
+    }
+
+    #[test]
+    fn company_board_rejects_generic_route_not_found() {
+        let err = super::parse_board_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"not-found","message":"route not found"}"#,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("board HTTP 404"));
+    }
+
+    #[test]
+    fn company_board_maps_live_projects_into_columns() {
+        let board = super::parse_board_response(
+            reqwest::StatusCode::OK,
+            r#"{
+                "companyUid": "cmp_01ABC",
+                "goals": [],
+                "projects": [
+                    {
+                        "uid": "p1",
+                        "name": "Triage intake",
+                        "status": "backlog",
+                        "assignee": {"name": "Ada Lovelace"},
+                        "labels": ["Ops"],
+                        "createdAt": "2026-05-20T12:00:00Z"
+                    },
+                    {
+                        "id": "p2",
+                        "title": "Ship sync UX",
+                        "status": "in_progress",
+                        "assigneeInitials": "SJ",
+                        "type": "Feature",
+                        "updatedAt": "2026-05-21T12:00:00Z"
+                    },
+                    {"id": "p3", "title": "Review polish", "status": "review"},
+                    {"id": "p4", "title": "Launch", "status": "shipped"}
+                ]
+            }"#,
+        )
+        .expect("live board should map to UI columns");
+
+        assert_eq!(board.inbox.len(), 1);
+        assert_eq!(board.inbox[0].id, "p1");
+        assert_eq!(board.inbox[0].title, "Triage intake");
+        assert_eq!(board.inbox[0].assignee_initials.as_deref(), Some("AL"));
+        assert_eq!(board.inbox[0].tag.as_deref(), Some("Ops"));
+        assert_eq!(board.inbox[0].age.as_deref(), Some("May 20, 2026"));
+
+        assert_eq!(board.doing.len(), 1);
+        assert_eq!(board.doing[0].id, "p2");
+        assert_eq!(board.doing[0].title, "Ship sync UX");
+        assert_eq!(board.doing[0].assignee_initials.as_deref(), Some("SJ"));
+        assert_eq!(board.doing[0].tag.as_deref(), Some("Feature"));
+        assert_eq!(board.doing[0].age.as_deref(), Some("May 21, 2026"));
+
+        assert_eq!(board.review[0].id, "p3");
+        assert_eq!(board.done[0].id, "p4");
     }
 
     #[test]
