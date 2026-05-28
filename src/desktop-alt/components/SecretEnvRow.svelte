@@ -78,7 +78,7 @@
 <style>
   .secret-env-row {
     min-width: 0;
-    border-top: 1px solid #f4f4f5;
+    border-top: 1px solid var(--border);
   }
 
   .secret-env-row:first-child {
@@ -94,15 +94,15 @@
     min-width: 0;
     padding: 10px 13px;
     border: 0;
-    background: #ffffff;
-    color: #27272a;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     text-align: left;
     cursor: default;
   }
 
   .env-button:hover {
-    background: #fafafa;
+    background: var(--row-hover);
   }
 
   .chevron {
@@ -110,7 +110,7 @@
     height: 0;
     border-top: 4px solid transparent;
     border-bottom: 4px solid transparent;
-    border-left: 5px solid #71717a;
+    border-left: 5px solid var(--muted);
     justify-self: center;
     transition: transform 120ms cubic-bezier(0.33, 1, 0.68, 1);
   }
@@ -129,7 +129,7 @@
   }
 
   .env-name {
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 700;
     line-height: 18px;
@@ -146,19 +146,19 @@
   }
 
   .env-pill.sealed {
-    border: 1px solid #fecaca;
-    background: #fef2f2;
-    color: #991b1b;
+    border: 1px solid rgba(248, 113, 113, 0.22);
+    background: rgba(248, 113, 113, 0.12);
+    color: var(--red);
   }
 
   .env-pill.open {
-    border: 1px solid #bbf7d0;
-    background: #f0fdf4;
-    color: #166534;
+    border: 1px solid rgba(52, 211, 153, 0.22);
+    background: rgba(52, 211, 153, 0.12);
+    color: var(--emerald);
   }
 
   .env-count {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     font-weight: 600;
     line-height: 16px;
@@ -167,8 +167,8 @@
 
   .secret-tree {
     min-width: 0;
-    border-top: 1px solid #f4f4f5;
-    background: #fcfcfc;
+    border-top: 1px solid var(--border);
+    background: var(--bg-subtle);
   }
 
   .tree-head,
@@ -182,7 +182,7 @@
   }
 
   .tree-head {
-    color: #71717a;
+    color: var(--muted);
     font-size: 11px;
     font-weight: 700;
     line-height: 15px;
@@ -190,12 +190,12 @@
   }
 
   .secret-item {
-    border-top: 1px solid #f4f4f5;
+    border-top: 1px solid var(--border);
   }
 
   .secret-key {
-    color: #18181b;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: var(--fg);
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
     font-size: 12px;
     font-weight: 650;
     line-height: 16px;
@@ -203,7 +203,7 @@
 
   .secret-item time,
   .env-empty {
-    color: #52525b;
+    color: var(--muted-3);
     font-size: 12px;
     line-height: 16px;
   }

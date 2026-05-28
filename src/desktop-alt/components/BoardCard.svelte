@@ -38,10 +38,10 @@
     min-width: 0;
     min-height: 92px;
     padding: 12px;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
-    box-shadow: 0 1px 2px rgb(24 24 27 / 4%);
+    background: var(--bg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 
   .board-card h3 {
@@ -49,7 +49,7 @@
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;
@@ -71,8 +71,8 @@
     height: 28px;
     overflow: hidden;
     border-radius: 999px;
-    background: #27272a;
-    color: #fafafa;
+    background: var(--row-active);
+    color: var(--fg);
     font-size: 10px;
     font-weight: 750;
     line-height: 28px;
@@ -85,7 +85,7 @@
   .age {
     min-width: 0;
     overflow: hidden;
-    color: #52525b;
+    color: var(--muted-3);
     font-size: 11px;
     font-weight: 600;
     line-height: 18px;
@@ -95,12 +95,12 @@
 
   .tag {
     padding: 0 7px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 999px;
-    background: #f4f4f5;
+    background: var(--row-hover);
   }
 
   .age {
-    color: #71717a;
+    color: var(--muted);
   }
 </style>

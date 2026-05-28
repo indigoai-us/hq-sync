@@ -16,10 +16,10 @@
     min-height: 260px;
     min-width: 0;
     place-items: center;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
-    color: #71717a;
+    background: var(--bg);
+    color: var(--muted);
   }
 
   .company-tab-placeholder p {

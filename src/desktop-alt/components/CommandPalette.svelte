@@ -159,17 +159,17 @@
     align-items: flex-start;
     justify-content: center;
     padding: 72px 20px 20px;
-    background: rgba(24, 24, 27, 0.2);
+    background: rgba(0, 0, 0, 0.5);
   }
 
   .command-palette {
     width: min(560px, 100%);
     overflow: hidden;
-    border: 1px solid rgba(24, 24, 27, 0.14);
+    border: 1px solid var(--border-strong);
     border-radius: 8px;
-    background: #ffffff;
-    box-shadow: 0 22px 60px rgba(24, 24, 27, 0.2);
-    color: #18181b;
+    background: var(--bg);
+    box-shadow: 0 22px 60px rgba(0, 0, 0, 0.55);
+    color: var(--fg);
     transform-origin: top center;
   }
 
@@ -188,17 +188,17 @@
     gap: 10px;
     height: 48px;
     padding: 0 12px;
-    border-bottom: 1px solid #e4e4e7;
-    background: #fafafa;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-subtle);
   }
 
   .command-glyph,
   .command-palette kbd {
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 5px;
-    background: #f4f4f5;
-    color: #52525b;
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    background: var(--row-active);
+    color: var(--muted-3);
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
     font-size: 11px;
     line-height: 18px;
   }
@@ -214,20 +214,20 @@
     border: 0;
     outline: 0;
     background: transparent;
-    color: #18181b;
+    color: var(--fg);
     font: inherit;
     font-size: 14px;
   }
 
   .command-palette input::placeholder {
-    color: #a1a1aa;
+    color: var(--muted-3);
   }
 
   .command-list {
     max-height: min(360px, calc(100vh - 160px));
     overflow-y: auto;
     padding: 6px;
-    scrollbar-color: #d4d4d8 transparent;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
   }
 
   .command-list button,
@@ -245,7 +245,7 @@
     padding: 7px 8px;
     border: 0;
     background: transparent;
-    color: #3f3f46;
+    color: var(--muted-2);
     font: inherit;
     text-align: left;
     cursor: default;
@@ -258,9 +258,9 @@
 
   .command-list button.highlighted,
   .command-list button:focus-visible {
-    background: #e8f0ff;
-    color: #18181b;
-    outline: 1px solid #93c5fd;
+    background: rgba(96, 165, 250, 0.14);
+    color: var(--fg);
+    outline: 1px solid rgba(96, 165, 250, 0.5);
   }
 
   .command-list button.highlighted {
@@ -288,7 +288,7 @@
   }
 
   .command-copy span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
   }
 
@@ -304,16 +304,16 @@
   }
 
   .command-list button.highlighted kbd {
-    border-color: #bfdbfe;
-    background: #eff6ff;
-    color: #1d4ed8;
+    border-color: rgba(96, 165, 250, 0.4);
+    background: rgba(96, 165, 250, 0.12);
+    color: var(--blue);
   }
 
   .command-empty {
     display: flex;
     align-items: center;
     padding: 0 10px;
-    color: #71717a;
+    color: var(--muted);
   }
 
   @media (prefers-reduced-motion: no-preference) {
@@ -328,7 +328,7 @@
 
   @keyframes command-backdrop-in {
     from {
-      background: rgba(24, 24, 27, 0);
+      background: rgba(0, 0, 0, 0);
     }
   }
 

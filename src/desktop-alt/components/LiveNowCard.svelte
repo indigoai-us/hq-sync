@@ -84,9 +84,9 @@
   .live-card {
     min-width: 0;
     padding: 14px;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
   }
 
   .live-heading {
@@ -104,7 +104,7 @@
   .empty-copy,
   .live-error {
     margin: 0;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 18px;
   }
@@ -112,7 +112,7 @@
   .live-heading h2 {
     margin: 2px 0 0;
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 18px;
     font-weight: 680;
     line-height: 24px;
@@ -123,16 +123,16 @@
     flex: 0 0 auto;
     padding: 4px 8px;
     border-radius: 999px;
-    background: #f4f4f5;
-    color: #52525b;
+    background: var(--row-active);
+    color: var(--muted-2);
     font-size: 11px;
     font-weight: 650;
     line-height: 14px;
   }
 
   .live-pill.recording {
-    background: #fee2e2;
-    color: #991b1b;
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--red);
   }
 
   .live-details {
@@ -146,11 +146,11 @@
     min-width: 0;
     padding: 9px 10px;
     border-radius: 6px;
-    background: #fafafa;
+    background: var(--row-hover);
   }
 
   .live-details dt {
-    color: #71717a;
+    color: var(--muted);
     font-size: 11px;
     font-weight: 650;
     line-height: 15px;
@@ -160,7 +160,7 @@
   .live-details dd {
     margin: 1px 0 0;
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;
@@ -170,7 +170,7 @@
 
   .live-error {
     margin-top: 10px;
-    color: #9f1239;
+    color: var(--red);
   }
 
   .live-actions {
@@ -182,10 +182,10 @@
   .live-actions button {
     height: 30px;
     padding: 0 12px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #ffffff;
-    color: #3f3f46;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     font-size: 12px;
     font-weight: 650;
@@ -198,27 +198,27 @@
   }
 
   .live-actions button:hover:not(:disabled) {
-    border-color: #a1a1aa;
-    background: #f4f4f5;
-    color: #18181b;
+    border-color: var(--border-strong);
+    background: var(--row-hover);
+    color: var(--fg);
     transform: translateY(-1px);
   }
 
   .live-actions button:focus-visible {
-    outline: 2px solid #2563eb;
+    outline: 2px solid var(--blue);
     outline-offset: 2px;
   }
 
   .live-actions button.primary {
-    border-color: #27272a;
-    background: #27272a;
-    color: #fafafa;
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--bg);
   }
 
   .live-actions button.primary:hover:not(:disabled) {
-    border-color: #18181b;
-    background: #18181b;
-    color: #ffffff;
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--bg);
   }
 
   .live-actions button:disabled {

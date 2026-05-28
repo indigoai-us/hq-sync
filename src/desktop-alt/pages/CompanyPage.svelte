@@ -101,7 +101,7 @@
     max-width: 100%;
     margin-bottom: 7px;
     overflow: hidden;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 16px;
     white-space: nowrap;
@@ -119,7 +119,7 @@
   .company-header h1 {
     margin: 0;
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 22px;
     font-weight: 680;
     line-height: 29px;
@@ -131,7 +131,7 @@
     margin: 5px 0 0;
     max-width: 100%;
     overflow-wrap: anywhere;
-    color: #71717a;
+    color: var(--muted);
     font-size: 13px;
     line-height: 18px;
   }
@@ -139,7 +139,7 @@
   .summary-error {
     display: block;
     margin-top: 5px;
-    color: #a16207;
+    color: var(--amber);
     font-size: 12px;
     line-height: 16px;
   }
@@ -155,10 +155,10 @@
     height: 30px;
     overflow: hidden;
     padding: 0 11px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #ffffff;
-    color: #27272a;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     font-size: 12px;
     font-weight: 650;
@@ -170,8 +170,8 @@
   }
 
   .company-actions button:hover {
-    border-color: #a1a1aa;
-    background: #f4f4f5;
+    border-color: var(--border-strong);
+    background: var(--row-hover);
     transform: translateY(-1px);
   }
 

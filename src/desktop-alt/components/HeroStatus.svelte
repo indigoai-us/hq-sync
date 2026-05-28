@@ -105,7 +105,7 @@
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 16px 24px;
     padding-bottom: 22px;
-    border-bottom: 1px solid #e4e4e7;
+    border-bottom: 1px solid var(--border);
   }
 
   .hero-main {
@@ -116,14 +116,14 @@
   .hero-current,
   .hero-feedback {
     margin: 0;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 18px;
   }
 
   .hero-status h1 {
     margin: 2px 0 4px;
-    color: #18181b;
+    color: var(--fg);
     font-size: 28px;
     font-weight: 680;
     letter-spacing: 0;
@@ -138,7 +138,7 @@
 
   .hero-current.attention,
   .hero-feedback.error {
-    color: #9f1239;
+    color: var(--red);
   }
 
   .hero-actions {
@@ -150,10 +150,10 @@
   .action-chip {
     height: 30px;
     padding: 0 12px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #ffffff;
-    color: #3f3f46;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     font-weight: 600;
     cursor: default;
@@ -163,20 +163,20 @@
   }
 
   .action-chip:hover:not(:disabled) {
-    background: #f4f4f5;
-    color: #18181b;
+    background: var(--row-hover);
+    color: var(--fg);
     transform: translateY(-1px);
   }
 
   .action-chip:focus-visible {
-    outline: 2px solid #2563eb;
+    outline: 2px solid var(--blue);
     outline-offset: 2px;
   }
 
   .action-chip.primary {
-    border-color: #27272a;
-    background: #27272a;
-    color: #fafafa;
+    border-color: var(--fg);
+    background: var(--fg);
+    color: var(--bg);
   }
 
   .action-chip:disabled {
@@ -199,21 +199,21 @@
   .metric {
     min-width: 0;
     padding: 12px;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
     transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .metric:hover {
-    border-color: #d4d4d8;
-    box-shadow: 0 1px 2px rgb(24 24 27 / 0.05);
+    border-color: var(--border-strong);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     transform: translateY(-1px);
   }
 
   .metric-label {
     display: block;
-    color: #71717a;
+    color: var(--muted);
     font-size: 11px;
     font-weight: 650;
     line-height: 16px;
@@ -224,7 +224,7 @@
     display: block;
     min-width: 0;
     overflow-wrap: anywhere;
-    color: #18181b;
+    color: var(--fg);
     font-size: 17px;
     font-weight: 680;
     line-height: 24px;

@@ -52,22 +52,22 @@
 
   .panel-header h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 15px;
     font-weight: 680;
     line-height: 22px;
   }
 
   .panel-header span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
   }
 
   .attention-empty,
   .attention-item {
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
   }
 
   .attention-empty {
@@ -80,7 +80,7 @@
 
   .attention-empty strong,
   .attention-item strong {
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;
@@ -89,7 +89,7 @@
   .attention-empty span,
   .attention-item p {
     margin: 0;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 17px;
   }
@@ -109,27 +109,27 @@
   }
 
   .attention-item:hover {
-    box-shadow: 0 1px 2px rgb(24 24 27 / 0.05);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     transform: translateY(-1px);
   }
 
   .attention-item.warn {
-    border-color: #fecdd3;
-    background: #fff7f8;
+    border-color: rgba(248, 113, 113, 0.22);
+    background: rgba(248, 113, 113, 0.08);
   }
 
   .attention-item.paused {
-    border-color: #e4e4e7;
-    background: #f8fafc;
+    border-color: var(--border);
+    background: var(--row-hover);
   }
 
   .attention-item button {
     height: 26px;
     padding: 0 9px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
-    background: #ffffff;
-    color: #3f3f46;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     font-size: 12px;
     font-weight: 650;
@@ -138,12 +138,12 @@
   }
 
   .attention-item button:hover {
-    background: #f4f4f5;
+    background: var(--row-hover);
     transform: translateY(-1px);
   }
 
   .attention-item button:focus-visible {
-    outline: 2px solid #2563eb;
+    outline: 2px solid var(--blue);
     outline-offset: 2px;
   }
 

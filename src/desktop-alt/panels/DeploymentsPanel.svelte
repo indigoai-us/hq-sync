@@ -180,7 +180,7 @@
 
   .deployments-title h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 16px;
     font-weight: 680;
     line-height: 22px;
@@ -190,7 +190,7 @@
   .card-header span,
   .empty-state,
   .counts {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 16px;
   }
@@ -217,7 +217,7 @@
   }
 
   .counts strong {
-    color: #27272a;
+    color: var(--fg);
     font-weight: 750;
   }
 
@@ -226,10 +226,10 @@
     height: 30px;
     min-width: 0;
     padding: 0 11px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 5px;
-    background: #ffffff;
-    color: #27272a;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     font-size: 12px;
     font-weight: 650;
@@ -238,8 +238,8 @@
   }
 
   .toolbar-button:disabled {
-    color: #a1a1aa;
-    background: #f4f4f5;
+    color: var(--muted-3);
+    background: var(--row-hover);
   }
 
   .deployments-error {
@@ -249,10 +249,10 @@
     gap: 14px;
     min-width: 0;
     padding: 12px;
-    border: 1px solid #fde68a;
+    border: 1px solid rgba(245, 158, 11, 0.3);
     border-radius: 8px;
-    background: #fffbeb;
-    color: #854d0e;
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--amber);
   }
 
   .deployments-error div {
@@ -279,10 +279,10 @@
 
   .deployments-card {
     min-width: 0;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
-    box-shadow: 0 1px 2px rgb(24 24 27 / 4%);
+    background: var(--bg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 
   .card-header {
@@ -292,14 +292,14 @@
     gap: 10px;
     min-width: 0;
     padding: 11px 13px;
-    border-bottom: 1px solid #e4e4e7;
+    border-bottom: 1px solid var(--border);
   }
 
   .card-header h3 {
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: #27272a;
+    color: var(--muted-2);
     font-size: 13px;
     font-weight: 700;
     line-height: 18px;
@@ -318,8 +318,8 @@
     gap: 12px;
     min-width: 0;
     padding: 8px 13px;
-    border-bottom: 1px solid #f4f4f5;
-    color: #71717a;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
     font-size: 11px;
     font-weight: 700;
     line-height: 15px;
@@ -339,7 +339,12 @@
   .deployment-skeleton span {
     height: 18px;
     border-radius: 5px;
-    background: linear-gradient(90deg, #f4f4f5, #e4e4e7, #f4f4f5);
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.05),
+      rgba(255, 255, 255, 0.1),
+      rgba(255, 255, 255, 0.05)
+    );
     background-size: 200% 100%;
     animation: skeleton 1.2s ease-in-out infinite;
   }

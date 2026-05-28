@@ -63,22 +63,22 @@
 
   .panel-header h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 15px;
     font-weight: 680;
     line-height: 22px;
   }
 
   .panel-header span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
   }
 
   .up-next,
   .meeting-list {
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
   }
 
   .up-next {
@@ -92,7 +92,7 @@
   .up-next small,
   .meeting-main span,
   .meeting-list time {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 17px;
   }
@@ -105,7 +105,7 @@
 
   .up-next strong {
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 14px;
     font-weight: 680;
     line-height: 20px;
@@ -133,14 +133,14 @@
   }
 
   .meeting-list li:not(.empty-row):hover {
-    background: #fafafa;
+    background: var(--row-hover);
     transform: translateX(2px);
   }
 
   .meeting-list .empty-row {
     display: block;
     min-height: 0;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 18px;
   }
@@ -163,7 +163,7 @@
   }
 
   .meeting-main strong {
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;

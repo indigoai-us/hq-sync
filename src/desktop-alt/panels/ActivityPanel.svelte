@@ -296,7 +296,7 @@
 
   .activity-title h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 16px;
     font-weight: 680;
     line-height: 22px;
@@ -306,7 +306,7 @@
   .card-header span,
   .chart-scale,
   .empty-state {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 16px;
   }
@@ -323,10 +323,10 @@
     gap: 14px;
     min-width: 0;
     padding: 12px;
-    border: 1px solid #fde68a;
+    border: 1px solid rgba(245, 158, 11, 0.3);
     border-radius: 8px;
-    background: #fffbeb;
-    color: #854d0e;
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--amber);
   }
 
   .activity-error div {
@@ -354,10 +354,10 @@
   .activity-error button {
     height: 30px;
     padding: 0 11px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 5px;
-    background: #ffffff;
-    color: #27272a;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     font-size: 12px;
     font-weight: 650;
@@ -381,10 +381,10 @@
 
   .activity-card {
     min-width: 0;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
-    box-shadow: 0 1px 2px rgb(24 24 27 / 4%);
+    background: var(--bg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 
   .card-header {
@@ -394,14 +394,14 @@
     gap: 10px;
     min-width: 0;
     padding: 11px 13px;
-    border-bottom: 1px solid #e4e4e7;
+    border-bottom: 1px solid var(--border);
   }
 
   .card-header h3 {
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: #27272a;
+    color: var(--muted-2);
     font-size: 13px;
     font-weight: 700;
     line-height: 18px;
@@ -411,7 +411,7 @@
 
   .sparkline-wrap {
     flex: 0 0 auto;
-    color: #52525b;
+    color: var(--muted-3);
   }
 
   .bar-chart,
@@ -427,8 +427,8 @@
   .activity-bar {
     flex: 1 1 0;
     min-width: 4px;
-    border-top: 1px solid #a1a1aa;
-    background: #e4e4e7;
+    border-top: 1px solid var(--muted-3);
+    background: rgba(255, 255, 255, 0.12);
     transition: height 300ms ease;
   }
 
@@ -462,7 +462,7 @@
     display: block;
     min-width: 0;
     overflow: hidden;
-    color: #27272a;
+    color: var(--muted-2);
     font-size: 13px;
     line-height: 18px;
     text-overflow: ellipsis;
@@ -470,8 +470,8 @@
   }
 
   .contributor-row strong {
-    color: #52525b;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    color: var(--muted-3);
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
     font-size: 12px;
     font-weight: 650;
     line-height: 16px;
@@ -483,14 +483,14 @@
     margin-top: 5px;
     overflow: hidden;
     border-radius: 999px;
-    background: #f4f4f5;
+    background: rgba(255, 255, 255, 0.08);
   }
 
   .contributor-fill {
     position: absolute;
     inset: 0 auto 0 0;
     border-radius: inherit;
-    background: #27272a;
+    background: var(--fg);
     opacity: 0.62;
     transition: width 380ms ease;
   }
@@ -506,7 +506,7 @@
     gap: 10px;
     min-width: 0;
     padding: 9px 13px;
-    border-top: 1px solid #f4f4f5;
+    border-top: 1px solid var(--border);
   }
 
   .recent-row:first-child {
@@ -518,8 +518,8 @@
     height: 28px;
     overflow: hidden;
     border-radius: 999px;
-    background: #27272a;
-    color: #fafafa;
+    background: var(--row-active);
+    color: var(--fg);
     font-size: 10px;
     font-weight: 750;
     line-height: 28px;
@@ -543,7 +543,7 @@
   }
 
   .recent-copy strong {
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;
@@ -551,23 +551,23 @@
 
   .recent-copy span,
   .recent-row time {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 16px;
   }
 
   .recent-row time {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
     white-space: nowrap;
   }
 
   .recent-row button {
     height: 26px;
     padding: 0 9px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 5px;
-    background: #f4f4f5;
-    color: #a1a1aa;
+    background: var(--row-hover);
+    color: var(--muted-2);
     font: inherit;
     font-size: 11px;
     font-weight: 650;
@@ -584,7 +584,12 @@
     display: block;
     overflow: hidden;
     border-radius: 999px;
-    background: linear-gradient(90deg, #e4e4e7 0%, #f4f4f5 46%, #e4e4e7 100%);
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0.1) 46%,
+      rgba(255, 255, 255, 0.05) 100%
+    );
     background-size: 180% 100%;
     animation: skeleton-pulse 1100ms ease-in-out infinite;
   }

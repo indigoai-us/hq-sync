@@ -7,20 +7,61 @@
 }
 
 :global(html[data-window='desktop-alt']) {
-  color-scheme: light;
-  background: #fafafa;
-  color: #18181b;
+  /* Dark theme tokens (mirrors prototype index.html :root). */
+  --bg: #0a0a0a;
+  --bg-subtle: #050505;
+  --desktop: #1a1a1c;
+  --fg: #fafafa;
+  --muted: #71717a;
+  --muted-2: #a1a1aa;
+  --muted-3: #52525b;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --row-hover: rgba(255, 255, 255, 0.035);
+  --row-active: rgba(255, 255, 255, 0.06);
+  --emerald: #34d399;
+  --amber: #f59e0b;
+  --red: #f87171;
+  --blue: #60a5fa;
+
+  color-scheme: dark;
+  background: var(--bg);
+  color: var(--fg);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 13px;
+    'Geist', ui-sans-serif, -apple-system, system-ui, 'SF Pro Text', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums lining-nums;
 }
 
 :global(html[data-window='desktop-alt'] body) {
   overflow: hidden;
+  /* App body sits behind the window surface. */
+  background: #131316;
 }
 
 :global(html[data-window='desktop-alt'] *) {
   box-sizing: border-box;
+}
+
+/* Subtle dark scrollbars, scoped to the desktop-alt window. */
+:global(html[data-window='desktop-alt'] ::-webkit-scrollbar) {
+  width: 6px;
+  height: 6px;
+}
+
+:global(html[data-window='desktop-alt'] ::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+:global(html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb) {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+:global(html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover) {
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .desktop-shell {
@@ -29,7 +70,10 @@
   width: 100%;
   height: 100%;
   min-width: 0;
-  background: #fafafa;
+  /* Single-scroll guarantee: only leaf scrollers (.company-list,
+     .desktop-main-scroll) may scroll — every ancestor clips. */
+  overflow: hidden;
+  background: var(--bg);
 }
 
 .desktop-sidebar {
@@ -39,17 +83,19 @@
   width: var(--desktop-sidebar-width, 216px);
   min-width: var(--desktop-sidebar-width, 216px);
   height: 100%;
+  min-height: 0;
+  overflow: hidden;
   /* Clears the native macOS traffic lights used by TitleBarStyle::Overlay. */
   padding: 38px 10px 10px;
-  border-right: 1px solid #e4e4e7;
-  background: #f4f4f5;
-  color: #52525b;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted-3);
 }
 
 .sidebar-title {
   height: 24px;
   padding: 0 8px;
-  color: #18181b;
+  color: var(--fg);
   font-size: 12px;
   font-weight: 650;
   line-height: 24px;
@@ -72,7 +118,7 @@
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #52525b;
+  color: var(--muted);
   font: inherit;
   text-align: left;
   cursor: default;
@@ -82,13 +128,13 @@
 }
 
 .sidebar-nav button:hover {
-  background: #e4e4e7;
-  color: #27272a;
+  background: var(--row-hover);
+  color: var(--fg);
 }
 
 .sidebar-nav button.active {
-  background: #27272a;
-  color: #fafafa;
+  background: var(--row-active);
+  color: var(--fg);
 }
 
 .sidebar-nav span {
@@ -107,13 +153,16 @@
 }
 
 .company-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
 
 .section-label {
   padding: 0 8px 6px;
-  color: #71717a;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 650;
   line-height: 16px;
@@ -121,14 +170,15 @@
 }
 
 .company-list {
-  max-height: calc(100vh - 132px);
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
 .empty-row {
   height: 28px;
   padding: 0 8px;
-  color: #a1a1aa;
+  color: var(--muted-2);
   font-size: 12px;
   line-height: 28px;
 }
@@ -137,6 +187,7 @@
 .desktop-main {
   min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 .desktop-main {
@@ -144,7 +195,7 @@
   grid-template-rows: minmax(0, 1fr) var(--desktop-status-bar-height, 26px);
   width: 100%;
   height: 100%;
-  background: #fafafa;
+  background: var(--bg);
 }
 
 .desktop-main-scroll {
@@ -154,7 +205,6 @@
 }
 
 .page {
-  min-height: 100%;
   padding: 28px 32px;
   animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
   will-change: transform;
@@ -190,7 +240,7 @@
 
 .page-header h1 {
   margin: 0;
-  color: #18181b;
+  color: var(--fg);
   font-size: 18px;
   font-weight: 650;
   line-height: 24px;
@@ -202,12 +252,12 @@
   gap: 8px;
   width: min(520px, 100%);
   padding: 0;
-  color: #71717a;
+  color: var(--muted);
 }
 
 .placeholder-panel p {
   margin: 0;
-  color: #3f3f46;
+  color: var(--muted-2);
 }
 
 .placeholder-panel span {
@@ -215,7 +265,7 @@
 }
 
 .workspace-error {
-  color: #a16207;
+  color: var(--amber);
 }
 
 .desktop-status-bar {
@@ -224,9 +274,9 @@
   justify-content: space-between;
   height: var(--desktop-status-bar-height, 26px);
   padding: 0 10px;
-  border-top: 1px solid #e4e4e7;
-  background: #f4f4f5;
-  color: #71717a;
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--muted);
   font-size: 11px;
   line-height: var(--desktop-status-bar-height, 26px);
 }

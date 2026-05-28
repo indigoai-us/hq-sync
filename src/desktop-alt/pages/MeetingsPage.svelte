@@ -189,7 +189,7 @@
     grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
     gap: 16px 24px;
     padding-bottom: 22px;
-    border-bottom: 1px solid #e4e4e7;
+    border-bottom: 1px solid var(--border);
   }
 
   .hero-main {
@@ -199,14 +199,14 @@
   .hero-kicker,
   .hero-current {
     margin: 0;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 18px;
   }
 
   .meetings-hero h1 {
     margin: 2px 0 4px;
-    color: #18181b;
+    color: var(--fg);
     font-size: 28px;
     font-weight: 680;
     letter-spacing: 0;
@@ -228,14 +228,14 @@
   .metric {
     min-width: 0;
     padding: 12px;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
   }
 
   .metric span {
     display: block;
-    color: #71717a;
+    color: var(--muted);
     font-size: 11px;
     font-weight: 650;
     line-height: 16px;
@@ -246,7 +246,7 @@
     display: block;
     min-width: 0;
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 21px;
     font-weight: 680;
     line-height: 28px;
@@ -278,7 +278,7 @@
 
   .panel-header h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 15px;
     font-weight: 680;
     line-height: 22px;
@@ -289,14 +289,14 @@
   .timeline-list span,
   .panel-error,
   .empty-row {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 18px;
   }
 
   .panel-error {
     margin: 0 0 8px;
-    color: #9f1239;
+    color: var(--red);
   }
 
   .routing-list,
@@ -305,9 +305,9 @@
     gap: 0;
     margin: 0;
     padding: 6px 0;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
     list-style: none;
   }
 
@@ -324,7 +324,7 @@
 
   .routing-list li:not(.empty-row):hover,
   .timeline-list li:not(.empty-row):hover {
-    background: #fafafa;
+    background: var(--row-hover);
     transform: translateX(2px);
   }
 
@@ -344,7 +344,7 @@
 
   .routing-copy strong,
   .timeline-list strong {
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;
@@ -355,8 +355,8 @@
     overflow: hidden;
     padding: 3px 7px;
     border-radius: 999px;
-    background: #f4f4f5;
-    color: #52525b;
+    background: var(--row-active);
+    color: var(--muted-2);
     font-size: 11px;
     font-weight: 650;
     line-height: 14px;
@@ -379,8 +379,8 @@
     height: 8px;
     margin-top: 5px;
     border-radius: 999px;
-    background: #0f766e;
-    box-shadow: 0 0 0 3px rgb(15 118 110 / 0.12);
+    background: var(--emerald);
+    box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16);
   }
 
   .routing-list .empty-row,

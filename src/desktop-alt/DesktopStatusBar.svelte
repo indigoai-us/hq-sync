@@ -123,19 +123,19 @@
   }
 
   .connected-pill.idle {
-    color: #16a34a;
+    color: var(--emerald);
   }
 
   .connected-pill.syncing {
-    color: #2563eb;
+    color: var(--blue);
   }
 
   .connected-pill.error {
-    color: #dc2626;
+    color: var(--red);
   }
 
   .connected-pill.conflict {
-    color: #d97706;
+    color: var(--amber);
   }
 
   .status-dot {
@@ -151,7 +151,7 @@
 
   .status-icon {
     flex: 0 0 auto;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 1;
     transition: color 160ms ease;
@@ -167,13 +167,13 @@
   .sparkbars span {
     display: block;
     width: 3px;
-    background: #71717a;
+    background: var(--muted-3);
     opacity: 0.78;
     transform-origin: bottom;
   }
 
   .version {
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
   }
 
   @media (prefers-reduced-motion: no-preference) {

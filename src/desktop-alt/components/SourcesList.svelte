@@ -109,7 +109,7 @@
 
   .panel-header h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 15px;
     font-weight: 680;
     line-height: 22px;
@@ -119,7 +119,7 @@
   .source-muted,
   .source-name span,
   .source-status span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 18px;
   }
@@ -136,9 +136,9 @@
     gap: 12px;
     min-height: 54px;
     padding: 9px 10px;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
     transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
@@ -147,7 +147,7 @@
     padding: 0 10px;
     border: 0;
     background: transparent;
-    color: #71717a;
+    color: var(--muted);
     font-size: 11px;
     font-weight: 650;
     line-height: 16px;
@@ -156,8 +156,8 @@
   }
 
   .source-row:not(.source-head):hover {
-    border-color: #d4d4d8;
-    box-shadow: 0 1px 2px rgb(24 24 27 / 0.05);
+    border-color: var(--border-strong);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     transform: translateY(-1px);
   }
 
@@ -177,7 +177,7 @@
     display: block;
     min-width: 0;
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
     line-height: 18px;
@@ -196,25 +196,25 @@
     width: 9px;
     height: 9px;
     border-radius: 999px;
-    background: #22c55e;
+    background: var(--emerald);
     flex: 0 0 auto;
-    box-shadow: 0 0 0 3px rgb(34 197 94 / 0.12);
+    box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16);
   }
 
   .state-dot.syncing {
-    background: #2563eb;
-    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.14);
+    background: var(--blue);
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
     animation: pulse 1.15s ease-in-out infinite;
   }
 
   .state-dot.warn {
-    background: #e11d48;
-    box-shadow: 0 0 0 3px rgb(225 29 72 / 0.12);
+    background: var(--red);
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.16);
   }
 
   .state-dot.paused {
-    background: #a1a1aa;
-    box-shadow: 0 0 0 3px rgb(161 161 170 / 0.16);
+    background: var(--muted-2);
+    box-shadow: 0 0 0 3px rgba(161, 161, 170, 0.16);
   }
 
   .progress-track {
@@ -223,14 +223,14 @@
     margin-top: 5px;
     overflow: hidden;
     border-radius: 999px;
-    background: #e4e4e7;
+    background: rgba(255, 255, 255, 0.08);
   }
 
   .progress-fill {
     width: 100%;
     height: 100%;
     border-radius: inherit;
-    background: #2563eb;
+    background: var(--blue);
     transform: scaleX(var(--progress-scale, 0));
     transform-origin: left center;
     transition: transform 180ms cubic-bezier(.2, .7, .2, 1);
@@ -244,54 +244,54 @@
     height: 24px;
     padding: 0 9px;
     border-radius: 999px;
-    background: #f4f4f5;
-    color: #3f3f46;
+    background: var(--row-active);
+    color: var(--muted-2);
     font-size: 12px;
     font-weight: 650;
     white-space: nowrap;
   }
 
   .action-pill.up-to-date {
-    background: #ecfdf5;
-    color: #047857;
+    background: rgba(52, 211, 153, 0.12);
+    color: var(--emerald);
   }
 
   .action-pill.syncing {
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: rgba(96, 165, 250, 0.12);
+    color: var(--blue);
   }
 
   .action-pill.reauth {
-    background: #fff1f2;
-    color: #be123c;
+    background: rgba(248, 113, 113, 0.12);
+    color: var(--red);
   }
 
   .action-pill.needs-attention {
-    background: #fff1f2;
-    color: #be123c;
+    background: rgba(248, 113, 113, 0.12);
+    color: var(--red);
   }
 
   .action-pill.paused {
-    background: #f4f4f5;
-    color: #52525b;
+    background: var(--row-active);
+    color: var(--muted-3);
   }
 
   .empty-state {
     padding: 28px;
-    border: 1px dashed #d4d4d8;
+    border: 1px dashed var(--border-strong);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
     text-align: center;
   }
 
   .empty-state p {
     margin: 0 0 4px;
-    color: #18181b;
+    color: var(--fg);
     font-weight: 650;
   }
 
   .empty-state span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
   }
 

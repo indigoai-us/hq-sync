@@ -30,17 +30,17 @@
     min-width: 0;
     min-height: 92px;
     padding: 13px;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
-    box-shadow: 0 1px 2px rgb(24 24 27 / 4%);
+    background: var(--bg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 
   .stat-label,
   .stat-hint {
     min-width: 0;
     overflow: hidden;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     font-weight: 650;
     line-height: 16px;
@@ -51,7 +51,7 @@
   strong {
     min-width: 0;
     overflow: hidden;
-    color: #18181b;
+    color: var(--fg);
     font-size: 24px;
     font-weight: 720;
     line-height: 30px;
@@ -67,7 +67,12 @@
     display: block;
     overflow: hidden;
     border-radius: 999px;
-    background: linear-gradient(90deg, #e4e4e7 0%, #f4f4f5 46%, #e4e4e7 100%);
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.05) 0%,
+      rgba(255, 255, 255, 0.1) 46%,
+      rgba(255, 255, 255, 0.05) 100%
+    );
     background-size: 180% 100%;
     animation: skeleton-pulse 1100ms ease-in-out infinite;
   }

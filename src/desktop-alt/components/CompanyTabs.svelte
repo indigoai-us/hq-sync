@@ -50,7 +50,7 @@
     justify-content: space-between;
     gap: 16px;
     min-width: 0;
-    border-bottom: 1px solid #e4e4e7;
+    border-bottom: 1px solid var(--border);
   }
 
   .company-tabs {
@@ -78,7 +78,7 @@
     margin-right: 22px;
     border: 0;
     background: transparent;
-    color: #71717a;
+    color: var(--muted);
     font: inherit;
     font-size: 13px;
     font-weight: 600;
@@ -96,7 +96,7 @@
     left: 0;
     height: 2px;
     border-radius: 999px;
-    background: #27272a;
+    background: var(--fg);
     content: '';
     opacity: 0;
     transform: scaleX(0.3);
@@ -106,7 +106,7 @@
   }
 
   .company-tabs button:hover {
-    color: #27272a;
+    color: var(--fg);
     transform: translateY(-1px);
   }
 
@@ -116,7 +116,7 @@
   }
 
   .company-tabs button.active {
-    color: #18181b;
+    color: var(--fg);
   }
 
   .company-tabs button.active::after {
@@ -138,8 +138,8 @@
     overflow: hidden;
     padding: 0 6px;
     border-radius: 999px;
-    background: #e4e4e7;
-    color: #52525b;
+    background: var(--row-active);
+    color: var(--muted-2);
     font-size: 11px;
     font-weight: 650;
     line-height: 18px;
@@ -149,8 +149,8 @@
   }
 
   .company-tabs button.active .tab-count {
-    background: #27272a;
-    color: #fafafa;
+    background: var(--row-active);
+    color: var(--fg);
   }
 
   .role-pill {
@@ -159,11 +159,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 999px;
     padding: 3px 9px;
-    background: #ffffff;
-    color: #52525b;
+    background: transparent;
+    color: var(--muted-2);
     font-size: 11px;
     font-weight: 650;
     line-height: 16px;

@@ -191,7 +191,7 @@
 
   .board-title h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 16px;
     font-weight: 680;
     line-height: 22px;
@@ -200,7 +200,7 @@
   .board-title span {
     display: block;
     margin-top: 2px;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 16px;
   }
@@ -218,9 +218,9 @@
     gap: 2px;
     height: 30px;
     padding: 2px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 7px;
-    background: #f4f4f5;
+    background: var(--row-hover);
   }
 
   .segment-control button,
@@ -240,27 +240,27 @@
   .segment-control button {
     padding: 0 9px;
     background: transparent;
-    color: #71717a;
+    color: var(--muted);
   }
 
   .segment-control button.active {
-    background: #ffffff;
-    color: #18181b;
-    box-shadow: 0 1px 2px rgb(24 24 27 / 8%);
+    background: var(--row-active);
+    color: var(--fg);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 
   .toolbar-button,
   .board-error button {
     height: 30px;
     padding: 0 11px;
-    border: 1px solid #d4d4d8;
-    background: #ffffff;
-    color: #27272a;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--fg);
   }
 
   .toolbar-button:disabled {
-    color: #a1a1aa;
-    background: #f4f4f5;
+    color: var(--muted-3);
+    background: var(--row-hover);
   }
 
   .search-row {
@@ -269,7 +269,7 @@
     gap: 9px;
     max-width: 360px;
     min-width: 0;
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     font-weight: 650;
     line-height: 16px;
@@ -280,10 +280,10 @@
     min-width: 0;
     height: 30px;
     padding: 0 10px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #ffffff;
-    color: #18181b;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
   }
 
@@ -292,10 +292,10 @@
     max-width: 240px;
     overflow: hidden;
     padding: 6px 10px;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border-strong);
     border-radius: 6px;
-    background: #27272a;
-    color: #fafafa;
+    background: var(--fg);
+    color: var(--bg);
     font-size: 12px;
     font-weight: 650;
     line-height: 16px;
@@ -310,10 +310,10 @@
     gap: 14px;
     min-width: 0;
     padding: 12px;
-    border: 1px solid #fde68a;
+    border: 1px solid rgba(245, 158, 11, 0.3);
     border-radius: 8px;
-    background: #fffbeb;
-    color: #854d0e;
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--amber);
   }
 
   .board-error div {
@@ -351,9 +351,9 @@
     gap: 10px;
     min-width: 0;
     padding: 10px;
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #f4f4f5;
+    background: var(--bg-subtle);
   }
 
   .board-column > header {
@@ -368,7 +368,7 @@
     min-width: 0;
     margin: 0;
     overflow: hidden;
-    color: #27272a;
+    color: var(--muted-2);
     font-size: 12px;
     font-weight: 700;
     line-height: 16px;
@@ -382,8 +382,8 @@
     height: 18px;
     padding: 0 6px;
     border-radius: 999px;
-    background: #e4e4e7;
-    color: #52525b;
+    background: var(--row-active);
+    color: var(--muted-3);
     font-size: 11px;
     font-weight: 650;
     line-height: 18px;
@@ -401,9 +401,9 @@
     display: grid;
     min-height: 92px;
     place-items: center;
-    border: 1px dashed #d4d4d8;
+    border: 1px dashed var(--border-strong);
     border-radius: 8px;
-    color: #a1a1aa;
+    color: var(--muted-3);
     font-size: 18px;
     line-height: 24px;
   }

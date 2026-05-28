@@ -172,22 +172,22 @@
 
   .panel-header h2 {
     margin: 0;
-    color: #18181b;
+    color: var(--fg);
     font-size: 15px;
     font-weight: 680;
     line-height: 22px;
   }
 
   .panel-header span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
   }
 
   .activity-empty,
   .activity-list {
-    border: 1px solid #e4e4e7;
+    border: 1px solid var(--border);
     border-radius: 8px;
-    background: #ffffff;
+    background: var(--bg);
   }
 
   .activity-empty {
@@ -199,13 +199,13 @@
   }
 
   .activity-empty strong {
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 650;
   }
 
   .activity-empty span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 12px;
     line-height: 17px;
   }
@@ -227,7 +227,7 @@
   }
 
   .activity-list li:hover {
-    background: #fafafa;
+    background: var(--row-hover);
     transform: translateX(2px);
   }
 
@@ -236,18 +236,18 @@
     height: 8px;
     margin-top: 5px;
     border-radius: 999px;
-    background: #2563eb;
-    box-shadow: 0 0 0 3px rgb(37 99 235 / 0.12);
+    background: var(--blue);
+    box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.18);
   }
 
   .activity-dot.up {
-    background: #16a34a;
-    box-shadow: 0 0 0 3px rgb(22 163 74 / 0.12);
+    background: var(--emerald);
+    box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16);
   }
 
   .activity-dot.deleted {
-    background: #dc2626;
-    box-shadow: 0 0 0 3px rgb(220 38 38 / 0.12);
+    background: var(--red);
+    box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.16);
   }
 
   .activity-copy {
@@ -263,14 +263,14 @@
   }
 
   .activity-copy strong {
-    color: #18181b;
+    color: var(--fg);
     font-size: 12px;
     font-weight: 650;
     line-height: 17px;
   }
 
   .activity-copy span {
-    color: #71717a;
+    color: var(--muted);
     font-size: 11px;
     line-height: 16px;
   }

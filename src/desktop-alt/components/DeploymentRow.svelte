@@ -73,7 +73,7 @@
     gap: 12px;
     min-width: 0;
     padding: 10px 13px;
-    border-top: 1px solid #f4f4f5;
+    border-top: 1px solid var(--border);
   }
 
   .deployment-row:first-child {
@@ -84,21 +84,21 @@
     width: 8px;
     height: 8px;
     border-radius: 999px;
-    background: #a1a1aa;
+    background: var(--muted-2);
     justify-self: center;
   }
 
   .status-dot.active {
-    background: #16a34a;
+    background: var(--emerald);
   }
 
   .status-dot.deploying {
-    background: #2563eb;
+    background: var(--blue);
     animation: pulse 1.4s ease-in-out infinite;
   }
 
   .status-dot.paused {
-    background: #a16207;
+    background: var(--amber);
   }
 
   .subdomain-cell {
@@ -122,7 +122,7 @@
   }
 
   .subdomain {
-    color: #18181b;
+    color: var(--fg);
     font-size: 13px;
     font-weight: 680;
     line-height: 18px;
@@ -130,7 +130,7 @@
 
   .url {
     grid-column: 1 / -1;
-    color: #71717a;
+    color: var(--muted);
     font-size: 11px;
     line-height: 15px;
   }
@@ -139,7 +139,7 @@
     position: relative;
     width: 11px;
     height: 10px;
-    border: 1.5px solid #71717a;
+    border: 1.5px solid var(--muted);
     border-radius: 2px;
   }
 
@@ -149,7 +149,7 @@
     top: -7px;
     width: 7px;
     height: 7px;
-    border: 1.5px solid #71717a;
+    border: 1.5px solid var(--muted);
     border-bottom: 0;
     border-radius: 7px 7px 0 0;
     content: '';
@@ -158,7 +158,7 @@
   .last-deploy,
   .size,
   .version {
-    color: #52525b;
+    color: var(--muted-3);
     font-size: 12px;
     font-weight: 600;
     line-height: 16px;
@@ -166,7 +166,7 @@
 
   .size,
   .version {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
   }
 
   .row-actions {
@@ -182,10 +182,10 @@
     height: 28px;
     overflow: hidden;
     padding: 0;
-    border: 1px solid #d4d4d8;
+    border: 1px solid var(--border);
     border-radius: 6px;
-    background: #ffffff;
-    color: #27272a;
+    background: transparent;
+    color: var(--fg);
     font: inherit;
     font-size: 10px;
     font-weight: 700;
@@ -194,13 +194,13 @@
   }
 
   .icon-button:hover:not(:disabled) {
-    border-color: #a1a1aa;
-    background: #f4f4f5;
+    border-color: var(--border-strong);
+    background: var(--row-hover);
   }
 
   .icon-button:disabled {
-    color: #a1a1aa;
-    background: #f4f4f5;
+    color: var(--muted-3);
+    background: var(--row-hover);
   }
 
   .open-icon {
