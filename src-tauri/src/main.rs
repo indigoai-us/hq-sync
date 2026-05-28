@@ -214,6 +214,7 @@ fn main() {
             commands::desktop_alt::desktop_alt_enabled,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
+            commands::desktop_alt::get_company_activity,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,

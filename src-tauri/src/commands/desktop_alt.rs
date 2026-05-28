@@ -66,6 +66,56 @@ pub struct CompanyBoard {
     pub done: Vec<BoardCard>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyActivity {
+    #[serde(default)]
+    pub stats: ActivityStats,
+    #[serde(default)]
+    pub sparkline: Vec<u32>,
+    #[serde(default)]
+    pub recent: Vec<ActivityEntry>,
+    #[serde(default)]
+    pub top: Vec<ActivityContributor>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityStats {
+    #[serde(default)]
+    pub files7: u32,
+    #[serde(default)]
+    pub edits7: u32,
+    #[serde(default)]
+    pub members: u32,
+    #[serde(default)]
+    pub vault_size: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityEntry {
+    #[serde(default)]
+    pub who: String,
+    #[serde(default)]
+    pub what: String,
+    #[serde(default)]
+    pub file: String,
+    #[serde(default)]
+    pub when: String,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityContributor {
+    #[serde(default)]
+    pub who: String,
+    #[serde(default)]
+    pub edits: u32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct LiveBoardModel {
@@ -175,6 +225,30 @@ pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
     let text = res.text().await.map_err(|e| format!("board read: {e}"))?;
 
     parse_board_response(status, &text)
+}
+
+#[tauri::command]
+pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, String> {
+    let slug = normalize_slug(&slug)?;
+    let company_uid = resolve_company_uid(&slug).await?;
+    let url = activity_url(&vault_base()?, &company_uid)?;
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .get(url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("activity fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("activity read: {e}"))?;
+
+    parse_activity_response(status, &text)
 }
 
 /// Open or focus the Indigo-only alternate desktop UX window.
@@ -289,6 +363,19 @@ fn board_url(base: &str, company_uid: &str) -> Result<String, String> {
     ))
 }
 
+fn activity_url(base: &str, company_uid: &str) -> Result<String, String> {
+    if !is_url_safe_id(company_uid) {
+        return Err(format!(
+            "company uid has invalid characters: {company_uid:?}"
+        ));
+    }
+    Ok(format!(
+        "{}/companies/{}/activity",
+        base.trim_end_matches('/'),
+        company_uid
+    ))
+}
+
 fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, String> {
     if status == StatusCode::NO_CONTENT {
         return Ok(CompanyBoard::default());
@@ -312,6 +399,29 @@ fn parse_board_response(status: StatusCode, text: &str) -> Result<CompanyBoard, 
     parse_company_board(text)
 }
 
+fn parse_activity_response(status: StatusCode, text: &str) -> Result<CompanyActivity, String> {
+    if status == StatusCode::NO_CONTENT {
+        return Ok(CompanyActivity::default());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return if is_activity_not_provisioned(text) {
+            Ok(CompanyActivity::default())
+        } else {
+            Err(format!("activity HTTP {status}: {text}"))
+        };
+    }
+    if !status.is_success() {
+        return Err(format!("activity HTTP {status}: {text}"));
+    }
+
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(CompanyActivity::default());
+    }
+
+    parse_company_activity(text)
+}
+
 fn parse_company_board(text: &str) -> Result<CompanyBoard, String> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("board parse: {e}"))?;
@@ -323,6 +433,10 @@ fn parse_company_board(text: &str) -> Result<CompanyBoard, String> {
     serde_json::from_value(value).map_err(|e| format!("board parse: {e}"))
 }
 
+fn parse_company_activity(text: &str) -> Result<CompanyActivity, String> {
+    serde_json::from_str(text).map_err(|e| format!("activity parse: {e}"))
+}
+
 fn is_board_not_provisioned(text: &str) -> bool {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
         return false;
@@ -332,6 +446,25 @@ fn is_board_not_provisioned(text: &str) -> bool {
             matches!(
                 code,
                 "board-not-provisioned" | "board_not_provisioned" | "board-missing"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn is_activity_not_provisioned(text: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return false;
+    };
+    json_code(&value)
+        .map(|code| {
+            matches!(
+                code,
+                "activity-not-provisioned"
+                    | "activity_not_provisioned"
+                    | "activity-missing"
+                    | "activity_missing"
+                    | "company-activity-missing"
+                    | "company_activity_missing"
             )
         })
         .unwrap_or(false)
@@ -533,6 +666,16 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn company_activity_rejects_empty_slug_before_network() {
+        assert_eq!(
+            super::get_company_activity("   ".to_string())
+                .await
+                .unwrap_err(),
+            "company slug is required"
+        );
+    }
+
     #[test]
     fn company_board_deserializes_missing_columns_as_empty_arrays() {
         let board: super::CompanyBoard = serde_json::from_str(
@@ -588,6 +731,114 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("board HTTP 404"));
+    }
+
+    #[test]
+    fn company_activity_deserializes_empty_object_as_empty_activity() {
+        let activity: super::CompanyActivity = serde_json::from_str("{}").unwrap();
+
+        assert_eq!(activity, super::CompanyActivity::default());
+    }
+
+    #[test]
+    fn company_activity_deserializes_missing_arrays_and_stats_as_defaults() {
+        let activity: super::CompanyActivity = serde_json::from_str(
+            r#"{
+                "stats": {"files7": 3},
+                "recent": [{"who": "Ada", "extraField": "kept"}]
+            }"#,
+        )
+        .expect("missing activity fields should default");
+
+        assert_eq!(activity.stats.files7, 3);
+        assert_eq!(activity.stats.edits7, 0);
+        assert_eq!(activity.stats.members, 0);
+        assert_eq!(activity.stats.vault_size, "");
+        assert!(activity.sparkline.is_empty());
+        assert_eq!(activity.recent.len(), 1);
+        assert_eq!(activity.recent[0].who, "Ada");
+        assert_eq!(activity.recent[0].what, "");
+        assert_eq!(activity.recent[0].extra["extraField"], "kept");
+        assert!(activity.top.is_empty());
+    }
+
+    #[test]
+    fn company_activity_treats_missing_or_empty_response_as_empty_activity() {
+        let not_provisioned = super::parse_activity_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"activity-not-provisioned"}"#,
+        )
+        .expect("missing activity should be empty activity");
+        assert_eq!(not_provisioned, super::CompanyActivity::default());
+
+        let nested_code = super::parse_activity_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"error":{"code":"activity_missing"}}"#,
+        )
+        .expect("nested missing code should be empty activity");
+        assert_eq!(nested_code, super::CompanyActivity::default());
+
+        let no_content = super::parse_activity_response(reqwest::StatusCode::NO_CONTENT, "")
+            .expect("204 should be empty activity");
+        assert_eq!(no_content, super::CompanyActivity::default());
+
+        let empty_body = super::parse_activity_response(reqwest::StatusCode::OK, " \n ")
+            .expect("empty activity response should be empty activity");
+        assert_eq!(empty_body, super::CompanyActivity::default());
+    }
+
+    #[test]
+    fn company_activity_rejects_generic_route_not_found() {
+        let err = super::parse_activity_response(
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"code":"not-found","message":"route not found"}"#,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("activity HTTP 404"));
+    }
+
+    #[test]
+    fn company_activity_parses_live_camel_case_response() {
+        let activity = super::parse_activity_response(
+            reqwest::StatusCode::OK,
+            r#"{
+                "stats": {
+                    "files7": 12,
+                    "edits7": 34,
+                    "members": 5,
+                    "vaultSize": "1.2 MB"
+                },
+                "sparkline": [0, 2, 4, 3],
+                "recent": [
+                    {
+                        "who": "Ada Lovelace",
+                        "what": "edited",
+                        "file": "plans/spec.md",
+                        "when": "2026-05-27T12:00:00Z",
+                        "source": "hq-sync"
+                    }
+                ],
+                "top": [
+                    {"who": "Ada Lovelace", "edits": 20},
+                    {"who": "Grace Hopper", "edits": 14}
+                ]
+            }"#,
+        )
+        .expect("live activity should parse");
+
+        assert_eq!(activity.stats.files7, 12);
+        assert_eq!(activity.stats.edits7, 34);
+        assert_eq!(activity.stats.members, 5);
+        assert_eq!(activity.stats.vault_size, "1.2 MB");
+        assert_eq!(activity.sparkline, vec![0, 2, 4, 3]);
+        assert_eq!(activity.recent[0].who, "Ada Lovelace");
+        assert_eq!(activity.recent[0].what, "edited");
+        assert_eq!(activity.recent[0].file, "plans/spec.md");
+        assert_eq!(activity.recent[0].when, "2026-05-27T12:00:00Z");
+        assert_eq!(activity.recent[0].extra["source"], "hq-sync");
+        assert_eq!(activity.top[0].edits, 20);
+        assert_eq!(activity.top[1].who, "Grace Hopper");
     }
 
     fn company_workspace(
@@ -779,6 +1030,14 @@ mod tests {
         );
         assert_eq!(
             super::board_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
+            "company uid has invalid characters: \"cmp/bad\""
+        );
+        assert_eq!(
+            super::activity_url("https://hqapi.getindigo.ai/", "cmp_01ABC-def.2").unwrap(),
+            "https://hqapi.getindigo.ai/companies/cmp_01ABC-def.2/activity"
+        );
+        assert_eq!(
+            super::activity_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
             "company uid has invalid characters: \"cmp/bad\""
         );
     }
