@@ -527,8 +527,19 @@ fn activity_url(base: &str, company_uid: &str) -> Result<String, String> {
     ))
 }
 
+/// Build the hq-deploy URL for the company Deployments panel.
+///
+/// Uses the ORG-scoped `GET /api/apps` (not the personal `GET /api/apps/me`).
+/// The panel is a *company* dashboard: it must show every app in the org —
+/// the same set the `hq deploy` CLI and the console table show — not just the
+/// apps owned by the signed-in caller. `/api/apps/me` post-filters server-side
+/// to `ownerId === userId`, so for a member viewing co-collaborators' apps it
+/// returns `{"apps":[]}` (HTTP 200, empty) and the panel rendered 0 even when
+/// the org has live deployments. Org scoping comes from the `x-org-slug`
+/// header the caller already sends; the response shape is byte-identical
+/// (`{"apps":[…]}`, no `orgSlug` on rows), so the parser is unchanged.
 fn deployments_url(base: &str) -> String {
-    format!("{}/api/apps/me", base.trim_end_matches('/'))
+    format!("{}/api/apps", base.trim_end_matches('/'))
 }
 
 fn secrets_url(base: &str, company_uid: &str) -> Result<String, String> {
@@ -1841,6 +1852,55 @@ mod tests {
         assert!(serialized.get(0).unwrap().get("value").is_none());
     }
 
+    /// Contract test against the VERBATIM hq-pro vault response shape
+    /// (`src/vault-service/handlers/secrets.ts` → `handleList`):
+    /// `{"secrets":[{name,type,lastModifiedDate,version,permission}],"companyUid"}`.
+    /// Proves the parser yields a NON-EMPTY result for this exact shape — so a
+    /// company that has secrets provisioned can never render 0 because of a
+    /// parse mismatch. (If the panel ever shows 0, the cause is upstream: an
+    /// empty SSM path, an auth/error body, or a different response — which the
+    /// committed `[desktop-alt] secrets structure:` diagnostic will reveal.)
+    /// SSM names with no `/` group under "default"; `ENV/KEY` names split.
+    #[test]
+    fn company_secrets_parses_verbatim_vault_handlelist_shape() {
+        let envs = super::parse_secrets_response(
+            reqwest::StatusCode::OK,
+            r#"{
+                "secrets": [
+                    {"name": "DATABASE_URL", "type": "SecureString", "lastModifiedDate": "2026-05-27T12:00:00Z", "version": 4, "permission": "admin"},
+                    {"name": "STRIPE_KEY", "type": "SecureString", "lastModifiedDate": "2026-05-26T09:00:00Z", "version": 1, "permission": "admin"},
+                    {"name": "DEV/API_TOKEN", "type": "String", "lastModifiedDate": "2026-05-25T09:00:00Z", "version": 2, "permission": "admin"}
+                ],
+                "companyUid": "cmp_01HX"
+            }"#,
+        )
+        .expect("verbatim vault handleList shape should parse");
+
+        // Two env groups: "DEV" (from DEV/API_TOKEN) and "default" (the two
+        // prefix-less names). A provisioned company is never 0.
+        assert!(!envs.is_empty(), "provisioned secrets must not parse to 0");
+        assert_eq!(envs.len(), 2);
+
+        let dev = envs.iter().find(|e| e.env == "DEV").expect("DEV env group");
+        assert_eq!(dev.count, 1);
+        assert_eq!(dev.items[0].key, "API_TOKEN");
+        assert_eq!(dev.items[0].upd, "2026-05-25T09:00:00Z");
+
+        let default = envs
+            .iter()
+            .find(|e| e.env == "default")
+            .expect("default env group");
+        assert_eq!(default.count, 2);
+        let keys: Vec<&str> = default.items.iter().map(|i| i.key.as_str()).collect();
+        assert!(keys.contains(&"DATABASE_URL"));
+        assert!(keys.contains(&"STRIPE_KEY"));
+
+        // The `permission`/`type` metadata never carries a value, but assert
+        // the serialized form stays values-free regardless.
+        let serialized = serde_json::to_value(&envs).unwrap().to_string();
+        assert!(!serialized.contains("\"value\""));
+    }
+
     /// The structure diagnostic must describe shape (top-level kind, key
     /// names, array lengths, first-row key names) and NEVER leak a value.
     #[test]
@@ -1949,6 +2009,21 @@ mod tests {
         assert_eq!(deployments.len(), 1);
         assert_eq!(deployments[0].sub, "nat-audit-indigo-api-3");
         assert_eq!(deployments[0].state, "active");
+    }
+
+    /// The Deployments panel is a *company* dashboard, so it must hit the
+    /// ORG-scoped `GET /api/apps` — never the personal `GET /api/apps/me`,
+    /// which filters server-side to `ownerId === userId` and returned an
+    /// empty `{"apps":[]}` (→ panel rendered 0) for any member viewing apps
+    /// a co-collaborator created. Pin the path so it can't regress to `/me`.
+    #[test]
+    fn deployments_url_is_org_scoped_not_personal() {
+        let url = super::deployments_url("https://api.indigo-hq.com");
+        assert_eq!(url, "https://api.indigo-hq.com/api/apps");
+        assert!(
+            !url.ends_with("/me"),
+            "deployments must use org-scoped /api/apps, not personal /api/apps/me: {url}"
+        );
     }
 
     #[test]
