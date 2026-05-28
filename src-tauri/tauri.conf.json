@@ -34,7 +34,7 @@
         "minHeight": 600,
         "decorations": true,
         "transparent": false,
-        "titleBarStyle": "overlay",
+        "titleBarStyle": "Overlay",
         "url": "desktop-alt.html",
         "visible": false,
         "create": false
