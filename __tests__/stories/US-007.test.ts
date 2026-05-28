@@ -93,7 +93,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(tabs).toContain("{ id: 'secrets' as const, label: 'Secrets', count: summary.secrets }");
   });
 
-  it('moves the active tab indicator and swaps the placeholder panel when a tab is selected', () => {
+  it('moves the active tab indicator and swaps the selected panel when a tab is selected', () => {
     const page = normalize(companyPage);
     const tabs = normalize(companyTabs);
     const placeholder = normalize(companyTabPlaceholder);
@@ -108,7 +108,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(page).toContain("{#if activeTab === 'board'}");
     expect(page).toContain('<BoardPanel slug={company.slug} />');
     expect(page).toContain('<ActivityPanel slug={company.slug} />');
-    expect(page).toContain("<CompanyTabPlaceholder label=\"Deployments panel - wired in US-011\" />");
+    expect(page).toContain('<DeploymentsPanel slug={company.slug} />');
     expect(page).toContain("<CompanyTabPlaceholder label=\"Secrets panel - wired in US-012\" />");
     expect(placeholder).toContain('<section class="company-tab-placeholder" aria-label={label}>');
   });

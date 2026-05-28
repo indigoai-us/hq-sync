@@ -5,6 +5,7 @@
   "windows": ["desktop-alt"],
   "permissions": [
     "core:default",
-    "core:event:default"
+    "core:event:default",
+    "shell:allow-open"
   ]
 }
