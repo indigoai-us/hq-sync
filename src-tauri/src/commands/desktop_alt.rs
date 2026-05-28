@@ -25,7 +25,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
-use crate::commands::workspaces::WorkspaceState;
+use crate::commands::workspaces::{Workspace, WorkspaceState};
 use crate::util::client_info::build_client;
 
 const WINDOW_LABEL: &str = "desktop-alt";
@@ -223,8 +223,14 @@ fn normalize_slug(slug: &str) -> Result<String, String> {
 
 async fn resolve_company_uid(slug: &str) -> Result<String, String> {
     let result = crate::commands::workspaces::list_syncable_workspaces().await?;
-    let workspace = result
-        .workspaces
+    resolve_company_uid_from_workspaces(result.workspaces, slug)
+}
+
+fn resolve_company_uid_from_workspaces(
+    workspaces: Vec<Workspace>,
+    slug: &str,
+) -> Result<String, String> {
+    let workspace = workspaces
         .into_iter()
         .find(|workspace| workspace.slug == slug)
         .ok_or_else(|| format!("company '{slug}' was not found"))?;
@@ -235,7 +241,10 @@ async fn resolve_company_uid(slug: &str) -> Result<String, String> {
             .unwrap_or("workspace cloud mapping is broken");
         return Err(format!("company '{slug}' is not synced: {reason}"));
     }
-    if workspace.state != WorkspaceState::Synced {
+    if !matches!(
+        workspace.state,
+        WorkspaceState::Synced | WorkspaceState::CloudOnly
+    ) {
         return Err(format!(
             "company '{slug}' is not synced (state: {:?})",
             workspace.state
@@ -435,6 +444,7 @@ fn is_url_safe_id(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::commands::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
     use crate::util::feature_gate::is_allowed_email;
 
     // Note: `desktop_alt_enabled` itself depends on the on-disk Cognito
@@ -561,6 +571,114 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("board HTTP 404"));
+    }
+
+    fn company_workspace(
+        slug: &str,
+        state: WorkspaceState,
+        cloud_uid: Option<&str>,
+        broken_reason: Option<&str>,
+    ) -> Workspace {
+        Workspace {
+            slug: slug.to_string(),
+            display_name: slug.to_string(),
+            kind: WorkspaceKind::Company,
+            state,
+            cloud_uid: cloud_uid.map(str::to_string),
+            bucket_name: None,
+            has_local_folder: true,
+            local_path: None,
+            membership_status: None,
+            role: None,
+            last_synced_at: None,
+            broken_reason: broken_reason.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn company_uid_resolution_allows_synced_and_cloud_only_with_cloud_identity() {
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(
+                vec![company_workspace(
+                    "acme",
+                    WorkspaceState::Synced,
+                    Some("cmp_synced"),
+                    None
+                )],
+                "acme",
+            )
+            .unwrap(),
+            "cmp_synced"
+        );
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(
+                vec![company_workspace(
+                    "orbit",
+                    WorkspaceState::CloudOnly,
+                    Some("cmp_cloud"),
+                    None
+                )],
+                "orbit",
+            )
+            .unwrap(),
+            "cmp_cloud"
+        );
+    }
+
+    #[test]
+    fn company_uid_resolution_rejects_broken_and_states_without_cloud_identity() {
+        let broken_err = super::resolve_company_uid_from_workspaces(
+            vec![company_workspace(
+                "acme",
+                WorkspaceState::Broken,
+                Some("cmp_old"),
+                Some("manifest cloud_uid cmp_old not found in your cloud memberships"),
+            )],
+            "acme",
+        )
+        .unwrap_err();
+        assert!(broken_err.contains("company 'acme' is not synced"));
+        assert!(broken_err.contains("manifest cloud_uid cmp_old not found"));
+
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(
+                vec![company_workspace(
+                    "local",
+                    WorkspaceState::LocalOnly,
+                    None,
+                    None
+                )],
+                "local",
+            )
+            .unwrap_err(),
+            "company 'local' is not synced (state: LocalOnly)"
+        );
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(
+                vec![company_workspace(
+                    "personal",
+                    WorkspaceState::Personal,
+                    Some("person_123"),
+                    None
+                )],
+                "personal",
+            )
+            .unwrap_err(),
+            "company 'personal' is not synced (state: Personal)"
+        );
+        assert_eq!(
+            super::resolve_company_uid_from_workspaces(
+                vec![company_workspace(
+                    "cloud",
+                    WorkspaceState::CloudOnly,
+                    None,
+                    None
+                )],
+                "cloud",
+            )
+            .unwrap_err(),
+            "company 'cloud' is not connected to cloud"
+        );
     }
 
     #[test]
