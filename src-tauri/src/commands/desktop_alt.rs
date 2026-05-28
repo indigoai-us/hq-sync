@@ -268,7 +268,7 @@ pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, Strin
 
 #[tauri::command]
 pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry>, String> {
-    let _slug = normalize_slug(&slug)?;
+    let slug = normalize_slug(&slug)?;
     let url = deployments_url(HQ_DEPLOY_API_BASE);
     let token = cognito::get_valid_access_token()
         .await
@@ -277,6 +277,7 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
     let res = build_client()
         .get(url)
         .header("authorization", format!("Bearer {token}"))
+        .header("x-org-slug", &slug)
         .send()
         .await
         .map_err(|e| format!("deployments fetch: {e}"))?;
@@ -286,7 +287,7 @@ pub async fn get_company_deployments(slug: String) -> Result<Vec<DeploymentEntry
         .await
         .map_err(|e| format!("deployments read: {e}"))?;
 
-    parse_deployments_response(status, &text)
+    parse_deployments_response(status, &text, &slug)
 }
 
 /// Open or focus the Indigo-only alternate desktop UX window.
@@ -482,6 +483,7 @@ fn parse_company_activity(text: &str) -> Result<CompanyActivity, String> {
 fn parse_deployments_response(
     status: StatusCode,
     text: &str,
+    selected_slug: &str,
 ) -> Result<Vec<DeploymentEntry>, String> {
     if status == StatusCode::NO_CONTENT {
         return Ok(Vec::new());
@@ -502,15 +504,21 @@ fn parse_deployments_response(
         return Ok(Vec::new());
     }
 
-    parse_deployment_entries(text)
+    parse_deployment_entries(text, selected_slug)
 }
 
-fn parse_deployment_entries(text: &str) -> Result<Vec<DeploymentEntry>, String> {
+fn parse_deployment_entries(
+    text: &str,
+    selected_slug: &str,
+) -> Result<Vec<DeploymentEntry>, String> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("deployments parse: {e}"))?;
     let rows = deployment_rows(&value)
         .ok_or_else(|| "deployments parse: missing apps array".to_string())?;
-    rows.iter().map(deployment_entry_from_value).collect()
+    rows.iter()
+        .filter(|row| deployment_matches_selected_slug(row, selected_slug))
+        .map(deployment_entry_from_value)
+        .collect()
 }
 
 fn deployment_rows(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -552,6 +560,23 @@ fn deployment_entry_from_value(value: &serde_json::Value) -> Result<DeploymentEn
             &["pwd", "passwordProtected", "passwordLocked", "locked"],
         )
         .unwrap_or(false),
+    })
+}
+
+fn deployment_matches_selected_slug(value: &serde_json::Value, selected_slug: &str) -> bool {
+    deployment_org_slug(value)
+        .map(|org_slug| org_slug == selected_slug)
+        .unwrap_or(true)
+}
+
+fn deployment_org_slug(value: &serde_json::Value) -> Option<String> {
+    string_field(value, &["orgSlug", "org_slug"]).or_else(|| {
+        value.get("org").and_then(|org| {
+            org.as_str()
+                .map(|slug| slug.trim().to_string())
+                .filter(|slug| !slug.is_empty())
+                .or_else(|| string_field(org, &["slug", "orgSlug", "org_slug"]))
+        })
     })
 }
 
@@ -1220,6 +1245,7 @@ mod tests {
                     }
                 ]
             }"#,
+            "test-org",
         )
         .expect("apps/me response should parse");
 
@@ -1252,6 +1278,7 @@ mod tests {
                     "pwd": false
                 }
             ]"#,
+            "test-org",
         )
         .expect("array response should parse");
 
@@ -1272,21 +1299,48 @@ mod tests {
     #[test]
     fn company_deployments_treats_empty_and_not_provisioned_as_empty() {
         assert_eq!(
-            super::parse_deployments_response(reqwest::StatusCode::NO_CONTENT, "").unwrap(),
+            super::parse_deployments_response(reqwest::StatusCode::NO_CONTENT, "", "test-org")
+                .unwrap(),
             Vec::<super::DeploymentEntry>::new()
         );
         assert_eq!(
-            super::parse_deployments_response(reqwest::StatusCode::OK, " \n ").unwrap(),
+            super::parse_deployments_response(reqwest::StatusCode::OK, " \n ", "test-org").unwrap(),
             Vec::<super::DeploymentEntry>::new()
         );
         assert_eq!(
             super::parse_deployments_response(
                 reqwest::StatusCode::NOT_FOUND,
-                r#"{"code":"deployments-not-provisioned"}"#
+                r#"{"code":"deployments-not-provisioned"}"#,
+                "test-org",
             )
             .unwrap(),
             Vec::<super::DeploymentEntry>::new()
         );
+    }
+
+    #[test]
+    fn company_deployments_filters_rows_with_org_slug_when_present() {
+        let deployments = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"{
+                "apps": [
+                    {"subdomain": "mine", "orgSlug": "selected-company"},
+                    {"subdomain": "snake", "org_slug": "selected-company"},
+                    {"subdomain": "nested", "org": {"slug": "selected-company"}},
+                    {"subdomain": "legacy-without-org"},
+                    {"subdomain": "theirs", "orgSlug": "other-company"},
+                    {"subdomain": "other-nested", "org": {"slug": "other-company"}}
+                ]
+            }"#,
+            "selected-company",
+        )
+        .expect("org-filtered response should parse");
+
+        let subs: Vec<&str> = deployments
+            .iter()
+            .map(|deployment| deployment.sub.as_str())
+            .collect();
+        assert_eq!(subs, vec!["mine", "snake", "nested", "legacy-without-org"]);
     }
 
     #[test]
@@ -1329,7 +1383,8 @@ mod tests {
         assert_eq!(
             super::parse_deployments_response(
                 reqwest::StatusCode::OK,
-                r#"[{"subdomain":"console","url":"https://evil.example.com"}]"#
+                r#"[{"subdomain":"console","url":"https://evil.example.com"}]"#,
+                "test-org",
             )
             .unwrap_err(),
             r#"deployments parse: app has unsafe url: "https://evil.example.com""#
@@ -1337,7 +1392,8 @@ mod tests {
         assert_eq!(
             super::parse_deployments_response(
                 reqwest::StatusCode::OK,
-                r#"[{"subdomain":"../console"}]"#
+                r#"[{"subdomain":"../console"}]"#,
+                "test-org",
             )
             .unwrap_err(),
             r#"deployments parse: app has unsafe subdomain: "../console""#
