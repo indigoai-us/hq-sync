@@ -17,6 +17,7 @@ const personalWorkspace: Workspace = {
   hasLocalFolder: true,
   localPath: '/tmp/HQ/personal',
   membershipStatus: null,
+  role: null,
   lastSyncedAt: null,
   brokenReason: null,
 };
@@ -31,6 +32,7 @@ const companyWorkspace: Workspace = {
   hasLocalFolder: true,
   localPath: '/tmp/HQ/companies/acme',
   membershipStatus: 'active',
+  role: 'member',
   lastSyncedAt: null,
   brokenReason: null,
 };

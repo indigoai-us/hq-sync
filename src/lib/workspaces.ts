@@ -14,6 +14,7 @@ export interface Workspace {
   hasLocalFolder: boolean;
   localPath: string | null;
   membershipStatus: string | null;
+  role: string | null;
   lastSyncedAt: string | null;
   // Diagnostic when state is 'broken'. Surfaced in the row tooltip + Connect
   // button hint. Always null for non-broken states.

@@ -212,6 +212,7 @@ fn main() {
             commands::activity::get_activity_log,
             commands::meetings::meetings_feature_enabled,
             commands::desktop_alt::desktop_alt_enabled,
+            commands::desktop_alt::get_company_summary,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,

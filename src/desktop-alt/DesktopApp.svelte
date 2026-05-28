@@ -6,6 +6,7 @@
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import SyncPage from './pages/SyncPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
+  import CompanyPage from './pages/CompanyPage.svelte';
   import {
     DESKTOP_SHELL_LAYOUT,
     getDesktopCompanies,
@@ -425,6 +426,10 @@
             <div class="page">
               <MeetingsPage />
             </div>
+          {:else if page.activeCompany}
+            <div class="page">
+              <CompanyPage company={page.activeCompany} />
+            </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
               <div class="page-header">
@@ -432,9 +437,6 @@
               </div>
               <div class="placeholder-panel">
                 <p>{page.placeholder}</p>
-                {#if route.kind === 'company' && page.activeCompany}
-                  <span>{page.activeCompany.slug}</span>
-                {/if}
                 {#if workspaceError}
                   <span class="workspace-error">{workspaceError}</span>
                 {/if}

@@ -21,9 +21,38 @@ use tauri::{AppHandle, Manager};
 
 const WINDOW_LABEL: &str = "desktop-alt";
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyActivitySummary {
+    pub last7d: u32,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanySummary {
+    pub board: u32,
+    pub activity: CompanyActivitySummary,
+    pub deployments: u32,
+    pub secrets: u32,
+}
+
 #[tauri::command]
 pub async fn desktop_alt_enabled() -> Result<bool, String> {
     Ok(crate::util::feature_gate::is_indigo_user().await)
+}
+
+#[tauri::command]
+pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String> {
+    if slug.trim().is_empty() {
+        return Err("company slug is required".to_string());
+    }
+
+    Ok(CompanySummary {
+        board: 0,
+        activity: CompanyActivitySummary { last7d: 0 },
+        deployments: 0,
+        secrets: 0,
+    })
 }
 
 /// Open or focus the Indigo-only alternate desktop UX window.
