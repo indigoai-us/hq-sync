@@ -3,6 +3,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount } from 'svelte';
+  import { loadMeetingsCache } from '../lib/meetingsCache';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import SyncPage from './pages/SyncPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
@@ -18,6 +19,18 @@
   } from './route';
   import DesktopSidebar from './DesktopSidebar.svelte';
   import DesktopStatusBar from './DesktopStatusBar.svelte';
+  import CommandPalette, {
+    type CommandPaletteItem,
+  } from './components/CommandPalette.svelte';
+  import {
+    eventStart,
+    isToday,
+    sortByStart,
+    type GoogleAccount,
+    type GoogleCalendar,
+    type MeetingEvent,
+    type ScheduledBot,
+  } from './lib/meetings-model';
   import {
     emptyWorkspaceStats,
     type ActivityEntry,
@@ -57,10 +70,15 @@
   let daemon = $state<DaemonStatus | null>(null);
   let actionMessage = $state('');
   let actionError = $state('');
+  let commandPaletteOpen = $state(false);
+  let meetingEvents = $state<MeetingEvent[]>([]);
+  let meetingCompanyNamesByUid = $state<Map<string, string>>(new Map());
+  let meetingStatusNow = $state(Date.now());
 
   const companies = $derived(getDesktopCompanies(workspaces));
   const routeKey = $derived(getDesktopRouteKey(route));
   const page = $derived(getDesktopPage(route, companies));
+  const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles);
   const indexedFiles = $derived(
     syncPlanTotalFiles > 0
       ? syncPlanTotalFiles
@@ -76,9 +94,66 @@
     );
     return Math.max(activityBytes, workspaceBytes, syncLastSummary?.bytesDownloaded ?? 0);
   });
+  const nextMeetingLabel = $derived.by(() => {
+    const now = new Date(meetingStatusNow);
+    const upcoming = meetingEvents
+      .filter((event) => isToday(event, now))
+      .filter((event) => (eventStart(event)?.getTime() ?? 0) >= now.getTime())
+      .sort(sortByStart)[0];
+    const startsAt = upcoming ? eventStart(upcoming) : null;
+    if (!upcoming || !startsAt) return null;
+
+    const company =
+      (upcoming.sourceCompanyUid
+        ? meetingCompanyNamesByUid.get(upcoming.sourceCompanyUid) ?? upcoming.sourceCompanyUid
+        : null) ?? 'Meetings';
+    const minutes = Math.max(0, Math.ceil((startsAt.getTime() - now.getTime()) / 60000));
+    return `${company} · in ${minutes}m`;
+  });
+  const commandItems = $derived<CommandPaletteItem[]>([
+    {
+      id: 'command-sync-now',
+      label: 'Sync now',
+      detail: 'Start a full workspace sync',
+      action: handleSyncAll,
+    },
+    {
+      id: 'command-open-settings',
+      label: 'Open settings',
+      detail: 'Open sync settings',
+      action: handleOpenSettings,
+    },
+    {
+      id: 'command-go-sync',
+      label: 'Go to Sync',
+      detail: 'Show sync overview',
+      shortcut: '⌘1',
+      action: () => navigate({ kind: 'sync' }),
+    },
+    {
+      id: 'command-go-meetings',
+      label: 'Go to Meetings',
+      detail: 'Show calendar and recordings',
+      shortcut: '⌘2',
+      action: () => navigate({ kind: 'meetings' }),
+    },
+    ...companies.map((company, index) => ({
+      id: `command-go-company-${company.slug}`,
+      label: `Go to ${company.displayName}`,
+      detail: 'Show company workspace',
+      shortcut: index < 4 ? `⌘${index + 3}` : undefined,
+      action: () => navigate({ kind: 'company', slug: company.slug }),
+    })),
+  ]);
 
   function navigate(nextRoute: DesktopRoute) {
     route = nextRoute;
+  }
+
+  function hydrateMeetingStatus() {
+    const snapshot = loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>();
+    meetingEvents = snapshot?.events ?? [];
+    meetingCompanyNamesByUid = new Map(snapshot?.companyNamesByUid ?? []);
   }
 
   function resetRunState(options: { preserveTotalFiles?: boolean } = {}) {
@@ -178,6 +253,14 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+      event.preventDefault();
+      commandPaletteOpen = true;
+      return;
+    }
+
+    if (commandPaletteOpen) return;
+
     const nextRoute = getDesktopHotkeyRoute(event, companies);
     if (!nextRoute) return;
 
@@ -189,14 +272,22 @@
     let mounted = true;
     let unlistenFocus: UnlistenFn | undefined;
     const unlisteners: UnlistenFn[] = [];
+    const meetingStatusInterval = window.setInterval(() => {
+      meetingStatusNow = Date.now();
+      hydrateMeetingStatus();
+    }, 30_000);
 
     refreshRealState();
+    hydrateMeetingStatus();
     window.addEventListener('keydown', handleKeydown);
+    window.addEventListener('focus', hydrateMeetingStatus);
+    window.addEventListener('storage', hydrateMeetingStatus);
 
     void getCurrentWindow()
       .onFocusChanged(({ payload: focused }) => {
         if (focused) {
           refreshRealState();
+          hydrateMeetingStatus();
         }
       })
       .then((unlisten) => {
@@ -383,7 +474,10 @@
       mounted = false;
       unlistenFocus?.();
       unlisteners.forEach((unlisten) => unlisten());
+      window.clearInterval(meetingStatusInterval);
       window.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('focus', hydrateMeetingStatus);
+      window.removeEventListener('storage', hydrateMeetingStatus);
     };
   });
 </script>
@@ -446,7 +540,18 @@
         {/key}
       </div>
 
-      <DesktopStatusBar version={__APP_VERSION__} state={syncState} progress={syncProgress} />
+      <DesktopStatusBar
+        version={__APP_VERSION__}
+        state={syncState}
+        progress={syncProgress}
+        filesProgressed={syncFilesProgressed}
+        totalFiles={effectiveTotalFiles}
+        {nextMeetingLabel}
+      />
     </main>
   </div>
+
+  {#if commandPaletteOpen}
+    <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
+  {/if}
 </div>
