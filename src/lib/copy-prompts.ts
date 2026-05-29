@@ -26,7 +26,8 @@ export type IssueKind =
   | 'local-env-failure'
   | 'hq-version-undetectable'
   | 'hq-core-drift'
-  | 'hq-core-drift-all';
+  | 'hq-core-drift-all'
+  | 'hq-core-update-failed';
 
 /**
  * Stable kind identifiers for `local-env-failure` payloads. These match the
@@ -281,6 +282,50 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       '3. Leave the already-in-staging files alone — they clear when the next hq-core release is cut and I run `/update-hq`.',
       "4. Give me a decision queue — one file at a time, with a promote / personal / restore recommendation and a one-line reason. Don't edit locked core in place.",
     ].join('\n');
+  },
+
+  // Footer "Update to vX.Y.Z" pill ran the hq-core rescue (release
+  // `install_hq_core_update` or staging `run_replace_from_staging`) and it
+  // didn't complete. We NEVER surface the raw "exit N" chip to the user — an
+  // exit code isn't actionable. Instead the menubar hands the agent the full
+  // context to finish the update by hand. `exitCode === -1` is the App.svelte
+  // catch-branch sentinel — the Tauri invoke itself threw before the rescue
+  // script could report its own code, which in practice means the install is
+  // too far out of date for the in-app rescue to bridge and needs a guided
+  // `/update-hq`. Any other non-zero is the rescue script's own exit
+  // (clone/scan/overlay failure). Payload: `{ exitCode, logTail, logPath,
+  // channel, targetVersion, targetRepo, hqVersion }`.
+  'hq-core-update-failed': (i) => {
+    const exitCode = num(i, 'exitCode');
+    const logTail = val(i, 'logTail');
+    const logPath = val(i, 'logPath');
+    const channel = val(i, 'channel');
+    const target = val(i, 'targetVersion');
+    const repo = val(i, 'targetRepo');
+    const hqVersion = val(i, 'hqVersion');
+    const targetLine =
+      channel === 'staging'
+        ? 'It was overlaying the latest **staging** hq-core.'
+        : target
+          ? `It was trying to update me to **v${target}**${repo ? ` (from \`${repo}\`)` : ''}.`
+          : 'It was pulling the latest hq-core release.';
+    const causeLine =
+      exitCode === -1
+        ? "The in-app rescue exited before it could run (exit -1) — usually this means my install is too far out of date for the menubar to bridge on its own, so it needs a guided update from you."
+        : `The rescue script exited with code ${exitCode}.`;
+    return [
+      "My HQ Sync menubar tried to update HQ core for me and it didn't finish.",
+      '',
+      hqVersion
+        ? `I'm currently on hq-core \`v${hqVersion}\`.`
+        : "I'm not sure which hq-core version I'm on.",
+      targetLine,
+      causeLine,
+      logTail ? `\nLast log lines:\n${logTail}` : '',
+      logPath ? `Full log: \`${logPath}\`` : '',
+      '',
+      "Please walk me through a guided update with `/update-hq`. First read the log above (and `~/.hq/logs/hq-sync.log`, last 100 lines) to see why the in-app rescue failed, then check `git status` in my HQ root for uncommitted local changes the overlay would clobber — if there are any, help me stash or commit them before updating. Then run `/update-hq` to pull the latest hq-core release and confirm the footer version row matches the target once it completes. Don't force-overwrite locked-core drift without showing me what changes first.",
+    ].filter(Boolean).join('\n');
   },
 
   // Footer "HQ vX.Y.Z" row couldn't detect a version — the HQ folder is
