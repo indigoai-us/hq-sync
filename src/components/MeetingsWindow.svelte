@@ -495,6 +495,46 @@
     }
   }
 
+  /**
+   * Force the bot to join NOW — third row icon, the "bot join now"
+   * affordance. Same shape as `onInvite` but hits `meetings_join_bot_now`
+   * which routes to `POST /v1/bot/join-now`.
+   *
+   * The server decides whether to PATCH `join_at` on an existing scheduled
+   * bot, no-op an already-joining/recording one, or create a fresh bot
+   * (meeting-restarted / failed-join cases) — see bot.service.ts::joinBotNow.
+   * From the UI side this is always the same call.
+   *
+   * The 409 special-case from `onInvite` doesn't apply here — join-now
+   * intentionally bypasses dedup, so a 409 would be a real conflict (e.g.
+   * the inviteBot race-window catcher) and should surface as a warning.
+   */
+  async function onJoinNow(evt: MeetingEvent) {
+    const url = eventMeetingUrl(evt);
+    if (!url) {
+      flashToast('warn', 'No meeting URL on this event.');
+      return;
+    }
+    const key = evt.id;
+    if (rowPending.has(key)) return;
+    rowPending = new Set(rowPending).add(key);
+    try {
+      await invoke<ScheduledBot>('meetings_join_bot_now', {
+        meetingUrl: url,
+        calendarEventId: evt.id,
+        companyId: evt.sourceCompanyUid ?? null,
+      });
+      flashToast('info', "Bot's on the way.");
+      await refresh();
+    } catch (err) {
+      flashToast('warn', friendlyError(err, "Couldn't tell the bot to join."));
+    } finally {
+      const next = new Set(rowPending);
+      next.delete(key);
+      rowPending = next;
+    }
+  }
+
   async function onUrlInvite() {
     const url = urlInput.trim();
     if (!isPlausibleMeetingUrl(url)) return;
@@ -1285,6 +1325,38 @@
                     </svg>
                   </span>
                 {/if}
+                <!-- Bot-join-now — the third row icon. Force the bot to
+                     join NOW, regardless of pre-scheduled join_at. Covers
+                     three scenarios behind one click: meeting started
+                     early (reschedule scheduled bot to now), meeting
+                     restarted after the bot left (fresh invite), and
+                     bot-failed-to-join recovery (fresh invite). Server
+                     side picks the right path — `joinBotNow` in
+                     hq-pro/src/meetings/bot/bot.service.ts. -->
+                {#if url}
+                  <button
+                    type="button"
+                    class="row-icon-btn row-icon-bot-now"
+                    disabled={pending}
+                    title={pending ? 'Telling bot to join…' : 'Tell bot to join now'}
+                    aria-label="Tell bot to join now"
+                    onclick={() => onJoinNow(evt)}
+                  >
+                    {#if pending}
+                      <span class="row-icon-spinner" aria-hidden="true"></span>
+                    {:else}
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                        <!-- antenna -->
+                        <line x1="6" y1="1" x2="6" y2="2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+                        <!-- head -->
+                        <rect x="2" y="3" width="8" height="6.5" rx="1.5" stroke="currentColor" stroke-width="1.4" />
+                        <!-- eyes -->
+                        <circle cx="4.6" cy="6.5" r="0.7" fill="currentColor" />
+                        <circle cx="7.4" cy="6.5" r="0.7" fill="currentColor" />
+                      </svg>
+                    {/if}
+                  </button>
+                {/if}
               </div>
             </li>
           {/each}
@@ -1833,6 +1905,19 @@
     background: rgba(34, 197, 94, 0.08);
     border-color: rgba(34, 197, 94, 0.30);
     cursor: default;
+  }
+  /* Bot-join-now — amber-accented "act now" affordance. Distinct from
+     the green of `invite` / red of `incall` so users learn to read it
+     as a separate, always-available control rather than confusing it
+     with a state indicator. */
+  .row-icon-bot-now {
+    color: #fcd34d;
+    background: rgba(202, 138, 4, 0.08);
+    border-color: rgba(202, 138, 4, 0.32);
+  }
+  .row-icon-bot-now:hover:not(:disabled) {
+    background: rgba(202, 138, 4, 0.18);
+    border-color: rgba(202, 138, 4, 0.55);
   }
 
   /* Inline spinner — used inside row-icon-btn while a request is pending.

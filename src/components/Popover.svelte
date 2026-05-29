@@ -114,73 +114,59 @@
      *  the captured stderr pre-filled (typical case: EACCES on a
      *  system-prefix npm that needs sudo). */
     hqCliUpdateError?: string | null;
-    /** Non-null when the user's local hq-core (read from core.yaml's
-     *  `hqVersion`) is behind the latest GitHub release of
-     *  indigoai-us/hq-core. When non-null, the footer HQ-version row
-     *  surfaces an "Update to vX.Y.Z" pill (right-aligned) whose click
-     *  handler launches Claude Code at the HQ folder with `/update-hq`
-     *  pre-filled in the prompt — same `claude://code/new` deep-link
-     *  mechanism as `fixHqCliUpdateInHq`. Replaces the v0.1.84 top-of-
-     *  popover update banner (less visually noisy, lives next to the
-     *  version string it's about). */
-    hqCoreUpdateAvailable?: {
-      local: string | null;
-      latest: string;
-    } | null;
     /** Locally-detected hq-core `hqVersion` (cheap on-disk read from
      *  `core.yaml`). Drives the "HQ vX.Y.Z" footer row, independent of
-     *  the GitHub-release check above. Null → render the row with a
+     *  the unified state check below. Null → render the row with a
      *  "version unknown" label + CopyPromptButton so a broken install
      *  becomes visible rather than silently hidden. */
     hqVersion?: string | null;
-    /** Drift summary from `hq-core-drift:available`. When `count > 0`,
-     *  the HQ-version footer row renders an "N drifted" pill to the
-     *  right of the version label (alongside the Update pill if both
-     *  are active). Clicking opens the drift detail window with this
-     *  exact payload — passed verbatim so the window doesn't re-fetch
-     *  and risk a count mismatch with the pill. Null → no pill. */
-    hqCoreDrift?: {
-      count: number;
-      modified: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
-      missing: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
-      added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+    /** Unified HQ-core state. Replaces the pre-refactor quad
+     *  (hqCoreUpdateAvailable + hqCoreDrift + stagingDrift +
+     *  stagingReplace). Drives both the state badge ("N drifted" / "in
+     *  sync") and the action pill ("Update to v…" / "Update to Staging")
+     *  on the HQ-version footer row.
+     *
+     *  Pill visibility logic:
+     *    state badge → render when `coreState != null` (showing either
+     *                  "N drifted" or "in sync" depending on drift count)
+     *    action pill → render when `coreState.versionBehind ||
+     *                  coreState.driftReport.count > 0`
+     *
+     *  Null = checker hasn't run yet (≠ "in sync"). The bg checker fires
+     *  30s after launch, so a freshly opened popover may briefly show no
+     *  pills. */
+    coreState?: {
+      channel: 'release' | 'staging';
+      targetRepo: string;
+      targetVersion: string;
+      targetRef: string;
+      localVersion: string | null;
+      floorSha: string | null;
+      isEligible: boolean;
+      versionBehind: boolean;
+      driftReport: {
+        count: number;
+        modified: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+        missing: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+        added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
+        scannedAt: string;
+        hqVersion: string;
+        targetRepo: string;
+        targetRef: string;
+      };
+      unchangedCount: number;
+      userOnlyCount: number;
       scannedAt: string;
-      hqVersion: string;
     } | null;
-    /** Staging-flavored drift summary from `hq-core-staging-drift:available`.
-     *  Same shape as `hqCoreDrift` but computed against `hq-core-staging@main`
-     *  instead of the released tag. Non-null only for eligible
-     *  @getindigo.ai builders (Rust-side gate). When non-null and
-     *  `count > 0`, REPLACES the release-drift pill — staging users care
-     *  about distance from where they're actually headed (staging),
-     *  not from the tag they've already moved past. */
-    stagingDrift?: {
-      count: number;
-      modified: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
-      missing: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
-      added: Array<{ path: string; size: number; gitShaLocal: string | null; gitShaUpstream: string | null }>;
-      scannedAt: string;
-      hqVersion: string;
-    } | null;
-    /** "Update from staging" pill state. Null when the feature is dark
-     *  (non-@getindigo.ai user, no GH token, GH API unreachable). Otherwise
-     *  the pill renders when `available=true` (local stamp missing or
-     *  behind staging main HEAD). */
-    stagingReplace?: {
-      available: boolean;
-      localSha: string | null;
-      latestSha: string;
-      latestShort: string;
-      repo: string;
-    } | null;
-    /** True while the rescue script is in-flight. Disables the pill +
-     *  swaps its label to "Updating…" so the user knows something's
-     *  happening during the multi-minute scan. */
-    stagingReplaceRunning?: boolean;
-    /** Last rescue run's result. Surfaced next to the pill so the user
-     *  gets immediate feedback (✓ done / ✗ failed) without opening the
-     *  log file. Cleared at start of a new run. */
-    stagingReplaceLastResult?: {
+    /** True while the unified "Update" rescue script is running (either
+     *  release `install_hq_core_update` or staging `run_replace_from_staging`;
+     *  App.svelte dispatches based on `coreState.channel`). Disables the
+     *  pill + swaps its label to "Updating…". */
+    coreInstalling?: boolean;
+    /** Last rescue-run result. Surfaced next to the pill so the user gets
+     *  immediate feedback (✓ done / ✗ failed) without opening the log file.
+     *  Cleared at start of a new run. */
+    coreInstallLastResult?: {
       kind: 'ok' | 'err';
       exitCode: number;
       logTail: string;
@@ -200,11 +186,12 @@
     /** Run `npm install -g @indigoai-us/hq-cli@latest` via the Rust
      *  backend. App.svelte owns the in-flight + error state. */
     oninstallhqcliupdate?: () => void;
-    /** Invoke the rescue script via the Rust `run_replace_from_staging`
-     *  command. App.svelte owns the in-flight + result state. Optional
-     *  so the prop is omittable for non-eligible users (the parent simply
-     *  doesn't bind it; the pill stays hidden anyway). */
-    onrunreplacefromstaging?: () => void;
+    /** Click handler for the unified Update pill. App.svelte dispatches
+     *  to either `install_hq_core_update` (release) or
+     *  `run_replace_from_staging` (staging) based on `coreState.channel`.
+     *  Optional so the prop is omittable; the pill stays interactive but
+     *  no-ops without a handler. */
+    oninstallcore?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -247,13 +234,10 @@
     hqCliUpdateAvailable = null,
     hqCliUpdateInstalling = false,
     hqCliUpdateError = null,
-    hqCoreUpdateAvailable = null,
     hqVersion = null,
-    hqCoreDrift = null,
-    stagingDrift = null,
-    stagingReplace = null,
-    stagingReplaceRunning = false,
-    stagingReplaceLastResult = null,
+    coreState = null,
+    coreInstalling = false,
+    coreInstallLastResult = null,
     onsync,
     oncancel,
     onsettings,
@@ -263,7 +247,7 @@
     ondismissconflicts,
     oninstallupdate,
     oninstallhqcliupdate,
-    onrunreplacefromstaging,
+    oninstallcore,
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
@@ -276,6 +260,7 @@
       bindStatsRefresh(() => statsEl?.refresh());
     }
   });
+
 
   // Human-readable formatters
   function formatBytes(n: number): string {
@@ -401,28 +386,15 @@
   // case is a click that does nothing, much better than a Sentry-level
   // exception in the user's face for an opt-in diagnostic surface.
   async function openDriftDetail() {
-    // Eligible users see the staging-flavored report; everyone else sees
-    // the release-tagged report. Same window, same structure — only the
-    // upstream reference differs. Both reports use the DriftReport shape
-    // so the detail window doesn't need to branch.
-    const report = stagingDrift ?? hqCoreDrift;
+    // Single source of truth — the report inside coreState. Channel is
+    // baked into the report's metadata so the detail window doesn't need
+    // to branch on staging vs release.
+    const report = coreState?.driftReport;
     if (!report) return;
     try {
       await invoke('open_drift_detail', { report });
     } catch (e) {
       console.error('open_drift_detail failed:', e);
-    }
-  }
-
-  async function updateHqCoreInClaudeCode() {
-    const params = new URLSearchParams({ q: '/update-hq' });
-    if (config?.hqFolderPath) params.set('folder', config.hqFolderPath);
-    const url = `claude://code/new?${params.toString()}`;
-
-    try {
-      await invoke('open_claude_code_link', { url });
-    } catch (e) {
-      console.error('open_claude_code_link failed:', e);
     }
   }
 
@@ -749,8 +721,12 @@
          Three states:
            1. hqVersion present + hqCoreUpdateAvailable null → "HQ vX.Y.Z" only
            2. hqVersion present + hqCoreUpdateAvailable non-null → version
-              text + right-aligned "Update to vX.Y.Z" pill (clickable, opens
-              Claude Code with /update-hq pre-filled).
+              text + right-aligned "Update to vX.Y.Z" pill. Click invokes
+              `install_hq_core_update` (spawns the rescue script against
+              indigoai-us/hq-core at the release tag — same engine the
+              staging pill uses). While running the pill is disabled and
+              relabelled "Updating…"; on completion a ✓ / ✗ chip
+              appears next to it.
            3. hqVersion null → "HQ version unknown" + right-aligned
               CopyPromptButton so the user can hand a triage prompt to an
               agent in-session (the install is broken in a way we can't
@@ -776,95 +752,101 @@
           issue={{ kind: 'hq-version-undetectable', payload: { hqFolderPath: config?.hqFolderPath ?? '' } }}
         />
       {:else}
+        <!-- `.footer-hq-version-actions` wrapper (from main) makes the
+             pill group wrap to a second line on narrow widths instead of
+             overlapping the "HQ vX.Y.Z" label. Inner rendering is the
+             unified `coreState` block (this branch). -->
         <div class="footer-hq-version-actions">
-        <!-- Drift pill (notice tone, not primary white) — appears first so
-             the eye lands on the diagnostic before the action pill. Hidden
-             when count is 0 or null so the row stays calm on healthy
-             installs. Click → opens the drift detail window. -->
-        <!-- Drift pill precedence:
-             * Eligible users (stagingDrift !== null) see the staging-vs-local
-               count — they care about distance from where they're actually
-               headed, not from the released tag they've moved past.
-             * Non-eligible users keep the existing release-drift pill.
-             Both reports use the same DriftReport shape so the detail
-             window doesn't fork. -->
-        {#if stagingDrift}
-          <!-- Eligible users always see a staging-drift chip — at 0 it
-               confirms "in sync", >0 it's the same notice pill as before.
-               Either state is clickable so the detail window is always
-               one click away (lets you inspect even when everything is
-               clean). -->
-          <button
-            class="footer-hq-version-pill {stagingDrift.count > 0 ? 'footer-hq-version-pill-notice' : ''}"
-            onclick={openDriftDetail}
-            title={stagingDrift.count > 0
-              ? `${stagingDrift.count} locked core file${stagingDrift.count === 1 ? '' : 's'} differ from ${stagingDrift.hqVersion}. Click for details. Click "Update to Staging" to reconcile.`
-              : `Locked core matches ${stagingDrift.hqVersion}. Click to open the drift detail window.`}
-          >
-            {stagingDrift.count > 0 ? `${stagingDrift.count} drifted` : 'in sync'}
-          </button>
-        {:else if hqCoreDrift && hqCoreDrift.count > 0}
-          <button
-            class="footer-hq-version-pill footer-hq-version-pill-notice"
-            onclick={openDriftDetail}
-            title={`${hqCoreDrift.count} locked core file${hqCoreDrift.count === 1 ? '' : 's'} differ from upstream v${hqCoreDrift.hqVersion}. Click for details.`}
-          >
-            {hqCoreDrift.count} drifted
-          </button>
-        {/if}
-        <!-- Pill precedence for the HQ-version footer row:
-             * Eligible @getindigo.ai users (stagingReplace !== null) use
-               the staging channel for updates — the "Update to Staging"
-               pill REPLACES the release "Update to vX.Y.Z" pill entirely
-               for them. They're already ahead of releases by definition,
-               so the release pill would be misleading noise.
-             * Non-eligible users (stagingReplace === null because the
-               Rust check returned None) fall back to the existing
-               release-update pill.
-             The staging pill reuses the standard primary-white pill
-             styling so it reads as a first-class action, not a side
-             channel. Disabled while running via the new disabled rule
-             on .footer-hq-version-pill. -->
-        {#if stagingReplace && onrunreplacefromstaging}
-          {#if stagingReplace.available || (stagingDrift && stagingDrift.count > 0)}
+        <!-- Unified state badge + action pill. Both derive entirely from
+             `coreState` (see commands/hq_core_state.rs). Channel selection
+             (release vs staging) is a parameter on the Rust side; this
+             render block is identical for every user.
+
+             State badge: "N drifted" when user_edit > 0, "in sync"
+             otherwise. Always clickable so the detail window is one click
+             away even on clean installs.
+
+             Action pill: shown when `versionBehind || hasDrift` — i.e.
+             whenever the rescue would do something. Label flips to
+             "Update to Staging" / "Update to v…" by channel. -->
+        {#if coreState}
+          {@const hasDrift = coreState.driftReport.count > 0}
+          {@const needsUpdate = coreState.versionBehind || hasDrift}
+          {@const updateLabel =
+            coreState.channel === 'staging'
+              ? coreState.versionBehind
+                ? 'Update to Staging'
+                : 'Restore Staging'
+              : coreState.versionBehind
+                ? `Update to v${coreState.targetVersion}`
+                : `Restore v${coreState.targetVersion}`}
+          <!-- State badge gating:
+               * Eligible (@getindigo.ai) — full diagnostic surface. "N
+                 drifted" with the real count when there's drift, "in
+                 sync" otherwise. Both clickable → opens the per-file
+                 detail window.
+               * Non-eligible — static "in sync" label only. Drift count
+                 is suppressed (no per-file surface offered) and the
+                 badge is non-clickable. The Update pill still respects
+                 the actual `needsUpdate`, so the user still has an
+                 action if drift exists. -->
+          {#if coreState.isEligible}
             <button
-              class="footer-hq-version-pill"
-              onclick={onrunreplacefromstaging}
-              disabled={stagingReplaceRunning}
-              title={stagingReplaceRunning
-                ? `Running rescue against ${stagingReplace.repo} — see /tmp/hq-sync-replace-from-staging-*.log`
-                : stagingReplace.available
-                  ? `Replace HQ with ${stagingReplace.repo}@${stagingReplace.latestShort}. Local drifts move to personal/; staging overlays on top.`
-                  : `Re-overlay ${stagingReplace.repo}@${stagingReplace.latestShort} to reconcile ${stagingDrift?.count ?? 0} drifted file${(stagingDrift?.count ?? 0) === 1 ? '' : 's'}. Local drifts move to personal/.`}
+              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice' : ''}"
+              onclick={openDriftDetail}
+              title={hasDrift
+                ? `${coreState.driftReport.count} locked core file${coreState.driftReport.count === 1 ? '' : 's'} edited since last sync vs ${coreState.targetRepo}@${coreState.targetVersion}. Click for details.`
+                : `Locked core matches ${coreState.targetRepo}@${coreState.targetVersion}. Click to open the drift detail window.`}
             >
-              {#if stagingReplaceRunning}
-                Updating…
-              {:else}
-                Update to Staging
-              {/if}
+              {hasDrift ? `${coreState.driftReport.count} drifted` : 'in sync'}
             </button>
+          {:else}
+            <span
+              class="footer-hq-version-pill footer-hq-version-pill-static"
+              title={`Locked core matches ${coreState.targetRepo}@${coreState.targetVersion}.`}
+            >
+              in sync
+            </span>
           {/if}
-        {:else if hqCoreUpdateAvailable}
-          <button
-            class="footer-hq-version-pill"
-            onclick={updateHqCoreInClaudeCode}
-            title="Open Claude Code with /update-hq pre-filled"
-          >
-            Update to v{hqCoreUpdateAvailable.latest}
-          </button>
+          {#if needsUpdate && oninstallcore}
+            <!-- {#key coreInstalling}: remount the button when in-flight
+                 flips so WebKit's GPU compositor can't leave residue from the
+                 wider "Restore v14.2.1" / "Update to v14.2.1" label after it
+                 shrinks to "Updating…". The popover runs in a transparent
+                 NSWindow (decorations:false, transparent:true in tauri.conf),
+                 which exposes a known WKWebView quirk where in-place text
+                 swaps that change the pill's intrinsic width can leave a
+                 ghost rect of the old pill in the compositor cache. -->
+            {#key coreInstalling}
+              <button
+                class="footer-hq-version-pill"
+                onclick={oninstallcore}
+                disabled={coreInstalling}
+                title={coreInstalling
+                  ? `Running rescue against ${coreState.targetRepo}@${coreState.targetVersion} — see /tmp/hq-sync-*.log`
+                  : `Replace HQ with ${coreState.targetRepo}@${coreState.targetVersion}. Local drifts move to personal/; the upstream tree overlays on top.`}
+              >
+                {#if coreInstalling}
+                  Updating…
+                {:else}
+                  {updateLabel}
+                {/if}
+              </button>
+            {/key}
+          {/if}
         {/if}
-        {#if stagingReplaceLastResult}
-          <!-- Last rescue-run feedback. Tiny inline chip so the user sees
-               success/failure without leaving the popover. Click reveals
-               the log-tail tooltip via `title`. -->
+        {#if coreInstallLastResult}
+          <!-- Single rescue-run feedback chip. Same shape regardless of
+               channel — App.svelte dispatches to the right command
+               internally. -->
           <span
-            class="footer-hq-version-result footer-hq-version-result-{stagingReplaceLastResult.kind}"
-            title={stagingReplaceLastResult.logTail || stagingReplaceLastResult.logPath}
+            class="footer-hq-version-result footer-hq-version-result-{coreInstallLastResult.kind}"
+            title={coreInstallLastResult.logTail || coreInstallLastResult.logPath}
           >
-            {#if stagingReplaceLastResult.kind === 'ok'}
-              ✓ rescue done
+            {#if coreInstallLastResult.kind === 'ok'}
+              ✓ update done
             {:else}
-              ✗ rescue failed (exit {stagingReplaceLastResult.exitCode})
+              ✗ update failed (exit {coreInstallLastResult.exitCode})
             {/if}
           </span>
         {/if}
@@ -1226,6 +1208,18 @@
   .footer-hq-version-pill-notice:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     color: var(--popover-text-heading, #ffffff);
+  }
+
+  /* Static variant — non-clickable "in sync" label shown to non-eligible
+     users (no @getindigo.ai email). Drift count is suppressed for them
+     and there's no per-file detail surface to open, so the badge renders
+     as a plain `<span>` with the same shape as the notice pill but no
+     cursor/hover/click affordances. Calm-grey background so it reads as
+     informational rather than actionable. */
+  .footer-hq-version-pill-static {
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    cursor: default;
   }
 
   /* Inline result chip rendered next to the pill after a rescue run. Small,

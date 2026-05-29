@@ -30,6 +30,7 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
+            staging_channel: Some(true),
             release_channel: None,
         });
     }
@@ -65,6 +66,12 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // each poll cycle in dm_notify.rs so the toggle takes effect without
         // restart. Mirrors `share_notifications`.
         dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
+        // Staging channel (@getindigo.ai-only): defaults ON so existing
+        // builders' "Update to Staging" pill keeps rendering across the
+        // upgrade. An explicit `false` flips them to the prod release
+        // channel — the same surface non-@indigo users see. See
+        // `MenubarPrefs::staging_channel` for the full gating contract.
+        staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
         // Pass-through (NOT resolved) — see fn-level comment.
         release_channel: prefs.release_channel,
     })
@@ -112,6 +119,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
+            staging_channel: None,
             release_channel: None,
         }
     }
@@ -134,6 +142,7 @@ mod tests {
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
+            staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
             release_channel: prefs.release_channel,
         }
     }
@@ -150,6 +159,9 @@ mod tests {
         assert_eq!(result.realtime_sync, Some(true));
         assert_eq!(result.share_notifications, Some(true));
         assert_eq!(result.dm_notifications, Some(true));
+        // staging_channel defaults ON (@indigo users keep "Update to Staging"
+        // across the upgrade until they explicitly toggle off).
+        assert_eq!(result.staging_channel, Some(true));
         // release_channel stays None at the apply_defaults boundary; the
         // identity-aware resolution happens inside get_settings itself
         // and is exercised by util::release_channel::tests.
@@ -186,6 +198,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(false),
             dm_notifications: Some(false),
+            staging_channel: Some(false),
             release_channel: Some("alpha".to_string()),
         };
 
@@ -199,6 +212,7 @@ mod tests {
         // explicit false must survive the unwrap_or(true)
         assert_eq!(result.share_notifications, Some(false));
         assert_eq!(result.dm_notifications, Some(false));
+        assert_eq!(result.staging_channel, Some(false));
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
@@ -219,6 +233,7 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
+            staging_channel: Some(true),
             release_channel: Some("beta".to_string()),
         };
 
@@ -230,6 +245,7 @@ mod tests {
         assert_eq!(parsed.notifications, prefs.notifications);
         assert_eq!(parsed.start_at_login, prefs.start_at_login);
         assert_eq!(parsed.share_notifications, prefs.share_notifications);
+        assert_eq!(parsed.staging_channel, Some(true));
         // releaseChannel round-trips as a camelCase string (matches the
         // #[serde(rename_all = "camelCase")] on MenubarPrefs).
         assert_eq!(parsed.release_channel, Some("beta".to_string()));
@@ -253,6 +269,7 @@ mod tests {
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
             share_notifications: Some(true),
+            staging_channel: Some(true),
             ..empty_prefs()
         };
 
@@ -277,6 +294,7 @@ mod tests {
             personal_sync_enabled: Some(true),
             instant_sync: Some(true),
             share_notifications: Some(true),
+            staging_channel: Some(true),
             ..empty_prefs()
         };
 
