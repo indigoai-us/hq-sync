@@ -23,8 +23,29 @@ export function useCompanySummary(options: { slug: () => string | null }) {
   let loading = $state(false);
   let error = $state<string | null>(null);
 
+  // The effect tracks `options.slug()` (i.e. `company.slug`), which re-fires
+  // whenever the parent hands down a NEW `company` object — even when the slug
+  // VALUE is unchanged. The desktop shell reassigns the whole workspace list on
+  // every focus/refresh, so `page.activeCompany` churns identity constantly.
+  // We must NOT cancel + refetch on those churns: the previous structure tied a
+  // `cancelled` flag to the effect cleanup, so each churn cancelled the
+  // in-flight `get_company_summary` before its (correct) counts could commit —
+  // leaving the UI stuck on zeros while the backend returned real data.
+  //
+  // Fix: only react to an actual slug-VALUE change. A monotonic request id (not
+  // an effect-cleanup flag) discards out-of-order completions when the slug
+  // changes rapidly, so the loaded summary sticks across identity churn.
+  let activeSlug: string | null = null;
+  let requestId = 0;
+
   $effect(() => {
     const slug = options.slug();
+    if (slug === activeSlug) {
+      return; // same company — keep the loaded summary, don't refetch/cancel
+    }
+    activeSlug = slug;
+    const myRequest = ++requestId;
+
     summary = emptyCompanySummary();
     error = null;
 
@@ -33,31 +54,26 @@ export function useCompanySummary(options: { slug: () => string | null }) {
       return;
     }
 
-    let cancelled = false;
     loading = true;
 
     void invoke<CompanySummary>('get_company_summary', { slug })
       .then((result) => {
-        if (!cancelled) {
+        if (myRequest === requestId) {
           summary = result;
         }
       })
       .catch((err) => {
         console.error('get_company_summary failed:', err);
-        if (!cancelled) {
+        if (myRequest === requestId) {
           error = String(err);
           summary = emptyCompanySummary();
         }
       })
       .finally(() => {
-        if (!cancelled) {
+        if (myRequest === requestId) {
           loading = false;
         }
       });
-
-    return () => {
-      cancelled = true;
-    };
   });
 
   return {

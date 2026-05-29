@@ -250,19 +250,28 @@ pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>
     // contributes 0 so one dead endpoint doesn't zero the others. Auth
     // failures are different — they must propagate so the UI can route to
     // sign-in rather than silently rendering empty counts.
-    let board = summary_count_or_auth(get_company_board(slug.clone()).await.map(|b| b.card_count()))?;
-    let last7d =
-        summary_count_or_auth(get_company_activity(slug.clone()).await.map(|a| a.last7d()))?;
-    let deployments = summary_count_or_auth(
-        get_company_deployments(slug.clone())
-            .await
-            .map(|d| u32::try_from(d.len()).unwrap_or(u32::MAX)),
-    )?;
-    let secrets = summary_count_or_auth(
-        get_company_secrets(slug)
-            .await
-            .map(|s| u32::try_from(s.len()).unwrap_or(u32::MAX)),
-    )?;
+    // DIAGNOSTIC: capture each surface's raw Result (count or error string)
+    // before collapsing, so a "panel shows 0" can be traced to the exact
+    // surface + reason. Counts and error messages only — never secret values.
+    let board_res = get_company_board(slug.clone()).await.map(|b| b.card_count());
+    let activity_res = get_company_activity(slug.clone()).await.map(|a| a.last7d());
+    let deployments_res = get_company_deployments(slug.clone())
+        .await
+        .map(|d| u32::try_from(d.len()).unwrap_or(u32::MAX));
+    let secrets_res = get_company_secrets(slug)
+        .await
+        .map(|s| u32::try_from(s.len()).unwrap_or(u32::MAX));
+    eprintln!(
+        "[desktop-alt] summary surfaces: board={board_res:?} activity={activity_res:?} deployments={deployments_res:?} secrets={secrets_res:?}"
+    );
+
+    let board = summary_count_or_auth(board_res)?;
+    let last7d = summary_count_or_auth(activity_res)?;
+    let deployments = summary_count_or_auth(deployments_res)?;
+    let secrets = summary_count_or_auth(secrets_res)?;
+    eprintln!(
+        "[desktop-alt] summary final: board={board} activity={last7d} deployments={deployments} secrets={secrets}"
+    );
 
     Ok(CompanySummary {
         board,
@@ -894,10 +903,35 @@ fn parse_deployment_entries(
         serde_json::from_str(text).map_err(|e| format!("deployments parse: {e}"))?;
     let rows = deployment_rows(&value)
         .ok_or_else(|| "deployments parse: missing apps array".to_string())?;
-    rows.iter()
+
+    // Per-row resilience: a single malformed app (unsafe subdomain/url, missing
+    // subdomain, etc.) must NOT blank the entire panel. The org-scoped
+    // `/api/apps` returns every app in the org, so one odd row would otherwise
+    // collapse the whole list to an error and zero the Deployments count.
+    // Skip+log the bad row and keep the rest. The log carries only the row's
+    // subdomain/url shape (no secrets) — deployments are public hostnames.
+    let mut entries = Vec::new();
+    let mut skipped = 0usize;
+    for row in rows
+        .iter()
         .filter(|row| deployment_matches_selected_slug(row, selected_slug))
-        .map(deployment_entry_from_value)
-        .collect()
+    {
+        match deployment_entry_from_value(row) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => {
+                skipped += 1;
+                eprintln!("[desktop-alt] deployments: skipping unparseable app row ({e})");
+            }
+        }
+    }
+    if skipped > 0 {
+        eprintln!(
+            "[desktop-alt] deployments: kept {} app(s), skipped {} unparseable",
+            entries.len(),
+            skipped
+        );
+    }
+    Ok(entries)
 }
 
 fn deployment_rows(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
@@ -2076,6 +2110,7 @@ mod tests {
 
     #[test]
     fn deployment_helpers_reject_unsafe_hosts_before_shell_open() {
+        // The host guard itself still rejects unsafe hosts outright.
         assert_eq!(
             super::normalize_deployment_host("https://evil.example.com"),
             None
@@ -2088,23 +2123,52 @@ mod tests {
             super::normalize_deployment_host("https://bad_sub.indigo-hq.com"),
             None
         );
-        assert_eq!(
-            super::parse_deployments_response(
-                reqwest::StatusCode::OK,
-                r#"[{"subdomain":"console","url":"https://evil.example.com"}]"#,
-                "test-org",
-            )
-            .unwrap_err(),
-            r#"deployments parse: app has unsafe url: "https://evil.example.com""#
+
+        // Contract: an unsafe row is EXCLUDED from the parsed list — its URL can
+        // never reach the UI to be shell-opened — but it does NOT fail the whole
+        // batch. One malformed/hostile app must not blank every valid deployment.
+        // (Regression: org-scoped `/api/apps` returns the whole org, so a single
+        // odd row previously errored the collect and zeroed the entire panel.)
+        let only_unsafe_url = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"[{"subdomain":"console","url":"https://evil.example.com"}]"#,
+            "test-org",
+        )
+        .expect("an unsafe row is skipped, not turned into a batch error");
+        assert!(
+            only_unsafe_url.is_empty(),
+            "the unsafe row must be excluded from results"
         );
-        assert_eq!(
-            super::parse_deployments_response(
-                reqwest::StatusCode::OK,
-                r#"[{"subdomain":"../console"}]"#,
-                "test-org",
-            )
-            .unwrap_err(),
-            r#"deployments parse: app has unsafe subdomain: "../console""#
+
+        let only_unsafe_sub = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"[{"subdomain":"../console"}]"#,
+            "test-org",
+        )
+        .expect("an unsafe subdomain row is skipped, not a batch error");
+        assert!(only_unsafe_sub.is_empty());
+
+        // The key fix: a mix of one hostile row and valid rows keeps the valid
+        // ones and drops only the hostile one — and the unsafe host never appears
+        // in any parsed entry (so it can never be shell-opened).
+        let mixed = super::parse_deployments_response(
+            reqwest::StatusCode::OK,
+            r#"[
+                {"subdomain":"good-app","url":"https://good-app.indigo-hq.com"},
+                {"subdomain":"console","url":"https://evil.example.com"},
+                {"subdomain":"another","url":"https://another.indigo-hq.com"}
+            ]"#,
+            "test-org",
+        )
+        .expect("valid rows survive alongside a skipped hostile row");
+        assert_eq!(mixed.len(), 2, "both safe rows are kept; only the hostile one drops");
+        let subs: Vec<&str> = mixed.iter().map(|d| d.sub.as_str()).collect();
+        assert!(subs.contains(&"good-app"));
+        assert!(subs.contains(&"another"));
+        let serialized = serde_json::to_string(&mixed).unwrap();
+        assert!(
+            !serialized.contains("evil.example.com"),
+            "the hostile host must never make it into a parsed entry"
         );
     }
 
