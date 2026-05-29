@@ -931,34 +931,43 @@
       })
     );
 
-    // --- DM-notification reply handler (DM-via-notification, 2026-05-28) ---
-    // Rust (`dm_notify.rs`) spawns a thread per inbound DM that blocks on
-    // mac-notification-sys `wait_for_click(true).send()` with an inline
-    // `MainButton::Response("Reply…")` field. When the user types a reply and
-    // submits, the thread emits `notification:dm-action` with the sender's
-    // addressing info + the typed text. We forward it straight to `send_dm`,
-    // which POSTs `/v1/notify/dm`. Errors are non-fatal — the DM simply isn't
-    // sent, and the user can retry from the compose surface in Settings.
+    // --- DM-notification action handler (rich DMs, 2026-05-29) ---
+    // DMs are receive-only (no reply/send surface). Plain DMs are fire-and-
+    // forget. A DM that carries agent context (`prompt`) and/or `details`
+    // gets an "Actions" dropdown; on action the Rust thread emits
+    // `notification:dm-action`:
+    //   "copy" → write the sender's agent prompt to the clipboard so the
+    //            recipient can paste it straight into their own agent session.
+    //   "open" → open the DM detail window (full message + details + Copy).
     unlisteners.push(
       await listen<{
-        action: 'reply';
-        toPersonUid: string;
-        toEmail: string;
-        replyText: string;
+        action: 'copy' | 'open';
+        event: {
+          eventId: string;
+          fromPersonUid: string;
+          fromEmail: string;
+          fromDisplayName: string;
+          body: string;
+          details?: string | null;
+          prompt?: string | null;
+          createdAt: string;
+        };
       }>('notification:dm-action', async (e) => {
-        const { action, toPersonUid, toEmail, replyText } = e.payload;
-        if (action !== 'reply') return;
-        const body = replyText?.trim();
-        if (!body) return;
-        try {
-          await invoke('send_dm', {
-            // Prefer the stable personUid for addressing; fall back to email.
-            toPersonUid: toPersonUid || null,
-            toEmail: toPersonUid ? null : toEmail || null,
-            body,
-          });
-        } catch (err) {
-          console.error('dm-notify: send_dm (reply) failed', err);
+        const { action, event: dm } = e.payload;
+        if (action === 'copy') {
+          const prompt = dm.prompt?.trim();
+          if (!prompt) return;
+          try {
+            await navigator.clipboard.writeText(prompt);
+          } catch (err) {
+            console.error('dm-notify: clipboard write failed', err);
+          }
+        } else if (action === 'open') {
+          try {
+            await invoke('open_dm_detail', { event: dm });
+          } catch (err) {
+            console.error('dm-notify: open_dm_detail failed', err);
+          }
         }
       })
     );

@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -51,13 +51,21 @@ use crate::util::paths;
 
 const LOG_TAG: &str = "dm-notify";
 
-/// Tauri event emitted to the frontend when the user interacts with a DM
-/// notification (currently: inline reply). The frontend invokes `send_dm`.
-const EVENT_NOTIFICATION_DM_ACTION: &str = "notification:dm-action";
-
 /// Tauri event emitted when new DMs are found (frontend may surface a badge
 /// or inbox view; currently informational, mirrors `share:new-events`).
 pub const EVENT_DM_NEW_EVENTS: &str = "dm:new-events";
+
+/// Tauri event emitted when the user actions a rich DM notification — "copy"
+/// (write the agent prompt to the clipboard) or "open" (open the DM detail
+/// window). Only emitted for DMs that carry `prompt`/`details`; plain DMs are
+/// fire-and-forget with no action surface. Frontend listener lives in App.svelte.
+const EVENT_NOTIFICATION_DM_ACTION: &str = "notification:dm-action";
+
+/// Label of the DM detail window (mirrors share-detail).
+const DM_DETAIL_LABEL: &str = "dm-detail";
+
+/// Tauri event the DM detail window listens for to receive its event payload.
+const EVENT_DM_DETAIL_EVENT: &str = "dm:detail-event";
 
 // ── Wire types ─────────────────────────────────────────────────────────────────
 
@@ -66,11 +74,20 @@ pub const EVENT_DM_NEW_EVENTS: &str = "dm:new-events";
 #[serde(rename_all = "camelCase")]
 pub struct DmEvent {
     pub event_id: String,
-    /// Canonical personUid of the sender (for reply addressing).
+    /// Canonical personUid of the sender (informational; the menubar is
+    /// receive-only so this is not used to address a reply).
     pub from_person_uid: String,
     pub from_email: String,
     pub from_display_name: String,
     pub body: String,
+    /// Optional longer-form detail — shown in the DM detail window. Present only
+    /// when the sender supplied it; drives whether the "Open details" action shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    /// Optional agent-context prompt the recipient can copy. Present only when
+    /// the sender supplied it; drives whether the "Copy prompt" action shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
     pub created_at: String,
 }
 
@@ -82,18 +99,20 @@ struct InboxResponse {
     next_cursor: Option<String>,
 }
 
-/// Action dispatched to the frontend when the user replies to a DM banner.
+/// Action dispatched to the frontend when the user actions a rich DM banner.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct NotificationDmActionEvent {
-    /// Currently always `"reply"`.
+    /// One of `"copy"` (write prompt to clipboard) or `"open"` (open detail window).
     action: String,
-    /// personUid to address the reply to.
-    to_person_uid: String,
-    to_email: String,
-    /// The text the user typed into the notification reply field.
-    reply_text: String,
+    /// Full DM payload so the frontend can copy the prompt or render details
+    /// without re-fetching the inbox.
+    event: DmEvent,
 }
+
+/// Managed state: the DM event pending for the detail window's ready-handshake.
+/// Mirrors `PendingShareEvents` in share_notify.rs.
+pub struct PendingDmEvents(pub Mutex<Vec<DmEvent>>);
 
 // ── In-flight guard (separate from share-notify's so they never contend) ────────
 
@@ -192,53 +211,10 @@ pub async fn poll_dm_inbox(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Tauri command: send a DM to a recipient. Frontend calls this from the
-/// compose box and from the notification reply listener.
-#[tauri::command]
-pub async fn send_dm(
-    to_person_uid: Option<String>,
-    to_email: Option<String>,
-    body: String,
-) -> Result<(), String> {
-    if to_person_uid.is_none() && to_email.is_none() {
-        return Err("send_dm requires toPersonUid or toEmail".into());
-    }
-    if body.trim().is_empty() {
-        return Err("send_dm requires a non-empty body".into());
-    }
-
-    let access_token = cognito::get_valid_access_token()
-        .await
-        .map_err(|e| format!("auth: {e}"))?;
-    let base_url = resolve_vault_api_url()
-        .map_err(|e| format!("vault url: {e}"))?
-        .trim_end_matches('/')
-        .to_string();
-    let url = format!("{}/v1/notify/dm", base_url);
-
-    let payload = serde_json::json!({
-        "toPersonUid": to_person_uid,
-        "toEmail": to_email,
-        "body": body,
-    });
-
-    let resp = build_client()
-        .post(&url)
-        .header("authorization", format!("Bearer {}", access_token))
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("network: {e}"))?;
-
-    if resp.status().is_success() {
-        log(LOG_TAG, "DM_NOTIFY_SEND_OK");
-        Ok(())
-    } else {
-        let status = resp.status();
-        log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAIL status={status}"));
-        Err(format!("send failed: {status}"))
-    }
-}
+// NOTE: the menubar is intentionally RECEIVE-ONLY. There is no `send_dm`
+// command — sending a DM is done by prompting HQ in a session / CLI
+// (POST /v1/notify/dm), not from the app. The app only polls the inbox and
+// fires a notification per incoming DM (see `do_poll` below).
 
 // ── Core poll logic (mirrors share_notify::do_poll) ─────────────────────────────
 
@@ -347,55 +323,108 @@ async fn do_poll(app: &AppHandle) {
         }
     });
 
-    // Fire one macOS notification per DM with an inline Reply field. On reply,
-    // emit `notification:dm-action` so the frontend can invoke `send_dm`.
+    // Fire one macOS notification per DM. RECEIVE-ONLY (no reply/send surface).
+    //
+    // Adaptive by payload:
+    //   * No prompt AND no details → plain fire-and-forget `.send()`. No
+    //     `wait_for_click(true)` (which busy-spins a Cocoa run loop and leaks a
+    //     ~100%-CPU thread per un-actioned banner — see
+    //     share_notify::BlockingNotifyGuard + hq-sync-cpu-spin-debug.md), so a
+    //     plain DM contributes ZERO spin.
+    //   * prompt and/or details present → a DropdownActions banner ("Copy
+    //     prompt" when prompt, "Open details" when details). This needs the
+    //     blocking `wait_for_click(true)` path, capped to ~1 process-wide by the
+    //     shared BlockingNotifyGuard (same as share notifications). Body-click =
+    //     the primary action (copy prompt if present, else open details).
+    //
+    // So the expensive blocking path only engages when there's actually
+    // something to act on.
     for dm in &body.events {
         let title = dm.from_display_name.clone();
         let message = dm.body.clone();
+        let has_prompt = dm.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let has_details = dm.details.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
         let app_for_thread = app.clone();
-        let to_person_uid = dm.from_person_uid.clone();
-        let to_email = dm.from_email.clone();
+        let event_clone = dm.clone();
 
         std::thread::spawn(move || {
             let mut notification = mac_notification_sys::Notification::default();
-            notification
-                .title(&title)
-                .message(&message)
-                // Inline text reply field (placeholder shown in the input).
-                .main_button(mac_notification_sys::MainButton::Response("Reply…"));
+            notification.title(&title).message(&message);
 
-            // CPU cap (Option 1): share the single blocking-send slot with
-            // share_notify so at most one busy-spinning `wait_for_click(true)`
-            // send is ever outstanding process-wide. Concurrent DMs fall back to
-            // a fire-and-forget send (loses the inline-reply affordance for that
-            // banner, but avoids leaking a spinning thread). See
-            // `BlockingNotifyGuard` + `workspace/reports/hq-sync-cpu-spin-debug.md`.
-            let response = match crate::commands::share_notify::BlockingNotifyGuard::try_acquire() {
-                Some(guard) => {
-                    let r = notification.wait_for_click(true).send();
-                    drop(guard);
-                    r
+            // No actionable payload → plain fire-and-forget, no spin.
+            if !has_prompt && !has_details {
+                if let Err(e) = notification.send() {
+                    log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}"));
                 }
-                None => notification.send(),
-            };
+                return;
+            }
+
+            // Build the dropdown items present for this DM (order = display order).
+            let mut actions: Vec<&str> = Vec::new();
+            if has_prompt {
+                actions.push("Copy prompt");
+            }
+            if has_details {
+                actions.push("Open details");
+            }
+            notification.main_button(mac_notification_sys::MainButton::DropdownActions(
+                "Actions",
+                &actions,
+            ));
+
+            // Blocking send capped to ~1 process-wide; concurrent rich DMs fall
+            // back to fire-and-forget (lose the action surface for that banner
+            // but never leak a spinning thread).
+            let response =
+                match crate::commands::share_notify::BlockingNotifyGuard::try_acquire() {
+                    Some(guard) => {
+                        let r = notification.wait_for_click(true).send();
+                        drop(guard);
+                        r
+                    }
+                    None => notification.send(),
+                };
 
             match response {
-                Ok(mac_notification_sys::NotificationResponse::Reply(text))
-                    if !text.trim().is_empty() =>
-                {
-                    let payload = NotificationDmActionEvent {
-                        action: "reply".to_string(),
-                        to_person_uid,
-                        to_email,
-                        reply_text: text,
+                Ok(resp) => {
+                    // Map the response to an action. Body-click → primary:
+                    // copy prompt if present, else open details.
+                    let action: Option<&'static str> = match resp {
+                        mac_notification_sys::NotificationResponse::ActionButton(name)
+                            if name.eq_ignore_ascii_case("copy prompt") =>
+                        {
+                            Some("copy")
+                        }
+                        mac_notification_sys::NotificationResponse::ActionButton(name)
+                            if name.eq_ignore_ascii_case("open details") =>
+                        {
+                            Some("open")
+                        }
+                        mac_notification_sys::NotificationResponse::Click => {
+                            if has_prompt {
+                                Some("copy")
+                            } else {
+                                Some("open")
+                            }
+                        }
+                        _ => None,
                     };
-                    if let Err(e) =
-                        app_for_thread.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
-                    {
-                        log(LOG_TAG, &format!("DM_NOTIFY_EMIT_ACTION_FAILED err={e}"));
+
+                    if let Some(action) = action {
+                        let payload = NotificationDmActionEvent {
+                            action: action.to_string(),
+                            event: event_clone,
+                        };
+                        if let Err(e) =
+                            app_for_thread.emit(EVENT_NOTIFICATION_DM_ACTION, &payload)
+                        {
+                            log(
+                                LOG_TAG,
+                                &format!("DM_NOTIFY_EMIT_ACTION_FAILED action={action} err={e}"),
+                            );
+                        }
                     }
                 }
-                Ok(_) => {} // Click / Close / empty reply — no actionable signal.
                 Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_SEND_FAILED err={e}")),
             }
         });
@@ -444,4 +473,73 @@ async fn post_ack(event_ids: Vec<String>) {
         Ok(r) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR status={}", r.status())),
         Err(e) => log(LOG_TAG, &format!("DM_NOTIFY_ACK_ERROR {e}")),
     }
+}
+
+// ── DM detail window ────────────────────────────────────────────────────────────
+//
+// Mirrors `open_share_detail` / `share_detail_window_ready` in share_notify.rs:
+// stash the event in managed state, create the window hidden, and let the
+// renderer's ready-handshake (`dm_detail_window_ready`) pull the payload + show
+// the window — avoids the race where emit_to fires before the JS listener mounts.
+
+/// Tauri command: open (or focus) the DM detail window for a single DM event.
+/// Invoked by App.svelte's `notification:dm-action` listener on the "open" action.
+#[tauri::command]
+pub async fn open_dm_detail(app: AppHandle, event: DmEvent) -> Result<(), String> {
+    if let Some(state) = app.try_state::<PendingDmEvents>() {
+        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = vec![event.clone()];
+    }
+
+    if let Some(window) = app.get_webview_window(DM_DETAIL_LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        app.emit_to(DM_DETAIL_LABEL, EVENT_DM_DETAIL_EVENT, &event)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        DM_DETAIL_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Direct Message")
+    .inner_size(560.0, 520.0)
+    .resizable(true)
+    .decorations(true)
+    .visible(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// Tauri command: called by DmDetail.svelte once its listener is registered.
+/// Emits the pending event, shows the window, and fires a best-effort ack.
+#[tauri::command]
+pub async fn dm_detail_window_ready(app: AppHandle) -> Result<(), String> {
+    let events: Vec<DmEvent> = app
+        .try_state::<PendingDmEvents>()
+        .map(|s| s.0.lock().unwrap_or_else(|p| p.into_inner()).clone())
+        .unwrap_or_default();
+
+    if let Some(event) = events.first() {
+        app.emit_to(DM_DETAIL_LABEL, EVENT_DM_DETAIL_EVENT, event)
+            .map_err(|e| e.to_string())?;
+    }
+
+    if let Some(window) = app.get_webview_window(DM_DETAIL_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+
+    // Best-effort ack so the opened DM isn't re-notified next poll.
+    if let Some(event) = events.first() {
+        let event_id = event.event_id.clone();
+        tauri::async_runtime::spawn(async move {
+            post_ack(vec![event_id]).await;
+        });
+    }
+
+    Ok(())
 }

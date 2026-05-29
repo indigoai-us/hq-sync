@@ -147,6 +147,7 @@ fn main() {
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
+        .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -221,7 +222,8 @@ fn main() {
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
             commands::dm_notify::poll_dm_inbox,
-            commands::dm_notify::send_dm,
+            commands::dm_notify::open_dm_detail,
+            commands::dm_notify::dm_detail_window_ready,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
         ])

@@ -792,13 +792,16 @@
                  action if drift exists. -->
           {#if coreState.isEligible}
             <button
-              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice' : ''}"
+              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice footer-hq-version-pill-count' : ''}"
               onclick={openDriftDetail}
+              aria-label={hasDrift
+                ? `${coreState.driftReport.count} drifted core file${coreState.driftReport.count === 1 ? '' : 's'}. Click for details.`
+                : 'Locked core in sync. Click for details.'}
               title={hasDrift
                 ? `${coreState.driftReport.count} locked core file${coreState.driftReport.count === 1 ? '' : 's'} edited since last sync vs ${coreState.targetRepo}@${coreState.targetVersion}. Click for details.`
                 : `Locked core matches ${coreState.targetRepo}@${coreState.targetVersion}. Click to open the drift detail window.`}
             >
-              {hasDrift ? `${coreState.driftReport.count} drifted` : 'in sync'}
+              {hasDrift ? `${coreState.driftReport.count}` : 'in sync'}
             </button>
           {:else}
             <span
@@ -1146,16 +1149,16 @@
     white-space: nowrap;
   }
 
-  /* Right-side action group (drift pill + Update/Update-to-Staging pill +
-     rescue-result chip). Wraps to a second line when the popover is too
-     narrow to fit everything beside the version label, rather than letting
-     fixed-width pills overflow and overlap the label. */
+  /* Right-side action group (drift count chip + Update/Update-to-Staging
+     pill + rescue-result chip). Stays on a single line: the drift badge is
+     now a bare count ("14") rather than "N drifted", so the group is narrow
+     enough to sit beside the version label without wrapping. */
   .footer-hq-version-actions {
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    flex-wrap: nowrap;
+    gap: 0.375rem;
     min-width: 0;
   }
 
@@ -1208,6 +1211,18 @@
   .footer-hq-version-pill-notice:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     color: var(--popover-text-heading, #ffffff);
+  }
+
+  /* Count variant — the drift badge renders as a bare count ("14") instead
+     of "N drifted" so the whole version row stays on one line. Tighter and
+     smaller than the base pill: a compact numeric chip beside the white
+     Update pill. `tabular-nums` keeps 1- and 2-digit counts from jiggling. */
+  .footer-hq-version-pill-count {
+    font-size: 0.625rem;
+    padding: 0.125rem 0.375rem;
+    min-width: 1.25rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
   }
 
   /* Static variant — non-clickable "in sync" label shown to non-eligible

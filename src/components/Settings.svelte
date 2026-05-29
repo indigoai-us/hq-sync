@@ -35,12 +35,6 @@
   // DM notifications — same dogfood gate as share notifications. Re-read on
   // each poll cycle in dm_notify.rs so the toggle takes effect without restart.
   let dmNotifications = $state(true);
-  // DM compose box state (sends via the `send_dm` Tauri command → /v1/notify/dm).
-  let dmTo = $state('');
-  let dmBody = $state('');
-  let dmSending = $state(false);
-  let dmResult = $state<string | null>(null);
-  let dmResultTimeout: ReturnType<typeof setTimeout> | null = null;
   // Shared @getindigo.ai gate, used by BOTH the share-notify section and
   // the staging-channel toggle below. Populated at mount from
   // `meetings_feature_enabled` (cached process-lifetime on the Rust side).
@@ -245,35 +239,6 @@
   async function handleToggleDmNotifications() {
     dmNotifications = !dmNotifications;
     await saveAll();
-  }
-
-  function showDmResult(msg: string) {
-    if (dmResultTimeout) clearTimeout(dmResultTimeout);
-    dmResult = msg;
-    dmResultTimeout = setTimeout(() => {
-      dmResult = null;
-    }, 2500);
-  }
-
-  // Send a direct message via the `send_dm` Tauri command (POST /v1/notify/dm).
-  // The recipient is addressed by email here (the compose surface); the
-  // notification-reply path in App.svelte prefers the sender's personUid.
-  async function handleSendDm() {
-    const to = dmTo.trim();
-    const body = dmBody.trim();
-    if (!to || !body || dmSending) return;
-    dmSending = true;
-    try {
-      await invoke('send_dm', { toPersonUid: null, toEmail: to, body });
-      dmBody = '';
-      showDmResult('Sent');
-    } catch (err) {
-      console.error('Failed to send DM:', err);
-      // Surface the server message (e.g. recipient-not-reachable) tersely.
-      showDmResult(typeof err === 'string' ? err : 'Send failed');
-    } finally {
-      dmSending = false;
-    }
   }
 
   // Read the current OS permission without prompting. Called on mount and on
@@ -641,9 +606,10 @@
           </button>
         </div>
 
-        <!-- DM notifications + compose — same dogfood gate. Persists
-             dmNotifications in menubar.json; dm_notify.rs re-reads it each
-             poll cycle. The compose box sends via the send_dm command. -->
+        <!-- DM notifications — same dogfood gate. Persists dmNotifications in
+             menubar.json; dm_notify.rs re-reads it each poll cycle. Receive-
+             only: the menubar fires a notification per incoming DM. Sending a
+             DM is done by prompting HQ in a session / CLI, not from the app. -->
         <div class="setting-row">
           <div class="setting-info">
             <label class="setting-label" for="toggle-dm-notifications">Direct messages</label>
@@ -660,36 +626,6 @@
           >
             <span class="toggle-knob"></span>
           </button>
-        </div>
-
-        <div class="dm-compose">
-          <input
-            class="dm-compose-to"
-            type="email"
-            placeholder="Recipient email"
-            bind:value={dmTo}
-            disabled={dmSending}
-            autocomplete="off"
-          />
-          <textarea
-            class="dm-compose-body"
-            placeholder="Write a message…"
-            rows="2"
-            bind:value={dmBody}
-            disabled={dmSending}
-          ></textarea>
-          <div class="dm-compose-actions">
-            {#if dmResult}
-              <span class="dm-compose-result">{dmResult}</span>
-            {/if}
-            <button
-              class="change-button"
-              onclick={handleSendDm}
-              disabled={dmSending || !dmTo.trim() || !dmBody.trim()}
-            >
-              {dmSending ? 'Sending…' : 'Send'}
-            </button>
-          </div>
         </div>
       {/if}
 
@@ -954,57 +890,6 @@
   .change-button:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-
-  /* DM compose box */
-  .dm-compose {
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-    padding: 0 0.125rem 0.25rem;
-  }
-
-  .dm-compose-to,
-  .dm-compose-body {
-    font-size: 0.75rem;
-    font-family: inherit;
-    color: var(--popover-text, #e0e0e0);
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
-    border-radius: 9px;
-    padding: 0.375rem 0.5rem;
-    width: 100%;
-    box-sizing: border-box;
-    outline: none;
-    transition: border-color 0.1s ease;
-  }
-
-  .dm-compose-to:focus,
-  .dm-compose-body:focus {
-    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
-  }
-
-  .dm-compose-body {
-    resize: vertical;
-    min-height: 2.25rem;
-    line-height: 1.3;
-  }
-
-  .dm-compose-to::placeholder,
-  .dm-compose-body::placeholder {
-    color: var(--popover-text-muted, #a0a0b0);
-  }
-
-  .dm-compose-actions {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.5rem;
-  }
-
-  .dm-compose-result {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
   }
 
   /* Permission status pill — informational, green-tinted "Enabled" state.
