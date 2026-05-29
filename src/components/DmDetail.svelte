@@ -19,6 +19,38 @@
   let event = $state<DmEvent | null>(null);
   let copied = $state(false);
 
+  let replyText = $state('');
+  let sending = $state(false);
+  let sent = $state(false);
+  let sendError = $state<string | null>(null);
+
+  async function sendReply(): Promise<void> {
+    const text = replyText.trim();
+    if (!text || sending || !event) return;
+    sending = true;
+    sendError = null;
+    try {
+      await invoke('send_dm', { toPersonUid: event.fromPersonUid, body: text });
+      replyText = '';
+      sent = true;
+      setTimeout(() => {
+        sent = false;
+      }, 1800);
+    } catch (err) {
+      sendError = typeof err === 'string' ? err : 'Failed to send reply';
+      console.error('dm-detail: send_dm failed', err);
+    } finally {
+      sending = false;
+    }
+  }
+
+  function onReplyKeydown(e: KeyboardEvent): void {
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      void sendReply();
+    }
+  }
+
   function formatDate(iso: string): string {
     try {
       return new Intl.DateTimeFormat(undefined, {
@@ -97,6 +129,34 @@
           <span class="dm-actions-hint">Paste into your agent session</span>
         </div>
       {/if}
+    </div>
+
+    <div class="dm-reply">
+      <textarea
+        class="dm-reply-input"
+        bind:value={replyText}
+        onkeydown={onReplyKeydown}
+        placeholder="Reply to {event.fromDisplayName}…"
+        rows="3"
+        disabled={sending}
+        aria-label="Reply message"
+      ></textarea>
+      <div class="dm-reply-footer">
+        {#if sendError}
+          <span class="dm-reply-error" role="alert">{sendError}</span>
+        {:else if sent}
+          <span class="dm-reply-sent">Sent ✓</span>
+        {:else}
+          <span class="dm-reply-hint">⌘↵ to send</span>
+        {/if}
+        <button
+          class="btn btn-send"
+          onclick={sendReply}
+          disabled={sending || replyText.trim().length === 0}
+        >
+          {sending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
     </div>
   {/if}
 </div>
@@ -252,5 +312,75 @@
 
   .btn-copy:hover {
     background: rgba(255, 255, 255, 0.16);
+  }
+
+  .dm-reply {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.875rem 1.25rem 1rem;
+    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+  }
+
+  .dm-reply-input {
+    width: 100%;
+    box-sizing: border-box;
+    resize: none;
+    padding: 0.5rem 0.625rem;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--popover-text, #e0e0e0);
+    font-family: inherit;
+    font-size: 0.8125rem;
+    line-height: 1.4;
+  }
+
+  .dm-reply-input:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.28);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .dm-reply-input:disabled {
+    opacity: 0.6;
+  }
+
+  .dm-reply-footer {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .dm-reply-hint {
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .dm-reply-sent {
+    font-size: 0.75rem;
+    color: #7ee2a8;
+  }
+
+  .dm-reply-error {
+    font-size: 0.75rem;
+    color: #ff9b9b;
+    word-break: break-word;
+  }
+
+  .btn-send {
+    margin-left: auto;
+    background: rgba(120, 170, 255, 0.22);
+    color: #dce8ff;
+  }
+
+  .btn-send:hover:not(:disabled) {
+    background: rgba(120, 170, 255, 0.32);
+  }
+
+  .btn-send:disabled {
+    opacity: 0.45;
+    cursor: default;
   }
 </style>
