@@ -11,6 +11,10 @@
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
+  import {
+    handleMeetingDetected,
+    type MeetingDetectedPayload,
+  } from './lib/meetingDetection';
   import './styles/popover.css';
 
   interface Config {
@@ -1029,91 +1033,40 @@
 
     // --- Meeting-detection listener ---
     // Fired by the Recall Desktop SDK sidecar when a supported video-call app
-    // becomes active. Flow:
-    //   1. Check hq-pro for an already-active bot (dedup signal)
-    //   2. If no bot, fire a macOS notification + bump the tray Prompt badge
-    //      (both handled inside `meetings_notify_detected` which also gates on
-    //      the user's notification prefs + the per-meeting ledger)
+    // becomes active. The dedup + surface decision lives in
+    // `handleMeetingDetected` (src/lib/meetingDetection.ts) so it can be
+    // unit-tested without Tauri IPC; this wrapper only binds the Tauri
+    // `invoke` + active-meeting store collaborators to it.
+    //
+    // The rule it enforces: a meeting already covered by an active hq-pro bot
+    // (a scheduled calendar bot, or one already in the call) surfaces NEITHER
+    // a recordable popover row NOR a macOS notification — the bot is handling
+    // it. Everything else (no bot, synthetic/URL-less detection, or a failed
+    // bot check) surfaces both.
     unlisteners.push(
-      await listen<{
-        meetingUrl?: string;
-        platform?: string;
-        summary?: string;
-        sourceEventId?: string;
-        // Synthetic key carried in `meetingUrl` for URL-less detections;
-        // SDK windowId is what we key on for recording control. The bridge
-        // emits `meetingUrl: "recall-window:<windowId>"` in that case, so
-        // we can extract it back out.
-        windowId?: string;
-      }>('meeting:detected', async (event) => {
-        const { meetingUrl, platform, summary, sourceEventId } = event.payload;
-        const directWindowId = event.payload.windowId;
-
-        // Prefer the direct `windowId` field — it's the canonical SDK
-        // handle that newer bridge versions include on every detection.
-        // Fall back to extracting it from the synthetic
-        // `recall-window:<id>` URL for backward compat (URL-less
-        // detections; older bridge). Last-resort use the meetingUrl
-        // itself as a stable key for dedup-only purposes (real URLs).
-        const isSyntheticUrl = typeof meetingUrl === 'string'
-          && meetingUrl.startsWith('recall-window:');
-        const windowId = directWindowId
-          ?? (isSyntheticUrl
-            ? meetingUrl!.slice('recall-window:'.length)
-            : (meetingUrl ?? ''));
-
-        if (windowId) {
-          // Seed the row with the current valid default. This may be null
-          // if the default-company context hasn't loaded yet — that's fine:
-          // `loadRecordingCompanyContext` back-fills unset rows when it
-          // completes, and `handleStartRecording` re-resolves the default
-          // at start time. `companyUserSet: false` marks this as a
-          // non-explicit seed so both of those can safely overwrite it.
-          upsertActiveMeeting({
-            windowId,
-            platform: platform ?? 'other',
-            meetingUrl: meetingUrl ?? '',
-            detectedAt: new Date().toISOString(),
-            state: 'detected',
-            companyUid: resolveValidDefault(),
-            companyUserSet: false,
-          });
-        }
-
+      await listen<MeetingDetectedPayload>('meeting:detected', async (event) => {
         try {
-          // Synthetic `recall-window:<id>` URLs come from URL-less SDK
-          // detections (unscheduled Zoom meetings, etc.). hq-pro will reject
-          // them as invalid input, and there's no way a bot got provisioned
-          // against that key anyway — skip the dedup check and go straight
-          // to notify. Same fallback applies if the bot check itself
-          // throws (network, auth, etc.) — better to over-notify once than
-          // swallow the detection entirely.
-          if (meetingUrl && !isSyntheticUrl) {
-            try {
-              const bot = await invoke<{ botId: string } | null>('meetings_check_bot_for_url', {
-                meetingUrl,
-                eventId: sourceEventId ?? null,
-              });
-              if (bot) return;
-            } catch (botErr) {
-              console.warn('meetings_check_bot_for_url failed, continuing to notify:', botErr);
-            }
-          }
-          await invoke('meetings_notify_detected', {
-            payload: {
-              meetingUrl: meetingUrl ?? null,
-              // Pass through so the notification's action-button thread
-              // can route Record clicks back to start_recording.
-              windowId: windowId || null,
-              platform: platform ?? null,
-              summary: summary ?? null,
-              sourceEventId: sourceEventId ?? null,
+          await handleMeetingDetected(event.payload, {
+            checkActiveBot: async (meetingUrl, eventId) => {
+              const bot = await invoke<{ botId: string } | null>(
+                'meetings_check_bot_for_url',
+                { meetingUrl, eventId },
+              );
+              return !!bot;
             },
+            upsertRow: (seed) => upsertActiveMeeting(seed),
+            removeRow: (windowId) => removeActiveMeeting(windowId),
+            notify: async (payload) => {
+              await invoke('meetings_notify_detected', { payload });
+            },
+            resolveValidDefault,
+            now: () => new Date().toISOString(),
+            warn: (msg, err) => console.warn(msg, err),
           });
         } catch (err) {
           console.error('meeting:detected handler error:', err);
         }
-      })
+      }),
     );
 
     // Recording lifecycle — flip the active-meeting row state machine as
