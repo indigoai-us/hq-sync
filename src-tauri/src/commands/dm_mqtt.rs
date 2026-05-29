@@ -330,16 +330,12 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
 /// Spawn the instant-DM MQTT receiver. Called from `main.rs` `.setup()`,
 /// macOS-gated like the other background tasks.
 ///
-/// Gated on `is_indigo_user()` (primary) and the `dmNotifications` pref. On any
-/// failure the task logs and retries with capped exponential backoff — it never
-/// surfaces an error to the user and never blocks the 60s poll.
+/// Runs for ALL signed-in users — instant DM is GA, no @getindigo.ai gate
+/// (the per-identity STS scoping on the server is the real isolation boundary).
+/// On any failure the task logs and retries with capped exponential backoff — it
+/// never surfaces an error to the user and never blocks the 60s poll.
 pub fn setup_dm_mqtt_receiver(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        if !crate::util::feature_gate::is_indigo_user().await {
-            log(LOG_TAG, "DM_MQTT_GATE_SKIP not an @getindigo.ai identity");
-            return;
-        }
-
         // Give the app a moment to finish init + load the Cognito token from
         // disk (mirrors the share-notify poller's 5s launch delay).
         tokio::time::sleep(Duration::from_secs(5)).await;
@@ -454,15 +450,5 @@ mod tests {
         assert_eq!(parsed.iot_endpoint, "abc123.iot.us-east-1.amazonaws.com");
         assert_eq!(parsed.region, "us-east-1");
         assert_eq!(parsed.topic, "hq/prs_abc/dm");
-    }
-
-    #[test]
-    fn gate_is_indigo_email_only() {
-        // The receiver gates on the shared feature_gate helper; assert its pure
-        // suffix-match rule here so this module's gate contract is pinned too.
-        use crate::util::feature_gate::is_allowed_email;
-        assert!(is_allowed_email(Some("dev@getindigo.ai")));
-        assert!(!is_allowed_email(Some("dev@example.com")));
-        assert!(!is_allowed_email(None));
     }
 }
