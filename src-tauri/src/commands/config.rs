@@ -85,6 +85,18 @@ pub struct MenubarPrefs {
     /// menubar.json files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_notifications: Option<bool>,
+    /// DM notifications: when true (default), HQ Sync polls `/v1/notify/inbox`
+    /// on the same independent timer as share-notify, fires a macOS
+    /// notification per new direct message with an inline Reply field, and acks
+    /// delivered DMs. The reply is dispatched to `send_dm` via the
+    /// `notification:dm-action` event. Read directly from menubar.json in
+    /// `commands/dm_notify.rs::dm_notifications_enabled` (untyped) so the DM
+    /// channel never blocks on a typed round-trip; this typed field exists so
+    /// the Settings toggle round-trips cleanly through get/save_settings and
+    /// isn't wiped on the next save. Absent in pre-DM menubar.json files →
+    /// treated as true (see `get_settings`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dm_notifications: Option<bool>,
     /// Rescue-source channel for @getindigo.ai builders. When `true`
     /// (default), the Settings toggle is ON → the popover's `CoreState`
     /// runs against `indigoai-us/hq-core-staging` (drift vs staging main,

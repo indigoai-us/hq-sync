@@ -220,6 +220,8 @@ fn main() {
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
+            commands::dm_notify::poll_dm_inbox,
+            commands::dm_notify::send_dm,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
         ])
@@ -275,16 +277,21 @@ fn main() {
             commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
 
-            // Share-notification poller: fires 5s after launch and after
-            // every sync:all-complete event. Gated to @getindigo.ai users
-            // and the shareNotifications menubar preference (both checked
-            // inside share_notify — not here so the gate is never scattered).
+            // Share-notification poller. Gated solely on the shareNotifications
+            // menubar preference (the @getindigo.ai dogfood gate was removed
+            // 2026-05-26 — see share_notify::should_poll). Gate is checked
+            // inside share_notify, not here, so it is never scattered.
+            //
+            // Delivery runs on an independent timer (launch poll + interval),
+            // so notifications no longer depend on a sync completing — see the
+            // 2026-05-28 incident report. The post-sync poll below is a
+            // latency optimization layered on top, not the sole trigger.
             {
                 use tauri::Listener;
-                // (a) Launch-time poll — 5s delay matches the updater pattern.
+                // (a) Launch poll (5s delay) + independent interval timer.
                 commands::share_notify::setup_share_notify_poller(app.handle().clone());
 
-                // (b) Post-sync poll — fires after every complete sync run.
+                // (b) Post-sync poll — low-latency top-up after a sync run.
                 let poll_handle = app.handle().clone();
                 app.listen(
                     crate::events::EVENT_SYNC_ALL_COMPLETE,

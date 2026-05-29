@@ -930,6 +930,38 @@
         }
       })
     );
+
+    // --- DM-notification reply handler (DM-via-notification, 2026-05-28) ---
+    // Rust (`dm_notify.rs`) spawns a thread per inbound DM that blocks on
+    // mac-notification-sys `wait_for_click(true).send()` with an inline
+    // `MainButton::Response("Reply…")` field. When the user types a reply and
+    // submits, the thread emits `notification:dm-action` with the sender's
+    // addressing info + the typed text. We forward it straight to `send_dm`,
+    // which POSTs `/v1/notify/dm`. Errors are non-fatal — the DM simply isn't
+    // sent, and the user can retry from the compose surface in Settings.
+    unlisteners.push(
+      await listen<{
+        action: 'reply';
+        toPersonUid: string;
+        toEmail: string;
+        replyText: string;
+      }>('notification:dm-action', async (e) => {
+        const { action, toPersonUid, toEmail, replyText } = e.payload;
+        if (action !== 'reply') return;
+        const body = replyText?.trim();
+        if (!body) return;
+        try {
+          await invoke('send_dm', {
+            // Prefer the stable personUid for addressing; fall back to email.
+            toPersonUid: toPersonUid || null,
+            toEmail: toPersonUid ? null : toEmail || null,
+            body,
+          });
+        } catch (err) {
+          console.error('dm-notify: send_dm (reply) failed', err);
+        }
+      })
+    );
   }
 
   $effect(() => {
