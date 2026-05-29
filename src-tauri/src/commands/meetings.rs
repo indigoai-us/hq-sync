@@ -107,6 +107,12 @@ pub struct ScheduledBot {
     pub calendar_event_id: Option<String>,
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
+    /// `POST /v1/bot/invite` returns a slimmer body than `GET /v1/bot/list`
+    /// and omits this field — a fresh manual invite is never auto-scheduled,
+    /// so default to `false` rather than failing the whole parse (which would
+    /// surface a spurious "Couldn't invite the bot." toast even though the bot
+    /// was scheduled successfully server-side).
+    #[serde(default)]
     pub auto_scheduled: bool,
     pub error_message: Option<String>,
 }
@@ -624,6 +630,31 @@ mod tests {
         assert_eq!(bot.calendar_event_id.as_deref(), Some("evt-1"));
         assert!(bot.auto_scheduled);
         assert!(bot.error_message.is_none());
+    }
+
+    /// Regression — `POST /v1/bot/invite` returns a slimmer body than
+    /// `GET /v1/bot/list`, omitting `autoScheduled` (and the Optional
+    /// fields). The invite command deserializes that response into
+    /// `ScheduledBot`; if the struct treats `autoScheduled` as required the
+    /// parse fails and the UI shows a spurious "Couldn't invite the bot."
+    /// toast even though the bot was scheduled successfully. The slim body
+    /// must parse, defaulting `auto_scheduled` to false.
+    #[test]
+    fn scheduled_bot_parses_slim_invite_response_without_auto_scheduled() {
+        let json = r#"{
+            "botId": "bot-abc",
+            "status": "scheduled",
+            "meetingUrl": "https://us06web.zoom.us/j/85906",
+            "platform": "zoom",
+            "createdAt": "2026-05-29T12:00:00Z"
+        }"#;
+        let bot: ScheduledBot = serde_json::from_str(json).expect("slim invite body must parse");
+        assert_eq!(bot.bot_id, "bot-abc");
+        assert_eq!(bot.status, "scheduled");
+        assert_eq!(bot.platform, "zoom");
+        assert!(!bot.auto_scheduled, "manual invite defaults to not auto-scheduled");
+        assert!(bot.calendar_event_id.is_none());
+        assert!(bot.meeting_title.is_none());
     }
 
     #[test]
