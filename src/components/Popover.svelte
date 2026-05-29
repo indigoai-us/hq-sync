@@ -1174,8 +1174,14 @@
   .footer-hq-version {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
+    /* Wrap the action group to a second line when the version label + pills
+       can't share one line, instead of overflowing the 320px popover and
+       overlapping the "HQ vX.Y.Z" label (the count badge + "Restore vX.Y.Z"
+       pill + "✓ update done" chip together exceed one row). The actions group
+       keeps `margin-left:auto` so it stays right-aligned whether it sits beside
+       the label or drops below it. */
+    flex-wrap: wrap;
+    gap: 0.375rem 0.5rem;
     padding: 0.4375rem 0.5rem;
     font-size: 0.8125rem;
     color: var(--popover-text-muted, #a0a0b0);
@@ -1203,9 +1209,14 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    flex-wrap: nowrap;
+    /* Wrap internally too, so an unusually wide combination (e.g.
+       "Update to vX.Y.Z" + "✗ update failed (exit 1)") stacks right-aligned
+       rather than overflowing. `margin-left:auto` keeps the group pinned right
+       on whichever row it lands. */
+    flex-wrap: wrap;
     gap: 0.375rem;
     min-width: 0;
+    margin-left: auto;
   }
 
   /* Right-aligned "Update to vX.Y.Z" pill. Same visual weight as
