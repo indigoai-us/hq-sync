@@ -163,10 +163,17 @@ fn build_signed_wss_url(
     use aws_sigv4::sign::v4;
     use aws_smithy_runtime_api::client::identity::Identity;
 
+    // CRITICAL (AWS IoT WSS): sign WITHOUT the session token. AWS IoT Core's
+    // WebSocket auth returns 403 if the signed canonical query includes
+    // X-Amz-Security-Token. The token must be appended to the URL AFTER signing
+    // (done at the end of this fn). Passing it into the signed identity is what
+    // made the 0.3.0-beta.1 client 403 on connect even though the very same
+    // creds work when the token is appended post-signing (proven via the
+    // hq-pro scripts/instant-dm-e2e.mjs harness).
     let creds = Credentials::new(
         access_key_id,
         secret_access_key,
-        Some(session_token.to_string()),
+        None,
         None,
         "hq-sync-realtime-iot",
     );
@@ -216,7 +223,30 @@ fn build_signed_wss_url(
         .collect::<Vec<_>>()
         .join("&");
 
-    Ok(format!("wss://{}/mqtt?{}", endpoint, query))
+    // Append the session token AFTER signing (NOT part of the signed query) —
+    // AWS IoT requires this for MQTT-over-WSS. AWS-canonical percent-encoding.
+    Ok(format!(
+        "wss://{}/mqtt?{}&X-Amz-Security-Token={}",
+        endpoint,
+        query,
+        aws_uri_encode(session_token),
+    ))
+}
+
+/// RFC3986 / AWS-canonical percent-encoding: everything except the unreserved
+/// set `A-Za-z0-9-_.~` is encoded. Used for the X-Amz-Security-Token value we
+/// append to the presigned IoT URL after signing.
+fn aws_uri_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 // ── MQTT receive loop ────────────────────────────────────────────────────────────
@@ -363,7 +393,7 @@ mod tests {
         let url = build_signed_wss_url(
             "AKIDEXAMPLE",
             "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
-            "FAKE_SESSION_TOKEN",
+            "FAKE/SESSION+TOKEN=",
             "abc123.iot.us-east-1.amazonaws.com",
             "us-east-1",
             fixed_time(),
@@ -387,6 +417,21 @@ mod tests {
         assert!(
             url.contains("iotdevicegateway"),
             "credential scope must name the service: {url}"
+        );
+
+        // REGRESSION (the 0.3.0-beta.1 403): the session token MUST be appended
+        // AFTER signing, never part of the signed query. Assert it appears after
+        // X-Amz-Signature (i.e. it's the trailing appended param, not signed).
+        let sig_at = url.find("X-Amz-Signature").unwrap();
+        let tok_at = url.find("X-Amz-Security-Token").unwrap();
+        assert!(
+            tok_at > sig_at,
+            "security token must be appended AFTER the signature (post-signing), got: {url}"
+        );
+        // And it must be AWS-percent-encoded (/ + = → %2F %2B %3D), not raw.
+        assert!(
+            url.contains("FAKE%2FSESSION%2BTOKEN%3D"),
+            "session token must be AWS-encoded: {url}"
         );
     }
 
