@@ -6,6 +6,7 @@ pub mod cognito;
 pub mod config;
 pub mod conflicts;
 pub mod daemon;
+pub mod dm_mqtt;
 pub mod dm_notify;
 pub mod drift_detail;
 pub mod first_push;

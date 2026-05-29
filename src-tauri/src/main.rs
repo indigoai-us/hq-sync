@@ -294,6 +294,15 @@ fn main() {
                 // (a) Launch poll (5s delay) + independent interval timer.
                 commands::share_notify::setup_share_notify_poller(app.handle().clone());
 
+                // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
+                // Gated on @getindigo.ai inside setup_dm_mqtt_receiver; wakes
+                // `poll_dm_once` on push so DMs arrive in near-real-time instead
+                // of waiting up to 60s. The interval poll above is the long-stop,
+                // so this is purely additive — any MQTT failure falls back to it
+                // silently. macOS-gated like the rest of the notification surface.
+                #[cfg(target_os = "macos")]
+                commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+
                 // (b) Post-sync poll — low-latency top-up after a sync run.
                 let poll_handle = app.handle().clone();
                 app.listen(
