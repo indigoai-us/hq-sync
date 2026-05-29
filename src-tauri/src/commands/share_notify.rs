@@ -43,6 +43,7 @@
 //!   `SHARE_NOTIFY_POLL_ERROR`         — 4xx/5xx other than auth, or parse fail
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +54,51 @@ use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 use crate::util::paths;
+
+// ── Blocking-notification concurrency cap ─────────────────────────────────────
+//
+// `mac-notification-sys` 0.6.12 busy-spins a Cocoa run loop inside
+// `Notification::send()` when `wait_for_click(true)` is set: its
+// `NotificationCenterDelegate keepRunning` loop calls
+// `[[NSRunLoop currentRunLoop] runUntilDate:…]` on a run loop with no attached
+// input source, so `runUntilDate:` returns immediately and the loop spins a
+// full core. `keepRunning` only flips false when the user clicks/dismisses, so
+// every un-actioned interactive notification leaks one spinning thread forever
+// (measured: 8 leaked threads ≈ 673% CPU). See
+// `workspace/reports/hq-sync-cpu-spin-debug.md`.
+//
+// Mitigation (CPU fix, Option 1): cap *blocking* sends to at most one at a
+// time, shared across BOTH the share and DM notification surfaces. The first
+// caller to acquire the slot sends with `wait_for_click(true)` (interactive);
+// any concurrent caller falls back to a fire-and-forget `.send()` (no spin).
+// This bounds the busy-spin at ~1 core instead of growing without limit, and
+// preserves interactivity for the in-flight notification. The proper long-term
+// fix (drop blocking sends entirely / move to a non-spinning action surface) is
+// tracked separately.
+static BLOCKING_NOTIFY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard for the single "blocking notification send" slot, shared process-
+/// wide across `share_notify` and `dm_notify`. Acquire with
+/// [`BlockingNotifyGuard::try_acquire`]; the slot is released on `Drop`.
+pub(crate) struct BlockingNotifyGuard;
+
+impl BlockingNotifyGuard {
+    /// Try to claim the single blocking-send slot. Returns `Some(guard)` if the
+    /// slot was free (now claimed); `None` if another blocking send is already
+    /// in flight — the caller should then fire-and-forget instead.
+    pub(crate) fn try_acquire() -> Option<Self> {
+        BLOCKING_NOTIFY_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            .then_some(BlockingNotifyGuard)
+    }
+}
+
+impl Drop for BlockingNotifyGuard {
+    fn drop(&mut self) {
+        BLOCKING_NOTIFY_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
 
 // ── Notification action wiring ────────────────────────────────────────────────
 //
@@ -235,13 +281,40 @@ pub fn share_notifications_enabled(share_notifications: Option<bool>) -> bool {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Spawn the launch-time poll. Called from `main.rs` setup with a 5-second
-/// delay (matches the updater pattern — gives the app time to fully initialize
-/// and the Cognito token to be loaded from disk).
+/// Interval between independent share-notify polls once the launch poll has
+/// run. Delivery MUST NOT depend on `sync:all-complete` firing — see the
+/// 2026-05-28 incident (`workspace/reports/hq-sync-notifications-debug.md`):
+/// the sync daemon was down ~34h, so the poller never ran and 7 incoming
+/// shares sat unacked, then drained in a single cursor jump (≤1 banner for 7
+/// events). The post-sync poll in `main.rs` is now a latency optimization on
+/// top of this timer, not the sole delivery mechanism.
+const SHARE_POLL_INTERVAL_SECS: u64 = 60;
+
+/// Spawn the share-notify poller. Called from `main.rs` setup. Runs a launch
+/// poll after a 5-second delay (matches the updater pattern — gives the app
+/// time to fully initialize and the Cognito token to be loaded from disk),
+/// then polls on an independent `SHARE_POLL_INTERVAL_SECS` timer so delivery
+/// is decoupled from sync completion. `poll_once` is singleton-guarded
+/// (`POLL_IN_FLIGHT`) so this composes safely with the post-sync poll.
 pub fn setup_share_notify_poller(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        poll_once(app).await;
+        // Launch poll: shares + DM inbox (one timer, two fetches — the DM
+        // channel rides this same independent timer so it can never inherit
+        // the sync-coupling flaw that broke share notifications).
+        poll_once(app.clone()).await;
+        crate::commands::dm_notify::poll_dm_once(app.clone()).await;
+
+        let mut ticker =
+            tokio::time::interval(tokio::time::Duration::from_secs(SHARE_POLL_INTERVAL_SECS));
+        // The first tick fires immediately; consume it so the launch poll
+        // above isn't double-counted, then poll once per interval thereafter.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            poll_once(app.clone()).await;
+            crate::commands::dm_notify::poll_dm_once(app.clone()).await;
+        }
     });
 }
 
@@ -426,7 +499,7 @@ async fn do_poll(app: &AppHandle) {
                             // The dropdown title appears as the visible button
                             // label; the slice elements are the dropdown items.
                             // Order = display order.
-                            let response = notification
+                            notification
                                 .title(&title)
                                 .message(&body_text)
                                 // Body-click = primary action (open Claude Code
@@ -448,9 +521,23 @@ async fn do_poll(app: &AppHandle) {
                                 .main_button(mac_notification_sys::MainButton::DropdownActions(
                                     "Actions",
                                     &["Copy prompt", "Open details"],
-                                ))
-                                .wait_for_click(true)
-                                .send();
+                                ));
+
+                            // CPU cap (Option 1): only the holder of the single
+                            // blocking-send slot may use `wait_for_click(true)`
+                            // (which busy-spins until the user acts — see
+                            // BlockingNotifyGuard docs). Any concurrent send
+                            // falls back to fire-and-forget so we never
+                            // accumulate spinning threads. The guard is dropped
+                            // the instant the blocking send returns.
+                            let response = match BlockingNotifyGuard::try_acquire() {
+                                Some(guard) => {
+                                    let r = notification.wait_for_click(true).send();
+                                    drop(guard);
+                                    r
+                                }
+                                None => notification.send(),
+                            };
 
                             match response {
                                 Ok(resp) => {
@@ -875,5 +962,46 @@ mod tests {
         // the regression guard for dropping the `@getindigo.ai` gate: a
         // non-getindigo recipient (None / Some(true) pref) must still poll.
         assert!(!share_notifications_enabled(Some(false)));
+    }
+
+    // ── BlockingNotifyGuard cap-to-1 (CPU spin regression, 2026-05-28) ─────────
+    //
+    // Regression guard for the 673% CPU leak: `mac-notification-sys`
+    // busy-spins one thread per outstanding `wait_for_click(true)` send. The
+    // guard caps concurrent blocking sends to exactly one process-wide so the
+    // spin can never accumulate. These tests assert the second concurrent
+    // acquire is refused (→ caller fire-and-forgets) and that the slot frees on
+    // drop. NOTE: this is the only test that touches BLOCKING_NOTIFY_IN_FLIGHT,
+    // so the shared static can't be perturbed by sibling tests.
+
+    //
+    // Both invariants live in ONE test (not two) on purpose: cargo runs tests
+    // in parallel threads within a process, and the guard's backing static is
+    // process-wide — two separate tests racing on it would flake. A single
+    // sequential test owns the slot for its whole body.
+    #[test]
+    fn test_blocking_guard_caps_concurrency_at_one() {
+        let first = BlockingNotifyGuard::try_acquire();
+        assert!(first.is_some(), "first acquire must claim the free slot");
+
+        // Second acquire while the first is held → None. This is what forces
+        // concurrent notification sends onto the fire-and-forget path instead
+        // of leaking another spinning thread.
+        assert!(
+            BlockingNotifyGuard::try_acquire().is_none(),
+            "second concurrent acquire must be refused while a send is in flight"
+        );
+
+        // Dropping the guard frees the slot (releases the in-flight flag).
+        drop(first);
+        assert!(
+            !BLOCKING_NOTIFY_IN_FLIGHT.load(Ordering::Acquire),
+            "the in-flight flag must be cleared once the guard drops"
+        );
+
+        // After the in-flight send returns (guard dropped), the slot is reusable.
+        let third = BlockingNotifyGuard::try_acquire();
+        assert!(third.is_some(), "slot must be reusable after the guard drops");
+        drop(third);
     }
 }
