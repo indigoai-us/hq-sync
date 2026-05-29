@@ -224,6 +224,7 @@ fn main() {
             commands::dm_notify::poll_dm_inbox,
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::dm_detail_window_ready,
+            commands::dm_notify::send_dm,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
         ])
