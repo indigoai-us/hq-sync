@@ -92,6 +92,13 @@ split-debuginfo = "packed"
 # any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
 # doesn't expose the panel handle, so we reach into AppKit directly.
 objc2 = "0.6"
+# Completion-handler blocks for the async UNUserNotificationCenter APIs
+# (getNotificationSettings / requestAuthorization) used in commands::notifications
+# to read the *real* OS authorization status. tauri-plugin-notification's desktop
+# impl hardcodes PermissionState::Granted, so we query UNUserNotificationCenter
+# directly. RcBlock (heap, refcounted) outlives our stack frame so a late
+# completion callback after a recv timeout can't use-after-free.
+block2 = "0.6"
 # Direct dep on mac-notification-sys for action-button notifications.
 # tauri-plugin-notification (2.3.3) on macOS uses notify-rust which
 # wraps NSUserNotification but DOES NOT expose action buttons —

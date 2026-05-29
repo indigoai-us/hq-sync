@@ -2643,6 +2643,7 @@ dependencies = [
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "base64 0.22.1",
+ "block2",
  "bytes",
  "chrono",
  "dirs",
