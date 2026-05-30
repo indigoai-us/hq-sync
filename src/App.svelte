@@ -971,6 +971,47 @@
         }
       })
     );
+
+    // --- Unified custom-banner action listener ---
+    // The custom in-app banner (commands/banner.rs) fires ONE event for every
+    // source; we route by `kind`. This is the action path for the custom
+    // banner surface — the native `notification:dm-action` /
+    // `notification:share-action` handlers above still serve the native path
+    // (when `customBanner` is off). `data` is the original source event,
+    // serialized camelCase, so it slots straight into the open_* commands.
+    unlisteners.push(
+      await listen<{ kind: string; action: string; data: any }>(
+        'notification:banner-action',
+        async (e) => {
+          const { kind, action, data } = e.payload;
+          try {
+            if (kind === 'dm') {
+              if (action === 'copy') {
+                const prompt = (data?.prompt ?? '').trim();
+                if (prompt) await navigator.clipboard.writeText(prompt);
+              } else if (action === 'open') {
+                await invoke('open_dm_detail', { event: data });
+              }
+            } else if (kind === 'share') {
+              if (action === 'open') {
+                await invoke('open_share_detail', { events: [data] });
+              } else if (action === 'copy') {
+                const paths = Array.isArray(data?.paths) ? data.paths.join(', ') : '';
+                if (paths) await navigator.clipboard.writeText(paths);
+              }
+            } else if (kind === 'update') {
+              if (action === 'update') {
+                await invoke('install_update');
+              } else if (action === 'open') {
+                await invoke('show_main_window');
+              }
+            }
+          } catch (err) {
+            console.error('banner-action failed', kind, action, err);
+          }
+        }
+      )
+    );
   }
 
   $effect(() => {
