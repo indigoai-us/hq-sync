@@ -819,7 +819,7 @@
           {/if}
         </div>
       {:else}
-        <SyncStats bind:this={statsEl} />
+        <SyncStats bind:this={statsEl} onhistory={() => invoke('open_activity_log')} />
         {#if newFilesCount > 0}
           <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => invoke('open_new_files_detail', { files: newFilesList })} />
         {/if}
@@ -859,8 +859,12 @@
               `install_hq_core_update` (spawns the rescue script against
               indigoai-us/hq-core at the release tag — same engine the
               staging pill uses). While running the pill is disabled and
-              relabelled "Updating…"; on completion a ✓ / ✗ chip
-              appears next to it.
+              relabelled "Updating…". On success a muted "✓ update done"
+              chip appears next to it; on FAILURE we never show a raw
+              "exit N" chip — instead a "Update failed — copy fix"
+              CopyPromptButton hands the user a guided-`/update-hq` prompt
+              for their HQ agent (the usual cause is an install too old for
+              the in-app rescue to bridge).
            3. hqVersion null → "HQ version unknown" + right-aligned
               CopyPromptButton so the user can hand a triage prompt to an
               agent in-session (the install is broken in a way we can't
@@ -926,13 +930,16 @@
                  action if drift exists. -->
           {#if coreState.isEligible}
             <button
-              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice' : ''}"
+              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice footer-hq-version-pill-count' : ''}"
               onclick={openDriftDetail}
+              aria-label={hasDrift
+                ? `${coreState.driftReport.count} drifted core file${coreState.driftReport.count === 1 ? '' : 's'}. Click for details.`
+                : 'Locked core in sync. Click for details.'}
               title={hasDrift
                 ? `${coreState.driftReport.count} locked core file${coreState.driftReport.count === 1 ? '' : 's'} edited since last sync vs ${coreState.targetRepo}@${coreState.targetVersion}. Click for details.`
                 : `Locked core matches ${coreState.targetRepo}@${coreState.targetVersion}. Click to open the drift detail window.`}
             >
-              {hasDrift ? `${coreState.driftReport.count} drifted` : 'in sync'}
+              {hasDrift ? `${coreState.driftReport.count}` : 'in sync'}
             </button>
           {:else}
             <span
@@ -970,33 +977,48 @@
           {/if}
         {/if}
         {#if coreInstallLastResult}
-          <!-- Single rescue-run feedback chip. Same shape regardless of
-               channel — App.svelte dispatches to the right command
-               internally. -->
-          <span
-            class="footer-hq-version-result footer-hq-version-result-{coreInstallLastResult.kind}"
-            title={coreInstallLastResult.logTail || coreInstallLastResult.logPath}
-          >
-            {#if coreInstallLastResult.kind === 'ok'}
+          {#if coreInstallLastResult.kind === 'ok'}
+            <!-- Success stays a muted inline chip — nothing for the user to
+                 act on. -->
+            <span
+              class="footer-hq-version-result footer-hq-version-result-ok"
+              title={coreInstallLastResult.logTail || coreInstallLastResult.logPath}
+            >
               ✓ update done
-            {:else}
-              ✗ update failed (exit {coreInstallLastResult.exitCode})
-            {/if}
-          </span>
+            </span>
+          {:else}
+            <!-- Failure NEVER surfaces a raw "exit N" chip — an exit code is
+                 not something the user can act on. Instead hand them a
+                 one-click prompt for their HQ agent to run a guided
+                 `/update-hq` (the usual cause is an install too old for the
+                 in-app rescue to bridge). The payload carries the exit code +
+                 log tail + target so the agent can triage without guessing. -->
+            <CopyPromptButton
+              variant="inline"
+              label="Update failed — copy fix"
+              issue={{
+                kind: 'hq-core-update-failed',
+                payload: {
+                  exitCode: coreInstallLastResult.exitCode,
+                  logTail: coreInstallLastResult.logTail,
+                  logPath: coreInstallLastResult.logPath,
+                  channel: coreState?.channel ?? '',
+                  targetVersion: coreState?.targetVersion ?? '',
+                  targetRepo: coreState?.targetRepo ?? '',
+                  hqVersion: hqVersion ?? '',
+                },
+              }}
+            />
+          {/if}
         {/if}
         </div>
       {/if}
     </div>
 
-    <button class="footer-action" onclick={() => invoke('open_activity_log')}>
-      <!-- Clock / history icon -->
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-        <path d="M8 4.5V8l2.5 1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-      Recent Changes
-    </button>
-
+    <!-- Primary navigation. "Recent Changes" now lives on the "Last synced"
+         row in SyncStats (the history affordance sits with the status it
+         describes), so the footer holds just Settings + the demoted
+         destructive row. -->
     <button class="footer-action" onclick={onsettings}>
       <!-- Settings gear icon -->
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -1006,24 +1028,31 @@
       Settings
     </button>
 
-    <button class="footer-action" onclick={onsignout}>
-      <!-- Log out icon -->
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <path d="M6 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M10.5 11.5L14 8l-3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        <path d="M14 8H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-      Sign out
-    </button>
+    <!-- Destructive actions — demoted beneath a divider and compacted onto a
+         single muted row so Quit / Sign out can't be hit by reflex while
+         reaching for Settings. -->
+    <div class="footer-divider"></div>
 
-    <button class="footer-action footer-quit" onclick={handleQuit}>
-      <!-- X / power icon -->
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-        <path d="M8 3v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-      </svg>
-      Quit
-    </button>
+    <div class="footer-destructive">
+      <button class="footer-mini" onclick={onsignout}>
+        <!-- Log out icon -->
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M6 14H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M10.5 11.5L14 8l-3.5-3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M14 8H6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        Sign out
+      </button>
+
+      <button class="footer-mini footer-quit" onclick={handleQuit}>
+        <!-- Power icon -->
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
+          <path d="M8 3v5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        </svg>
+        Quit
+      </button>
+    </div>
   </footer>
 </div>
 
@@ -1231,13 +1260,13 @@
     align-items: center;
     gap: 0.5rem;
     width: 100%;
-    padding: 0.4375rem 0.5rem;
-    font-size: 0.8125rem;
+    padding: 0.4375rem var(--space-2);
+    font-size: var(--text-base);
     font-family: inherit;
     color: var(--popover-text-muted, #a0a0b0);
     background: none;
     border: none;
-    border-radius: 9px;
+    border-radius: var(--radius-md);
     cursor: pointer;
     transition: background-color 0.1s ease, color 0.1s ease;
     text-align: left;
@@ -1252,6 +1281,50 @@
     color: var(--popover-danger, #ef4444);
   }
 
+  /* Hairline separating primary nav from the demoted destructive row.
+     Inset to match the footer's horizontal padding rhythm. */
+  .footer-divider {
+    height: 1px;
+    background: var(--popover-divider, rgba(255, 255, 255, 0.06));
+    margin: var(--space-1) var(--space-2);
+  }
+
+  /* Destructive actions share one compact, muted row. Each button is
+     center-aligned and lighter than a nav row, so the pair reads as
+     secondary and sits clearly apart from Settings above the divider. */
+  .footer-destructive {
+    display: flex;
+    gap: var(--space-1);
+  }
+
+  .footer-mini {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    font-size: var(--text-sm);
+    font-family: inherit;
+    color: var(--popover-text-muted, #a0a0b0);
+    background: none;
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background-color 0.1s ease, color 0.1s ease;
+  }
+
+  .footer-mini:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
+    color: var(--popover-text, #e0e0e0);
+  }
+
+  /* Higher specificity than `.footer-mini:hover` so Quit's hover stays
+     the danger tone rather than the neutral text color. */
+  .footer-mini.footer-quit:hover {
+    color: var(--popover-danger, #ef4444);
+  }
+
   /* HQ-version footer row. Same padding rhythm as `.footer-action` so it
      reads as part of the same column, but it's a div (not a button) — the
      row itself isn't clickable; the optional right-aligned pill /
@@ -1259,8 +1332,14 @@
   .footer-hq-version {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
+    /* Wrap the action group to a second line when the version label + pills
+       can't share one line, instead of overflowing the 320px popover and
+       overlapping the "HQ vX.Y.Z" label (the count badge + "Restore vX.Y.Z"
+       pill + "✓ update done" chip together exceed one row). The actions group
+       keeps `margin-left:auto` so it stays right-aligned whether it sits beside
+       the label or drops below it. */
+    flex-wrap: wrap;
+    gap: 0.375rem 0.5rem;
     padding: 0.4375rem 0.5rem;
     font-size: 0.8125rem;
     color: var(--popover-text-muted, #a0a0b0);
@@ -1280,17 +1359,22 @@
     white-space: nowrap;
   }
 
-  /* Right-side action group (drift pill + Update/Update-to-Staging pill +
-     rescue-result chip). Wraps to a second line when the popover is too
-     narrow to fit everything beside the version label, rather than letting
-     fixed-width pills overflow and overlap the label. */
+  /* Right-side action group (drift count chip + Update/Update-to-Staging
+     pill + rescue-result chip). Stays on a single line: the drift badge is
+     now a bare count ("14") rather than "N drifted", so the group is narrow
+     enough to sit beside the version label without wrapping. */
   .footer-hq-version-actions {
     display: flex;
     align-items: center;
     justify-content: flex-end;
+    /* Wrap internally too, so an unusually wide combination (e.g.
+       "Update to vX.Y.Z" + the "Update failed — copy fix" prompt button)
+       stacks right-aligned rather than overflowing. `margin-left:auto` keeps
+       the group pinned right on whichever row it lands. */
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.375rem;
     min-width: 0;
+    margin-left: auto;
   }
 
   /* Right-aligned "Update to vX.Y.Z" pill. Same visual weight as
@@ -1344,6 +1428,18 @@
     color: var(--popover-text-heading, #ffffff);
   }
 
+  /* Count variant — the drift badge renders as a bare count ("14") instead
+     of "N drifted" so the whole version row stays on one line. Tighter and
+     smaller than the base pill: a compact numeric chip beside the white
+     Update pill. `tabular-nums` keeps 1- and 2-digit counts from jiggling. */
+  .footer-hq-version-pill-count {
+    font-size: 0.625rem;
+    padding: 0.125rem 0.375rem;
+    min-width: 1.25rem;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
   /* Static variant — non-clickable "in sync" label shown to non-eligible
      users (no @getindigo.ai email). Drift count is suppressed for them
      and there's no per-file detail surface to open, so the badge renders
@@ -1369,10 +1465,6 @@
 
   .footer-hq-version-result-ok {
     color: var(--popover-success, #6ad59c);
-  }
-
-  .footer-hq-version-result-err {
-    color: var(--popover-danger, #d56a6a);
   }
 
   /* Banners — actionable state callouts (setup / auth / error) */

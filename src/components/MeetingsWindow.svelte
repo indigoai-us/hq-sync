@@ -14,6 +14,7 @@
     loadMeetingsCache,
     saveMeetingsCache,
   } from '../lib/meetingsCache';
+  import { isAlreadyScheduledError } from '../lib/invite-errors';
 
   interface MeetingEvent {
     id: string;
@@ -488,13 +489,12 @@
       flashToast('info', 'Bot invited.');
       await refresh();
     } catch (err) {
-      // 409 "bot-already-scheduled" is benign and (usually) means the row
-      // was stale — e.g. the auto-schedule cron picked up the event between
-      // window-open and this click, or a separate hq-sync instance got
-      // there first. Refresh + tell the user it's invited rather than
+      // 409 "bot-already-schedul(ed|ing)" is benign and (usually) means the
+      // row was stale — e.g. the auto-schedule cron picked up the event
+      // between window-open and this click, or a separate hq-sync instance
+      // got there first. Refresh + tell the user it's invited rather than
       // showing a scary failure toast.
-      const msg = String(err);
-      if (msg.includes('409') || msg.includes('bot-already-scheduled')) {
+      if (isAlreadyScheduledError(err)) {
         flashToast('info', 'Already invited — refreshing.');
         await refresh();
       } else {
@@ -589,7 +589,18 @@
       flashToast('info', `Bot invited — meeting will save to ${destLabel}.`);
       await refresh();
     } catch (err) {
-      flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
+      // 409 "bot-already-schedul(ed|ing)" is benign — a separate hq-sync
+      // instance, the auto-schedule cron, or a double-submit got there first.
+      // The bot IS scheduled, so mirror onInvite: clear the row, tell the
+      // user it's invited, and refresh rather than showing a scary failure.
+      if (isAlreadyScheduledError(err)) {
+        urlInput = '';
+        urlInputCompanyId = null;
+        flashToast('info', 'Already invited — refreshing.');
+        await refresh();
+      } else {
+        flashToast('warn', friendlyError(err, "Couldn't invite the bot."));
+      }
     } finally {
       urlInviting = false;
     }

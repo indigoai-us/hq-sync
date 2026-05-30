@@ -18,6 +18,10 @@ const ALL_KINDS: IssueKind[] = [
   'workspace-broken',
   'repair-company',
   'local-env-failure',
+  'hq-version-undetectable',
+  'hq-core-drift',
+  'hq-core-drift-all',
+  'hq-core-update-failed',
 ];
 
 describe('buildPrompt', () => {
@@ -101,6 +105,46 @@ describe('buildPrompt', () => {
     // Falls back to generic copy without count
     expect(out).toContain('sync conflicts');
     expect(out).not.toContain('NaN');
+  });
+
+  describe('hq-core-update-failed prompts', () => {
+    // The footer update-failed surface must NEVER expose a raw "exit N" chip
+    // to the user — it hands the agent a guided-update prompt instead. Guard
+    // the routing (must mention /update-hq) and the diagnostic threading.
+
+    it('routes to a guided /update-hq', () => {
+      const out = buildPrompt({ kind: 'hq-core-update-failed' });
+      expect(out).toContain('/update-hq');
+    });
+
+    it('treats exit -1 as a too-old install needing a guided update', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: { exitCode: -1, hqVersion: '12.1.0', targetVersion: '15.0.2', targetRepo: 'indigoai-us/hq-core' },
+      });
+      expect(out).toContain('v12.1.0');
+      expect(out).toContain('v15.0.2');
+      expect(out).toMatch(/out of date|too far/i);
+      expect(out).toContain('/update-hq');
+    });
+
+    it('threads the log tail + path so the agent can triage', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: { exitCode: 3, logTail: 'fatal: clone failed', logPath: '/tmp/hq-sync-abc.log' },
+      });
+      expect(out).toContain('fatal: clone failed');
+      expect(out).toContain('/tmp/hq-sync-abc.log');
+      expect(out).toContain('code 3');
+    });
+
+    it('handles the staging channel variant', () => {
+      const out = buildPrompt({
+        kind: 'hq-core-update-failed',
+        payload: { exitCode: -1, channel: 'staging' },
+      });
+      expect(out).toMatch(/staging/i);
+    });
   });
 
   it('refers to HQ skills the agent can invoke', () => {

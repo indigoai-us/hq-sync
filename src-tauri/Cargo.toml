@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.2.0-beta.1"
+version = "0.4.0"
 edition = "2021"
 
 [build-dependencies]
@@ -47,6 +47,26 @@ aws-sdk-sts = { version = "1", features = ["behavior-version-latest"] }
 aws-config = "1"
 aws-smithy-types = "1"
 aws-credential-types = "1"
+# Provides `Identity` (the `aws-sigv4` SigningParams builder takes `&Identity`,
+# constructed from `aws_credential_types::Credentials` via `Into`). Already in
+# the graph transitively via the aws-sdk crates; pinned direct so dm_mqtt.rs can
+# name the type without leaning on a transitive re-export.
+aws-smithy-runtime-api = { version = "1", features = ["client"] }
+# SigV4 query-presigning for the AWS IoT MQTT-over-WSS connection
+# (commands/dm_mqtt.rs). The `http1` feature pulls the `http_request`
+# presigning surface (SignableRequest / SigningSettings / SignatureLocation)
+# which signs a GET and emits the X-Amz-* query string we hand to rumqttc.
+# Already in the dep graph transitively via the aws-sdk crates; pinned direct
+# so dm_mqtt.rs can use it without a transitive re-export moving.
+aws-sigv4 = { version = "1", features = ["http1"] }
+# MQTT-over-WebSockets client for AWS IoT Core push delivery. `websocket`
+# enables the wss transport, but the `Transport::Wss` connect path in rumqttc
+# is gated on `use-rustls` too (it builds a tokio-rustls TLS layer), so both
+# are required. We set the full presigned `wss://{host}/mqtt?X-Amz-...` string
+# as the broker address (path + SigV4 query preserved) rather than via
+# `parse_url`, because rumqttc's url parser treats unknown query keys as errors
+# and would reject the X-Amz-* params.
+rumqttc = { version = "0.24", default-features = false, features = ["websocket", "use-rustls"] }
 ulid = "1"
 bytes = "1"
 # Strict SemVer comparison for the release-channel resolver in
@@ -72,11 +92,20 @@ split-debuginfo = "packed"
 # any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
 # doesn't expose the panel handle, so we reach into AppKit directly.
 objc2 = "0.6"
-# Used by commands/permissions.rs to trigger TCC microphone registration
-# from HQ Sync's main process. AVCaptureDevice's requestAccessForMediaType:
-# selector takes a non-optional ObjC block as the completion handler, so we
-# need block2 to construct one (Apple's API contract — passing nil
-# completion handler crashes).
+# block2 has two callers in the menubar app, both needing ObjC completion
+# blocks for Apple APIs whose contract requires a non-nil block:
+#
+# 1. commands/notifications.rs — UNUserNotificationCenter
+#    getNotificationSettings / requestAuthorization, so we can read the
+#    *real* OS authorization state instead of the hardcoded
+#    PermissionState::Granted that tauri-plugin-notification's desktop
+#    impl returns. RcBlock (heap, refcounted) outlives our stack frame so
+#    a late completion callback after a recv timeout can't use-after-free.
+#
+# 2. commands/permissions.rs — AVCaptureDevice
+#    requestAccessForMediaType: for TCC microphone registration from HQ
+#    Sync's main process. Passing nil for the completion handler crashes
+#    per Apple's contract, so block2 constructs a valid one.
 block2 = "0.6"
 # Direct dep on mac-notification-sys for action-button notifications.
 # tauri-plugin-notification (2.3.3) on macOS uses notify-rust which wraps

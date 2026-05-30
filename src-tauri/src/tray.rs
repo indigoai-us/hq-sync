@@ -433,17 +433,10 @@ pub fn show_window_at_tray(app: &AppHandle) {
     let _ = window.set_focus();
 }
 
-/// Tauri command — Svelte-invokable wrapper around `show_window_at_tray`.
-///
-/// Used by the meeting-detected notification action handler: when the
-/// user clicks the notification body (action="open"), the renderer
-/// calls this to summon the popover with the active-meetings row
-/// visible. Same effect as a left-click on the tray icon, callable
-/// from anywhere in JS land.
-#[tauri::command]
-pub fn show_main_window(app: AppHandle) {
-    show_window_at_tray(&app);
-}
+// `show_main_window` (the Svelte-invokable wrapper) lives in
+// commands/banner.rs now — the meeting-detect notification's "open" action
+// hits the same handler as the update banner's body-click, and both just
+// call `show_window_at_tray` here. One name, one handler.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Icon update

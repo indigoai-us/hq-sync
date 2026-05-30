@@ -148,6 +148,8 @@ fn main() {
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
+        .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
+        .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -180,6 +182,8 @@ fn main() {
             commands::sync::cancel_sync,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
+            commands::sync_mode::get_sync_mode,
+            commands::sync_mode::set_sync_mode,
             commands::conflicts::resolve_conflict,
             commands::conflicts::open_in_editor,
             commands::settings::get_settings,
@@ -229,12 +233,22 @@ fn main() {
             commands::recall_sdk::start_recording,
             commands::recall_sdk::stop_recording,
             tray::meetings_set_prompt_badge,
-            tray::show_main_window,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
+            commands::dm_notify::poll_dm_inbox,
+            commands::dm_notify::open_dm_detail,
+            commands::dm_notify::dm_detail_window_ready,
+            commands::dm_notify::send_dm,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
+            commands::banner::banner_window_ready,
+            commands::banner::banner_action,
+            commands::banner::dismiss_banner,
+            commands::banner::show_main_window,
+            commands::banner::preview_dm_banner,
+            commands::banner::preview_share_banner,
+            commands::banner::preview_update_banner,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -288,16 +302,30 @@ fn main() {
             commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
 
-            // Share-notification poller: fires 5s after launch and after
-            // every sync:all-complete event. Gated to @getindigo.ai users
-            // and the shareNotifications menubar preference (both checked
-            // inside share_notify — not here so the gate is never scattered).
+            // Share-notification poller. Gated solely on the shareNotifications
+            // menubar preference (the @getindigo.ai dogfood gate was removed
+            // 2026-05-26 — see share_notify::should_poll). Gate is checked
+            // inside share_notify, not here, so it is never scattered.
+            //
+            // Delivery runs on an independent timer (launch poll + interval),
+            // so notifications no longer depend on a sync completing — see the
+            // 2026-05-28 incident report. The post-sync poll below is a
+            // latency optimization layered on top, not the sole trigger.
             {
                 use tauri::Listener;
-                // (a) Launch-time poll — 5s delay matches the updater pattern.
+                // (a) Launch poll (5s delay) + independent interval timer.
                 commands::share_notify::setup_share_notify_poller(app.handle().clone());
 
-                // (b) Post-sync poll — fires after every complete sync run.
+                // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
+                // Gated on @getindigo.ai inside setup_dm_mqtt_receiver; wakes
+                // `poll_dm_once` on push so DMs arrive in near-real-time instead
+                // of waiting up to 60s. The interval poll above is the long-stop,
+                // so this is purely additive — any MQTT failure falls back to it
+                // silently. macOS-gated like the rest of the notification surface.
+                #[cfg(target_os = "macos")]
+                commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+
+                // (b) Post-sync poll — low-latency top-up after a sync run.
                 let poll_handle = app.handle().clone();
                 app.listen(
                     crate::events::EVENT_SYNC_ALL_COMPLETE,
@@ -308,6 +336,31 @@ fn main() {
                         });
                     },
                 );
+            }
+
+            // SPIKE: env-var trigger to preview the custom notification banner
+            // without devtools / real inbound events. Pops one representative
+            // banner per source — DM (2s), share (10s), update (18s) — spaced
+            // past the 6s auto-dismiss so each is seen in turn. No-op when unset.
+            //   HQ_SYNC_PREVIEW_BANNER=1     → DM only
+            //   HQ_SYNC_PREVIEW_BANNER=all   → DM, then share, then update
+            match std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() {
+                Ok("1") | Ok("all") => {
+                    let all = std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() == Ok("all");
+                    let h = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        use std::time::Duration;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let _ = commands::banner::preview_dm_banner(h.clone()).await;
+                        if all {
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_share_banner(h.clone()).await;
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_update_banner(h.clone()).await;
+                        }
+                    });
+                }
+                _ => {}
             }
 
             // Register Cmd+Shift+H globally so the popover can be summoned

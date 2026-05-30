@@ -58,6 +58,9 @@
   // on the Rust side). Re-read on each poll cycle in share_notify.rs so the
   // toggle takes effect immediately without app restart.
   let shareNotifications = $state(true);
+  // DM notifications — same dogfood gate as share notifications. Re-read on
+  // each poll cycle in dm_notify.rs so the toggle takes effect without restart.
+  let dmNotifications = $state(true);
   // Shared @getindigo.ai gate, used by BOTH the share-notify section and
   // the staging-channel toggle below. Populated at mount from
   // `meetings_feature_enabled` (cached process-lifetime on the Rust side).
@@ -138,6 +141,7 @@
           personalSyncEnabled: boolean | null;
           instantSync: boolean | null;
           shareNotifications: boolean | null;
+          dmNotifications: boolean | null;
           stagingChannel: boolean | null;
           releaseChannel: string | null;
           meetingDetectNotify?: {
@@ -170,6 +174,7 @@
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
       instantSync = settings.instantSync ?? true;
       shareNotifications = settings.shareNotifications ?? true;
+      dmNotifications = settings.dmNotifications ?? true;
       stagingChannel = settings.stagingChannel ?? true;
       isIndigoUser = indigoUser;
       availableChannels = (channels.filter(
@@ -220,6 +225,7 @@
           personalSyncEnabled,
           instantSync,
           shareNotifications,
+          dmNotifications,
           stagingChannel,
           // Round-trip the RAW stored value (null when never explicitly
           // chosen). The Rust side serializes `null` -> absent via
@@ -286,6 +292,11 @@
 
   async function handleToggleShareNotifications() {
     shareNotifications = !shareNotifications;
+    await saveAll();
+  }
+
+  async function handleToggleDmNotifications() {
+    dmNotifications = !dmNotifications;
     await saveAll();
   }
 
@@ -469,440 +480,497 @@
     <span class="saved-indicator" class:visible={savedFeedback}>Saved</span>
   </header>
 
-  <div class="settings-divider"></div>
-
   {#if loading}
     <div class="settings-loading">
       <span class="dot-spinner"></span>
     </div>
   {:else}
     <div class="settings-body">
-      <!-- HQ Folder Path -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">HQ Folder</span>
-          <span class="setting-path" title={hqPath ?? ''}>{pathDisplay}</span>
-        </div>
-        <button class="change-button" onclick={handlePickFolder}>Change...</button>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <!-- Sync on Launch -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="toggle-sync-launch">Sync on Launch</label>
-          <span class="setting-desc">Automatically sync when app starts</span>
-        </div>
-        <button
-          id="toggle-sync-launch"
-          class="toggle"
-          class:active={syncOnLaunch}
-          onclick={handleToggleSyncOnLaunch}
-          role="switch"
-          aria-checked={syncOnLaunch}
-          aria-label="Sync on Launch"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-
-      <!-- Auto-sync — runs hq-sync-runner in --watch mode via the existing
-           daemon Tauri commands, fanning out to every membership the user
-           has (same as the Sync Now button). -->
-      <div class="settings-divider"></div>
-
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="toggle-realtime-sync">Auto-sync</label>
-          <span class="setting-desc">Syncs every 10 minutes with no clicks needed</span>
-        </div>
-        <button
-          id="toggle-realtime-sync"
-          class="toggle"
-          class:active={realtimeSync}
-          onclick={handleToggleRealtimeSync}
-          role="switch"
-          aria-checked={realtimeSync}
-          aria-label="Auto-sync"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <!-- Instant sync (event-driven) — when ON, the daemon spawns the
-           hq-sync-runner with --event-push so local edits upload within
-           seconds of the filesystem event instead of waiting for the
-           10-minute poll. The backend only honors this for @getindigo.ai
-           identities (Phase 1 rollout); other users stay poll-only
-           regardless. See src-tauri/src/commands/daemon.rs. -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="toggle-instant-sync">Instant sync</label>
-          <span class="setting-desc">Push local edits within seconds instead of every 10 minutes</span>
-        </div>
-        <button
-          id="toggle-instant-sync"
-          class="toggle"
-          class:active={instantSync}
-          onclick={handleToggleInstantSync}
-          role="switch"
-          aria-checked={instantSync}
-          aria-label="Instant sync"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <!-- Staging channel — @getindigo.ai-only toggle. When ON (default
-           for @indigo builders), the popover's Update pill targets
-           `hq-core-staging` and shows the staging-flavored drift count.
-           When OFF, the staging-replace + staging-drift checks both
-           return None and the popover falls through to the prod release
-           channel (the same surface non-@indigo users see). Visibility
-           gated on `isIndigoUser` (shared @getindigo.ai gate; same
-           predicate the share-notify section uses, via
-           `meetings_feature_enabled`). See `commands/hq_core_staging.rs`. -->
-      {#if isIndigoUser}
-        <div class="setting-row">
-          <div class="setting-info">
-            <label class="setting-label" for="toggle-staging-channel">Use staging channel</label>
-            <span class="setting-desc">Target hq-core-staging for the Update pill instead of the released hq-core tag</span>
+      <!-- ===== Group: Sync ============================================
+           HQ folder + the four sync-behavior toggles. Ordered most- to
+           least-touched. Rendered as a grouped inset list (macOS System
+           Settings idiom): a surface card with hairline dividers between
+           rows only, a muted section header above. -->
+      <section class="settings-group-wrap">
+        <h2 class="settings-group-title">Sync</h2>
+        <div class="settings-group">
+          <!-- HQ Folder Path -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">HQ Folder</span>
+              <span class="setting-path" title={hqPath ?? ''}>{pathDisplay}</span>
+            </div>
+            <button class="change-button" onclick={handlePickFolder}>Change...</button>
           </div>
-          <button
-            id="toggle-staging-channel"
-            class="toggle"
-            class:active={stagingChannel}
-            onclick={handleToggleStagingChannel}
-            role="switch"
-            aria-checked={stagingChannel}
-            aria-label="Use staging channel"
-          >
-            <span class="toggle-knob"></span>
-          </button>
-        </div>
 
-        <div class="settings-divider"></div>
-      {/if}
-
-      <!-- Sync personal vault — when OFF, the menubar passes --skip-personal
-           to the spawned hq-sync-runner so the personal target is dropped
-           from the --companies fanout. Only cloud-enabled company
-           memberships sync. Defaults ON to preserve pre-5.25 behavior. -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="toggle-personal-sync">Sync personal vault</label>
-          <span class="setting-desc">Sync your personal HQ files in addition to company memberships</span>
-        </div>
-        <button
-          id="toggle-personal-sync"
-          class="toggle"
-          class:active={personalSyncEnabled}
-          onclick={handleTogglePersonalSync}
-          role="switch"
-          aria-checked={personalSyncEnabled}
-          aria-label="Sync personal vault"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <!-- Notifications -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="toggle-notifications">Notifications</label>
-          <span class="setting-desc">Show notifications for sync events</span>
-        </div>
-        <button
-          id="toggle-notifications"
-          class="toggle"
-          class:active={notifications}
-          onclick={handleToggleNotifications}
-          role="switch"
-          aria-checked={notifications}
-          aria-label="Notifications"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-
-      <!-- macOS permission monitor — reflects the OS authorization (separate
-           from the in-app toggle above). Persistent: re-read on focus so it
-           tracks changes made in System Settings. Hidden until first read. -->
-      {#if notifPermission !== 'unknown'}
-        <div class="setting-row">
-          <div class="setting-info">
-            <span class="setting-label">System permission</span>
-            <span class="setting-desc">
-              {#if notifPermission === 'granted'}
-                macOS is allowing notifications from HQ Sync
-              {:else if notifPermission === 'denied'}
-                Blocked in macOS — open System Settings to allow
-              {:else}
-                Not enabled yet — allow to see sync &amp; share alerts
-              {/if}
-            </span>
-          </div>
-          {#if notifPermission === 'granted'}
-            <span class="perm-pill">Enabled</span>
-          {:else}
+          <!-- Sync on Launch -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-sync-launch">Sync on Launch</label>
+              <span class="setting-desc">Automatically sync when app starts</span>
+            </div>
             <button
-              class="change-button"
-              onclick={handleEnableNotifications}
-              disabled={notifRequesting}
+              id="toggle-sync-launch"
+              class="toggle"
+              class:active={syncOnLaunch}
+              onclick={handleToggleSyncOnLaunch}
+              role="switch"
+              aria-checked={syncOnLaunch}
+              aria-label="Sync on Launch"
             >
-              {#if notifRequesting}
-                Requesting…
-              {:else if notifPermission === 'denied'}
-                Open Settings
-              {:else}
-                Enable
-              {/if}
+              <span class="toggle-knob"></span>
             </button>
-          {/if}
-        </div>
-      {/if}
-
-      <!-- Share notifications — dogfood gate: only rendered for @getindigo.ai
-           users. Persists shareNotifications in menubar.json; the poll in
-           share_notify.rs re-reads on each cycle so the toggle takes effect
-           on the next sync:complete without restart. -->
-      {#if isIndigoUser}
-        <div class="settings-divider"></div>
-
-        <div class="setting-row">
-          <div class="setting-info">
-            <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
-            <span class="setting-desc">Show a notification when someone shares files with you</span>
           </div>
-          <button
-            id="toggle-share-notifications"
-            class="toggle"
-            class:active={shareNotifications}
-            onclick={handleToggleShareNotifications}
-            role="switch"
-            aria-checked={shareNotifications}
-            aria-label="Share notifications"
-          >
-            <span class="toggle-knob"></span>
-          </button>
-        </div>
-      {/if}
 
-      <!-- Meeting Detection (Phase 0). Gated on
-           `permissionState.meetingDetectEligible` so users outside the
-           allowlist don't see a toggle for an SDK that won't spawn. The
-           Rust side (`commands::recall_sdk::meeting_detect_eligible`) is the
-           authoritative gate; this is UX-only. macOS permissions are
-           handled by native first-use prompts — no parallel UI here. -->
-      {#if permissionState.meetingDetectEligible}
-        <div class="settings-divider"></div>
-
-        <div class="setting-row">
-          <div class="setting-info">
-            <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
-            <span class="setting-desc">Notify when a new meeting is detected</span>
+          <!-- Auto-sync — runs hq-sync-runner in --watch mode via the
+               existing daemon Tauri commands, fanning out to every
+               membership the user has (same as the Sync Now button). -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-realtime-sync">Auto-sync</label>
+              <span class="setting-desc">Syncs every 10 minutes with no clicks needed</span>
+            </div>
+            <button
+              id="toggle-realtime-sync"
+              class="toggle"
+              class:active={realtimeSync}
+              onclick={handleToggleRealtimeSync}
+              role="switch"
+              aria-checked={realtimeSync}
+              aria-label="Auto-sync"
+            >
+              <span class="toggle-knob"></span>
+            </button>
           </div>
-          <button
-            id="toggle-meeting-detect"
-            class="toggle"
-            class:active={meetingDetectEnabled}
-            onclick={handleToggleMeetingDetect}
-            role="switch"
-            aria-checked={meetingDetectEnabled}
-            aria-label="Detect upcoming meetings"
-          >
-            <span class="toggle-knob"></span>
-          </button>
-        </div>
 
-        {#if meetingDetectEnabled}
-          <div class="platform-rows">
-            {#each ALL_PLATFORMS as platform}
-              {@const checked = meetingDetectPlatforms.includes(platform)}
-              <div class="platform-row">
-                <label class="platform-label" for="platform-{platform}">{platform}</label>
+          <!-- Instant sync (event-driven) — when ON, the daemon spawns the
+               hq-sync-runner with --event-push so local edits upload within
+               seconds of the filesystem event instead of waiting for the
+               10-minute poll. The backend only honors this for @getindigo.ai
+               identities (Phase 1 rollout); other users stay poll-only
+               regardless. See src-tauri/src/commands/daemon.rs. -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-instant-sync">Instant sync</label>
+              <span class="setting-desc">Push local edits within seconds instead of every 10 minutes</span>
+            </div>
+            <button
+              id="toggle-instant-sync"
+              class="toggle"
+              class:active={instantSync}
+              onclick={handleToggleInstantSync}
+              role="switch"
+              aria-checked={instantSync}
+              aria-label="Instant sync"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <!-- Sync personal vault — when OFF, the menubar passes
+               --skip-personal to the spawned hq-sync-runner so the personal
+               target is dropped from the --companies fanout. Only
+               cloud-enabled company memberships sync. Defaults ON to
+               preserve pre-5.25 behavior. -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-personal-sync">Sync personal vault</label>
+              <span class="setting-desc">Sync your personal HQ files in addition to company memberships</span>
+            </div>
+            <button
+              id="toggle-personal-sync"
+              class="toggle"
+              class:active={personalSyncEnabled}
+              onclick={handleTogglePersonalSync}
+              role="switch"
+              aria-checked={personalSyncEnabled}
+              aria-label="Sync personal vault"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Group: Notifications =================================== -->
+      <section class="settings-group-wrap">
+        <h2 class="settings-group-title">Notifications</h2>
+        <div class="settings-group">
+          <!-- Notifications -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-notifications">Notifications</label>
+              <span class="setting-desc">Show notifications for sync events</span>
+            </div>
+            <button
+              id="toggle-notifications"
+              class="toggle"
+              class:active={notifications}
+              onclick={handleToggleNotifications}
+              role="switch"
+              aria-checked={notifications}
+              aria-label="Notifications"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <!-- macOS permission monitor — reflects the OS authorization
+               (separate from the in-app toggle above). Persistent: re-read
+               on focus so it tracks changes made in System Settings. Hidden
+               until first read. -->
+          {#if notifPermission !== 'unknown'}
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">System permission</span>
+                <span class="setting-desc">
+                  {#if notifPermission === 'granted'}
+                    macOS is allowing notifications from HQ Sync
+                  {:else if notifPermission === 'denied'}
+                    Blocked in macOS — open System Settings to allow
+                  {:else}
+                    Not enabled yet — allow to see sync &amp; share alerts
+                  {/if}
+                </span>
+              </div>
+              {#if notifPermission === 'granted'}
+                <span class="perm-pill">Enabled</span>
+              {:else}
                 <button
-                  id="platform-{platform}"
-                  class="platform-check"
-                  class:checked
-                  onclick={() => handleTogglePlatform(platform)}
-                  role="checkbox"
-                  aria-checked={checked}
-                  aria-label="Enable {platform} meeting detection"
+                  class="change-button"
+                  onclick={handleEnableNotifications}
+                  disabled={notifRequesting}
                 >
-                  {#if checked}
-                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                      <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
+                  {#if notifRequesting}
+                    Requesting…
+                  {:else if notifPermission === 'denied'}
+                    Open Settings
+                  {:else}
+                    Enable
                   {/if}
                 </button>
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Share + DM notifications — dogfood gate: only rendered for
+               @getindigo.ai users. Persisted in menubar.json; share_notify.rs
+               / dm_notify.rs re-read each poll cycle so toggles take effect
+               without restart. DM is receive-only. -->
+          {#if isIndigoUser}
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
+                <span class="setting-desc">Show a notification when someone shares files with you</span>
               </div>
-            {/each}
-            <div class="ledger-path-row">
-              <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
+              <button
+                id="toggle-share-notifications"
+                class="toggle"
+                class:active={shareNotifications}
+                onclick={handleToggleShareNotifications}
+                role="switch"
+                aria-checked={shareNotifications}
+                aria-label="Share notifications"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="toggle-dm-notifications">Direct messages</label>
+                <span class="setting-desc">Show a notification when a teammate sends you a message</span>
+              </div>
+              <button
+                id="toggle-dm-notifications"
+                class="toggle"
+                class:active={dmNotifications}
+                onclick={handleToggleDmNotifications}
+                role="switch"
+                aria-checked={dmNotifications}
+                aria-label="Direct message notifications"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+          {/if}
+        </div>
+      </section>
+
+      <!-- ===== Group: Notifications ===================================
+           Share notifications — dogfood gate: only rendered for
+           @getindigo.ai users. Persists shareNotifications in
+           menubar.json; the poll in share_notify.rs re-reads on each
+           cycle so the toggle takes effect on the next sync:complete
+           without restart. -->
+      {#if isIndigoUser}
+        <section class="settings-group-wrap">
+          <h2 class="settings-group-title">Notifications</h2>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
+                <span class="setting-desc">Show a notification when someone shares files with you</span>
+              </div>
+              <button
+                id="toggle-share-notifications"
+                class="toggle"
+                class:active={shareNotifications}
+                onclick={handleToggleShareNotifications}
+                role="switch"
+                aria-checked={shareNotifications}
+                aria-label="Share notifications"
+              >
+                <span class="toggle-knob"></span>
+              </button>
             </div>
           </div>
-        {/if}
-
-        <!-- Default recording company — preselects the company-attribution
-             dropdown in the popover's active-meetings row. The user can
-             still override per-recording via that dropdown. Empty / no
-             selection = Personal vault (no company tag on the Recall
-             metadata). Memberships come from `meetings_list_memberships`
-             — same source as MeetingsWindow's URL-invite picker, so the
-             two surfaces stay in lockstep when a membership is added or
-             revoked. -->
-        <div class="setting-row">
-          <div class="setting-info">
-            <label class="setting-label" for="default-recording-company">Default recording</label>
-            <span class="setting-desc">
-              Where new meeting recordings get attributed by default. You can change this per-recording from the popover.
-            </span>
-          </div>
-          <select
-            id="default-recording-company"
-            class="default-recording-company"
-            aria-label="Default recording company"
-            value={defaultRecordingCompanyUid}
-            onchange={(e) => {
-              const v = (e.currentTarget as HTMLSelectElement).value;
-              void handleChangeDefaultRecordingCompany(v === '' ? null : v);
-            }}
-          >
-            <option value="">Personal</option>
-            {#each memberships as m (m.companyUid)}
-              <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
-            {/each}
-          </select>
-        </div>
-
-        <!-- Meeting permissions monitor — opens the wizard window where the
-             user can grant (or revoke) each macOS TCC permission the SDK
-             needs. The button label stays "Manage" regardless of current
-             state, since the wizard handles both directions:
-             - all granted  → user may want to audit / revoke
-             - some missing → user grants the missing ones
-
-             The descriptive text below the label still reflects the
-             current state so the Settings overview reads correctly at a
-             glance without opening the wizard. -->
-        <div class="setting-row">
-          <div class="setting-info">
-            <span class="setting-label">Meeting permissions</span>
-            <span class="setting-desc">
-              {#if !permissionState.meetingPermissions}
-                Checking macOS privacy grants…
-              {:else if permissionState.meetingPermissions.allRequiredGranted}
-                Accessibility, screen recording &amp; microphone all granted
-              {:else}
-                One or more macOS permissions need attention
-              {/if}
-            </span>
-          </div>
-          <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
-            Manage
-          </button>
-        </div>
+        </section>
       {/if}
 
-      <div class="settings-divider"></div>
-
-      <!-- Start at Login -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <label class="setting-label" for="toggle-start-login">Start at Login</label>
-          <span class="setting-desc">Launch HQ Sync when you log in</span>
-        </div>
-        <button
-          id="toggle-start-login"
-          class="toggle"
-          class:active={startAtLogin}
-          onclick={handleToggleStartAtLogin}
-          role="switch"
-          aria-checked={startAtLogin}
-          aria-label="Start at Login"
-        >
-          <span class="toggle-knob"></span>
-        </button>
-      </div>
-
-      <div class="settings-divider"></div>
-
-      <!-- Release channel — only rendered when the backend exposes more than
-           one channel (i.e. signed-in user is @getindigo.ai). Non-indigo
-           users have updates pinned to stable on the Rust side regardless
-           of what's stored, so showing the picker would be misleading.
-
-           The segmented control renders one button per available channel;
-           the selected button is highlighted, the others are click targets.
-           Persisted via save_settings on every change so the next 6-hour
-           updater poll picks up the new endpoint. -->
-      {#if availableChannels.length > 1}
-        <div class="setting-row channel-row">
-          <div class="setting-info">
-            <span class="setting-label">Release channel</span>
-            <span class="setting-desc">
-              {#if displayedChannel === 'stable'}
-                Stable updates only
-              {:else if displayedChannel === 'beta'}
-                Includes beta builds — early access, mostly stable
-              {:else}
-                Includes alpha builds — bleeding edge, may break
-              {/if}
-            </span>
-          </div>
-          <div class="channel-segments" role="radiogroup" aria-label="Release channel">
-            {#each availableChannels as channel (channel)}
+      <!-- ===== Group: Meetings ========================================
+           Detect upcoming meetings + per-recording attribution +
+           permissions wizard. Gated on
+           `permissionState.meetingDetectEligible` so users outside the
+           allowlist don't see toggles for an SDK that won't spawn. The
+           Rust side (`commands::recall_sdk::meeting_detect_eligible`) is
+           the authoritative gate; this is UX-only. macOS permissions are
+           handled by native first-use prompts — no parallel UI here. -->
+      {#if permissionState.meetingDetectEligible}
+        <section class="settings-group-wrap">
+          <h2 class="settings-group-title">Meetings</h2>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
+                <span class="setting-desc">Notify when a new meeting is detected</span>
+              </div>
               <button
-                type="button"
-                class="channel-segment"
-                class:active={displayedChannel === channel}
-                role="radio"
-                aria-checked={displayedChannel === channel}
-                onclick={() => handleChannelChange(channel)}
+                id="toggle-meeting-detect"
+                class="toggle"
+                class:active={meetingDetectEnabled}
+                onclick={handleToggleMeetingDetect}
+                role="switch"
+                aria-checked={meetingDetectEnabled}
+                aria-label="Detect upcoming meetings"
               >
-                {channel === 'stable' ? 'Stable' : channel === 'beta' ? 'Beta' : 'Alpha'}
+                <span class="toggle-knob"></span>
               </button>
-            {/each}
-          </div>
-        </div>
+            </div>
 
-        <div class="settings-divider"></div>
+            {#if meetingDetectEnabled}
+              <div class="platform-rows">
+                {#each ALL_PLATFORMS as platform}
+                  {@const checked = meetingDetectPlatforms.includes(platform)}
+                  <div class="platform-row">
+                    <label class="platform-label" for="platform-{platform}">{platform}</label>
+                    <button
+                      id="platform-{platform}"
+                      class="platform-check"
+                      class:checked
+                      onclick={() => handleTogglePlatform(platform)}
+                      role="checkbox"
+                      aria-checked={checked}
+                      aria-label="Enable {platform} meeting detection"
+                    >
+                      {#if checked}
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      {/if}
+                    </button>
+                  </div>
+                {/each}
+                <div class="ledger-path-row">
+                  <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
+                </div>
+              </div>
+            {/if}
+
+            <!-- Default recording company — preselects the company-attribution
+                 dropdown in the popover's active-meetings row. The user can
+                 still override per-recording via that dropdown. Empty / no
+                 selection = Personal vault (no company tag on the Recall
+                 metadata). Memberships come from `meetings_list_memberships`
+                 — same source as MeetingsWindow's URL-invite picker, so the
+                 two surfaces stay in lockstep when a membership is added or
+                 revoked. -->
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="default-recording-company">Default recording</label>
+                <span class="setting-desc">
+                  Where new meeting recordings get attributed by default. You can change this per-recording from the popover.
+                </span>
+              </div>
+              <select
+                id="default-recording-company"
+                class="default-recording-company"
+                aria-label="Default recording company"
+                value={defaultRecordingCompanyUid}
+                onchange={(e) => {
+                  const v = (e.currentTarget as HTMLSelectElement).value;
+                  void handleChangeDefaultRecordingCompany(v === '' ? null : v);
+                }}
+              >
+                <option value="">Personal</option>
+                {#each memberships as m (m.companyUid)}
+                  <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
+                {/each}
+              </select>
+            </div>
+
+            <!-- Meeting permissions monitor — opens the wizard window where
+                 the user can grant (or revoke) each macOS TCC permission
+                 the SDK needs. The button label stays "Manage" regardless
+                 of current state, since the wizard handles both directions:
+                 - all granted  → user may want to audit / revoke
+                 - some missing → user grants the missing ones
+
+                 The descriptive text below the label still reflects the
+                 current state so the Settings overview reads correctly at a
+                 glance without opening the wizard. -->
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">Meeting permissions</span>
+                <span class="setting-desc">
+                  {#if !permissionState.meetingPermissions}
+                    Checking macOS privacy grants…
+                  {:else if permissionState.meetingPermissions.allRequiredGranted}
+                    Accessibility, screen recording &amp; microphone all granted
+                  {:else}
+                    One or more macOS permissions need attention
+                  {/if}
+                </span>
+              </div>
+              <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
+                Manage
+              </button>
+            </div>
+          </div>
+        </section>
       {/if}
 
-      <!-- Check for Updates — manual trigger; background checker runs every 6h -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Check for Updates</span>
-          <span class="setting-desc">
-            {updateResult ?? 'Background checks run every 6 hours'}
-          </span>
-        </div>
-        <button
-          class="change-button"
-          onclick={handleCheckForUpdates}
-          disabled={updateChecking}
-        >
-          {updateChecking ? 'Checking…' : 'Check Now'}
-        </button>
-      </div>
+      <!-- ===== Group: Updates =========================================
+           Everything that controls what the Update pill targets and which
+           build the auto-updater pulls. Check for Updates is always present
+           so the group never renders empty for non-@indigo users. -->
+      <section class="settings-group-wrap">
+        <h2 class="settings-group-title">Updates</h2>
+        <div class="settings-group">
+          <!-- Staging channel — @getindigo.ai-only toggle. When ON (default
+               for @indigo builders), the popover's Update pill targets
+               `hq-core-staging` and shows the staging-flavored drift count.
+               When OFF, the staging-replace + staging-drift checks both
+               return None and the popover falls through to the prod release
+               channel. See `commands/hq_core_staging.rs`. -->
+          {#if isIndigoUser}
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="toggle-staging-channel">Use staging channel</label>
+                <span class="setting-desc">Target hq-core-staging for the Update pill instead of the released hq-core tag</span>
+              </div>
+              <button
+                id="toggle-staging-channel"
+                class="toggle"
+                class:active={stagingChannel}
+                onclick={handleToggleStagingChannel}
+                role="switch"
+                aria-checked={stagingChannel}
+                aria-label="Use staging channel"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+          {/if}
 
-      <div class="settings-divider"></div>
+          <!-- Release channel — only rendered when the backend exposes more
+               than one channel (i.e. signed-in user is @getindigo.ai).
+               Non-indigo users have updates pinned to stable on the Rust
+               side regardless of what's stored, so showing the picker would
+               be misleading. Persisted via save_settings on every change so
+               the next 6-hour updater poll picks up the new endpoint. -->
+          {#if availableChannels.length > 1}
+            <div class="setting-row channel-row">
+              <div class="setting-info">
+                <span class="setting-label">Release channel</span>
+                <span class="setting-desc">
+                  {#if displayedChannel === 'stable'}
+                    Stable updates only
+                  {:else if displayedChannel === 'beta'}
+                    Includes beta builds — early access, mostly stable
+                  {:else}
+                    Includes alpha builds — bleeding edge, may break
+                  {/if}
+                </span>
+              </div>
+              <div class="channel-segments" role="radiogroup" aria-label="Release channel">
+                {#each availableChannels as channel (channel)}
+                  <button
+                    type="button"
+                    class="channel-segment"
+                    class:active={displayedChannel === channel}
+                    role="radio"
+                    aria-checked={displayedChannel === channel}
+                    onclick={() => handleChannelChange(channel)}
+                  >
+                    {channel === 'stable' ? 'Stable' : channel === 'beta' ? 'Beta' : 'Alpha'}
+                  </button>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
-      <!-- Version — read-only; sourced from tauri.conf.json via getVersion() -->
-      <div class="setting-row">
-        <div class="setting-info">
-          <span class="setting-label">Version</span>
+          <!-- Check for Updates — manual trigger; background checker runs every 6h -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">Check for Updates</span>
+              <span class="setting-desc">
+                {updateResult ?? 'Background checks run every 6 hours'}
+              </span>
+            </div>
+            <button
+              class="change-button"
+              onclick={handleCheckForUpdates}
+              disabled={updateChecking}
+            >
+              {updateChecking ? 'Checking…' : 'Check Now'}
+            </button>
+          </div>
         </div>
-        <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
-      </div>
+      </section>
+
+      <!-- ===== Group: General ========================================= -->
+      <section class="settings-group-wrap">
+        <h2 class="settings-group-title">General</h2>
+        <div class="settings-group">
+          <!-- Start at Login -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-start-login">Start at Login</label>
+              <span class="setting-desc">Launch HQ Sync when you log in</span>
+            </div>
+            <button
+              id="toggle-start-login"
+              class="toggle"
+              class:active={startAtLogin}
+              onclick={handleToggleStartAtLogin}
+              role="switch"
+              aria-checked={startAtLogin}
+              aria-label="Start at Login"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <!-- Version — read-only; sourced from tauri.conf.json via getVersion() -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">Version</span>
+            </div>
+            <span class="version-value">{appVersion ? `v${appVersion}` : '—'}</span>
+          </div>
+        </div>
+      </section>
     </div>
   {/if}
 </div>
@@ -973,18 +1041,48 @@
     opacity: 1;
   }
 
-  /* Divider */
-  .settings-divider {
-    height: 1px;
-    background: var(--popover-divider, rgba(255, 255, 255, 0.06));
-    margin: 0 0.75rem;
-  }
-
-  /* Body */
+  /* Body — vertical stack of labeled groups. Groups are separated by
+     space, not dividers; dividers live only between rows inside a group. */
   .settings-body {
     display: flex;
     flex-direction: column;
-    padding: 0.25rem 0;
+    gap: var(--space-5);
+    padding: var(--space-2) var(--space-3) var(--space-4);
+  }
+
+  /* Grouped inset list (macOS System Settings idiom). A muted uppercase
+     header sits above a surface card; rows live inside the card with
+     hairline dividers between them. */
+  .settings-group-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .settings-group-title {
+    margin: 0;
+    padding: 0 var(--space-2);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .settings-group {
+    display: flex;
+    flex-direction: column;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+  }
+
+  /* Divider between consecutive rows within a group only. CSS adjacency
+     ignores Svelte's {#if} anchor comments, so gated rows still divide
+     correctly. */
+  .settings-group > .setting-row + .setting-row {
+    border-top: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
   }
 
   .settings-loading {
@@ -1015,8 +1113,8 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
+    gap: var(--space-3);
+    padding: var(--space-3);
   }
 
   .setting-info {
