@@ -725,8 +725,12 @@
               `install_hq_core_update` (spawns the rescue script against
               indigoai-us/hq-core at the release tag — same engine the
               staging pill uses). While running the pill is disabled and
-              relabelled "Updating…"; on completion a ✓ / ✗ chip
-              appears next to it.
+              relabelled "Updating…". On success a muted "✓ update done"
+              chip appears next to it; on FAILURE we never show a raw
+              "exit N" chip — instead a "Update failed — copy fix"
+              CopyPromptButton hands the user a guided-`/update-hq` prompt
+              for their HQ agent (the usual cause is an install too old for
+              the in-app rescue to bridge).
            3. hqVersion null → "HQ version unknown" + right-aligned
               CopyPromptButton so the user can hand a triage prompt to an
               agent in-session (the install is broken in a way we can't
@@ -839,19 +843,39 @@
           {/if}
         {/if}
         {#if coreInstallLastResult}
-          <!-- Single rescue-run feedback chip. Same shape regardless of
-               channel — App.svelte dispatches to the right command
-               internally. -->
-          <span
-            class="footer-hq-version-result footer-hq-version-result-{coreInstallLastResult.kind}"
-            title={coreInstallLastResult.logTail || coreInstallLastResult.logPath}
-          >
-            {#if coreInstallLastResult.kind === 'ok'}
+          {#if coreInstallLastResult.kind === 'ok'}
+            <!-- Success stays a muted inline chip — nothing for the user to
+                 act on. -->
+            <span
+              class="footer-hq-version-result footer-hq-version-result-ok"
+              title={coreInstallLastResult.logTail || coreInstallLastResult.logPath}
+            >
               ✓ update done
-            {:else}
-              ✗ update failed (exit {coreInstallLastResult.exitCode})
-            {/if}
-          </span>
+            </span>
+          {:else}
+            <!-- Failure NEVER surfaces a raw "exit N" chip — an exit code is
+                 not something the user can act on. Instead hand them a
+                 one-click prompt for their HQ agent to run a guided
+                 `/update-hq` (the usual cause is an install too old for the
+                 in-app rescue to bridge). The payload carries the exit code +
+                 log tail + target so the agent can triage without guessing. -->
+            <CopyPromptButton
+              variant="inline"
+              label="Update failed — copy fix"
+              issue={{
+                kind: 'hq-core-update-failed',
+                payload: {
+                  exitCode: coreInstallLastResult.exitCode,
+                  logTail: coreInstallLastResult.logTail,
+                  logPath: coreInstallLastResult.logPath,
+                  channel: coreState?.channel ?? '',
+                  targetVersion: coreState?.targetVersion ?? '',
+                  targetRepo: coreState?.targetRepo ?? '',
+                  hqVersion: hqVersion ?? '',
+                },
+              }}
+            />
+          {/if}
         {/if}
         </div>
       {/if}
@@ -1210,9 +1234,9 @@
     align-items: center;
     justify-content: flex-end;
     /* Wrap internally too, so an unusually wide combination (e.g.
-       "Update to vX.Y.Z" + "✗ update failed (exit 1)") stacks right-aligned
-       rather than overflowing. `margin-left:auto` keeps the group pinned right
-       on whichever row it lands. */
+       "Update to vX.Y.Z" + the "Update failed — copy fix" prompt button)
+       stacks right-aligned rather than overflowing. `margin-left:auto` keeps
+       the group pinned right on whichever row it lands. */
     flex-wrap: wrap;
     gap: 0.375rem;
     min-width: 0;
@@ -1307,10 +1331,6 @@
 
   .footer-hq-version-result-ok {
     color: var(--popover-success, #6ad59c);
-  }
-
-  .footer-hq-version-result-err {
-    color: var(--popover-danger, #d56a6a);
   }
 
   /* Banners — actionable state callouts (setup / auth / error) */
