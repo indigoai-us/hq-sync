@@ -97,7 +97,7 @@
     class:saving
     title={
       cloudReachable
-        ? 'What this company downloads to this machine. Shared = only granted prefixes; All = everything. Access is unaffected.'
+        ? 'Controls what this company downloads to THIS machine — not who can access it. Shared = only files shared with you; All = the whole company. Switching to Shared removes the rest from this machine on the next sync (they stay in the cloud and come back if you switch to All). Files you’ve changed but not yet synced are never removed.'
         : 'Cloud unreachable — sync mode can’t be changed right now'
     }
   >
