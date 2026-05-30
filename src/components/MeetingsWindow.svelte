@@ -303,13 +303,26 @@
     listError = null;
     try {
       // Fetch events + bots + memberships + connected accounts in parallel.
-      // Accounts is best-effort — falls back to [] so a person with zero
-      // connected Google accounts still gets the (empty) events render
-      // instead of a hard error.
+      //
+      // Catch the two primary list calls individually instead of letting
+      // Promise.all reject on first failure: an outage that 500s
+      // /v1/calendar/events should not blank in-memory bot state, and
+      // vice versa, so the 30s poll can recover one independently. Memberships
+      // and accounts already swallow to [] for the same reason — a person
+      // with zero connected Google accounts still wants the events render
+      // (the empty-state below handles that branch).
+      let upcomingErr: unknown = null;
+      let botsErr: unknown = null;
       const [evts, bots, memberships, accts] = await Promise.all([
-        invoke<MeetingEvent[]>('meetings_list_upcoming'),
+        invoke<MeetingEvent[]>('meetings_list_upcoming').catch((err: unknown) => {
+          upcomingErr = err;
+          return null;
+        }),
         invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
           calendarEventIds: null,
+        }).catch((err: unknown) => {
+          botsErr = err;
+          return null;
         }),
         // Memberships are tiny + rarely change — fetched on every open is
         // cheap and avoids stale company-name display after the user joins
@@ -319,8 +332,12 @@
           () => [] as GoogleAccount[],
         ),
       ]);
-      events = evts ?? [];
-      botsByEventId = buildBotMap(bots ?? []);
+      // Only overwrite on success so a transient 500 keeps the last good
+      // snapshot in memory until recovery. The error banner still wins in
+      // the render branch order, but the cached state is correct for the
+      // next successful refresh.
+      if (evts !== null) events = evts;
+      if (bots !== null) botsByEventId = buildBotMap(bots);
       companyNamesByUid = buildCompanyNameMap(memberships ?? []);
       accounts = accts ?? [];
       accountEmailById = new Map(
@@ -334,6 +351,16 @@
       // accountId as the badge fallback.
       await loadCalendarsForAccounts(accts ?? []);
 
+      // Surface the upstream error through friendlyError() so the user
+      // sees "Server hiccup — try again in a moment." instead of a raw
+      // `events HTTP 500: {"message":"Internal Server Error"}` blob.
+      // listError gets cleared at the top of the next refresh(), so the
+      // 30s poll drops this banner the moment hq-pro recovers.
+      const firstErr = upcomingErr ?? botsErr;
+      if (firstErr !== null) {
+        listError = friendlyError(firstErr, 'Could not load meetings.');
+      }
+
       // Persist after EVERYTHING (events + calendars) so the next open
       // hydrates a complete view — calendar maps need to be in the cache
       // too or the filter dropdown would be empty on next paint until the
@@ -341,7 +368,11 @@
       // inside saveMeetingsCache and never breaks this code path.
       persistSnapshot();
     } catch (err) {
-      listError = String(err);
+      // Defensive backstop. Network errors are caught per-call above; this
+      // only fires on an unexpected throw in the post-Promise.all body
+      // (e.g. a serialization bug). Route through friendlyError() too so
+      // a programming bug doesn't dump a stack trace into the UI either.
+      listError = friendlyError(err, 'Could not load meetings.');
     } finally {
       loading = false;
     }
