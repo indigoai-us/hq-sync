@@ -132,6 +132,7 @@
 #                     [--preserve-subpath REL]...
 #                     [--hq-root DIR]
 #                     [--no-history-check]
+#                     [--no-backup] [--backup-dir DIR]
 #                     [--dry-run] [--yes]
 #
 # Defaults:
@@ -163,6 +164,23 @@ HISTORY_CHECK=1
 # passes it here so the rescue baselines against the user's actual
 # installed tree, not "any blob in main's history."
 FLOOR_SHA_OVERRIDE=""
+
+# Pre-operation safety snapshot (v0.4.1+). The rescue walk MOVES USER-EDIT
+# files into personal/ and DELETES UNCHANGED ones before the overlay. A
+# misclassification (head_compare fallback on an unstamped install, a binary
+# USER-EDIT, an interrupted run) would otherwise be unrecoverable — there was
+# previously NO backup taken by the destructive code itself, only a manual
+# step documented in MIGRATION.md that users skipped. We now snapshot the
+# wipe set to ~/.hq/backups/pre-update-<ts>/ + write a RECOVERY.md manifest
+# BEFORE any destructive op. Default ON; opt out with --no-backup or
+# HQ_RESCUE_NO_BACKUP=1. Override location with --backup-dir / HQ_BACKUP_DIR.
+# Old snapshots older than HQ_BACKUP_RETENTION_DAYS (default 7) are pruned
+# after a successful run — this is the auto-cleanup MIGRATION.md promised.
+DO_BACKUP=1
+[ "${HQ_RESCUE_NO_BACKUP:-0}" = "1" ] && DO_BACKUP=0
+BACKUP_ROOT="${HQ_BACKUP_DIR:-$HOME/.hq/backups}"
+BACKUP_RETENTION_DAYS="${HQ_BACKUP_RETENTION_DAYS:-7}"
+BACKUP_DIR=""   # resolved at snapshot time (BACKUP_ROOT/pre-update-<RUN_TS>)
 
 # Paths that are ALWAYS preserved across the wipe+overlay, regardless of
 # mode or user flags. Each entry is shuttled to a mktemp area pre-wipe and
@@ -207,6 +225,8 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       shift 2 ;;
+    --no-backup) DO_BACKUP=0; shift ;;
+    --backup-dir) BACKUP_ROOT="$2"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     -h|--help) usage ;;
@@ -368,16 +388,29 @@ if [ "$HISTORY_CHECK" = "1" ]; then
 else
   echo "==> History gate: OFF (--no-history-check; every diff rescued)"
 fi
+if [ "$DO_BACKUP" = "1" ]; then
+  echo "==> Safety backup: ON  -> $BACKUP_ROOT/pre-update-$RUN_TS (retention ${BACKUP_RETENTION_DAYS}d)"
+else
+  echo "==> Safety backup: OFF (--no-backup / HQ_RESCUE_NO_BACKUP=1)"
+fi
 [ "$DRY_RUN" = "1" ] && echo "==> DRY RUN     (no destructive operations will run)"
 
 if [ "$ASSUME_YES" != "1" ] && [ "$DRY_RUN" != "1" ]; then
-  printf "\nThis will:\n  * rescue user-edited files (vs the last sync) into personal/,\n  * leave user-only files (not in upstream) untouched,\n  * delete upstream files unchanged since last sync, then unpack %s@%s on top.\nType 'yes' to proceed: " "$SOURCE_REPO" "$REF"
+  _backup_line="  * NO pre-op backup (--no-backup),"
+  [ "$DO_BACKUP" = "1" ] && _backup_line="  * snapshot the wipe set to $BACKUP_ROOT/pre-update-$RUN_TS first,"
+  printf "\nThis will:\n%s\n  * rescue user-edited files (vs the last sync) into personal/,\n  * leave user-only files (not in upstream) untouched,\n  * delete upstream files unchanged since last sync, then unpack %s@%s on top.\nType 'yes' to proceed: " "$_backup_line" "$SOURCE_REPO" "$REF"
   read -r confirm
   [ "$confirm" = "yes" ] || { echo "Aborted."; exit 4; }
 fi
 
 TMPDIR="$(mktemp -d -t hq-replace-rescue-XXXXXX)"
 trap 'rm -rf "$TMPDIR"' EXIT
+
+# Append-only record of every file the walk MOVES (rescue) or DELETES
+# (unchanged). Folded into the snapshot's RECOVERY.md manifest after the run
+# so a user can see exactly what changed and restore any single file.
+RESCUE_LOG="$TMPDIR/rescue-actions.log"
+: > "$RESCUE_LOG"
 
 # Build the clone URL. If GH_TOKEN is set in the environment, inject it as
 # the basic-auth user so `git clone` can access private staging repos
@@ -637,6 +670,7 @@ rescue_one() {
   if [ "$rel" = ".claude/CLAUDE.md" ]; then
     diff_append_claude_md
     rm -f "$local_path"
+    printf 'rescued\t%s\t-> personal/CLAUDE.md (diff-append)\n' "$rel" >> "$RESCUE_LOG" 2>/dev/null || true
     return
   fi
 
@@ -649,6 +683,7 @@ rescue_one() {
   fi
   mv "$local_path" "$dest"
   echo "    rescued: $rel  ->  ${dest#"$HQ_ROOT/"}"
+  printf 'rescued\t%s\t-> %s\n' "$rel" "${dest#"$HQ_ROOT/"}" >> "$RESCUE_LOG" 2>/dev/null || true
 }
 
 # Classify + act on one file. The per-file workhorse of the new algorithm.
@@ -763,6 +798,7 @@ process_one() {
       echo "    unchanged (delete + replace): $rel"
     else
       rm -f "$local_path"
+      printf 'deleted\t%s\t(unchanged vs baseline; re-created by overlay)\n' "$rel" >> "$RESCUE_LOG" 2>/dev/null || true
     fi
   fi
 }
@@ -807,6 +843,47 @@ walk_and_process() {
     process_one "$rel"
   done < <(find "$root_abs" \( -type d \( -name node_modules -o -name .git \) -prune \) -o \( -type f -print0 \))
 }
+
+# Prune pre-update-* snapshots older than the retention window. Best-effort:
+# a failure here never aborts the run (the snapshot we just took is what
+# matters). This is the auto-cleanup MIGRATION.md promised but never shipped.
+prune_old_backups() {
+  [ -d "$BACKUP_ROOT" ] || return 0
+  case "$BACKUP_RETENTION_DAYS" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$BACKUP_RETENTION_DAYS" -gt 0 ] || return 0
+  find "$BACKUP_ROOT" -maxdepth 1 -type d -name 'pre-update-*' -mtime +"$BACKUP_RETENTION_DAYS" -print 2>/dev/null \
+    | while IFS= read -r old; do
+        echo "    pruned old snapshot (> ${BACKUP_RETENTION_DAYS}d): ${old##*/}"
+        rm -rf "$old" 2>/dev/null || true
+      done
+}
+
+# --- Pre-operation safety snapshot (BEFORE any destructive op) --------------
+# Copy every wipe-set top-level entry to ~/.hq/backups/pre-update-<ts>/ so a
+# misclassification or interrupted rescue is fully recoverable. Only the wipe
+# set is snapshotted — repos/ (often ~GBs), personal/, companies/, workspace/
+# are preserved by the overlay and never at risk, so copying them would be
+# wasteful and slow. node_modules/ + nested .git/ are excluded for the same
+# reason. Skipped in dry-run (nothing gets destroyed) and when --no-backup.
+if [ "$DO_BACKUP" = "1" ] && [ "$DRY_RUN" != "1" ] && [ "${#WIPE_TOPLEVEL[@]}" -ne 0 ]; then
+  BACKUP_DIR="$BACKUP_ROOT/pre-update-$RUN_TS"
+  echo ""
+  echo "==> Safety snapshot -> $BACKUP_DIR"
+  mkdir -p "$BACKUP_DIR"
+  for root_rel in "${WIPE_TOPLEVEL[@]}"; do
+    src_abs="$HQ_ROOT/$root_rel"
+    [ -e "$src_abs" ] || continue
+    parent_rel="$(dirname "$root_rel")"
+    mkdir -p "$BACKUP_DIR/$parent_rel"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --exclude='node_modules/' --exclude='.git/' "$src_abs" "$BACKUP_DIR/$parent_rel/" 2>/dev/null \
+        || cp -a "$src_abs" "$BACKUP_DIR/$parent_rel/" 2>/dev/null || true
+    else
+      cp -a "$src_abs" "$BACKUP_DIR/$parent_rel/" 2>/dev/null || true
+    fi
+  done
+  echo "    snapshot complete (restore any file: cp \"$BACKUP_DIR/<relpath>\" \"$HQ_ROOT/<relpath>\")"
+fi
 
 echo ""
 if [ "${#WIPE_TOPLEVEL[@]}" -eq 0 ]; then
@@ -969,7 +1046,48 @@ else
   echo "    baseline:                          upstream HEAD (no stamp; first run / floor unreachable)"
 fi
 
+# --- Write recovery manifest into the snapshot + prune old snapshots --------
+if [ "$DO_BACKUP" = "1" ] && [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
+  {
+    echo "# HQ pre-update safety snapshot"
+    echo ""
+    echo "Created:   $RUN_TS"
+    echo "HQ root:   $HQ_ROOT"
+    echo "Source:    $SOURCE_REPO@$REF ($SRC_SHA)"
+    if [ "$BASELINE_MODE" = "history_floor" ]; then
+      echo "Baseline:  history_floor ($HISTORY_FLOOR)"
+    else
+      echo "Baseline:  head_compare (no last-sync stamp; first run or floor unreachable)"
+    fi
+    echo ""
+    echo "## What the rescue did"
+    echo "  user-only  (left in place):          $COUNT_USER_ONLY"
+    echo "  unchanged  (deleted + re-overlaid):  $COUNT_UNCHANGED"
+    echo "  user-edit  (rescued into personal/): $COUNT_USER_EDIT"
+    echo ""
+    echo "## Moved / deleted files (tab-separated: action, path, detail)"
+    if [ -s "$RESCUE_LOG" ]; then
+      cat "$RESCUE_LOG"
+    else
+      echo "  (no files were moved or deleted)"
+    fi
+    echo ""
+    echo "## Restore"
+    echo "This directory holds the wipe set exactly as it was before the update."
+    echo "Restore a single file:"
+    echo "  cp \"$BACKUP_DIR/<relpath>\" \"$HQ_ROOT/<relpath>\""
+    echo "Restore everything (overwrites current scaffold — use with care):"
+    echo "  rsync -a \"$BACKUP_DIR/\" \"$HQ_ROOT/\""
+    echo ""
+    echo "Auto-pruned after $BACKUP_RETENTION_DAYS days (HQ_BACKUP_RETENTION_DAYS)."
+  } > "$BACKUP_DIR/RECOVERY.md" 2>/dev/null || true
+  echo ""
+  echo "==> Pre-update snapshot + recovery manifest: $BACKUP_DIR"
+  prune_old_backups
+fi
+
 echo ""
 echo "==> Done. Source: $SOURCE_REPO@$REF ($SRC_SHA)"
 echo "    User-edited files were rescued under personal/ (see scan output above)."
 echo "    User-only files (created by you, unknown to upstream) were left untouched."
+[ "$DO_BACKUP" = "1" ] && [ -n "$BACKUP_DIR" ] && echo "    A full pre-update snapshot is at $BACKUP_DIR (RECOVERY.md explains restore)."
