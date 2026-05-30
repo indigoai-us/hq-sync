@@ -796,7 +796,7 @@
                  action if drift exists. -->
           {#if coreState.isEligible}
             <button
-              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice footer-hq-version-pill-count' : ''}"
+              class="footer-hq-version-pill {hasDrift ? 'footer-hq-version-pill-notice' : ''}"
               onclick={openDriftDetail}
               aria-label={hasDrift
                 ? `${coreState.driftReport.count} drifted core file${coreState.driftReport.count === 1 ? '' : 's'}. Click for details.`
@@ -805,7 +805,9 @@
                 ? `${coreState.driftReport.count} locked core file${coreState.driftReport.count === 1 ? '' : 's'} edited since last sync vs ${coreState.targetRepo}@${coreState.targetVersion}. Click for details.`
                 : `Locked core matches ${coreState.targetRepo}@${coreState.targetVersion}. Click to open the drift detail window.`}
             >
-              {hasDrift ? `${coreState.driftReport.count}` : 'in sync'}
+              {hasDrift
+                ? `${coreState.driftReport.count} drifted`
+                : 'in sync'}
             </button>
           {:else}
             <span

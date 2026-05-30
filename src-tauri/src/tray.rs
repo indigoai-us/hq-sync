@@ -245,7 +245,21 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         let disable_blur_hide = std::env::var("HQ_DISABLE_BLUR_HIDE").ok().as_deref() == Some("1");
         window.on_window_event(move |event| {
             if let WindowEvent::Focused(false) = event {
-                if !is_modal_open() && !disable_blur_hide {
+                // Don't dismiss the popover when focus moved to one of OUR OWN
+                // secondary windows (drift / new-files / DM / share detail). A
+                // sync or notification that opens such a window steals key
+                // focus from the popover and fires `Focused(false)`; hiding
+                // here made the popover vanish out from under the user mid-
+                // interaction (and made the Install/Restore buttons impossible
+                // to click — the window closed before the click landed). Only
+                // hide on a genuine click-away, i.e. when no other HQ window is
+                // visible. `is_modal_open()` still covers native pickers.
+                let secondary_open = win_clone
+                    .app_handle()
+                    .webview_windows()
+                    .iter()
+                    .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
+                if !is_modal_open() && !secondary_open && !disable_blur_hide {
                     let _ = win_clone.hide();
                 }
             }

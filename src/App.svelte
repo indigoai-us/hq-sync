@@ -295,6 +295,15 @@
         invoke('check_core_state').catch((e) =>
           console.error('post-install core-state refresh failed:', e)
         );
+        // Auto-dismiss the "✓ update done" chip after a few seconds. It's a
+        // momentary confirmation, not a persistent status — left up, it
+        // lingers next to a freshly-recomputed "Restore vX" pill (any
+        // remaining drift) and reads as a contradiction ("done" + "restore").
+        // Guard the clear so a NEW run started in the meantime isn't wiped.
+        const settledAt = coreInstallLastResult;
+        setTimeout(() => {
+          if (coreInstallLastResult === settledAt) coreInstallLastResult = null;
+        }, 6000);
       }
     } catch (err) {
       console.error(`${command} failed:`, err);
