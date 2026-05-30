@@ -488,6 +488,28 @@ async fn do_poll(app: &AppHandle) {
                     // on `wait_for_click(true).send()` until the user interacts
                     // (or macOS auto-dismisses) and emits a Tauri event for the
                     // frontend listener to handle.
+                    //
+                    // Custom-banner path: when `customBanner` is enabled, route
+                    // each share through the in-app banner (event-driven, no
+                    // busy-spinning Cocoa run loop) and skip the native firing
+                    // loop below entirely. The tray badge + `share:new-events`
+                    // emit after the branch run for both paths.
+                    if crate::commands::banner::custom_banner_enabled() {
+                        log(
+                            LOG_TAG,
+                            &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", body.events.len()),
+                        );
+                        for evt in &body.events {
+                            if let Err(e) = crate::commands::banner::show_share_banner(
+                                app.clone(),
+                                evt.clone(),
+                            )
+                            .await
+                            {
+                                log(LOG_TAG, &format!("SHARE_NOTIFY_BANNER_FAIL err={e}"));
+                            }
+                        }
+                    } else {
                     for evt in &body.events {
                         let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                         let title = notification_title(&evt.issuer_display_name);
@@ -598,6 +620,7 @@ async fn do_poll(app: &AppHandle) {
                             }
                         });
                     }
+                    } // end else — native firing path
 
                     // Badge the tray icon with the unacknowledged event count.
                     crate::tray::set_share_badge(app, body.events.len());

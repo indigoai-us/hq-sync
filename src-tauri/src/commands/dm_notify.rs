@@ -370,6 +370,22 @@ async fn do_poll(app: &AppHandle) {
         &format!("DM_NOTIFY_POLL_OK {} DM(s), cursor→{}", body.events.len(), newest),
     );
 
+    // SPIKE: when the custom banner is enabled, route every DM through the
+    // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
+    // loop — and skip the native firing path entirely.
+    if crate::commands::banner::custom_banner_enabled() {
+        log(LOG_TAG, &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", body.events.len()));
+        for dm in &body.events {
+            if let Err(e) = crate::commands::banner::show_dm_banner(app.clone(), dm.clone()).await {
+                log(LOG_TAG, &format!("DM_NOTIFY_BANNER_FAIL err={e}"));
+            }
+        }
+        let event_ids: Vec<String> = body.events.iter().map(|e| e.event_id.clone()).collect();
+        tauri::async_runtime::spawn(async move { post_ack(event_ids).await });
+        let _ = app.emit(EVENT_DM_NEW_EVENTS, &body.events);
+        return;
+    }
+
     // Lazily register the bundle identifier with mac-notification-sys so the
     // first send doesn't trigger a macOS "Choose Application" picker. Mirrors
     // the guard in share_notify::do_poll.

@@ -109,8 +109,19 @@ pub async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, Str
             if let Some(state) = app.try_state::<PendingUpdate>() {
                 *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.clone());
             }
-            // Emit event for frontend
+            // Emit event for frontend (popover update UI)
             let _ = app.emit("update:available", &info);
+            // Also raise the custom banner so a version drop surfaces even with
+            // the popover closed (gated on customBanner; purely additive — the
+            // in-app UI above is unchanged).
+            if crate::commands::banner::custom_banner_enabled() {
+                let _ = crate::commands::banner::show_update_banner(
+                    app.clone(),
+                    info.version.clone(),
+                    info.body.clone(),
+                )
+                .await;
+            }
             Ok(Some(info))
         }
         Ok(None) => Ok(None),
@@ -190,6 +201,14 @@ pub fn setup_update_checker(app: &AppHandle) {
                                 Some(info.clone());
                         }
                         let _ = handle.emit("update:available", &info);
+                        if crate::commands::banner::custom_banner_enabled() {
+                            let _ = crate::commands::banner::show_update_banner(
+                                handle.clone(),
+                                info.version.clone(),
+                                info.body.clone(),
+                            )
+                            .await;
+                        }
                     }
                     Ok(None) => {} // No update available — nothing to do
                     Err(e) => eprintln!("[updater] background check failed: {e}"),

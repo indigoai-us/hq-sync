@@ -6,6 +6,7 @@
   import { parseLocalEnvFailure } from '../lib/copy-prompts';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
+  import SyncModeToggle from './SyncModeToggle.svelte';
 
   interface Props {
     workspaces: Workspace[];
@@ -115,6 +116,14 @@
   }
 
   function isCompanyClickable(w: Workspace): boolean {
+    return w.kind === 'company' && (w.state === 'synced' || w.state === 'cloud-only');
+  }
+
+  // Show the sync-mode toggle only for cloud-backed company rows. `cloud-only`
+  // is included on purpose: a user can pre-set `shared` before the first
+  // download so a never-synced company never pulls its full tree. The personal
+  // vault has no membership sync-config, so it never gets the toggle.
+  function showSyncMode(w: Workspace): boolean {
     return w.kind === 'company' && (w.state === 'synced' || w.state === 'cloud-only');
   }
 
@@ -293,6 +302,12 @@
             <span class="row-meta">Cloud unreachable</span>
           {/if}
         </div>
+
+        <!-- Sync-mode toggle (Shared / All) — local download footprint, not
+             access. Cloud-backed company rows only. -->
+        {#if showSyncMode(w)}
+          <SyncModeToggle slug={w.slug} {cloudReachable} />
+        {/if}
 
         <!-- Connect icon button — for local-only AND broken rows. The same
              command (connect_workspace_to_cloud) handles both: for local-only
