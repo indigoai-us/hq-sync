@@ -70,7 +70,21 @@ fi
 
 sign_file() {
   local target="$1"
-  codesign "${SIGN_FLAGS[@]}" "$target" 2>/dev/null
+  local out
+  # Capture combined output instead of discarding stderr: under
+  # `set -euo pipefail` a codesign failure on the very first dylib aborts the
+  # whole step with NO diagnostic if stderr is sent to /dev/null. Stay quiet on
+  # success (codesign chatters "replacing existing signature" on every file),
+  # but on failure surface the real error AND the identities codesign can
+  # actually see (the default keychain search list) so CI failures are
+  # debuggable in one run.
+  if ! out=$(codesign "${SIGN_FLAGS[@]}" "$target" 2>&1); then
+    echo "ERROR: codesign failed for: $target" >&2
+    echo "  codesign output: ${out:-<none>}" >&2
+    echo "  identities visible to codesign (default search list):" >&2
+    security find-identity -v -p codesigning >&2 || true
+    return 1
+  fi
 }
 
 SDK_DIR="$APP/Contents/Resources/recall-sdk-bridge/node_modules/@recallai/desktop-sdk"
