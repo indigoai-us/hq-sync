@@ -17,7 +17,6 @@
    *     can verify against the SDK's diagnostic output.
    */
   import { invoke } from '@tauri-apps/api/core';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, onDestroy } from 'svelte';
   import {
     permissionState,
@@ -147,10 +146,6 @@
     }
   }
 
-  function handleClose() {
-    getCurrentWindow().close();
-  }
-
   let unlistenFocus: (() => void) | null = null;
 
   onMount(() => {
@@ -171,21 +166,18 @@
 </script>
 
 <div class="window">
+  <!-- Title-bar close affordance comes from the native macOS traffic-light
+       buttons (window has decorations=true in commands/permissions.rs).
+       A second in-content X button on the header would be redundant and
+       looked ugly next to the system chrome. -->
   <header>
-    <div>
-      <h1>Meeting Permissions</h1>
-      <p class="subtitle">
-        HQ Sync needs three macOS privacy grants to detect meetings and record them locally.
-        {#if allGranted}
-          <strong>All set</strong> — you can close this window.
-        {/if}
-      </p>
-    </div>
-    <button class="close-btn" onclick={handleClose} aria-label="Close window">
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-        <path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-      </svg>
-    </button>
+    <h1>Meeting Permissions</h1>
+    <p class="subtitle">
+      HQ Sync needs three macOS privacy grants to detect meetings and record them locally.
+      {#if allGranted}
+        <strong>All set</strong> — you can close this window.
+      {/if}
+    </p>
   </header>
 
   <!-- Quick-prompt button — fires the native macOS prompts for any
@@ -287,9 +279,6 @@
   }
 
   header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
     padding: 18px 22px 14px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   }
@@ -303,23 +292,11 @@
     margin: 0;
     font-size: 12.5px;
     color: rgba(250, 250, 250, 0.62);
-    max-width: 420px;
+    max-width: 520px;
   }
   header .subtitle strong {
     color: #4ade80;
     font-weight: 500;
-  }
-  .close-btn {
-    background: transparent;
-    border: 0;
-    padding: 6px;
-    color: rgba(250, 250, 250, 0.55);
-    cursor: pointer;
-    border-radius: 6px;
-  }
-  .close-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(250, 250, 250, 0.95);
   }
 
   .quick-prompt {
@@ -399,7 +376,7 @@
     margin: 4px 0 0;
     font-size: 12.5px;
     color: rgba(250, 250, 250, 0.62);
-    max-width: 360px;
+    max-width: 480px;
   }
   .perm-controls {
     display: flex;

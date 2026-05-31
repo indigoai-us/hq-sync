@@ -303,12 +303,6 @@
     onchangerecordingcompany,
   }: Props = $props();
 
-  /** Title-case a platform string for display ("zoom" → "Zoom"). */
-  function platformLabel(p: string): string {
-    if (!p) return 'Meeting';
-    return p.charAt(0).toUpperCase() + p.slice(1);
-  }
-
   // Instance ref for SyncStats so parent can trigger refresh
   let statsEl: SyncStats | undefined = $state();
   $effect(() => {
@@ -496,8 +490,26 @@
     {#if meetingsEnabled && onmeetingsclick}
       <!-- Discreet meeting-invite icon, sits just left of Sync. Gated to
            @getindigo.ai via `meetings_feature_enabled` (SYNC-1) so this
-           branch is dead code for non-Indigo users. -->
-      <MeetingIcon onclick={onmeetingsclick} />
+           branch is dead code for non-Indigo users.
+
+           Tinted from the same `activeMeetings` snapshot the (now-removed)
+           in-popover Detected row used to consume — yellow when one is
+           awaiting Record, red while any is recording. The Detected/Record
+           row itself was moved into MeetingsWindow so the popover stays
+           focused on sync state; the calendar icon is now the in-popover
+           hook into the meeting flow. -->
+      <MeetingIcon
+        onclick={onmeetingsclick}
+        detected={activeMeetings.some(
+          (m) => m.state === 'detected' || m.state === 'error',
+        )}
+        recording={activeMeetings.some(
+          (m) =>
+            m.state === 'recording' ||
+            m.state === 'starting' ||
+            m.state === 'stopping',
+        )}
+      />
     {/if}
 
     <!-- Sync button — right-aligned in the header so it's always visible
@@ -557,83 +569,15 @@
 
   <div class="popover-divider"></div>
 
-  <!-- Active meeting detections — rendered above all sync content when
-       the SDK has detected an in-progress meeting. The row's primary
-       action is Record (or Stop, if recording), wired to the
-       Tauri commands of the same name. Phase-0 only — non-allowlisted
-       users will never see this section because `activeMeetings` never
-       gets populated (the Rust side gates `meeting:detected` emission
-       on the Phase-0 check). -->
-  {#if activeMeetings.length > 0}
-    <section class="active-meetings" aria-label="Active meetings">
-      {#each activeMeetings as meeting (meeting.windowId)}
-        {@const pickerDisabled =
-          meeting.state === 'starting' ||
-          meeting.state === 'stopping'}
-        <div class="meeting-row" data-state={meeting.state}>
-          <div class="meeting-info">
-            <span class="meeting-platform">{platformLabel(meeting.platform)} meeting</span>
-            {#if meeting.state === 'recording'}
-              <span class="meeting-status recording">
-                <span class="recording-dot"></span>
-                Recording
-              </span>
-            {:else if meeting.state === 'starting'}
-              <span class="meeting-status">Starting…</span>
-            {:else if meeting.state === 'stopping'}
-              <span class="meeting-status">Stopping…</span>
-            {:else if meeting.state === 'error' && meeting.error}
-              <span class="meeting-status error" title={meeting.error}>Error</span>
-            {:else}
-              <span class="meeting-status">Detected</span>
-            {/if}
-          </div>
-          <!-- Company-attribution dropdown. Interactive while detected AND
-               while recording (locked only during the starting/stopping
-               transitions to avoid racing the bridge). Pre-recording the
-               selection rides into the upload-token mint on Record.
-               NB: changing it mid-recording updates intent but does not
-               yet re-attribute the recording — Recall's metadata is baked
-               at mint time; true "company at end" needs the hq-pro
-               /finalize endpoint (tracked follow-up). Personal (null) is
-               always available; per-recording picks aren't persisted as
-               the new default (that lives in Settings). -->
-          <select
-            class="meeting-company"
-            aria-label="Attribute recording to"
-            value={meeting.companyUid ?? ''}
-            disabled={pickerDisabled}
-            onchange={(e) => {
-              const v = (e.currentTarget as HTMLSelectElement).value;
-              onchangerecordingcompany?.(meeting.windowId, v === '' ? null : v);
-            }}
-          >
-            <option value="">Personal</option>
-            {#each recordingCompanies as c (c.companyUid)}
-              <option value={c.companyUid}>{c.companyName ?? c.companyUid}</option>
-            {/each}
-          </select>
-          {#if meeting.state === 'recording'}
-            <button
-              type="button"
-              class="meeting-action stop"
-              onclick={() => onstoprecording?.(meeting.windowId)}
-              disabled={meeting.state !== 'recording'}
-            >Stop</button>
-          {:else if meeting.state === 'starting' || meeting.state === 'stopping'}
-            <button type="button" class="meeting-action" disabled>…</button>
-          {:else}
-            <button
-              type="button"
-              class="meeting-action record"
-              onclick={() => onstartrecording?.(meeting.windowId)}
-            >Record</button>
-          {/if}
-        </div>
-      {/each}
-    </section>
-    <div class="popover-divider"></div>
-  {/if}
+  <!-- Active meeting detections used to render here as a Detected/Record
+       row above the sync list. They were moved to the top of
+       MeetingsWindow so the popover stays focused on sync state — the
+       calendar icon in the header now tints yellow (detected) / red
+       (recording) and clicking it opens the meetings window where the
+       same controls live. The `activeMeetings` / `onstartrecording` /
+       `onstoprecording` / `onchangerecordingcompany` props are still
+       received by this component (they drive the MeetingIcon tint) but
+       no longer rendered inline. -->
 
   <!-- Body -->
   <section class="popover-body">
@@ -1650,152 +1594,12 @@
     line-height: 1.4;
   }
 
-  /* ── Active meetings section ─────────────────────────────────────────
-     Shown above the sync body whenever the Recall Desktop SDK has a
-     live meeting detection. One row per windowId; rows disappear on
-     `meeting:closed` or `recording:ended`. */
-  .active-meetings {
-    padding: 0.5rem 0.875rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.375rem;
-  }
-
-  .meeting-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    padding: 0.5rem 0.625rem;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 8px;
-    transition: background 120ms ease, border-color 120ms ease;
-  }
-
-  .meeting-row[data-state='recording'] {
-    background: rgba(239, 68, 68, 0.06);
-    border-color: rgba(239, 68, 68, 0.18);
-  }
-
-  .meeting-row[data-state='error'] {
-    background: rgba(239, 68, 68, 0.05);
-    border-color: rgba(239, 68, 68, 0.16);
-  }
-
-  .meeting-info {
-    display: flex;
-    flex-direction: column;
-    gap: 0.0625rem;
-    min-width: 0;
-  }
-
-  .meeting-platform {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--popover-text, #e7e7eb);
-  }
-
-  .meeting-status {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3125rem;
-  }
-
-  .meeting-status.recording {
-    color: #f87171;
-    font-weight: 500;
-  }
-  .meeting-status.error {
-    color: #fca5a5;
-    cursor: help;
-  }
-
-  /* Pulsing red dot during recording — purely decorative, no aria. */
-  .recording-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #ef4444;
-    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
-    animation: recording-pulse 1.6s ease-out infinite;
-  }
-  @keyframes recording-pulse {
-    0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
-    70%  { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
-  }
-
-  .meeting-action {
-    flex: 0 0 auto;
-    font-size: 0.75rem;
-    font-weight: 500;
-    padding: 0.3125rem 0.625rem;
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--popover-text, #e7e7eb);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 6px;
-    cursor: pointer;
-    transition: background 100ms ease, border-color 100ms ease;
-  }
-  .meeting-action:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.16);
-  }
-  .meeting-action:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .meeting-action.record {
-    background: rgba(239, 68, 68, 0.16);
-    border-color: rgba(239, 68, 68, 0.32);
-    color: #fecaca;
-  }
-  .meeting-action.record:hover:not(:disabled) {
-    background: rgba(239, 68, 68, 0.24);
-    border-color: rgba(239, 68, 68, 0.44);
-  }
-  .meeting-action.stop {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.16);
-  }
-
-  /* Company-attribution dropdown — same height/typography as
-     `.meeting-action` so the row reads as a single control strip.
-     Width capped at 110px so longer org names ellipsize rather than
-     pushing the action button off the edge; native chevron suppressed
-     in favour of a chevron SVG that matches the popover's muted ink. */
-  .meeting-company {
-    flex: 0 0 auto;
-    max-width: 110px;
-    font-size: 0.6875rem;
-    font-family: inherit;
-    padding: 0.25rem 1.25rem 0.25rem 0.5rem;
-    background: rgba(255, 255, 255, 0.06);
-    color: var(--popover-text, #e7e7eb);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 6px;
-    cursor: pointer;
-    text-overflow: ellipsis;
-    overflow: hidden;
-    appearance: none;
-    -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: right 0.5rem center;
-  }
-  .meeting-company:hover:not(:disabled) {
-    background-color: rgba(255, 255, 255, 0.1);
-    border-color: rgba(255, 255, 255, 0.14);
-  }
-  .meeting-company:focus {
-    outline: none;
-    border-color: rgba(255, 255, 255, 0.2);
-  }
-  .meeting-company:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
+  /* The active-meetings row UI (Detected/Record + company-attribution
+     select + Stop button) moved to MeetingsWindow.svelte on
+     2026-05-30. Its CSS (`.active-meetings` / `.meeting-row` /
+     `.meeting-company` / `.recording-dot` / `@keyframes
+     recording-pulse` etc) lived here previously; the equivalent
+     `.active-*` classes now live alongside the markup in
+     MeetingsWindow's <style> block. Removed from this file so
+     `vite-plugin-svelte` doesn't flag them as unused. */
 </style>

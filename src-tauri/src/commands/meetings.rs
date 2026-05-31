@@ -858,21 +858,107 @@ pub async fn meetings_notify_detected(
     let body_for_thread = body.clone();
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
+        // ── Primary delivery: AppleScript ───────────────────────────────
+        // macOS 26 (Sequoia) blocks NSUserNotification from being mixed
+        // with UNUserNotificationCenter in the same process. usernoted
+        // logs:
+        //   Error: Legacy client ai.indigo.hq-sync-menubar connecting to
+        //   modern client. Denying message N from <LegacyConnection>.
+        // Once anything in the process touches UN (the
+        // `notification_permission_state` IPC probe is enough), the
+        // legacy `mac-notification-sys` deliver path is silently denied
+        // forever. `osascript display notification` doesn't go through
+        // the per-process legacy/modern gate — it's NotificationCenter's
+        // own scripting bridge — so it fires reliably regardless.
+        //
+        // Trade-off vs. the legacy library: no action button. We lose
+        // the inline "Record" button on the banner. Mitigation: the
+        // popover's calendar icon now tints yellow on detection (see
+        // MeetingIcon.svelte), so the user has an obvious in-app affordance
+        // to act on the detection. Click on the notification body still
+        // focuses HQ Sync (macOS's default behavior for any app's
+        // notification), and our `notification:meeting-action` event
+        // listener treats that as action="open" via the popover.
+        //
+        // Long-term: migrate to UNUserNotificationCenter via objc2 +
+        // UNNotificationCategory + UNNotificationAction("RECORD") so the
+        // Record button comes back. Tracked as a follow-up.
+        let osa_body = body_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
+        let osa_title = "Meeting detected".to_string();
+        let script = format!(
+            "display notification \"{osa_body}\" with title \"{osa_title}\""
+        );
+        match std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &script])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                crate::util::logfile::log(
+                    "meetings",
+                    "osascript notification fired",
+                );
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!(
+                        "osascript notification non-zero exit ({}): {}",
+                        out.status, stderr
+                    ),
+                );
+            }
+            Err(e) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("osascript spawn failed: {e}"),
+                );
+            }
+        }
+
+        // ── Secondary delivery: legacy mac-notification-sys ────────────
+        // Still attempted because: (1) some users may be on older macOS
+        // where the legacy path works (Catalina/Big Sur/Monterey/Ventura),
+        // and (2) it carries the Record action button via the response
+        // thread. On Sequoia+ this thread's `send()` is denied by
+        // usernoted and either errors immediately or returns
+        // NotificationResponse::None — both paths are logged below so the
+        // failure mode is visible.
         let mut notification = mac_notification_sys::Notification::default();
         notification
             .title("Meeting detected")
             .message(&body_for_thread)
             // `main_button` attaches a single action button labelled
-            // "Record". On modern macOS (Sonoma/Sequoia) banner-style
-            // notifications reveal action buttons on hover; alert-style
-            // shows them inline. Either way, clicking it returns
-            // ActionButton("Record") in the response.
+            // "Record". On older macOS this surfaces inline (alert
+            // style) or on hover (banner style). Sequoia denies the
+            // whole deliver, so this never reaches the user there.
             .main_button(mac_notification_sys::MainButton::SingleAction("Record"))
             // Block the thread until the user interacts (or macOS
             // auto-dismisses, which surfaces as None).
             .wait_for_click(true);
         match notification.send() {
             Ok(resp) => {
+                // Log the raw response variant so a "user said they got no
+                // notification" report can be cross-referenced against what
+                // mac-notification-sys actually returned. None/timeout reads
+                // identically to "macOS silently dropped the banner due to
+                // missing UNUserNotificationCenter authorization" in the
+                // logs — surfacing the variant makes that distinguishable.
+                let variant = match &resp {
+                    mac_notification_sys::NotificationResponse::ActionButton(n) => {
+                        format!("ActionButton({n})")
+                    }
+                    mac_notification_sys::NotificationResponse::Click => "Click".to_string(),
+                    mac_notification_sys::NotificationResponse::CloseButton(_) => {
+                        "CloseButton".to_string()
+                    }
+                    mac_notification_sys::NotificationResponse::Reply(_) => "Reply".to_string(),
+                    mac_notification_sys::NotificationResponse::None => "None".to_string(),
+                };
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("mac-notification-sys response: {variant}"),
+                );
                 let action = match resp {
                     mac_notification_sys::NotificationResponse::ActionButton(name)
                         if name.eq_ignore_ascii_case("record") =>

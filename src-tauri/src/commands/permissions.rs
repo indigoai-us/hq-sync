@@ -456,8 +456,12 @@ pub async fn open_meeting_permissions_window(app: tauri::AppHandle) -> Result<()
         tauri::WebviewUrl::App("index.html".into()),
     )
     .title("Meeting Permissions")
-    .inner_size(520.0, 540.0)
-    .min_inner_size(440.0, 420.0)
+    // Sized so all four permission rows + footer fit without the inner
+    // scrollbar appearing (`.perm-list` overflow:auto). Width gives the
+    // `.perm-reason` text a 480px column so the SDK rationale doesn't wrap
+    // onto a third line per row, which made the wizard look cramped.
+    .inner_size(640.0, 700.0)
+    .min_inner_size(560.0, 600.0)
     .resizable(true)
     .decorations(true)
     .icon(icon)

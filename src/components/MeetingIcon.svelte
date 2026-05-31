@@ -6,21 +6,69 @@
    * `invoke('open_meetings_window')`). Parent gates rendering on the
    * `meetings_feature_enabled` check so this component is only mounted for
    * users on the @getindigo.ai allowlist.
+   *
+   * Three visual states drive the glyph colour:
+   *   - `recording` (red): at least one ActiveMeeting in the `recording`
+   *     state. Highest priority — recording is the most actionable state.
+   *   - `detected` (yellow): at least one ActiveMeeting awaiting a record
+   *     decision (state `detected` or `error`) and none recording. The
+   *     in-popover Detected/Record row was removed in favour of this
+   *     discreet header affordance — clicking it opens MeetingsWindow,
+   *     where the user can act on the detection.
+   *   - `idle` (default near-white): no active meetings.
+   *
+   * Priority is intentional: a parallel "recording" + "detected" pair
+   * (e.g. one Zoom recording, a new Slack call detected) reads as
+   * recording first so the user doesn't miss the active red dot. The
+   * MeetingsWindow shows both rows for the granular picture.
    */
+  type ActiveState = 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
   interface Props {
     onclick: () => void;
     /** Optional badge — e.g. number of upcoming meetings. Future use. */
     count?: number;
+    /**
+     * Lightweight summary of the parent's `activeMeetings` array. Only
+     * the per-row `state` is needed to colour the icon; passing the
+     * derived bools (instead of the full array) avoids leaking the
+     * window-id / company-uid shape across the component boundary.
+     */
+    detected?: boolean;
+    recording?: boolean;
   }
-  let { onclick, count }: Props = $props();
+  let {
+    onclick,
+    count,
+    detected = false,
+    recording = false,
+  }: Props = $props();
+
+  // Recording wins over detected so the icon reads as "live capture in
+  // progress" whenever any meeting is being recorded.
+  const visualState = $derived<'idle' | 'detected' | 'recording'>(
+    recording ? 'recording' : detected ? 'detected' : 'idle',
+  );
 </script>
 
 <button
   type="button"
   class="meeting-icon-btn"
+  data-state={visualState}
   {onclick}
-  title="Upcoming meetings"
-  aria-label="Open meetings"
+  title={
+    visualState === 'recording'
+      ? 'Recording in progress — click to manage'
+      : visualState === 'detected'
+        ? 'Meeting detected — click to record'
+        : 'Upcoming meetings'
+  }
+  aria-label={
+    visualState === 'recording'
+      ? 'Open meetings — recording in progress'
+      : visualState === 'detected'
+        ? 'Open meetings — meeting detected'
+        : 'Open meetings'
+  }
 >
   <svg
     width="16"
@@ -70,7 +118,7 @@
        now uses a near-white so the calendar reads at a glance. */
     color: #f4f4f5;
     cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
     padding: 0;
     margin-right: 8px;
   }
@@ -81,6 +129,30 @@
   .meeting-icon-btn:focus-visible {
     outline: 2px solid rgba(180, 180, 255, 0.7);
     outline-offset: 1px;
+  }
+  /* Detected — yellow/amber. A meeting is in progress and the user has
+     not yet pressed Record. Matches the macOS HUD amber for "attention
+     needed but non-urgent". */
+  .meeting-icon-btn[data-state='detected'] {
+    color: #facc15;
+    background: rgba(250, 204, 21, 0.16);
+    border-color: rgba(250, 204, 21, 0.42);
+  }
+  .meeting-icon-btn[data-state='detected']:hover {
+    background: rgba(250, 204, 21, 0.24);
+    border-color: rgba(250, 204, 21, 0.62);
+  }
+  /* Recording — red. A SDK upload is actively in flight (the "live
+     indicator" on the calendar dot). Same palette as the popover Stop
+     button so the user reads it as the same state. */
+  .meeting-icon-btn[data-state='recording'] {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.16);
+    border-color: rgba(248, 113, 113, 0.45);
+  }
+  .meeting-icon-btn[data-state='recording']:hover {
+    background: rgba(248, 113, 113, 0.24);
+    border-color: rgba(248, 113, 113, 0.65);
   }
   .meeting-icon-badge {
     position: absolute;

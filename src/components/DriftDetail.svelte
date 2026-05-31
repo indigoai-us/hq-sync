@@ -345,14 +345,7 @@
        grouping, and a hard line under the title clashes with the
        continuous backdrop blur. -->
   <header class="drift-header">
-    <div class="drift-title-block">
-      <h1>Core Drift</h1>
-      {#if report}
-        <span class="drift-meta">
-          {versionLabel} · {report.count} file{report.count === 1 ? '' : 's'} differ
-        </span>
-      {/if}
-    </div>
+    <h1>Core Drift</h1>
     <div class="drift-header-actions">
       {#if allDriftIssue}
         <CopyPromptButton variant="inline" label="Copy prompt for all" issue={allDriftIssue} />
@@ -560,27 +553,14 @@
     cursor: default;
   }
 
-  /* Title + meta stacked tightly so the whole block fits inside the
-     38px title-bar zone. Heading uses 13px (canonical primary size),
-     meta uses 11px (canonical micro). No vertical gap — line-height
-     handles the rhythm. */
-  .drift-title-block {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-    line-height: 1.15;
-  }
-
+  /* Heading uses 13px (canonical primary size). Sits centered vertically
+     in the 38px title-bar zone alongside the macOS traffic-light buttons
+     and the right-side action cluster. */
   .drift-header h1 {
     font-size: var(--fs-lg);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
     margin: 0;
-  }
-
-  .drift-meta {
-    font-size: var(--fs-sm);
-    color: var(--popover-text-muted, #a0a0b0);
   }
 
   /* Loading + empty share centered-column layout — different inner content

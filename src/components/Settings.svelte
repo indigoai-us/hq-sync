@@ -794,12 +794,20 @@
                  metadata). Memberships come from `meetings_list_memberships`
                  — same source as MeetingsWindow's URL-invite picker, so the
                  two surfaces stay in lockstep when a membership is added or
-                 revoked. -->
-            <div class="setting-row">
+                 revoked.
+
+                 Layout deviates from the other `.setting-row` entries: the
+                 label sits above a full-width select instead of sharing a row
+                 with it. The default-company description is awkward to
+                 compress and the constrained `max-width: 140px` pill on the
+                 right read as cramped + ugly when the company name was long.
+                 Stacking keeps the select wide enough to show full names and
+                 gives the row visual room to breathe. -->
+            <div class="setting-row setting-row-stacked">
               <div class="setting-info">
                 <label class="setting-label" for="default-recording-company">Default recording</label>
                 <span class="setting-desc">
-                  Where new meeting recordings get attributed by default. You can change this per-recording from the popover.
+                  Attribution for new recordings. Changeable per-recording.
                 </span>
               </div>
               <select
@@ -1117,6 +1125,15 @@
     padding: var(--space-3);
   }
 
+  /* Vertical variant — label/desc on top, control on a second row spanning
+     full width. Used by the Default recording row where a long company name
+     would otherwise look cramped inside the 140px right-column pill. */
+  .setting-row-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+
   .setting-info {
     display: flex;
     flex-direction: column;
@@ -1173,21 +1190,21 @@
     cursor: default;
   }
 
-  /* Mirrors `.change-button` sizing so the default-recording row reads
-     visually consistent with adjacent change/manage controls — same
-     height pill on the right column, just with the native <select>
-     chevron. Caret colour follows the muted text so the control reads
-     as inactive until hovered/focused. */
+  /* Native <select> styled to read as the row's primary control. Sits on
+     its own line inside `.setting-row-stacked` so the full width is
+     available — long company names no longer clip behind the chevron.
+     Caret colour follows the muted text so the control reads as inactive
+     until hovered/focused. */
   .default-recording-company {
-    font-size: 0.75rem;
+    font-size: 0.8125rem;
     font-family: inherit;
-    padding: 0.25rem 1.5rem 0.25rem 0.625rem;
+    padding: 0.4375rem 1.75rem 0.4375rem 0.625rem;
     background: var(--popover-surface, rgba(255, 255, 255, 0.08));
     color: var(--popover-text, #e0e0e0);
     border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
     border-radius: 9px;
     cursor: pointer;
-    max-width: 140px;
+    width: 100%;
     text-overflow: ellipsis;
     overflow: hidden;
     appearance: none;
@@ -1195,7 +1212,6 @@
     background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 0.5rem center;
-    flex-shrink: 0;
   }
   .default-recording-company:hover {
     background-color: var(--popover-action-hover, rgba(255, 255, 255, 0.05));

@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as Sentry from '@sentry/svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
@@ -1119,6 +1119,54 @@
       ),
     );
 
+    // --- Cross-window bridge to MeetingsWindow ---
+    // The Detected/Record row used to live inside Popover.svelte. As of
+    // 2026-05-30 it moved to MeetingsWindow's top strip so the popover
+    // stays focused on sync state. MeetingsWindow runs in a separate
+    // webview, so we ship the snapshot + dispatch actions over Tauri
+    // custom events instead of via props.
+    //
+    // Three event channels:
+    //   popover:meetings-snapshot           ← App.svelte → MeetingsWindow
+    //     Whole snapshot {activeMeetings, memberships, defaultRecordingCompanyUid}.
+    //     Re-broadcast on every $effect tick when any of those mutate.
+    //   meetings-window:request-snapshot    ← MeetingsWindow → App.svelte
+    //     Fired on MeetingsWindow mount so it gets an immediate seed
+    //     without having to wait for the next mutation.
+    //   meetings-window:action              ← MeetingsWindow → App.svelte
+    //     Dispatch for Record / Stop / company-change. The handler maps
+    //     each to its existing local handler so the bridge doesn't
+    //     duplicate company-resolution / state-machine logic.
+    unlisteners.push(
+      await listen('meetings-window:request-snapshot', () => {
+        // Best-effort emit — `emit` returns a Promise but we don't await
+        // (the request is fire-and-forget UX).
+        emit('popover:meetings-snapshot', {
+          activeMeetings,
+          memberships,
+          defaultRecordingCompanyUid,
+        }).catch((err) => {
+          console.warn('meetings-snapshot re-emit failed', err);
+        });
+      }),
+    );
+    unlisteners.push(
+      await listen<{
+        action: 'start' | 'stop' | 'change-company';
+        windowId: string;
+        companyUid?: string | null;
+      }>('meetings-window:action', (event) => {
+        const { action, windowId, companyUid } = event.payload;
+        if (action === 'start') {
+          void handleStartRecording(windowId);
+        } else if (action === 'stop') {
+          void handleStopRecording(windowId);
+        } else if (action === 'change-company') {
+          handleChangeRecordingCompany(windowId, companyUid ?? null);
+        }
+      }),
+    );
+
     // Notification action dispatch — fired by the Rust mac-notification-sys
     // worker thread when the user interacts with a "Meeting detected"
     // notification. Two cases:
@@ -1389,11 +1437,47 @@
     };
   });
 
-  // Ask macOS for notification authorization once. The Rust command wraps
-  // tauri-plugin-notification's request_permission(); macOS shows the system
-  // dialog only when the status is `prompt`, so this is safe to call on every
-  // launch (no re-nag). We skip the request entirely when already determined
-  // to avoid a needless IPC round-trip.
+  // Broadcast the active-meetings snapshot to MeetingsWindow whenever the
+  // pieces it renders mutate. Tauri `emit` fans out to every webview
+  // (including the popover itself, which ignores its own emit by virtue
+  // of the popover not subscribing). The snapshot is shaped to match
+  // what MeetingsWindow renders 1:1 so the receiver is a dumb consumer.
+  //
+  // Don't depend on the receiver being mounted — `emit` is best-effort
+  // and lost emits while MeetingsWindow is closed are recovered the
+  // next time it mounts via `meetings-window:request-snapshot`.
+  $effect(() => {
+    if (!meetingsEnabled) return;
+    emit('popover:meetings-snapshot', {
+      activeMeetings,
+      memberships,
+      defaultRecordingCompanyUid,
+    }).catch((err) => {
+      console.warn('meetings-snapshot emit failed', err);
+    });
+  });
+
+  // Ask macOS for notification authorization once on cold start.
+  //
+  // The call is GATED on `state === 'prompt'` because of an interaction
+  // discovered on macOS 26.4 (Sequoia) on 2026-05-30: calling
+  // `requestAuthorizationWithOptions` registers the process as a
+  // UNUserNotificationCenter "modern" client. After that, usernoted
+  // rejects any NSUserNotification deliveries from the same process
+  // with:
+  //   Error: Legacy client <bundle> connecting to modern client.
+  //   You can't mix modern clients with legacy clients.
+  //   Denying message N from connection <LegacyConnection ...>
+  // Our meeting-detect path goes through `mac-notification-sys` (0.6),
+  // which is still on NSUserNotification — calling `request_authorization`
+  // unconditionally bricks it. The conservative gate keeps the app on
+  // the legacy track unless the OS dialog is actually needed.
+  //
+  // Long-term fix: migrate `meetings_notify_detected` (and the
+  // share/dm-notify paths) to UNUserNotificationCenter via objc2 so the
+  // whole app is a modern client. Tracked as a follow-up. For now the
+  // meeting-detect handler falls back to `osascript display notification`
+  // when the legacy deliver gets denied (see commands/meetings.rs).
   async function requestNotificationPermissionOnce() {
     try {
       const state = await invoke<string>('notification_permission_state');
