@@ -219,6 +219,12 @@
     logTail: string;
     logPath: string;
   } | null>(null);
+  let coworkPluginInstalling = $state(false);
+  let coworkPluginLastResult = $state<{
+    kind: 'ok' | 'err';
+    artifactPath?: string;
+    logTail: string;
+  } | null>(null);
 
   // Locally-installed hq-core `hqVersion` (or null when core.yaml is
   // missing/unparseable). Always populated by a cheap on-disk read at app
@@ -505,6 +511,31 @@
     }
   }
 
+  async function handleInstallCoworkPlugin() {
+    if (coworkPluginInstalling) return;
+    coworkPluginInstalling = true;
+    coworkPluginLastResult = null;
+    try {
+      const result = await invoke<{ artifactPath: string; logTail: string }>(
+        'install_cowork_plugin',
+        { hqFolderPath: config?.hqFolderPath ?? null }
+      );
+      coworkPluginLastResult = {
+        kind: 'ok',
+        artifactPath: result.artifactPath,
+        logTail: result.logTail,
+      };
+    } catch (err) {
+      console.error('install_cowork_plugin failed:', err);
+      coworkPluginLastResult = {
+        kind: 'err',
+        logTail: String(err),
+      };
+    } finally {
+      coworkPluginInstalling = false;
+    }
+  }
+
   async function setupTrayListeners() {
     // Refresh workspaces every time the menubar popover gains focus. Cheap
     // (single Tauri command + small vault round-trip) and catches external
@@ -531,6 +562,12 @@
     unlisteners.push(
       await listen('tray:open-settings', () => {
         handleSettings();
+      })
+    );
+
+    unlisteners.push(
+      await listen('tray:install-cowork-plugin', () => {
+        handleInstallCoworkPlugin();
       })
     );
 
@@ -1171,6 +1208,8 @@
       {coreState}
       {coreInstalling}
       {coreInstallLastResult}
+      {coworkPluginInstalling}
+      {coworkPluginLastResult}
       {hqVersion}
       onsync={handleSyncNow}
       oncancel={handleCancel}
@@ -1182,6 +1221,7 @@
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
       oninstallcore={handleInstallCore}
+      oninstallcoworkplugin={handleInstallCoworkPlugin}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
       {desktopAltEnabled}

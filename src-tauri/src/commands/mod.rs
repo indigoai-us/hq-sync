@@ -6,6 +6,7 @@ pub mod banner;
 pub mod cognito;
 pub mod config;
 pub mod conflicts;
+pub mod cowork_plugin;
 pub mod daemon;
 pub mod desktop_alt;
 pub mod dm_mqtt;

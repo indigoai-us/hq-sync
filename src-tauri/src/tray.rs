@@ -141,6 +141,7 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
 
 const MENU_VERSION: &str = "version";
 const MENU_SYNC_NOW: &str = "sync-now";
+const MENU_INSTALL_COWORK_PLUGIN: &str = "install-cowork-plugin";
 const MENU_SETTINGS: &str = "settings";
 const MENU_QUIT: &str = "quit";
 
@@ -169,6 +170,8 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .enabled(false)
         .build(app)?;
     let sync_now = MenuItemBuilder::with_id(MENU_SYNC_NOW, "Sync Now").build(app)?;
+    let install_cowork_plugin =
+        MenuItemBuilder::with_id(MENU_INSTALL_COWORK_PLUGIN, "Install Cowork Plugin").build(app)?;
     let settings = MenuItemBuilder::with_id(MENU_SETTINGS, "Settings").build(app)?;
     let quit = MenuItemBuilder::with_id(MENU_QUIT, "Quit").build(app)?;
 
@@ -176,6 +179,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .item(&version_item)
         .separator()
         .item(&sync_now)
+        .item(&install_cowork_plugin)
         .separator()
         .item(&settings)
         .item(&quit)
@@ -195,6 +199,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 match id {
                     id if id == MENU_SYNC_NOW => {
                         let _ = app_handle.emit("tray:sync-now", ());
+                    }
+                    id if id == MENU_INSTALL_COWORK_PLUGIN => {
+                        show_window_at_tray(&app_handle);
+                        let _ = app_handle.emit("tray:install-cowork-plugin", ());
                     }
                     id if id == MENU_SETTINGS => {
                         let _ = app_handle.emit("tray:open-settings", ());

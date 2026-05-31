@@ -177,6 +177,7 @@ fn main() {
             commands::auth::has_stored_token,
             commands::auth::refresh_tokens,
             commands::config::get_config,
+            commands::cowork_plugin::install_cowork_plugin,
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
