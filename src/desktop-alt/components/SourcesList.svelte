@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Workspace } from '../../lib/workspaces';
+  import SyncModeToggle from '../../components/SyncModeToggle.svelte';
   import {
     buildSourceRows,
     type SourceViewModel,
@@ -68,7 +69,12 @@
           <div class="source-name" role="cell">
             <span class="state-dot {row.liveState}" aria-label={stateLabel(row)}></span>
             <div>
-              <strong>{row.name}</strong>
+              <div class="source-name-row">
+                <strong>{row.name}</strong>
+                {#if row.isPersonal}
+                  <span class="personal-tag">Personal</span>
+                {/if}
+              </div>
               <span>{row.detail}</span>
             </div>
           </div>
@@ -85,9 +91,16 @@
           </div>
           <span class="source-muted" role="cell">{row.lastSyncLabel}</span>
           <span class="source-muted" role="cell">{row.transferredLabel}</span>
-          <span class="action-pill {row.action.toLowerCase().replaceAll(' ', '-')}" role="cell">
-            {row.action}
-          </span>
+          <div class="source-action" class:has-sync-mode={row.showSyncMode} role="cell">
+            <span class="action-pill {row.action.toLowerCase().replaceAll(' ', '-')}">
+              {row.action}
+            </span>
+            {#if row.showSyncMode}
+              <div class="sync-mode-slot">
+                <SyncModeToggle slug={row.slug} {cloudReachable} />
+              </div>
+            {/if}
+          </div>
         </div>
       {/each}
     </div>
@@ -292,6 +305,66 @@
   .action-pill.paused {
     background: var(--row-active);
     color: var(--muted-3);
+  }
+
+  .source-name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  /* Higher specificity than the broad `.source-name span` rule above so the
+     tag stays an inline pill (not a clipped block) with its own color/size. */
+  .source-name .personal-tag {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    height: 16px;
+    padding: 0 6px;
+    border: 1px solid rgba(99, 102, 241, 0.32);
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.14);
+    color: #a5a8ff;
+    font-size: 10px;
+    font-weight: 650;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    overflow: visible;
+    white-space: nowrap;
+  }
+
+  .source-action {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 74px;
+  }
+
+  .action-pill {
+    transition: opacity 0.12s ease;
+  }
+
+  .sync-mode-slot {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    transform: translateY(-50%);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  .source-row:hover .source-action.has-sync-mode .action-pill,
+  .source-row:focus-within .source-action.has-sync-mode .action-pill {
+    opacity: 0;
+  }
+
+  .source-row:hover .source-action.has-sync-mode .sync-mode-slot,
+  .source-row:focus-within .source-action.has-sync-mode .sync-mode-slot {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   .empty-state {

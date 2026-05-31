@@ -1,10 +1,8 @@
 <script lang="ts">
   import type { Workspace } from '../../lib/workspaces';
-  import AttentionPanel from '../components/AttentionPanel.svelte';
   import HeroStatus from '../components/HeroStatus.svelte';
   import SourcesList from '../components/SourcesList.svelte';
   import {
-    buildAttentionItems,
     formatBytes,
     timeAgo,
     type ActivityEntry,
@@ -49,28 +47,13 @@
     observedVaultBytes,
     statsBySlug,
     cloudReachable,
-    cloudError,
-    manifestError,
     activity,
-    syncErrorMessage,
     onsync,
     onsettings,
     onaddsource,
     actionMessage = '',
     actionError = '',
   }: Props = $props();
-
-  const attentionItems = $derived(
-    buildAttentionItems({
-      workspaces,
-      syncState,
-      syncErrorMessage,
-      cloudReachable,
-      cloudError,
-      manifestError,
-      statsBySlug,
-    }),
-  );
 
   const recentActivity = $derived(
     [...activity].sort((a, b) => b.at - a.at).slice(0, 6),
@@ -110,8 +93,6 @@
     />
 
     <aside class="side-column">
-      <AttentionPanel items={attentionItems} onaction={onsettings} />
-
       <section class="activity-panel" aria-labelledby="activity-title">
         <div class="panel-header">
           <h2 id="activity-title">Recent activity</h2>

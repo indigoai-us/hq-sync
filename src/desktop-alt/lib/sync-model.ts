@@ -59,6 +59,11 @@ export type SourceAction = 'Up to date' | 'Syncing' | 'Reauth' | 'Paused' | 'Nee
 
 export interface SourceViewModel {
   key: string;
+  slug: string;
+  kind: Workspace['kind'];
+  state: Workspace['state'];
+  isPersonal: boolean;
+  showSyncMode: boolean;
   name: string;
   detail: string;
   liveState: SourceLiveState;
@@ -67,6 +72,25 @@ export interface SourceViewModel {
   transferredLabel: string;
   progressPct: number | null;
   warning: string | null;
+}
+
+// Mirror classic WorkspaceList ordering: personal first, then synced,
+// cloud-only, broken, local-only. Stable sort preserves backend order within
+// each group.
+const SOURCE_STATE_ORDER: Record<Workspace['state'], number> = {
+  personal: 0,
+  synced: 1,
+  'cloud-only': 2,
+  broken: 3,
+  'local-only': 4,
+};
+
+// Hover shared/All footprint toggle only applies to cloud-backed company rows.
+export function showSyncModeFor(workspace: Workspace): boolean {
+  return (
+    workspace.kind === 'company' &&
+    (workspace.state === 'synced' || workspace.state === 'cloud-only')
+  );
 }
 
 export interface AttentionItem {
@@ -192,7 +216,11 @@ export function buildSourceRows(args: {
 }): SourceViewModel[] {
   const { workspaces, syncState, progress, statsBySlug, cloudReachable } = args;
 
-  return workspaces.map((workspace) => {
+  const ordered = [...workspaces].sort(
+    (a, b) => SOURCE_STATE_ORDER[a.state] - SOURCE_STATE_ORDER[b.state],
+  );
+
+  return ordered.map((workspace) => {
     const stats = statsBySlug[workspace.slug] ?? emptyWorkspaceStats();
     const syncing = syncState === 'syncing' && progress?.company === workspace.slug;
     const reauth = needsReauthWorkspace(workspace, syncState);
@@ -223,6 +251,11 @@ export function buildSourceRows(args: {
 
     return {
       key: `${workspace.kind}:${workspace.slug}`,
+      slug: workspace.slug,
+      kind: workspace.kind,
+      state: workspace.state,
+      isPersonal: workspace.kind === 'personal',
+      showSyncMode: showSyncModeFor(workspace),
       name: workspace.displayName,
       detail,
       liveState: syncing
