@@ -2,40 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!--
-      Hardened-runtime entitlements for the notarized Developer ID build.
-
-      Notarization (Apple, since macOS 10.14) REQUIRES the hardened runtime
-      (codesign `--options runtime`). The hardened runtime turns on library
-      validation by default: a process may then only load dylibs signed by
-      Apple or by the same Team ID as the host binary.
-
-      The Recall Desktop SDK we bundle does NOT satisfy that: its
-      GStreamer.framework dylibs (~100 of them) and the top-level Recall
-      dylibs (liblibbot_desktop_rs.dylib, libui_recorder.dylib) carry no
-      Team ID. The process that loads them is the SDK's own child binary
-      `desktop_sdk_macos_exe` (otool shows it links
-      @rpath/GStreamer.framework/Versions/1.0/GStreamer). We re-sign that
-      binary ourselves in scripts/sign-bundle.sh Phase 5, so attaching this
-      entitlement THERE is exactly what lets it dlopen the Team-ID-less
-      GStreamer dylibs under the hardened runtime instead of SIGABRT-looping.
-
-      scripts/sign-bundle.sh applies the signing flags (including
-      --entitlements) to every component it signs, so this lands on
-      desktop_sdk_macos_exe, the main hq-sync-menubar binary, and the
-      sidecar shim alike. That is harmless for the main binary (all its
-      deps are static Rust + Apple system frameworks) and load-bearing for
-      desktop_sdk_macos_exe.
-
-      Kept intentionally minimal: the app is NOT sandboxed, so microphone /
-      screen-recording / accessibility access flow through TCC + the
-      Info.plist usage strings at runtime, not through sandbox entitlements.
-      The bridge sets no DYLD_* environment variables and resolves the
-      framework purely via baked-in @rpath, so allow-dyld-environment-
-      variables is deliberately omitted. Add entitlements here only if the
-      dry-run notarization / launch surfaces a concrete need.
-    -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
 </dict>
 </plist>
