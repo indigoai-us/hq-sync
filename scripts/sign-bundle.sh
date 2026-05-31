@@ -90,33 +90,55 @@ sign_file() {
 SDK_DIR="$APP/Contents/Resources/recall-sdk-bridge/node_modules/@recallai/desktop-sdk"
 GST_FRAMEWORK="$SDK_DIR/Frameworks/GStreamer.framework"
 
-# ─── 1. Sign every dylib inside the GStreamer framework ─────────────────────
-# Deepest first — the gst-plugins subdir links against the top-level dylibs,
-# so the top-level dylibs need their final signatures before the plugins
-# can resolve them (matters for codesign's load-command verification).
+# ─── 1. Sign every Mach-O inside the GStreamer framework ────────────────────
+# Sign by CONTENT, not by name. The framework ships Mach-O binaries that do
+# NOT end in .dylib — notably the `GStreamer` umbrella binary, which exists at
+# BOTH Versions/1.0/GStreamer AND Versions/1.0/lib/GStreamer (two distinct
+# inodes, byte-identical, each a fat x86_64+arm64 binary). A `*.dylib` glob
+# misses both. Apple's notary service rejects ANY unsigned nested Mach-O,
+# while `codesign --verify --deep` (Phase 9) does NOT — it only seals them as
+# hashed nested resources. That gap let the unsigned Versions/1.0/lib/GStreamer
+# pass the Sign step's verify and then fail the Notarize step ~8 min later
+# (dry-run run 26725856981). Classify each file with `file` and sign anything
+# Mach-O; skip the rest so `set -e` doesn't abort on Resources/headers/.py.
+#
+# Order within this phase doesn't matter — each file is signed in isolation
+# (no --deep). Leaf-first ordering only matters when SEALING directories (the
+# framework in Phase 3, the .app in Phase 8). find -print0 / read -d '' keeps
+# paths with spaces intact and avoids ARG_MAX with the ~400 SDK binaries.
 if [ -d "$GST_FRAMEWORK" ]; then
-  echo "  Phase 1: GStreamer.framework dylibs"
-  # Codesign only cares about leaf-first ordering when sealing *directories*
-  # (the framework + .app, handled below). For individual dylibs the order
-  # within this phase doesn't matter — each is signed in isolation. Using
-  # find -print0 / read -d '' so paths with spaces survive intact, and so
-  # we don't blow past ARG_MAX with the ~400 SDK dylibs.
-  dylib_count=0
-  while IFS= read -r -d '' dylib; do
-    sign_file "$dylib"
-    dylib_count=$((dylib_count + 1))
-  done < <(find "$GST_FRAMEWORK" -type f -name "*.dylib" -print0)
-  echo "    ($dylib_count dylibs signed)"
+  echo "  Phase 1: sign every Mach-O in GStreamer.framework"
+  macho_count=0
+  while IFS= read -r -d '' f; do
+    desc=$(file -b "$f" 2>/dev/null) || true
+    case "$desc" in
+      *Mach-O*)
+        sign_file "$f"
+        macho_count=$((macho_count + 1))
+        ;;
+    esac
+  done < <(find "$GST_FRAMEWORK" -type f -print0)
+  echo "    ($macho_count Mach-O binaries signed)"
 fi
 
-# ─── 2. Sign helper binaries inside the framework ───────────────────────────
-# The framework's `GStreamer` mach-O lives at `Versions/1.0/GStreamer` and
-# is what `@rpath/GStreamer` resolves to. Sign it before sealing the
-# framework directory.
-if [ -f "$GST_FRAMEWORK/Versions/1.0/GStreamer" ]; then
-  echo "  Phase 2: framework mach-O"
-  sign_file "$GST_FRAMEWORK/Versions/1.0/GStreamer"
-fi
+# ─── 2. Assert the umbrella Mach-O binaries are signed ──────────────────────
+# Belt-and-suspenders for the exact regression that broke notarization: the
+# `GStreamer` umbrella binary at BOTH Versions/1.0/GStreamer and
+# Versions/1.0/lib/GStreamer must carry a signature after Phase 1. Verify it
+# HERE (sign time) so a future glob/scan regression fails fast and loud,
+# instead of silently shipping an unsigned Mach-O that only Apple's notary
+# rejects — 8+ minutes downstream, with a far less obvious error.
+for umbrella in \
+  "$GST_FRAMEWORK/Versions/1.0/GStreamer" \
+  "$GST_FRAMEWORK/Versions/1.0/lib/GStreamer"; do
+  [ -f "$umbrella" ] || continue
+  if ! codesign --verify --strict "$umbrella" 2>/dev/null; then
+    echo "ERROR: framework umbrella Mach-O is unsigned after Phase 1: $umbrella" >&2
+    echo "       (Phase 1 must sign every Mach-O by content — notary rejects unsigned nested Mach-O)" >&2
+    exit 1
+  fi
+done
+echo "  Phase 2: framework umbrella binaries verified signed"
 
 # ─── 3. Sign the framework directory itself ────────────────────────────────
 # This seals the framework — creates Versions/1.0/_CodeSignature with
