@@ -3,6 +3,8 @@
   import { onMount } from 'svelte';
   import {
     activeMeetings,
+    recordingMemberships,
+    setRecordingCompany,
     startRecording,
     stopRecording,
   } from '../../lib/activeMeetings';
@@ -176,7 +178,13 @@
 
   <div class="content">
     <div class="three-col">
-      <LiveNowCard meeting={liveMeeting} onstart={startRecording} onstop={stopRecording} />
+      <LiveNowCard
+        meeting={liveMeeting}
+        memberships={$recordingMemberships}
+        onstart={startRecording}
+        onstop={stopRecording}
+        oncompany={setRecordingCompany}
+      />
 
       <div class="card">
         <div class="card-header">

@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import { ensureActiveMeetingListeners } from '../../lib/activeMeetings';
+import {
+  ensureActiveMeetingListeners,
+  loadRecordingCompanyContext,
+} from '../../lib/activeMeetings';
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
 import { eventMeetingUrl, friendlyError } from './meetings-model';
 import type {
@@ -341,6 +344,10 @@ export function startMeetingsStore(): void {
 
   hydrateFromCache();
   void ensureActiveMeetingListeners();
+  // Resolve the recording-company context (active memberships + validated
+  // default) so a detected meeting is attributed correctly out of the gate;
+  // back-fills any rows that detected before this resolved. Fails soft.
+  void loadRecordingCompanyContext();
   void refresh();
 
   pollTimer = setInterval(() => {
@@ -349,6 +356,7 @@ export function startMeetingsStore(): void {
 
   const onFocus = () => {
     hydrateFromCache();
+    void loadRecordingCompanyContext();
     void refresh();
   };
   const onStorage = () => hydrateFromCache();

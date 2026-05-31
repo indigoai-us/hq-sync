@@ -1,6 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { get, writable } from 'svelte/store';
+import {
+  activeMemberships,
+  resolveStartCompany,
+  resolveValidDefault,
+  shouldBackfill,
+  type RecordingMembership,
+} from './recordingCompany';
 
 export type ActiveMeetingState = 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
 
@@ -13,6 +20,10 @@ export interface ActiveMeeting {
   recordingId?: string;
   error?: string;
   companyUid: string | null;
+  /** True once the user has explicitly picked a company for this row (incl. an
+   *  explicit "Personal" = null). Guards the resolved-default + back-fill paths
+   *  from clobbering a deliberate choice. */
+  companyUserSet?: boolean;
   summary?: string;
   sourceEventId?: string;
 }
@@ -26,6 +37,13 @@ interface MeetingDetectedPayload {
 }
 
 export const activeMeetings = writable<ActiveMeeting[]>([]);
+
+// Recording-company context, mirrored from the classic popover. The picker in
+// LiveNowCard reads `recordingMemberships` (active-filtered); `startRecording`
+// and the detection seed resolve attribution against the validated default.
+// Loaded via `loadRecordingCompanyContext` at store start + on focus.
+export const recordingMemberships = writable<RecordingMembership[]>([]);
+let defaultRecordingCompanyUid: string | null = null;
 
 let unlisteners: UnlistenFn[] | null = null;
 let listenerPromise: Promise<() => void> | null = null;
@@ -62,10 +80,18 @@ export function removeActiveMeeting(windowId: string): void {
 export async function startRecording(windowId: string): Promise<void> {
   updateActiveMeeting(windowId, { state: 'starting', error: undefined });
   const row = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
+  // Resolve attribution the same way the classic popover does: an explicit
+  // user choice wins, else the validated default, else whatever the row had.
+  // Persist the resolved uid back so the row reflects the company we recorded
+  // under (e.g. a detected row that only had the default reflected applied).
+  const companyUid = resolveStartCompany(row, defaultRecordingCompanyUid, get(recordingMemberships));
+  if (row && row.companyUid !== companyUid) {
+    updateActiveMeeting(windowId, { companyUid });
+  }
   try {
     const recordingId = await invoke<string>('start_recording', {
       windowId,
-      companyUid: row?.companyUid ?? null,
+      companyUid,
     });
     updateActiveMeeting(windowId, { recordingId });
   } catch (err) {
@@ -87,6 +113,48 @@ export async function stopRecording(windowId: string): Promise<void> {
       state: 'recording',
       error: typeof err === 'string' ? err : String(err),
     });
+  }
+}
+
+/**
+ * Record an explicit per-meeting company choice from the LiveNowCard picker.
+ * `companyUserSet: true` marks it deliberate so the resolved-default and the
+ * focus-time back-fill leave it alone. `null` is a valid choice (Personal).
+ */
+export function setRecordingCompany(windowId: string, companyUid: string | null): void {
+  updateActiveMeeting(windowId, { companyUid, companyUserSet: true });
+}
+
+/**
+ * Load the recording-company context (active memberships + validated default)
+ * from the backend, then back-fill any already-detected rows that loaded
+ * before this resolved. Mirrors classic App.svelte's memberships/default load.
+ *
+ * Both invokes fail soft to an empty/neutral result: the picker is an additive
+ * affordance, so a transient backend hiccup must never blank the live meeting
+ * or throw on the focus path.
+ */
+export async function loadRecordingCompanyContext(): Promise<void> {
+  const [list, settings] = await Promise.all([
+    invoke<RecordingMembership[]>('meetings_list_memberships').catch(
+      () => [] as RecordingMembership[],
+    ),
+    invoke<{ defaultRecordingCompanyUid?: string | null }>('get_settings').catch(
+      () => ({}) as { defaultRecordingCompanyUid?: string | null },
+    ),
+  ]);
+  const active = activeMemberships(list ?? []);
+  recordingMemberships.set(active);
+  defaultRecordingCompanyUid = resolveValidDefault(
+    settings?.defaultRecordingCompanyUid ?? null,
+    active,
+  );
+  // Seed the resolved default onto rows detected before this loaded — without
+  // overwriting an explicit user choice (shouldBackfill guards that).
+  for (const m of get(activeMeetings)) {
+    if (shouldBackfill(m, defaultRecordingCompanyUid)) {
+      updateActiveMeeting(m.windowId, { companyUid: defaultRecordingCompanyUid });
+    }
   }
 }
 
@@ -172,7 +240,15 @@ async function handleMeetingDetected(event: { payload: MeetingDetectedPayload })
       meetingUrl: meetingUrl ?? existing?.meetingUrl ?? '',
       detectedAt: new Date().toISOString(),
       state: existing?.state ?? 'detected',
-      companyUid: existing?.companyUid ?? null,
+      // Keep an explicit choice; otherwise seed the validated default so a
+      // fresh detection is attributed correctly out of the gate (back-filled
+      // later if the context wasn't loaded yet).
+      companyUid: existing?.companyUserSet
+        ? (existing.companyUid ?? null)
+        : (resolveValidDefault(defaultRecordingCompanyUid, get(recordingMemberships)) ??
+          existing?.companyUid ??
+          null),
+      companyUserSet: existing?.companyUserSet ?? false,
       summary: summary ?? existing?.summary,
       sourceEventId: sourceEventId ?? existing?.sourceEventId,
     });
