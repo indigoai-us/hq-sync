@@ -224,6 +224,7 @@ pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
         tokens: tokens.clone(),
         file_mtime: mtime,
     });
+    crate::util::feature_gate::clear_cached_gate();
     Ok(())
 }
 

@@ -9,6 +9,12 @@ npm install
 npm run tauri dev
 ```
 
+## Indigo Desktop View
+
+Indigo dogfood users see an **Open desktop view** icon in the popover header. It opens a separate decorated Tauri window with Sync, Meetings, and per-company Board / Activity / Deployments / Secrets panels. The surface is hidden from non-`@getindigo.ai` users in the UI and rejected again by the backend command gate.
+
+Implementation notes: [`docs/desktop-alt.md`](docs/desktop-alt.md)
+
 ## Build
 
 ```bash
@@ -17,11 +23,11 @@ npm run tauri build
 
 ## Testing
 
-> **Policy deviation:** V1 uses manual testing + Loom video instead of automated e2e tests. This is a documented exception from [`e2e-backpressure-required.md`](../../.claude/policies/e2e-backpressure-required.md), approved during PRD interview (QUALITY-2). Justification: dogfood-only cohort of 10 internal Indigo users with a direct feedback channel. V2 will add Playwright (for popover WebView) + AppleScript (for tray icon) automated e2e tests before any external customer rollout.
+Classic popover release testing still uses the manual checklist and Loom proof below. The Indigo desktop view also has a Vitest E2E harness for gate visibility, window lifecycle, smoke pages, and metadata-only secrets.
 
 ### Manual Testing
 
-All testing is done via a structured manual checklist covering the 7 user journeys defined in the PRD:
+Manual testing is done via a structured checklist covering the 7 user journeys defined in the PRD:
 
 | Journey | Description |
 |---------|-------------|
@@ -41,8 +47,11 @@ Full checklist with step-by-step instructions, expected outcomes, and pass/fail 
 # Rust unit tests
 cargo test --manifest-path=src-tauri/Cargo.toml
 
-# Frontend (when added)
+# Frontend unit/story tests
 npm test
+
+# Desktop-alt scripted or live E2E
+npm run test:e2e:desktop-alt
 ```
 
 ### Release Testing Protocol
@@ -55,10 +64,6 @@ Before each release (v1.0.0 and every minor/patch):
 4. Verify performance budgets pass (see `tests/PERF.md`)
 5. Verify code signing: `spctl -a -vv "HQ Sync.app"`
 
-### V2 Automated E2E (Planned)
+### Desktop-Alt E2E
 
-V2 will introduce automated e2e tests before any external rollout:
-
-- **Playwright** — popover WebView interactions (sync button, conflict modal, settings pane)
-- **AppleScript** — tray icon state verification, context menu actions
-- **CI integration** — automated test suite in GitHub Actions on every PR
+`npm run test:e2e:desktop-alt` defaults to a scripted source-contract harness, so it can run in CI without booting a signed app. For live Tauri-driver coverage, set `HQ_SYNC_DESKTOP_ALT_LIVE=1` with `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`. `HQ_SYNC_DESKTOP_ALT_WEBDRIVER_URL` defaults to `http://127.0.0.1:4444`.

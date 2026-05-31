@@ -324,6 +324,14 @@
     }
   }
 
+  // Desktop-alt UX feature flag (US-001) — driven by `desktop_alt_enabled`
+  // (Rust side delegates to the same `@getindigo.ai` gate as
+  // `meetings_feature_enabled`; the OnceLock cache is shared). Defaults
+  // false so non-Indigo users never see the alt UX surface even if the
+  // gate command hasn't resolved yet. Subsequent stories (US-003/US-004)
+  // gate the toggle button + alt popover render path on this flag.
+  let desktopAltEnabled = $state(false);
+
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -463,6 +471,14 @@
     }
   }
 
+  async function refreshDesktopAltEnabled() {
+    try {
+      desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled');
+    } catch {
+      desktopAltEnabled = false;
+    }
+  }
+
   // Unified "Update" action — dispatches to the right rescue command based
   // on the active channel. Release channel runs `install_hq_core_update`
   // (overlays the latest hq-core release tag); staging channel runs
@@ -503,6 +519,15 @@
         invoke('check_core_state').catch((e) =>
           console.error('post-install core-state refresh failed:', e)
         );
+        // Auto-dismiss the "✓ update done" chip after a few seconds. It's a
+        // momentary confirmation, not a persistent status — left up, it
+        // lingers next to a freshly-recomputed "Restore vX" pill (any
+        // remaining drift) and reads as a contradiction ("done" + "restore").
+        // Guard the clear so a NEW run started in the meantime isn't wiped.
+        const settledAt = coreInstallLastResult;
+        setTimeout(() => {
+          if (coreInstallLastResult === settledAt) coreInstallLastResult = null;
+        }, 6000);
       }
     } catch (err) {
       console.error(`${command} failed:`, err);
@@ -1431,6 +1456,11 @@
         meetingsEnabled = false;
       });
 
+    // Desktop-alt UX gate (US-001). Same @getindigo.ai check as
+    // `meetings_feature_enabled`; errors fall back to false so a misfiring
+    // gate command can never accidentally expose the alt UX.
+    refreshDesktopAltEnabled();
+
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
       unlisteners = [];
@@ -1508,6 +1538,9 @@
 
       authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
+      if (authenticated) {
+        await refreshDesktopAltEnabled();
+      }
     } catch {
       authenticated = false;
     } finally {
@@ -1518,6 +1551,7 @@
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
+    void refreshDesktopAltEnabled();
   }
 </script>
 
@@ -1575,6 +1609,7 @@
       oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
+      {desktopAltEnabled}
       onmeetingsclick={() => {
         // Spawn the detached Upcoming Meetings window (label: meetings-window).
         // Fire-and-forget — the Rust handler focuses an existing window if

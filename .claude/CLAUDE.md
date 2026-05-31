@@ -4,7 +4,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 
 ## Architecture
 
-**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23). Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, Connect diagnostics drawer, and a footer HQ-version row whose action pills — drift count + Restore vX.Y.Z + update-done chip — wrap to a second line below the version label so they never overlap it, fixed v0.2.2), `Settings` (preferences + folder re-tether). Conflict resolution via `ConflictModal` + `ConflictRow` components. New-file notification via `NewFilesBadge` (in-popover count) + `NewFilesDetail` (secondary window with file list and attribution). Recent Changes via `ActivityLog` (secondary window listing the session's per-file syncs, each attributed as "{author} added/updated" — author email + verb — falling back to the company slug when no author). DM notifications open `DmDetail` (secondary window showing sender + body with a reply composer — textarea + **Send** / ⌘↵); share notifications open `ShareDetail`.
+**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23) for the classic popover and `src/desktop-alt/styles/desktop-alt.css` for the Indigo desktop window. Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, Connect diagnostics drawer, and a footer HQ-version row whose action pills — drift count + Restore vX.Y.Z + update-done chip — wrap to a second line below the version label so they never overlap it, fixed v0.2.2), `Settings` (preferences + folder re-tether), and the desktop-alt shell under `src/desktop-alt/` (Sync, Meetings, Company tabs, status bar, command palette). Conflict resolution via `ConflictModal` + `ConflictRow` components. New-file notification via `NewFilesBadge` (in-popover count) + `NewFilesDetail` (secondary window with file list and attribution). Recent Changes via `ActivityLog` (secondary window listing the session's per-file syncs, each attributed as "{author} added/updated" — author email + verb — falling back to the company slug when no author). DM notifications open `DmDetail` (secondary window showing sender + body with a reply composer — textarea + **Send** / ⌘↵); share notifications open `ShareDetail`.
 
 **Backend:** Tauri 2 Rust commands in `src-tauri/src/commands/`. 63 registered commands in `main.rs`.
 
@@ -37,6 +37,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `commands/dm_notify.rs` | User-to-user DM notification client, layered on the same poll timer as `share_notify`. Polls `GET /v1/notify/inbox`, surfaces a banner; **every DM is clickable** — a body-click maps to the `"open"` action (opens `DmDetail`), while `"copy"` (write the agent prompt to the clipboard) stays an explicit action button for DMs that carry a `prompt`. Outbound `send_dm` (`POST /v1/notify/dm` via the sender's `fromPersonUid` → recipient's `toPersonUid`) powers the `DmDetail` reply composer — the app is no longer receive-only. Cursor `~/.hq/dm-cursor.json`; gated by `dmNotifications` in menubar.json (default on); log codes `DM_NOTIFY_*` in `~/.hq/logs/hq-sync.log`. All DM sends take the guarded blocking-send path (`BlockingNotifyGuard` caps blocking sends at ~1 core) |
 | `commands/dm_mqtt.rs` | **Instant DM delivery** (GA in 0.3.0, all signed-in users). MQTT-over-WSS receiver: fetches scoped STS creds from `POST /v1/realtime/credentials`, SigV4-presigns the AWS IoT Core endpoint (sign WITHOUT the session token, append `X-Amz-Security-Token` after — IoT rejects a token in the signed query with 403), subscribes to its own `hq/{personUid}/dm`, and on any wake (and on connect/reconnect for offline catch-up) calls `dm_notify::poll_dm_once` — the MQTT message is only a wake signal, so dedupe/cursor/notification all reuse the poll path. Spawned from `main.rs` `.setup()`; capped exponential backoff; on any failure falls back silently to the 60s poll (no regression). Log codes `DM_MQTT_*`. |
 | `commands/notifications.rs` | OS notification permission state + request (`notification_permission_state` / `notification_request_permission`) |
+| `commands/desktop_alt.rs` | Indigo-only desktop window gate, open/focus command, and read-only company panel commands. Uses `feature_gate::is_indigo_user()` for both UI eligibility and backend enforcement. Board/Activity call the vault API, Deployments calls hq-deploy with `x-org-slug`, and Secrets returns metadata-only `{key, upd, rot}` rows with no plaintext fields |
 | `commands/settings.rs` | Settings persistence |
 | `commands/autostart.rs` | Login-item autostart. `ensure_autostart_on_launch()` (called from `main.rs` `.setup()`, macOS-gated) idempotently reconciles the LaunchAgent plist with the effective `startAtLogin` pref on every launch — **default-on** (a fresh install autostarts without opening Settings), honouring an explicit `"startAtLogin": false` opt-out (stale plist removed). Mirrors the `daemon.rs` `realtime_sync` default-on convention |
 | `tray.rs` | System tray with 4 visual states (idle/syncing/error/conflict) |
@@ -48,12 +49,30 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `util/journal.rs` | Append-only sync journal at `~/.hq/sync-journal.log` (used by Connect diagnostics) |
 | `util/logfile.rs` | Persistent diagnostic log for the sync pipeline at `~/.hq/sync-debug.log` (rotated at 10MB) |
 
+## Desktop Alt UX (Indigo Dogfood)
+
+The desktop-alt UX is a second Tauri window labeled `desktop-alt`, declared hidden in `src-tauri/tauri.conf.json` with `create: false` and opened only by `open_desktop_alt_window`. The classic menubar popover remains the default UI; Indigo users get a header icon button with title `Open desktop view`.
+
+Access is defense-in-depth:
+
+1. `App.svelte` invokes `desktop_alt_enabled`.
+2. `Popover.svelte` only renders `data-testid="desktop-alt-toggle"` when that result is true.
+3. `open_desktop_alt_window` calls the same backend gate again and rejects non-Indigo users.
+
+Frontend files live under `src/desktop-alt/`. `DesktopApp.svelte` owns the route, command-K palette, status bar, sync event listeners, workspace loading, and meetings cache hydration. `route.ts` maps the sidebar rows and command-number hotkeys. Company panels call `get_company_board`, `get_company_activity`, `get_company_deployments`, and `get_company_secrets`.
+
+Important constraints:
+
+- Any new desktop-alt invoke path must be allowed by `src-tauri/capabilities/desktop-alt.json`.
+- Secrets are read-only metadata. Do not add `value`, `secret`, or reveal-mode fields to `SecretEnv` / `SecretItem`; `e2e/desktop-alt/secrets-never-leak.spec.ts` exists to lock this down.
+- The endpoint migration inventory for Board and Activity is outside this repo at `companies/indigo/projects/hq-sync-desktop-alt/references.md`.
+
 ## Config Files (User Machine)
 
 | File | Written By | Purpose |
 |------|-----------|---------|
 | `~/.hq/config.json` | hq-installer | Company UID, slug, person, bucket, vault URL, HQ folder path |
-| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon |
+| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon, realtimeSync, personalSyncEnabled, instantSync, driftStagingRepo, shareNotifications, releaseChannel |
 | `~/.hq/cognito-tokens.json` | hq-installer / this app | Cognito access + refresh + id tokens |
 
 ## HQ Folder Path Resolution
@@ -180,7 +199,7 @@ Documented in `tests/PERF.md`:
 
 ## Testing
 
-Manual testing only in V1 (documented policy deviation). Checklist at `tests/MANUAL_TESTING.md`. Automated e2e planned for V2. Rust unit tests cover serialization, config parsing, process management.
+Classic popover release testing still uses `tests/MANUAL_TESTING.md` plus Loom proof. Rust unit tests cover serialization, config parsing, process management. Frontend and story tests run with `npm test`. Desktop-alt gate/window/page/secrets coverage runs with `npm run test:e2e:desktop-alt`; it uses a scripted source-contract harness by default and can switch to live `tauri-driver` with `HQ_SYNC_DESKTOP_ALT_LIVE=1` plus `HQ_SYNC_DESKTOP_ALT_APP` or `HQ_SYNC_DESKTOP_ALT_APP_PATH`.
 
 ## Gotchas
 
@@ -192,3 +211,4 @@ Manual testing only in V1 (documented policy deviation). Checklist at `tests/MAN
 - **Multi-window ready handshake:** Secondary windows (e.g. `new-files-detail`) use a managed-state + `detail_window_ready` command pattern instead of timed `emit_to` delays. The renderer calls `detail_window_ready` after mounting its `listen()` handler, which emits the data and shows the window. This avoids the race where `emit_to` fires before the webview's JS event listener is registered.
 - `on_window_event` in main.rs is scoped to the `main` window label -- the detail window can close independently without quitting the app.
 - New files state (`newFilesList`) in App.svelte accumulates across companies within a single sync run and resets when a new sync starts.
+- The desktop-alt window is not a ready-handshake window. It self-loads from Tauri commands after mount, so failures usually come from missing capability permissions, command registration drift in `main.rs`, or the Indigo gate rejecting the caller.

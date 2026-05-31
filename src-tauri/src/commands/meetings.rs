@@ -83,6 +83,11 @@ pub struct MeetingEvent {
     /// show an Invite button" check.
     #[serde(default, rename = "meetingUrl")]
     pub meeting_url: Option<String>,
+    /// Server-extracted meeting signals. Preserve as raw JSON so the
+    /// renderer cache can aggregate counts without coupling this command to
+    /// the hq-pro signal schema.
+    #[serde(default)]
+    pub signals: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1170,6 +1175,7 @@ mod tests {
         assert!(evt.hangout_link.is_none());
         assert!(evt.source_calendar_id.is_none());
         assert!(evt.source_company_uid.is_none());
+        assert!(evt.signals.is_none());
         assert_eq!(evt.start.date_time.as_deref(), Some("2026-05-15T14:00:00Z"));
     }
 
@@ -1184,7 +1190,12 @@ mod tests {
             "status": "confirmed",
             "hangoutLink": "https://meet.google.com/abc-defg-hij",
             "sourceCalendarId": "stefan@getindigo.ai",
-            "sourceCompanyUid": "cmp_indigo"
+            "sourceCompanyUid": "cmp_indigo",
+            "signals": {
+                "actions": ["Send notes"],
+                "decisions": [{"title": "Ship"}],
+                "risks": []
+            }
         }"#;
         let evt: MeetingEvent = serde_json::from_str(json).expect("parse");
         assert_eq!(evt.summary.as_deref(), Some("Sync w/ Spencer"));
@@ -1196,6 +1207,13 @@ mod tests {
         assert_eq!(
             evt.hangout_link.as_deref(),
             Some("https://meet.google.com/abc-defg-hij"),
+        );
+        assert_eq!(
+            evt.signals
+                .as_ref()
+                .and_then(|signals| signals["actions"].as_array())
+                .map(Vec::len),
+            Some(1),
         );
     }
 

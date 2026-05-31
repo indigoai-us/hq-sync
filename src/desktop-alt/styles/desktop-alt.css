@@ -1,0 +1,282 @@
+html[data-window='desktop-alt'],
+html[data-window='desktop-alt'] body,
+html[data-window='desktop-alt'] #desktop-alt {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+}
+
+html[data-window='desktop-alt'] {
+  /* Dark theme tokens (mirrors prototype index.html :root). */
+  --bg: #0a0a0a;
+  --bg-subtle: #050505;
+  --desktop: #1a1a1c;
+  --fg: #fafafa;
+  --muted: #71717a;
+  --muted-2: #a1a1aa;
+  --muted-3: #52525b;
+  --border: rgba(255, 255, 255, 0.1);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --row-hover: rgba(255, 255, 255, 0.035);
+  --row-active: rgba(255, 255, 255, 0.06);
+  --emerald: #34d399;
+  --amber: #f59e0b;
+  --red: #f87171;
+  --blue: #60a5fa;
+
+  color-scheme: dark;
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    'Geist', ui-sans-serif, -apple-system, system-ui, 'SF Pro Text', sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+html[data-window='desktop-alt'] body {
+  overflow: hidden;
+  /* App body sits behind the window surface. */
+  background: #131316;
+}
+
+html[data-window='desktop-alt'] * {
+  box-sizing: border-box;
+}
+
+/* Subtle dark scrollbars, scoped to the desktop-alt window. */
+html[data-window='desktop-alt'] ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.desktop-shell {
+  display: grid;
+  grid-template-columns: var(--desktop-sidebar-width, 216px) minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  /* Single-scroll guarantee: only leaf scrollers (.company-list,
+     .desktop-main-scroll) may scroll — every ancestor clips. */
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.desktop-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: var(--desktop-sidebar-width, 216px);
+  min-width: var(--desktop-sidebar-width, 216px);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  /* Clears the native macOS traffic lights used by TitleBarStyle::Overlay. */
+  padding: 38px 10px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--muted-3);
+}
+
+.sidebar-title {
+  height: 24px;
+  padding: 0 8px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-nav button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 28px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition:
+    background-color 120ms cubic-bezier(.2, .7, .2, 1),
+    color 120ms cubic-bezier(.2, .7, .2, 1);
+}
+
+.sidebar-nav button:hover {
+  background: var(--row-hover);
+  color: var(--fg);
+}
+
+.sidebar-nav button.active {
+  background: var(--row-active);
+  color: var(--fg);
+}
+
+.sidebar-nav span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-sidebar kbd {
+  flex: 0 0 auto;
+  color: currentColor;
+  font-family: inherit;
+  font-size: 11px;
+  opacity: 0.56;
+}
+
+.company-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.section-label {
+  padding: 0 8px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+  text-transform: uppercase;
+}
+
+.company-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.empty-row {
+  height: 28px;
+  padding: 0 8px;
+  color: var(--muted-2);
+  font-size: 12px;
+  line-height: 28px;
+}
+
+.desktop-content,
+.desktop-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.desktop-main {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) var(--desktop-status-bar-height, 26px);
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+}
+
+.desktop-main-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.page {
+  padding: 28px 32px;
+  animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
+  will-change: transform;
+}
+
+@keyframes pageEnter {
+  from {
+    transform: translateY(4px);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+.page .page {
+  animation: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-nav button {
+    transition: none;
+  }
+
+  .page {
+    animation: none;
+    will-change: auto;
+  }
+}
+
+.page-header {
+  margin-bottom: 18px;
+}
+
+.page-header h1 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.placeholder-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(520px, 100%);
+  padding: 0;
+  color: var(--muted);
+}
+
+.placeholder-panel p {
+  margin: 0;
+  color: var(--muted-2);
+}
+
+.placeholder-panel span {
+  font-size: 12px;
+}
+
+.workspace-error {
+  color: var(--amber);
+}
+
+.desktop-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--desktop-status-bar-height, 26px);
+  padding: 0 10px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: var(--desktop-status-bar-height, 26px);
+}
