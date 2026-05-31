@@ -223,6 +223,7 @@
   let coworkPluginLastResult = $state<{
     kind: 'ok' | 'err';
     artifactPath?: string;
+    coworkInstallPaths?: string[];
     logTail: string;
   } | null>(null);
 
@@ -516,13 +517,18 @@
     coworkPluginInstalling = true;
     coworkPluginLastResult = null;
     try {
-      const result = await invoke<{ artifactPath: string; logTail: string }>(
+      const result = await invoke<{
+        artifactPath: string;
+        coworkInstallPaths: string[];
+        logTail: string;
+      }>(
         'install_cowork_plugin',
         { hqFolderPath: config?.hqFolderPath ?? null }
       );
       coworkPluginLastResult = {
         kind: 'ok',
         artifactPath: result.artifactPath,
+        coworkInstallPaths: result.coworkInstallPaths,
         logTail: result.logTail,
       };
     } catch (err) {

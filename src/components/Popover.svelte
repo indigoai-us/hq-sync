@@ -176,6 +176,7 @@
     coworkPluginLastResult?: {
       kind: 'ok' | 'err';
       artifactPath?: string;
+      coworkInstallPaths?: string[];
       logTail: string;
     } | null;
     onsync: () => void;
@@ -975,7 +976,7 @@
         class="footer-action"
         onclick={oninstallcoworkplugin}
         disabled={coworkPluginInstalling}
-        title="Install the HQ Cowork plugin into Claude Code and create the Cowork upload artifact"
+        title="Install the HQ Cowork plugin into Cowork and Claude Code"
       >
         <!-- Plug icon -->
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -990,7 +991,7 @@
           title={coworkPluginLastResult.logTail}
         >
           {#if coworkPluginLastResult.kind === 'ok'}
-            Installed. Restart Claude or Cowork to pick it up.
+            Installed in Cowork. Start a new Cowork task to pick it up.
           {:else}
             Install failed. Open HQ and run /hq-cowork-install.
           {/if}
