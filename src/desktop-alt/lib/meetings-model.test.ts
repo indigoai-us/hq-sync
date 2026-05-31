@@ -3,6 +3,8 @@ import { get } from 'svelte/store';
 import {
   activeRecordingsFromScheduledBots,
   buildConnectedCalendarRows,
+  dayLabel,
+  groupByDay,
   pickLiveMeeting,
   totalSignalCounts,
   type MeetingEvent,
@@ -196,5 +198,58 @@ describe('meetings-model', () => {
         sourceEventId: 'event_1',
       }),
     ]);
+  });
+
+  // `now` is a fixed local wall-clock reference. Event times are built from
+  // local Date components and round-tripped through ISO so the local-day
+  // comparison in dayLabel/groupByDay is stable regardless of the test TZ.
+  const now = new Date(2026, 4, 27, 9, 0, 0); // Wed May 27 2026, 09:00 local
+
+  function eventAt(id: string, local: Date): MeetingEvent {
+    return {
+      id,
+      status: 'confirmed',
+      start: { dateTime: local.toISOString() },
+      end: { dateTime: new Date(local.getTime() + 30 * 60_000).toISOString() },
+    };
+  }
+
+  it('labels days relative to now as Today / Tomorrow / dated', () => {
+    expect(dayLabel(new Date(2026, 4, 27, 15, 0, 0), now)).toBe('Today');
+    expect(dayLabel(new Date(2026, 4, 28, 8, 0, 0), now)).toBe('Tomorrow');
+
+    const dated = dayLabel(new Date(2026, 4, 30, 8, 0, 0), now);
+    expect(dated).not.toBe('Today');
+    expect(dated).not.toBe('Tomorrow');
+    expect(dated).toContain('30');
+  });
+
+  it('groups events into chronological per-day buckets', () => {
+    const groups = groupByDay(
+      [
+        eventAt('today-late', new Date(2026, 4, 27, 16, 0, 0)),
+        eventAt('tomorrow', new Date(2026, 4, 28, 10, 0, 0)),
+        eventAt('today-early', new Date(2026, 4, 27, 9, 30, 0)),
+      ],
+      now,
+    );
+
+    expect(groups.map((g) => g.label)).toEqual(['Today', 'Tomorrow']);
+    // Sorted within the day even though input order was late-then-early.
+    expect(groups[0].events.map((e) => e.id)).toEqual(['today-early', 'today-late']);
+    expect(groups[1].events.map((e) => e.id)).toEqual(['tomorrow']);
+  });
+
+  it('drops events with no parseable start from the day groups', () => {
+    const groups = groupByDay(
+      [
+        eventAt('real', new Date(2026, 4, 27, 12, 0, 0)),
+        { id: 'startless', status: 'confirmed', start: {}, end: {} },
+      ],
+      now,
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0].events.map((e) => e.id)).toEqual(['real']);
   });
 });

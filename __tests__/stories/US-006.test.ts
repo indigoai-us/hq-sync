@@ -7,7 +7,6 @@ import {
   eventEnd,
   eventStart,
   extractedSignalLabels,
-  isToday,
   pickLiveMeeting,
   pickUpNext,
   signalCounts,
@@ -20,12 +19,20 @@ const meetingsPage = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/pages/MeetingsPage.svelte'),
   'utf8',
 );
+// The network fetch, cache hydration, detection listeners, and 30s poll moved
+// out of MeetingsPage into a module-level singleton store so the data survives
+// the {#key routeKey} remount (preload + poll, not a per-nav blocking fetch).
+// Assertions that pin those calls now read the store source, not the page.
+const meetingsStore = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/lib/meetings-store.svelte.ts'),
+  'utf8',
+);
 const liveNowCard = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/LiveNowCard.svelte'),
   'utf8',
 );
-const meetingsToday = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/MeetingsToday.svelte'),
+const meetingsAgenda = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/components/MeetingsAgenda.svelte'),
   'utf8',
 );
 const activeMeetings = readFileSync(resolve(process.cwd(), 'src/lib/activeMeetings.ts'), 'utf8');
@@ -79,7 +86,7 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
       expect(activeMeetings).toContain(`'${eventName}'`);
     }
 
-    expect(meetingsPage).toContain('ensureActiveMeetingListeners()');
+    expect(meetingsStore).toContain('ensureActiveMeetingListeners()');
     expect(meetingsPage).toContain(
       'const liveMeeting = $derived(pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]))',
     );
@@ -97,7 +104,7 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     expect(activeMeetings).toContain("await invoke('stop_recording'");
   });
 
-  it('renders Today and Up next from meetingsCache in chronological order with cached signal totals and recent signals', () => {
+  it('renders every upcoming meeting grouped by day with Up next, cached signal totals, and recent signals', () => {
     const now = new Date('2026-05-27T16:00:00.000Z');
     const events = [
       event({
@@ -133,11 +140,14 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
         summary: 'Tomorrow',
         start: { dateTime: '2026-05-28T17:00:00.000Z' },
         end: { dateTime: '2026-05-28T17:30:00.000Z' },
-        signals: { actions: ['Not counted today'] },
+        signals: { actions: ['Counted now — multi-day'] },
       }),
     ];
 
-    const todayEvents = events.filter((row) => isToday(row, now)).sort(sortByStart);
+    // Multi-day agenda: every upcoming event is shown (sorted chronologically),
+    // not just today's. The old isToday() filter hid all non-today meetings,
+    // which read as an empty view. `tomorrow` must now be included everywhere.
+    const upcomingEvents = [...events].sort(sortByStart);
     const recentlySynced = events
       .filter((row) => extractedSignalLabels(row).length > 0)
       .sort(
@@ -147,22 +157,37 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
       )
       .slice(0, 3);
 
-    expect(todayEvents.map((row) => row.id)).toEqual(['standup', 'planning', 'review', 'retro']);
-    expect(pickUpNext(todayEvents, now)?.id).toBe('standup');
-    expect(totalSignalCounts(todayEvents)).toEqual({ actions: 2, decisions: 2, risks: 1 });
-    expect(signalCounts(todayEvents[2])).toEqual({ actions: 1, decisions: 1, risks: 0 });
+    expect(upcomingEvents.map((row) => row.id)).toEqual([
+      'standup',
+      'planning',
+      'review',
+      'retro',
+      'tomorrow',
+    ]);
+    expect(pickUpNext(upcomingEvents, now)?.id).toBe('standup');
+    // `tomorrow`'s action is now counted (it was excluded under the today-only filter).
+    expect(totalSignalCounts(upcomingEvents)).toEqual({ actions: 3, decisions: 2, risks: 1 });
+    expect(signalCounts(upcomingEvents[2])).toEqual({ actions: 1, decisions: 1, risks: 0 });
     expect(recentlySynced.map((row) => row.id)).toEqual(['tomorrow', 'retro', 'review']);
 
     const page = normalize(meetingsPage);
-    const today = normalize(meetingsToday);
-    expect(page).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
-    expect(page).toContain('const todayEvents = $derived(events.filter((event) => isToday(event)).sort(sortByStart))');
-    expect(page).toContain('const upNext = $derived(pickUpNext(todayEvents))');
-    expect(page).toContain('const signalTotals = $derived(totalSignalCounts(todayEvents))');
+    const agenda = normalize(meetingsAgenda);
+    expect(meetingsStore).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
+    expect(page).toContain('const upcomingEvents = $derived([...events].sort(sortByStart))');
+    expect(page).toContain('const dayGroups = $derived(groupByDay(upcomingEvents))');
+    expect(page).toContain('const upNext = $derived(pickUpNext(upcomingEvents))');
+    expect(page).toContain('const signalTotals = $derived(totalSignalCounts(upcomingEvents))');
     expect(page).toContain('extractedSignalLabels(event).length > 0');
     expect(page).toContain('.slice(0, 3)');
-    expect(today).toContain('{#each events as event (event.id)}');
-    expect(`${page}\n${today}`).not.toContain("invoke<MeetingEvent[]>('meetings_list_upcoming'");
+    expect(page).toContain(
+      '<MeetingsAgenda groups={dayGroups} {upNext} totalCount={upcomingEvents.length} companyNames={companyNamesByUid} {liveEventId} {botsByEventId} {pendingEventIds} {onInvite} {onUninvite} {onJoinNow} onOpenExternal={openExternal} />',
+    );
+    expect(agenda).toContain('{#each groups as group (group.label)}');
+    expect(agenda).toContain('{#each group.events as event (event.id)}');
+    // The store owns the network fetch via a typed invoke; the agenda subcomponent
+    // is purely presentational and never touches Tauri/invoke.
+    expect(meetingsStore).toContain("invoke<MeetingEvent[]>('meetings_list_upcoming')");
+    expect(agenda).not.toContain('invoke');
   });
 
   it('renders exactly the Personal connected calendar row when the user has no memberships', () => {
@@ -192,7 +217,7 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     ]);
 
     const page = normalize(meetingsPage);
-    expect(page).toContain("invoke<CompanyMembership[]>('meetings_list_memberships')");
+    expect(meetingsStore).toContain("invoke<CompanyMembership[]>('meetings_list_memberships')");
     expect(page).toContain('buildConnectedCalendarRows( accounts, calendarsByAccount, enabledCalIdsByAccount, events, memberships, )');
     expect(page).toContain('<strong>{row.email}</strong>');
     expect(page).toContain('{row.calendar} -> {row.routingTarget}');

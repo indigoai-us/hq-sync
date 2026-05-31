@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { companyStore } from '../lib/company-store.svelte';
   import DeploymentRow, {
     type DeploymentEntry,
     type DeploymentState,
@@ -31,12 +32,16 @@
     }
 
     let cancelled = false;
-    loading = true;
+
+    const warm = companyStore.deployments(slug);
+    deployments = warm ? warm.map(normalizeDeployment) : [];
+    loading = warm === null;
 
     void invoke<Partial<DeploymentEntry>[]>('get_company_deployments', { slug })
       .then((result) => {
         if (!cancelled) {
           deployments = Array.isArray(result) ? result.map(normalizeDeployment) : [];
+          companyStore.setDeployments(slug, Array.isArray(result) ? result : []);
         }
       })
       .catch((err) => {

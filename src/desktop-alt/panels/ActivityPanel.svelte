@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { companyStore } from '../lib/company-store.svelte';
   import Sparkline from '../components/Sparkline.svelte';
   import StatTile from '../components/StatTile.svelte';
 
@@ -69,12 +70,16 @@
     }
 
     let cancelled = false;
-    loading = true;
+
+    const warm = companyStore.activity(slug);
+    activity = warm != null ? normalizeActivity(warm as Partial<CompanyActivity>) : emptyActivity();
+    loading = warm == null;
 
     void invoke<Partial<CompanyActivity>>('get_company_activity', { slug })
       .then((result) => {
         if (!cancelled) {
           activity = normalizeActivity(result);
+          companyStore.setActivity(slug, result);
         }
       })
       .catch((err) => {

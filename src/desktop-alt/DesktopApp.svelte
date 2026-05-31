@@ -8,6 +8,8 @@
   import SyncPage from './pages/SyncPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
+  import { startMeetingsStore } from './lib/meetings-store.svelte';
+  import { startCompanyStore } from './lib/company-store.svelte';
   import {
     DESKTOP_SHELL_LAYOUT,
     getDesktopCompanies,
@@ -184,6 +186,10 @@
       workspacesCloudReachable = result.cloudReachable;
       workspaceError = result.error;
       workspaceManifestError = result.manifestError;
+      // Warm the company-tab preload cache for every known company once the real
+      // slugs resolve. Idempotent + reconciles, so companies that appear on a
+      // later refresh still get warmed; the 30s poll + focus listener wire once.
+      startCompanyStore(getDesktopCompanies(result.workspaces).map((company) => company.slug));
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
       workspacesCloudReachable = false;
@@ -279,6 +285,10 @@
 
     refreshRealState();
     hydrateMeetingStatus();
+    // Warm the Meetings singleton at app launch so its data is ready before the
+    // user ever navigates to Meetings — the page then reads the warm store on
+    // remount (instant) instead of running a blocking fetch each nav. Idempotent.
+    startMeetingsStore();
     window.addEventListener('keydown', handleKeydown);
     window.addEventListener('focus', hydrateMeetingStatus);
     window.addEventListener('storage', hydrateMeetingStatus);

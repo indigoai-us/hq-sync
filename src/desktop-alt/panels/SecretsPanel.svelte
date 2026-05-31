@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { companyStore } from '../lib/company-store.svelte';
   import SecretEnvRow, { type SecretEnv, type SecretItem } from '../components/SecretEnvRow.svelte';
 
   interface Props {
@@ -26,12 +27,16 @@
     }
 
     let cancelled = false;
-    loading = true;
+
+    const warm = companyStore.secrets(slug);
+    secrets = warm ? warm.map(normalizeSecretEnv) : [];
+    loading = warm === null;
 
     void invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug })
       .then((result) => {
         if (!cancelled) {
           secrets = Array.isArray(result) ? result.map(normalizeSecretEnv) : [];
+          companyStore.setSecrets(slug, Array.isArray(result) ? result : []);
         }
       })
       .catch((err) => {

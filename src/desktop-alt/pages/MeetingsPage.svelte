@@ -1,64 +1,54 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onMount } from 'svelte';
   import {
     activeMeetings,
-    ensureActiveMeetingListeners,
     startRecording,
     stopRecording,
-    type ActiveMeeting,
   } from '../../lib/activeMeetings';
-  import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
+  import {
+    meetingsStore,
+    startMeetingsStore,
+    type ToastDescriptor,
+  } from '../lib/meetings-store.svelte';
   import LiveNowCard from '../components/LiveNowCard.svelte';
-  import MeetingsToday from '../components/MeetingsToday.svelte';
+  import MeetingsAgenda from '../components/MeetingsAgenda.svelte';
   import {
     buildConnectedCalendarRows,
     activeRecordingsFromScheduledBots,
+    companyLabel,
+    durationMinutes,
     eventEnd,
     eventStart,
     extractedSignalLabels,
-    isToday,
+    groupByDay,
     pickLiveMeeting,
     pickUpNext,
     sortByStart,
+    timeLabel,
     totalSignalCounts,
-    type CompanyMembership,
-    type GoogleAccount,
-    type GoogleCalendar,
     type MeetingEvent,
-    type ScheduledBot,
   } from '../lib/meetings-model';
 
-  /** Return shape of `meetings_list_calendars_for_account` — the per-account
-   *  calendar list plus the user's enabled selection. Mirrors the inline type
-   *  in the classic MeetingsWindow (not exported from the model). */
-  interface AccountCalendars {
-    calendars: GoogleCalendar[];
-    selectedCalendarIds: string[];
-  }
-
-  let events = $state<MeetingEvent[]>([]);
-  let accounts = $state<GoogleAccount[]>([]);
-  let calendarsByAccount = $state<Map<string, GoogleCalendar[]>>(new Map());
-  let enabledCalIdsByAccount = $state<Map<string, Set<string>>>(
-    new Map(),
-  );
-  // Bot map drives the "recording" pills the alt page surfaces from the
-  // calendar snapshot (distinct from the live `meeting:detected` channel,
-  // which is owned by ensureActiveMeetingListeners and left untouched).
-  let botsByEventId = $state<Map<string, ScheduledBot>>(new Map());
-  // Persisted alongside the rest of the snapshot so the classic window and
-  // the alt window stay in lockstep on the shared meetingsCache key.
-  let companyNamesByUid = $state<Map<string, string>>(new Map());
-  let accountEmailById = $state<Map<string, string>>(new Map());
-  let calendarSummaryByKey = $state<Map<string, string>>(new Map());
-  let memberships = $state<CompanyMembership[]>([]);
-  let membershipsError = $state('');
-  // Surfaced when the live calendar fetch fails outright (vs. cache miss):
-  // we keep the stale paint on screen and show this rather than faking an
-  // empty state. Auth failures are special-cased to a "sign in again" hint.
-  let fetchError = $state('');
-  let loading = $state(false);
+  // Store-backed data. The singleton (started at app launch in
+  // DesktopApp.onMount) loads once + polls every 30s, so this page is a thin
+  // consumer: it reads the already-warm store instead of running a blocking
+  // network fetch on every nav remount — which is what made the page take
+  // 5-10s to paint. Aliased through $derived so the presentation derives below
+  // — and the US-006 source-contract strings — stay unchanged.
+  const events = $derived(meetingsStore.events);
+  const botsByEventId = $derived(meetingsStore.botsByEventId);
+  const accounts = $derived(meetingsStore.accounts);
+  const calendarsByAccount = $derived(meetingsStore.calendarsByAccount);
+  const enabledCalIdsByAccount = $derived(meetingsStore.enabledCalIdsByAccount);
+  const companyNamesByUid = $derived(meetingsStore.companyNamesByUid);
+  const memberships = $derived(meetingsStore.memberships);
+  const membershipsError = $derived(meetingsStore.membershipsError);
+  const fetchError = $derived(meetingsStore.fetchError);
+  const loading = $derived(meetingsStore.loading);
+  // Per-row in-flight set for bot actions, owned by the store. Passed to the
+  // agenda so each row can disable its buttons + spin while its invoke runs.
+  const pendingEventIds = $derived(meetingsStore.pendingEventIds);
 
   // Recordings inferred from the calendar snapshot's scheduled bots. Derived
   // (not manually assigned) so it recomputes whenever the cache-first paint or
@@ -68,9 +58,17 @@
   );
 
   const liveMeeting = $derived(pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]));
-  const todayEvents = $derived(events.filter((event) => isToday(event)).sort(sortByStart));
-  const upNext = $derived(pickUpNext(todayEvents));
-  const signalTotals = $derived(totalSignalCounts(todayEvents));
+  // The calendar event id behind the live detection, so the agenda can mark
+  // exactly that row "Live" (recall bots carry the originating event id).
+  const liveEventId = $derived(liveMeeting?.sourceEventId ?? null);
+  // Multi-day agenda: `meetings_list_upcoming` already returns events across
+  // the server's sync window, so we show them all grouped by day rather than
+  // narrowing to today (the old `isToday` filter hid every non-today meeting,
+  // which read as an empty "no meetings" view).
+  const upcomingEvents = $derived([...events].sort(sortByStart));
+  const dayGroups = $derived(groupByDay(upcomingEvents));
+  const upNext = $derived(pickUpNext(upcomingEvents));
+  const signalTotals = $derived(totalSignalCounts(upcomingEvents));
   const connectedRows = $derived(
     buildConnectedCalendarRows(
       accounts,
@@ -87,521 +85,315 @@
       .slice(0, 3),
   );
 
+  // Upcoming meetings carrying >=1 extracted signal — powers "from N meetings" caption.
+  const signalMeetingCount = $derived(
+    upcomingEvents.filter((event) => extractedSignalLabels(event).length > 0).length,
+  );
+
+  // Transient action feedback. The store owns the invoke + decides the copy
+  // (returns a ToastDescriptor next to the call that produced it); this page
+  // only renders it. `null` = nothing to surface (no-op dedupe / missing bot).
+  let toast = $state<ToastDescriptor | null>(null);
+  function flashToast(kind: 'info' | 'warn', text: string): void {
+    toast = { kind, text };
+    setTimeout(() => {
+      if (toast && toast.text === text) toast = null;
+    }, 4000);
+  }
+
+  // Thin wrappers: delegate the invoke to the store, surface its toast (if any).
+  // The agenda calls these via callback props so it stays 'invoke'-free.
+  async function onInvite(evt: MeetingEvent): Promise<void> {
+    const t = await meetingsStore.inviteBot(evt);
+    if (t) flashToast(t.kind, t.text);
+  }
+  async function onUninvite(evt: MeetingEvent): Promise<void> {
+    const t = await meetingsStore.cancelBot(evt);
+    if (t) flashToast(t.kind, t.text);
+  }
+  async function onJoinNow(evt: MeetingEvent): Promise<void> {
+    const t = await meetingsStore.joinBotNow(evt);
+    if (t) flashToast(t.kind, t.text);
+  }
+
+  function openCalendar(): void {
+    void openExternal('https://calendar.google.com');
+  }
+
   onMount(() => {
-    // Cache-first: paint the last good snapshot synchronously (instant, even
-    // if stale), then revalidate from the network — same stale-while-revalidate
-    // contract the classic MeetingsWindow uses. The alt window has its own
-    // per-window localStorage, so without the network refresh below the cache
-    // was always empty here (the original bug).
-    hydrateFromCache();
-    void ensureActiveMeetingListeners();
-    void refresh();
-
-    // Re-hydrate on focus/storage so a refresh in the classic window (or a
-    // prior alt session) reflects here immediately; `refresh()` on focus then
-    // pulls fresh data. The `loading` guard dedupes the mount+focus pair.
-    const onFocus = () => {
-      hydrateFromCache();
-      void refresh();
-    };
-    const onStorage = () => hydrateFromCache();
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('storage', onStorage);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('storage', onStorage);
-    };
+    // The store is a module-level singleton started once at app launch from
+    // DesktopApp.onMount. Calling it here too keeps the page self-sufficient
+    // for isolated mounts (tests / direct nav); it's idempotent via an internal
+    // `started` guard, so this never double-fetches or double-polls. The
+    // cache-first paint, live refresh, 30s poll, and focus/storage listeners
+    // all live in the store now — this remount just reads the already-warm
+    // singleton, which is what makes the nav instant instead of 5-10s.
+    startMeetingsStore();
   });
-
-  function hydrateFromCache() {
-    const snapshot = loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>();
-    if (!snapshot) return;
-    events = snapshot.events ?? [];
-    botsByEventId = new Map(snapshot.botsByEventId ?? []);
-    companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
-    accounts = snapshot.accounts ?? [];
-    accountEmailById = new Map(snapshot.accountEmailById ?? []);
-    calendarsByAccount = new Map(snapshot.calendarsByAccount ?? []);
-    calendarSummaryByKey = new Map(snapshot.calendarSummaryByKey ?? []);
-    enabledCalIdsByAccount = new Map(
-      (snapshot.enabledCalIdsByAccount ?? []).map(([accountId, ids]) => [
-        accountId,
-        new Set(ids),
-      ]),
-    );
-  }
-
-  /**
-   * Live fetch — mirrors MeetingsWindow.svelte's mount `refresh()`. The alt
-   * window must fetch calendar data itself: it can't piggyback on the classic
-   * window's cache because localStorage is per-WebviewWindow. Fetches
-   * events + bots + memberships + connected accounts in parallel, fans out to
-   * per-account calendars, populates the model, and persists the snapshot.
-   *
-   * Errors are NOT swallowed to a blank state: on failure we keep whatever the
-   * cache already painted, log the error, and surface a message (auth failures
-   * prompt re-sign-in) instead of faking "0 meetings".
-   */
-  async function refresh() {
-    if (loading) return;
-    loading = true;
-    fetchError = '';
-    membershipsError = '';
-    try {
-      const [evts, bots, members, accts] = await Promise.all([
-        invoke<MeetingEvent[]>('meetings_list_upcoming'),
-        invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
-          calendarEventIds: null,
-        }),
-        invoke<CompanyMembership[]>('meetings_list_memberships').catch((err) => {
-          console.error('meetings_list_memberships failed:', err);
-          membershipsError = 'Could not load calendar routing.';
-          return [] as CompanyMembership[];
-        }),
-        invoke<GoogleAccount[]>('meetings_list_accounts').catch(
-          () => [] as GoogleAccount[],
-        ),
-      ]);
-      events = evts ?? [];
-      botsByEventId = buildBotMap(bots ?? []);
-      memberships = members ?? [];
-      companyNamesByUid = buildCompanyNameMap(members ?? []);
-      accounts = accts ?? [];
-      accountEmailById = new Map(
-        (accts ?? []).map((a) => [a.accountId, a.email ?? '']),
-      );
-
-      // Calendar fan-out is a second pass so the events render doesn't block
-      // on calendar metadata; per-account failures are non-fatal.
-      await loadCalendarsForAccounts(accts ?? []);
-
-      // Persist AFTER everything (events + calendars) so the next paint — in
-      // either window — hydrates a complete view.
-      persistSnapshot();
-    } catch (err) {
-      // Keep the cached paint; surface the failure rather than blanking out.
-      console.error('meetings refresh failed:', err);
-      fetchError = friendlyFetchError(err);
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function loadCalendarsForAccounts(accts: GoogleAccount[]) {
-    const nextByAccount = new Map<string, GoogleCalendar[]>();
-    const nextEnabled = new Map<string, Set<string>>();
-    const nextSummaries = new Map<string, string>();
-    await Promise.all(
-      accts.map(async (a) => {
-        try {
-          const resp = await invoke<AccountCalendars>(
-            'meetings_list_calendars_for_account',
-            { accountId: a.accountId },
-          );
-          nextByAccount.set(a.accountId, resp.calendars ?? []);
-          nextEnabled.set(a.accountId, new Set(resp.selectedCalendarIds ?? []));
-          for (const c of resp.calendars ?? []) {
-            nextSummaries.set(`${a.accountId}|${c.id}`, c.summary);
-          }
-        } catch (err) {
-          console.error(
-            `meetings_list_calendars_for_account failed for ${a.accountId}:`,
-            err,
-          );
-          nextByAccount.set(a.accountId, []);
-          nextEnabled.set(a.accountId, new Set());
-        }
-      }),
-    );
-    calendarsByAccount = nextByAccount;
-    enabledCalIdsByAccount = nextEnabled;
-    calendarSummaryByKey = nextSummaries;
-  }
-
-  function persistSnapshot(): void {
-    saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
-      events,
-      botsByEventId: Array.from(botsByEventId.entries()),
-      companyNamesByUid: Array.from(companyNamesByUid.entries()),
-      accounts,
-      accountEmailById: Array.from(accountEmailById.entries()),
-      calendarsByAccount: Array.from(calendarsByAccount.entries()),
-      enabledCalIdsByAccount: Array.from(enabledCalIdsByAccount.entries()).map(
-        ([acct, ids]) => [acct, Array.from(ids)],
-      ),
-      calendarSummaryByKey: Array.from(calendarSummaryByKey.entries()),
-    });
-  }
-
-  function buildBotMap(bots: ScheduledBot[]): Map<string, ScheduledBot> {
-    const m = new Map<string, ScheduledBot>();
-    for (const b of bots) {
-      if (b.calendarEventId && isActiveStatus(b.status)) {
-        m.set(b.calendarEventId, b);
-      }
-    }
-    return m;
-  }
-
-  function buildCompanyNameMap(rows: CompanyMembership[]): Map<string, string> {
-    const m = new Map<string, string>();
-    for (const row of rows) {
-      if (row.companyName) m.set(row.companyUid, row.companyName);
-    }
-    return m;
-  }
-
-  function isActiveStatus(s: string): boolean {
-    return (
-      s === 'scheduled' ||
-      s === 'joining' ||
-      s === 'recording' ||
-      s === 'processing' ||
-      s === 'completed'
-    );
-  }
-
-  function friendlyFetchError(err: unknown): string {
-    const raw = String(err ?? '');
-    if (/\b401\b/.test(raw) || /auth/i.test(raw)) {
-      return 'Sign in again to load meetings.';
-    }
-    return 'Could not refresh meetings — showing the last cached view.';
-  }
 </script>
 
-<section class="meetings-page" aria-label="Meetings">
-  <div class="meetings-hero">
-    <div class="hero-main">
-      <p class="hero-kicker">Calendar cache / menubar truth</p>
+<div class="meetings" aria-label="Meetings">
+  {#snippet iconCalendar()}
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <path d="M16 2v4M8 2v4M3 10h18" />
+    </svg>
+  {/snippet}
+  {#snippet iconSync()}
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 0 0-15-6.7L3 8" />
+      <path d="M3 12a9 9 0 0 0 15 6.7L21 16" />
+      <path d="M3 3v5h5" />
+      <path d="M21 21v-5h-5" />
+    </svg>
+  {/snippet}
+
+  <header class="page-header">
+    <div class="ph-titles">
       <h1>Meetings</h1>
-      <p class="hero-current">
-        {todayEvents.length} on deck today / {signalTotals.actions + signalTotals.decisions + signalTotals.risks} signals extracted
-      </p>
+      <div class="subtitle">
+        {upcomingEvents.length} upcoming across {dayGroups.length} day{dayGroups.length === 1 ? '' : 's'} · all companies
+      </div>
       {#if fetchError}
-        <p class="hero-error" role="status">{fetchError}</p>
+        <div class="page-error" role="status">{fetchError}</div>
       {/if}
     </div>
-    <div class="hero-metrics" aria-label="Meeting signal counts">
-      <div class="metric">
-        <span>Actions</span>
-        <strong>{signalTotals.actions}</strong>
-      </div>
-      <div class="metric">
-        <span>Decisions</span>
-        <strong>{signalTotals.decisions}</strong>
-      </div>
-      <div class="metric">
-        <span>Risks</span>
-        <strong>{signalTotals.risks}</strong>
-      </div>
+    <div class="actions">
+      <button type="button" class="btn subtle" onclick={openCalendar}>
+        <span class="icon">{@render iconCalendar()}</span>
+        Open calendar
+      </button>
+      <button type="button" class="btn" onclick={() => void meetingsStore.refresh()} disabled={loading}>
+        <span class="icon">{@render iconSync()}</span>
+        {loading ? 'Refreshing' : 'Refresh'}
+      </button>
     </div>
-  </div>
+  </header>
 
-  <div class="meetings-grid">
-    <div class="main-column">
+  {#if toast}
+    <div class="toast" class:toast-warn={toast.kind === 'warn'} role="status">{toast.text}</div>
+  {/if}
+
+  <div class="content">
+    <div class="three-col">
       <LiveNowCard meeting={liveMeeting} onstart={startRecording} onstop={stopRecording} />
-      <MeetingsToday events={todayEvents} {upNext} />
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Up next</h3>
+          <span>{upNext ? timeLabel(upNext) : ''}</span>
+        </div>
+        <div class="card-body">
+          {#if upNext}
+            {@const dur = durationMinutes(upNext)}
+            <div class="un-name">{upNext.summary ?? '(no title)'}</div>
+            <div class="un-meta">
+              {companyLabel(upNext, companyNamesByUid)}{#if dur} · {dur}m{/if}
+            </div>
+          {:else}
+            <div class="card-empty">Nothing scheduled next.</div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Signal pool</h3>
+          <span>extracted</span>
+        </div>
+        <div class="card-body">
+          <div class="sp-stats">
+            <div class="sp-stat">
+              <span class="sp-num">{signalTotals.actions}</span>
+              <span class="sp-lbl">Actions</span>
+            </div>
+            <div class="sp-stat">
+              <span class="sp-num">{signalTotals.decisions}</span>
+              <span class="sp-lbl">Decisions</span>
+            </div>
+            <div class="sp-stat">
+              <span class="sp-num">{signalTotals.risks}</span>
+              <span class="sp-lbl">Risks</span>
+            </div>
+          </div>
+          <div class="sp-sub">from {signalMeetingCount} meeting{signalMeetingCount === 1 ? '' : 's'}</div>
+        </div>
+      </div>
     </div>
 
-    <aside class="side-column">
-      <section class="routing-panel" aria-labelledby="calendars-title">
-        <div class="panel-header">
-          <h2 id="calendars-title">Connected calendars</h2>
+    <MeetingsAgenda
+      groups={dayGroups}
+      {upNext}
+      totalCount={upcomingEvents.length}
+      companyNames={companyNamesByUid}
+      {liveEventId}
+      {botsByEventId}
+      {pendingEventIds}
+      {onInvite}
+      {onUninvite}
+      {onJoinNow}
+      onOpenExternal={openExternal}
+    />
+
+    <div class="section two-col">
+      <div class="card">
+        <div class="card-header">
+          <h3>Connected calendars</h3>
           <span>{connectedRows.length}</span>
         </div>
         {#if membershipsError}
-          <p class="panel-error">{membershipsError}</p>
+          <p class="card-error">{membershipsError}</p>
         {/if}
-        <ol class="routing-list">
+        <div class="sync-list">
           {#each connectedRows as row (row.key)}
-            <li>
-              <div class="routing-copy">
+            <div class="sync-source">
+              <span class="icon-wrap">{@render iconCalendar()}</span>
+              <div class="ss-copy">
                 <strong>{row.email}</strong>
-                <span>{row.calendar} -> {row.routingTarget}</span>
+                <span class="sub">{row.calendar} -> {row.routingTarget}</span>
               </div>
               <span class="status-pill">{row.status}</span>
-            </li>
+            </div>
           {:else}
-            <li class="empty-row">No connected calendars in the cached snapshot.</li>
+            {#if accounts.length === 0}
+              <div class="card-empty no-accounts">
+                <div class="na-title">No calendars connected yet</div>
+                <p class="na-copy">Connect a Google Calendar in HQ Console to start capturing meetings here.</p>
+                <button type="button" class="btn" onclick={() => void openExternal('https://hq.getindigo.ai/integrations')}>Open HQ Console Integrations</button>
+              </div>
+            {:else}
+              <div class="card-empty">No connected calendars in the cached snapshot.</div>
+            {/if}
           {/each}
-        </ol>
-      </section>
+        </div>
+      </div>
 
-      <section class="timeline-panel" aria-labelledby="synced-title">
-        <div class="panel-header">
-          <h2 id="synced-title">Recently synced</h2>
+      <div class="card">
+        <div class="card-header">
+          <h3>Recently synced</h3>
           <span>{recentlySynced.length}</span>
         </div>
-        <ol class="timeline-list">
-          {#each recentlySynced as event (event.id)}
-            {@const labels = extractedSignalLabels(event)}
-            <li>
-              <span class="timeline-dot" aria-hidden="true"></span>
-              <div>
-                <strong>{event.summary ?? '(no title)'}</strong>
-                <span>{labels.join(' / ')}</span>
-              </div>
-            </li>
+        <div class="card-body">
+          {#if recentlySynced.length > 0}
+            <div class="timeline">
+              {#each recentlySynced as event (event.id)}
+                {@const labels = extractedSignalLabels(event)}
+                <div class="tl-row blue">
+                  <div class="tl-copy">
+                    <div class="what">{event.summary ?? '(no title)'}</div>
+                    <div class="who">{labels.join(' / ')}</div>
+                  </div>
+                </div>
+              {/each}
+            </div>
           {:else}
-            <li class="empty-row">Extracted meeting signals will appear after sync.</li>
-          {/each}
-        </ol>
-      </section>
-    </aside>
+            <div class="card-empty">Extracted meeting signals will appear after sync.</div>
+          {/if}
+        </div>
+      </div>
+    </div>
   </div>
-</section>
+</div>
 
 <style>
-  .meetings-page {
-    display: grid;
-    gap: 22px;
-  }
+  .meetings { min-width: 0; }
 
-  .meetings-hero {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
-    gap: 16px 24px;
-    padding-bottom: 22px;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .hero-main {
-    min-width: 0;
-  }
-
-  .hero-kicker,
-  .hero-current {
-    margin: 0;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 18px;
-  }
-
-  .meetings-hero h1 {
-    margin: 2px 0 4px;
-    color: var(--fg);
-    font-size: 28px;
-    font-weight: 680;
-    letter-spacing: 0;
-    line-height: 34px;
-  }
-
-  .hero-current {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .hero-error {
-    margin: 6px 0 0;
-    color: var(--red);
-    font-size: 12px;
-    line-height: 18px;
-  }
-
-  .hero-metrics {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-  }
-
-  .metric {
-    min-width: 0;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
-  }
-
-  .metric span {
-    display: block;
-    color: var(--muted);
-    font-size: 11px;
-    font-weight: 650;
-    line-height: 16px;
-    text-transform: uppercase;
-  }
-
-  .metric strong {
-    display: block;
-    min-width: 0;
-    overflow: hidden;
-    color: var(--fg);
-    font-size: 21px;
-    font-weight: 680;
-    line-height: 28px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .meetings-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(270px, 320px);
-    align-items: start;
-    gap: 22px;
-  }
-
-  .main-column,
-  .side-column {
-    display: grid;
-    gap: 18px;
-    min-width: 0;
-  }
-
-  .panel-header {
+  .page-header {
     display: flex;
-    align-items: baseline;
+    align-items: flex-start;
     justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 10px;
+    gap: 16px;
+  }
+  .ph-titles { min-width: 0; }
+  .subtitle { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 18px; }
+  .page-error { margin-top: 6px; color: var(--red); font-size: 12px; line-height: 18px; }
+  .actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
+
+  /* Transient action feedback. Amber (not red) for recoverable bot-action
+     warnings — mirrors classic MeetingsWindow's deliberate `.toast-warn` tone. */
+  .toast {
+    margin: 12px 0 0; padding: 8px 12px; border: 1px solid rgba(52, 211, 153, 0.22);
+    border-radius: 6px; background: rgba(52, 211, 153, 0.08);
+    color: var(--emerald); font-size: 12px; line-height: 18px;
+  }
+  .toast-warn {
+    border-color: rgba(202, 138, 4, 0.35); background: rgba(202, 138, 4, 0.1); color: #fcd34d;
   }
 
-  .panel-header h2 {
-    margin: 0;
-    color: var(--fg);
-    font-size: 15px;
-    font-weight: 680;
-    line-height: 22px;
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 10px; border: 1px solid var(--border); border-radius: 5px;
+    background: transparent; color: var(--fg); font: inherit; font-size: 12px;
+    white-space: nowrap; cursor: default;
+    transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1);
   }
+  .btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--row-hover); }
+  .btn:disabled { opacity: 0.5; }
+  .btn.subtle { border-color: transparent; color: var(--muted); }
+  .btn.subtle:hover:not(:disabled) { background: var(--row-hover); color: var(--fg); }
+  .btn .icon { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; }
 
-  .panel-header span,
-  .routing-copy span,
-  .timeline-list span,
-  .panel-error,
-  .empty-row {
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 18px;
+  .content { display: flex; flex-direction: column; gap: 28px; }
+
+  .three-col { display: grid; grid-template-columns: 1.6fr 1fr 1fr; gap: 14px; align-items: start; }
+
+  .card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+  .card-header {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border);
   }
+  .card-header h3 { margin: 0; color: var(--muted); font-size: 13px; font-weight: 650; line-height: 18px; }
+  .card-header > span { flex: 0 0 auto; color: var(--muted-3); font-size: 12px; line-height: 18px; }
+  .card-body { padding: 14px 16px; }
+  .card-empty { padding: 14px 16px; color: var(--muted); font-size: 12px; line-height: 18px; }
+  .card-error { margin: 0; padding: 10px 16px 0; color: var(--red); font-size: 12px; line-height: 18px; }
 
-  .panel-error {
-    margin: 0 0 8px;
-    color: var(--red);
+  .no-accounts { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .na-title { color: var(--fg); font-size: 13px; font-weight: 650; line-height: 18px; }
+  .na-copy { margin: 0; color: var(--muted); font-size: 12px; line-height: 18px; }
+
+  .un-name { overflow: hidden; color: var(--fg); font-size: 14px; font-weight: 650; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+  .un-meta { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 18px; }
+
+  .sp-stats { display: flex; gap: 24px; }
+  .sp-stat { display: flex; flex-direction: column; gap: 2px; }
+  .sp-num { color: var(--fg); font-family: 'Geist Mono', monospace; font-size: 20px; font-weight: 600; line-height: 26px; }
+  .sp-lbl { color: var(--muted); font-size: 11px; font-weight: 650; line-height: 14px; text-transform: uppercase; }
+  .sp-sub { margin-top: 12px; color: var(--muted-3); font-size: 12px; line-height: 18px; }
+
+  .section { min-width: 0; }
+  .two-col { display: grid; grid-template-columns: 1.4fr 1fr; gap: 14px; align-items: start; }
+
+  .sync-list { display: flex; flex-direction: column; }
+  .sync-source {
+    display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center;
+    gap: 14px; padding: 11px 16px; border-top: 1px solid var(--border);
+    transition: background 140ms cubic-bezier(.2,.7,.2,1);
   }
-
-  .routing-list,
-  .timeline-list {
-    display: grid;
-    gap: 0;
-    margin: 0;
-    padding: 6px 0;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg);
-    list-style: none;
+  .sync-source:first-child { border-top: none; }
+  .sync-source:hover { background: var(--row-hover); }
+  .icon-wrap {
+    display: flex; align-items: center; justify-content: center; width: 22px; height: 22px;
+    border: 1px solid var(--border); border-radius: 6px; color: var(--muted);
   }
-
-  .routing-list li {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 10px;
-    padding: 9px 12px;
-    transition:
-      background 140ms cubic-bezier(.2, .7, .2, 1),
-      transform 140ms cubic-bezier(.2, .7, .2, 1);
-  }
-
-  .routing-list li:not(.empty-row):hover,
-  .timeline-list li:not(.empty-row):hover {
-    background: var(--row-hover);
-    transform: translateX(2px);
-  }
-
-  .routing-copy {
-    min-width: 0;
-  }
-
-  .routing-copy strong,
-  .routing-copy span,
-  .timeline-list strong,
-  .timeline-list span {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .routing-copy strong,
-  .timeline-list strong {
-    color: var(--fg);
-    font-size: 13px;
-    font-weight: 650;
-    line-height: 18px;
-  }
-
+  .ss-copy { min-width: 0; }
+  .ss-copy strong { display: block; overflow: hidden; color: var(--fg); font-size: 13px; font-weight: 650; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+  .ss-copy .sub { display: block; overflow: hidden; color: var(--muted-3); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
   .status-pill {
-    max-width: 96px;
-    overflow: hidden;
-    padding: 3px 7px;
-    border-radius: 999px;
-    background: var(--row-active);
-    color: var(--muted-2);
-    font-size: 11px;
-    font-weight: 650;
-    line-height: 14px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    max-width: 110px; overflow: hidden; padding: 2px 8px; border: 1px solid var(--border);
+    border-radius: 999px; color: var(--muted); font-size: 11px; font-weight: 650; line-height: 16px;
+    text-overflow: ellipsis; white-space: nowrap;
   }
 
-  .timeline-list li {
-    display: grid;
-    grid-template-columns: 12px minmax(0, 1fr);
-    gap: 8px;
-    padding: 9px 12px;
-    transition:
-      background 140ms cubic-bezier(.2, .7, .2, 1),
-      transform 140ms cubic-bezier(.2, .7, .2, 1);
-  }
+  .timeline { position: relative; padding-left: 18px; }
+  .timeline::before { content: ''; position: absolute; left: 4px; top: 4px; bottom: 4px; width: 1px; background: var(--border); }
+  .tl-row { position: relative; padding: 6px 0; }
+  .tl-row::before { content: ''; position: absolute; left: -18px; top: 11px; width: 7px; height: 7px; border-radius: 50%; background: var(--muted-3); border: 2px solid var(--bg); }
+  .tl-row.blue::before { background: var(--blue); }
+  .tl-copy { min-width: 0; }
+  .what { overflow: hidden; color: var(--fg); font-size: 13px; line-height: 18px; text-overflow: ellipsis; white-space: nowrap; }
+  .who { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
 
-  .timeline-dot {
-    width: 8px;
-    height: 8px;
-    margin-top: 5px;
-    border-radius: 999px;
-    background: var(--emerald);
-    box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.16);
-  }
-
-  .routing-list .empty-row,
-  .timeline-list .empty-row {
-    display: block;
-  }
-
-  @media (max-width: 980px) {
-    .meetings-hero,
-    .meetings-grid {
-      grid-template-columns: minmax(0, 1fr);
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .routing-list li,
-    .timeline-list li {
-      transition: none;
-    }
-
-    .routing-list li:not(.empty-row):hover,
-    .timeline-list li:not(.empty-row):hover {
-      transform: none;
-    }
-  }
-
-  @media (max-width: 520px) {
-    .hero-metrics {
-      grid-template-columns: minmax(0, 1fr);
-    }
-
-    .routing-list li {
-      grid-template-columns: minmax(0, 1fr);
-      align-items: start;
-      gap: 6px;
-    }
-
-    .status-pill {
-      justify-self: start;
-      max-width: 100%;
-    }
-  }
+  @media (max-width: 980px) { .three-col, .two-col { grid-template-columns: minmax(0, 1fr); } }
+  @media (prefers-reduced-motion: reduce) { .btn, .sync-source { transition: none; } }
 </style>

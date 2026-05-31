@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { companyStore } from './company-store.svelte';
 
 export interface CompanyBoardCard {
   id: string;
@@ -26,6 +27,18 @@ export const emptyCompanyBoard = (): CompanyBoard => ({
   done: [],
 });
 
+// Normalize a raw board payload (from invoke or the warm cache) into the four
+// always-present columns. Shared by the warm-read paint and the invoke commit
+// so both go through identical shaping.
+function shapeBoard(raw: CompanyBoard): CompanyBoard {
+  return {
+    inbox: raw.inbox ?? [],
+    doing: raw.doing ?? [],
+    review: raw.review ?? [],
+    done: raw.done ?? [],
+  };
+}
+
 export function useCompanyBoard(options: { slug: () => string | null }) {
   let board = $state<CompanyBoard>(emptyCompanyBoard());
   let loading = $state(false);
@@ -44,17 +57,16 @@ export function useCompanyBoard(options: { slug: () => string | null }) {
     }
 
     let cancelled = false;
-    loading = true;
+
+    const warm = companyStore.board(slug);
+    board = warm ? shapeBoard(warm) : emptyCompanyBoard();
+    loading = warm === null;
 
     void invoke<CompanyBoard>('get_company_board', { slug })
       .then((result) => {
         if (!cancelled) {
-          board = {
-            inbox: result.inbox ?? [],
-            doing: result.doing ?? [],
-            review: result.review ?? [],
-            done: result.done ?? [],
-          };
+          board = shapeBoard(result);
+          companyStore.setBoard(slug, result);
         }
       })
       .catch((err) => {

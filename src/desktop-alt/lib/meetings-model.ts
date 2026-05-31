@@ -105,6 +105,19 @@ export function rangeLabel(event: MeetingEvent): string {
   })}`;
 }
 
+/**
+ * Whole-minute duration between start and end. Returns null when either edge
+ * is unparseable or the span is non-positive (so the row can omit the "· Nm"
+ * suffix rather than render "· 0m"). Powers the design `.mtime` cell.
+ */
+export function durationMinutes(event: MeetingEvent): number | null {
+  const start = eventStart(event);
+  const end = eventEnd(event);
+  if (!start || !end) return null;
+  const mins = Math.round((end.getTime() - start.getTime()) / 60000);
+  return mins > 0 ? mins : null;
+}
+
 export function isToday(event: MeetingEvent, now = new Date()): boolean {
   const start = eventStart(event);
   if (!start) return false;
@@ -125,6 +138,82 @@ export function pickUpNext(events: MeetingEvent[], now = new Date()): MeetingEve
       .filter((event) => (eventEnd(event)?.getTime() ?? 0) >= now.getTime())
       .sort(sortByStart)[0] ?? null
   );
+}
+
+/** Row lifecycle state, mirrored from the Claude Design `.meeting-row` mock. */
+export type MeetingRowState = 'live' | 'next' | 'past' | 'scheduled';
+
+/**
+ * Resolve a row's display state. `live` wins when the event is the active
+ * detection/recording (matched by id against the live meeting's sourceEventId),
+ * then `next` for the up-next pick, then `past` once the event has ended, else
+ * `scheduled`. Pure + `now`-injectable so the agenda stays presentational.
+ */
+export function meetingState(
+  event: MeetingEvent,
+  opts: { liveEventId?: string | null; upNextId?: string | null; now?: Date } = {},
+): MeetingRowState {
+  const { liveEventId = null, upNextId = null, now = new Date() } = opts;
+  if (liveEventId && event.id === liveEventId) return 'live';
+  if (upNextId && event.id === upNextId) return 'next';
+  const end = eventEnd(event);
+  if (end && end.getTime() < now.getTime()) return 'past';
+  return 'scheduled';
+}
+
+/**
+ * Subtitle label for a meeting row — the routed company name when known,
+ * falling back to a short UID, else "Personal" for un-routed calendars.
+ * The design row shows "{with} · {company}"; real events carry no attendee,
+ * so we surface company only.
+ */
+export function companyLabel(event: MeetingEvent, companyNames: Map<string, string>): string {
+  const uid = event.sourceCompanyUid;
+  if (!uid) return 'Personal';
+  return companyNames.get(uid) ?? shortUid(uid);
+}
+
+export interface DayGroup {
+  label: string;
+  events: MeetingEvent[];
+}
+
+/**
+ * Human day label relative to `now` — "Today", "Tomorrow", else a short
+ * "Wed, Jun 3" style date. Ported from the classic MeetingsWindow so the alt
+ * window's multi-day agenda reads identically. `now` is injectable for tests.
+ */
+export function dayLabel(date: Date, now = new Date()): string {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const eventDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  if (eventDay.getTime() === today.getTime()) return 'Today';
+  if (eventDay.getTime() === tomorrow.getTime()) return 'Tomorrow';
+  return date.toLocaleDateString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+/**
+ * Group events into chronological per-day buckets for the multi-day agenda.
+ * Events are sorted by start first, so both the day order and the within-day
+ * order come out chronological (Map preserves first-seen insertion order).
+ * Events with no parseable start are dropped — they can't be placed on a day.
+ */
+export function groupByDay(events: MeetingEvent[], now = new Date()): DayGroup[] {
+  const byLabel = new Map<string, MeetingEvent[]>();
+  for (const event of [...events].sort(sortByStart)) {
+    const start = eventStart(event);
+    if (!start) continue;
+    const label = dayLabel(start, now);
+    const bucket = byLabel.get(label);
+    if (bucket) bucket.push(event);
+    else byLabel.set(label, [event]);
+  }
+  return Array.from(byLabel, ([label, eventsInDay]) => ({ label, events: eventsInDay }));
 }
 
 export function pickLiveMeeting(activeMeetings: ActiveMeeting[]): ActiveMeeting | null {
@@ -196,6 +285,21 @@ export function signalCounts(event: MeetingEvent): SignalCounts {
   };
 }
 
+/**
+ * Compact, human signal summary for a meeting row — only non-zero kinds,
+ * pluralized, joined with " · " (e.g. "2 actions · 1 decision"). Empty string
+ * when the meeting has no extracted signals, so the `.msig` cell stays blank
+ * rather than rendering "0 actions · 0 decisions".
+ */
+export function signalSummary(counts: SignalCounts): string {
+  const parts: string[] = [];
+  if (counts.actions) parts.push(`${counts.actions} action${counts.actions === 1 ? '' : 's'}`);
+  if (counts.decisions)
+    parts.push(`${counts.decisions} decision${counts.decisions === 1 ? '' : 's'}`);
+  if (counts.risks) parts.push(`${counts.risks} risk${counts.risks === 1 ? '' : 's'}`);
+  return parts.join(' · ');
+}
+
 export function extractedSignalLabels(event: MeetingEvent): string[] {
   return normalizeSignals(event.signals)
     .map((signal) => signal.title ?? signal.summary ?? signal.text ?? signal.type ?? signal.kind)
@@ -254,6 +358,125 @@ export function buildConnectedCalendarRows(
   }
 
   return rows.sort((a, b) => `${a.email}${a.calendar}`.localeCompare(`${b.email}${b.calendar}`));
+}
+
+/**
+ * Resolve a usable meeting URL for an event. Server-side extraction (BE-5)
+ * populates `meetingUrl` from hangoutLink/conferenceData/description; fall back
+ * to the raw `hangoutLink` for events served by a pre-BE-5 backend. Pure mirror
+ * of the classic MeetingsWindow helper so row actions resolve identically.
+ */
+export function eventMeetingUrl(e: MeetingEvent): string | null {
+  return e.meetingUrl ?? e.hangoutLink ?? null;
+}
+
+/**
+ * Human platform label for a meeting row — "Google Meet" / "Zoom" / "Teams" /
+ * "Webex", else empty string when the URL is missing or unrecognized.
+ */
+export function platformLabel(e: MeetingEvent): string {
+  const url = eventMeetingUrl(e) ?? '';
+  if (url.includes('meet.google.com')) return 'Google Meet';
+  if (url.includes('zoom.us')) return 'Zoom';
+  if (url.includes('teams.microsoft.com')) return 'Teams';
+  if (url.includes('webex.com')) return 'Webex';
+  return '';
+}
+
+/**
+ * True when `url` looks like a real join link for a supported platform
+ * (Zoom / Google Meet / Teams / Webex). Gates the row's invite/join affordances
+ * so we never schedule a bot against a bogus URL.
+ */
+export function isPlausibleMeetingUrl(url: string): boolean {
+  if (!url) return false;
+  return (
+    /^https:\/\/[^\s/]*\.zoom\.us\/j\/[^\s]+/i.test(url) ||
+    /^https:\/\/meet\.google\.com\/[a-z-]+/i.test(url) ||
+    /^https:\/\/teams\.microsoft\.com\/l\/meetup-join\/[^\s]+/i.test(url) ||
+    /^https:\/\/[^\s/]*\.webex\.com\/[^\s]+/i.test(url)
+  );
+}
+
+/**
+ * Row action button lifecycle, driven by the scheduled bot's status:
+ *   no bot     → "invite"     (CTA)
+ *   scheduled  → "invited"    (click to cancel)
+ *   joining    → "joining"    (transient)
+ *   recording  → "in-call"    (live indicator, click to stop)
+ *   processing → "processing" (non-cancellable, transient)
+ *   completed  → "done"
+ */
+export type RowButtonKind = 'invite' | 'invited' | 'joining' | 'in-call' | 'processing' | 'done';
+
+export function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
+  if (!bot) return 'invite';
+  switch (bot.status) {
+    case 'scheduled':
+      return 'invited';
+    case 'joining':
+      return 'joining';
+    case 'recording':
+      return 'in-call';
+    case 'processing':
+      return 'processing';
+    case 'completed':
+      return 'done';
+    default:
+      // Defensive fallback — failed bots aren't in the active map, so hitting
+      // here means an unknown status. Render as Invite so the user can recover.
+      return 'invite';
+  }
+}
+
+export function rowButtonLabel(kind: RowButtonKind, pending: boolean): string {
+  if (pending) return '…';
+  switch (kind) {
+    case 'invite':
+      return 'Invite';
+    case 'invited':
+      return 'Invited';
+    case 'joining':
+      return 'Joining…';
+    case 'in-call':
+      return 'In Call';
+    case 'processing':
+      return 'Processing';
+    case 'done':
+      return 'Done';
+  }
+}
+
+/**
+ * Map a raw invoke rejection to friendly, recoverable copy. Tries to parse a
+ * JSON `{ error | message }` payload first, then falls back to HTTP-status
+ * heuristics (409 already-scheduled, 401 re-auth, 403 forbidden, 5xx server),
+ * else the caller-supplied fallback. Mirrors the classic MeetingsWindow.
+ */
+export function friendlyError(err: unknown, fallback: string): string {
+  const raw = String(err ?? '').trim();
+  const jsonStart = raw.indexOf('{');
+  if (jsonStart >= 0) {
+    try {
+      const parsed = JSON.parse(raw.slice(jsonStart)) as {
+        error?: string;
+        message?: string;
+      };
+      if (typeof parsed.error === 'string' && parsed.error.length > 0) {
+        return parsed.error;
+      }
+      if (typeof parsed.message === 'string' && parsed.message.length > 0) {
+        return parsed.message;
+      }
+    } catch {
+      // Not JSON — fall through to HTTP-status heuristics below.
+    }
+  }
+  if (/\b409\b/.test(raw)) return 'A bot is already scheduled for this meeting.';
+  if (/\b401\b/.test(raw)) return 'You need to sign in again.';
+  if (/\b403\b/.test(raw)) return "You don't have permission for that.";
+  if (/\b5\d{2}\b/.test(raw)) return 'Server hiccup — try again in a moment.';
+  return fallback;
 }
 
 function normalizeSignals(raw: unknown): MeetingSignal[] {

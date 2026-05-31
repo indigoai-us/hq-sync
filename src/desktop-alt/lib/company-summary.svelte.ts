@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { companyStore } from './company-store.svelte';
 
 export interface CompanySummary {
   board: number;
@@ -54,12 +55,15 @@ export function useCompanySummary(options: { slug: () => string | null }) {
       return;
     }
 
-    loading = true;
+    const warm = companyStore.summary(slug);
+    summary = warm ?? emptyCompanySummary();
+    loading = warm === null;
 
     void invoke<CompanySummary>('get_company_summary', { slug })
       .then((result) => {
         if (myRequest === requestId) {
           summary = result;
+          companyStore.setSummary(slug, result);
         }
       })
       .catch((err) => {
