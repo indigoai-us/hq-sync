@@ -172,13 +172,6 @@
       logTail: string;
       logPath: string;
     } | null;
-    coworkPluginInstalling?: boolean;
-    coworkPluginLastResult?: {
-      kind: 'ok' | 'err';
-      artifactPath?: string;
-      coworkInstallPaths?: string[];
-      logTail: string;
-    } | null;
     onsync: () => void;
     /** Cancel the in-flight sync (kills the runner subprocess). The same
      *  header button doubles as Sync/Stop — only meaningful when
@@ -199,7 +192,6 @@
      *  Optional so the prop is omittable; the pill stays interactive but
      *  no-ops without a handler. */
     oninstallcore?: () => void;
-    oninstallcoworkplugin?: () => void;
     // Parent can call the returned fn to refresh SyncStats (bound to
     // the child's exported refresh()). We pass a setter down rather
     // than using bind:this because App.svelte holds the ref.
@@ -248,8 +240,6 @@
     coreState = null,
     coreInstalling = false,
     coreInstallLastResult = null,
-    coworkPluginInstalling = false,
-    coworkPluginLastResult = null,
     onsync,
     oncancel,
     onsettings,
@@ -260,7 +250,6 @@
     oninstallupdate,
     oninstallhqcliupdate,
     oninstallcore,
-    oninstallcoworkplugin,
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
@@ -971,34 +960,6 @@
       {/if}
     </div>
 
-    {#if oninstallcoworkplugin}
-      <button
-        class="footer-action"
-        onclick={oninstallcoworkplugin}
-        disabled={coworkPluginInstalling}
-        title="Install the HQ Cowork plugin into Cowork and Claude Code"
-      >
-        <!-- Plug icon -->
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M5 1.75v3M11 1.75v3M4 5h8v2.75a4 4 0 0 1-8 0V5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M8 11.75v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        </svg>
-        {coworkPluginInstalling ? 'Installing Cowork plugin…' : 'Install Cowork plugin'}
-      </button>
-      {#if coworkPluginLastResult}
-        <div
-          class="footer-install-result {coworkPluginLastResult.kind === 'ok' ? 'footer-install-result-ok' : 'footer-install-result-err'}"
-          title={coworkPluginLastResult.logTail}
-        >
-          {#if coworkPluginLastResult.kind === 'ok'}
-            Installed in Cowork. Start a new Cowork task to pick it up.
-          {:else}
-            Install failed. Open HQ and run /hq-cowork-install.
-          {/if}
-        </div>
-      {/if}
-    {/if}
-
     <!-- Primary navigation. "Recent Changes" now lives on the "Last synced"
          row in SyncStats (the history affordance sits with the status it
          describes), so the footer holds just Settings + the demoted
@@ -1360,20 +1321,6 @@
   .footer-action:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
     color: var(--popover-text, #e0e0e0);
-  }
-
-  .footer-install-result {
-    padding: 0.125rem 0.5rem 0.375rem 1.75rem;
-    font-size: 0.6875rem;
-    line-height: 1.25;
-  }
-
-  .footer-install-result-ok {
-    color: var(--popover-success, #6ad59c);
-  }
-
-  .footer-install-result-err {
-    color: var(--popover-danger, #ef4444);
   }
 
   .footer-quit:hover {

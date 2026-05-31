@@ -1179,7 +1179,12 @@
       <span class="dot-spinner"></span>
     </div>
   {:else if authenticated && showSettings}
-    <Settings onback={handleBackFromSettings} />
+    <Settings
+      onback={handleBackFromSettings}
+      {coworkPluginInstalling}
+      {coworkPluginLastResult}
+      oninstallcoworkplugin={handleInstallCoworkPlugin}
+    />
   {:else if authenticated}
     <Popover
       {syncState}
@@ -1214,8 +1219,6 @@
       {coreState}
       {coreInstalling}
       {coreInstallLastResult}
-      {coworkPluginInstalling}
-      {coworkPluginLastResult}
       {hqVersion}
       onsync={handleSyncNow}
       oncancel={handleCancel}
@@ -1227,7 +1230,6 @@
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
       oninstallcore={handleInstallCore}
-      oninstallcoworkplugin={handleInstallCoworkPlugin}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
       {desktopAltEnabled}

@@ -5,9 +5,22 @@
 
   interface Props {
     onback: () => void;
+    coworkPluginInstalling?: boolean;
+    coworkPluginLastResult?: {
+      kind: 'ok' | 'err';
+      artifactPath?: string;
+      coworkInstallPaths?: string[];
+      logTail: string;
+    } | null;
+    oninstallcoworkplugin?: () => void;
   }
 
-  let { onback }: Props = $props();
+  let {
+    onback,
+    coworkPluginInstalling = false,
+    coworkPluginLastResult = null,
+    oninstallcoworkplugin,
+  }: Props = $props();
 
   let hqPath = $state<string | null>(null);
   let syncOnLaunch = $state(false);
@@ -719,6 +732,45 @@
           </div>
         </div>
       </section>
+
+      {#if oninstallcoworkplugin}
+        <section class="settings-group-wrap">
+          <h2 class="settings-group-title">Cowork</h2>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">HQ Cowork Plugin</span>
+                {#if coworkPluginLastResult}
+                  <span
+                    class="setting-desc install-result {coworkPluginLastResult.kind === 'ok' ? 'install-result-ok' : 'install-result-err'}"
+                    title={coworkPluginLastResult.logTail}
+                  >
+                    {#if coworkPluginLastResult.kind === 'ok'}
+                      Installed in Cowork. Start a new Cowork task to pick it up.
+                    {:else}
+                      Install failed. Open HQ and run /hq-cowork-install.
+                    {/if}
+                  </span>
+                {:else}
+                  <span class="setting-desc">Make HQ tools and skills available in Cowork</span>
+                {/if}
+              </div>
+              <button
+                class="change-button install-button"
+                onclick={oninstallcoworkplugin}
+                disabled={coworkPluginInstalling}
+                title="Install the HQ Cowork plugin into Cowork and Claude Code"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M5 1.75v3M11 1.75v3M4 5h8v2.75a4 4 0 0 1-8 0V5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+                  <path d="M8 11.75v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                </svg>
+                {coworkPluginInstalling ? 'Installing…' : 'Install'}
+              </button>
+            </div>
+          </div>
+        </section>
+      {/if}
     </div>
   {/if}
 </div>
@@ -919,6 +971,24 @@
   .change-button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  .install-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .install-result {
+    white-space: normal;
+  }
+
+  .install-result-ok {
+    color: var(--popover-success, #6ad59c);
+  }
+
+  .install-result-err {
+    color: var(--popover-danger, #ef4444);
   }
 
   /* Permission status pill — informational, green-tinted "Enabled" state.
