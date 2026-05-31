@@ -128,12 +128,40 @@ fn main() {
     let show_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyH);
 
     tauri::Builder::default()
+        // single-instance MUST be the first plugin: it runs before any other
+        // plugin can create a window or spawn a process, so a second launch is
+        // collapsed back into the already-running instance. macOS routes a
+        // notification click (and a re-open of the installed copy) through
+        // Launch Services by bundle id, which would otherwise start a duplicate
+        // menubar process. Here the callback surfaces the existing instance and
+        // the second process exits instead of becoming a ghost duplicate.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // Prefer the detached "HQ Meetings" (desktop-alt) window when it's
+            // open, else the main popover. show + unminimize + focus is
+            // idempotent, so re-firing on an already-visible window is a no-op.
+            let target = app
+                .get_webview_window("desktop-alt")
+                .or_else(|| app.get_webview_window("main"));
+            if let Some(window) = target {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+                crate::util::logfile::log(
+                    "app",
+                    "single-instance: focused existing window on second launch",
+                );
+            } else {
+                crate::util::logfile::log(
+                    "app",
+                    "single-instance: second launch with no window to focus",
+                );
+            }
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -239,8 +267,10 @@ fn main() {
             commands::recall_sdk::meeting_detect_feature_enabled,
             commands::recall_sdk::start_recording,
             commands::recall_sdk::stop_recording,
+            commands::recall_sdk::meetings_list_active_detections,
             tray::meetings_set_prompt_badge,
             commands::desktop_alt::open_desktop_alt_window,
+            commands::desktop_alt::desktop_alt_consume_pending_route,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
@@ -332,6 +362,15 @@ fn main() {
                 // silently. macOS-gated like the rest of the notification surface.
                 #[cfg(target_os = "macos")]
                 commands::dm_mqtt::setup_dm_mqtt_receiver(app.handle().clone());
+
+                // (a'') Clickable meeting-detected notifications. Installs a
+                // UNUserNotificationCenter delegate (once) and stashes the
+                // AppHandle so a *cold* banner click — no desktop-alt window
+                // open, hence no frontend listener — can still open the
+                // "HQ Meetings" window straight from Rust. Safe to call when
+                // unbundled (guards on bundleIdentifier internally).
+                #[cfg(target_os = "macos")]
+                commands::un_notify::register_delegate(app.handle());
 
                 // (b) Post-sync poll — low-latency top-up after a sync run.
                 let poll_handle = app.handle().clone();
@@ -442,6 +481,43 @@ fn main() {
                             Err(e) => util::logfile::log(
                                 "permissions",
                                 &format!("native register failed: {e}"),
+                            ),
+                        }
+
+                        // Guide the user when something the SDK needs is still
+                        // missing. Native prompts only fire once, and
+                        // Accessibility / Screen Recording never re-prompt
+                        // after a denial — so without this an eligible user
+                        // who dismissed or denied a prompt is left with
+                        // meeting-detect silently broken and no idea why.
+                        // Opening the wizard surfaces exactly which permissions
+                        // are outstanding and deep-links each to the right
+                        // System Settings pane. No-op once all are granted.
+                        match commands::permissions::meetings_permissions_state() {
+                            Ok(state) if !state.all_required_granted => {
+                                util::logfile::log(
+                                    "permissions",
+                                    "startup: required meeting permissions missing — opening wizard",
+                                );
+                                if let Err(e) =
+                                    commands::permissions::open_meeting_permissions_window(
+                                        handle.clone(),
+                                    )
+                                    .await
+                                {
+                                    util::logfile::log(
+                                        "permissions",
+                                        &format!("open_meeting_permissions_window failed: {e}"),
+                                    );
+                                }
+                            }
+                            Ok(_) => util::logfile::log(
+                                "permissions",
+                                "startup: all required meeting permissions granted",
+                            ),
+                            Err(e) => util::logfile::log(
+                                "permissions",
+                                &format!("meetings_permissions_state failed: {e}"),
                             ),
                         }
                     }

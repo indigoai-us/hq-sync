@@ -51,10 +51,14 @@ mod macos {
         /// it registers the app in the Accessibility list (denied by default).
         pub fn AXIsProcessTrusted() -> bool;
 
-        /// Variant that accepts an options dict — passing
-        /// `kAXTrustedCheckOptionPrompt = true` shows the system prompt
-        /// dialog explaining how to grant. We don't pass options (null) so
-        /// we just get registration without a modal.
+        /// Variant that accepts an options dict. Passing
+        /// `{ kAXTrustedCheckOptionPrompt: true }` makes macOS show the
+        /// system prompt directing the user to System Settings when the app
+        /// is not yet trusted (see `accessibility_register_with_prompt`).
+        /// Passing null registers the app silently but never nudges the
+        /// user — which is why startup registration MUST pass the option,
+        /// otherwise Accessibility never surfaces and meeting-detect quietly
+        /// fails with no signal to the user.
         pub fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
     }
 
@@ -97,6 +101,74 @@ mod macos {
             let av_cls: &AnyClass = class!(AVCaptureDevice);
             let status: i64 = msg_send![av_cls, authorizationStatusForMediaType: audio_type];
             status
+        }
+    }
+
+    /// Build the options dictionary `{ kAXTrustedCheckOptionPrompt: true }`
+    /// that `AXIsProcessTrustedWithOptions` consumes to show the "grant
+    /// Accessibility" system prompt.
+    ///
+    /// We construct the key from its string value
+    /// (`"AXTrustedCheckOptionPrompt"`) rather than linking the
+    /// `kAXTrustedCheckOptionPrompt` CFString *data* symbol: CFDictionary
+    /// compares keys with `CFEqual`, and an NSString with identical contents
+    /// is `CFEqual` to the framework constant, so the hand-built dict is
+    /// accepted by the API exactly as the imported constant would be. This
+    /// avoids a brittle `extern` link to a data constant (which objc2 can't
+    /// express as cleanly as a function symbol).
+    ///
+    /// Returns an autoreleased `NSDictionary*` (toll-free bridged to
+    /// `CFDictionaryRef`) or null if allocation failed. The caller must use
+    /// it synchronously — the AX call reads it and returns immediately.
+    pub fn ax_prompt_options_dict() -> *mut objc2::runtime::AnyObject {
+        use objc2::{
+            class, msg_send,
+            runtime::{AnyClass, AnyObject, Bool},
+        };
+        // SAFETY: NSString / NSNumber / NSDictionary are always present at
+        // runtime on macOS; every msg_send targets a documented class method
+        // and returns an autoreleased object we never retain across the call.
+        unsafe {
+            let ns_string_cls: &AnyClass = class!(NSString);
+            let key: *mut AnyObject = msg_send![
+                ns_string_cls,
+                stringWithUTF8String: b"AXTrustedCheckOptionPrompt\0".as_ptr() as *const i8
+            ];
+            let ns_number_cls: &AnyClass = class!(NSNumber);
+            let value: *mut AnyObject = msg_send![ns_number_cls, numberWithBool: Bool::new(true)];
+            if key.is_null() || value.is_null() {
+                return std::ptr::null_mut();
+            }
+            let ns_dict_cls: &AnyClass = class!(NSDictionary);
+            let dict: *mut AnyObject = msg_send![
+                ns_dict_cls,
+                dictionaryWithObject: value,
+                forKey: key
+            ];
+            dict
+        }
+    }
+
+    /// Call `AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt:
+    /// true})` so macOS shows the prompt directing the user to System
+    /// Settings when the app is not yet trusted for Accessibility. Returns
+    /// the current trusted bool.
+    ///
+    /// Unlike Screen Recording / Microphone there is no programmatic grant
+    /// for Accessibility — the prompt is the only built-in nudge, so passing
+    /// the option (vs. the old null) is what makes the requirement visible.
+    /// Falls back to the prompt-less `AXIsProcessTrusted()` only if the
+    /// options dict couldn't be built (never observed in practice).
+    pub fn accessibility_register_with_prompt() -> bool {
+        let options = ax_prompt_options_dict();
+        // SAFETY: AXIsProcessTrustedWithOptions is thread-safe and reads the
+        // dict synchronously; `options` is a valid autoreleased dict (or null,
+        // handled below) that outlives this call.
+        unsafe {
+            if options.is_null() {
+                return AXIsProcessTrusted();
+            }
+            AXIsProcessTrustedWithOptions(options as *const c_void)
         }
     }
 }
@@ -188,12 +260,15 @@ pub fn permissions_force_native_register() -> Result<(bool, bool), String> {
     {
         use macos::*;
 
-        // SAFETY: both C functions are safe to call from any thread; they
-        // take no Rust references that could outlive the call.
-        let ax = unsafe { AXIsProcessTrustedWithOptions(std::ptr::null()) };
+        // Pass `{kAXTrustedCheckOptionPrompt: true}` so macOS shows the
+        // Accessibility prompt the first time an un-decided app calls it.
+        // Previously this passed null options, which registered the app
+        // silently but never prompted — so users who hadn't already granted
+        // Accessibility had meeting-detect quietly broken with no signal.
+        let ax = accessibility_register_with_prompt();
         log(
             LOG_TAG,
-            &format!("AXIsProcessTrustedWithOptions(null) -> {ax}"),
+            &format!("AXIsProcessTrustedWithOptions(prompt=true) -> {ax}"),
         );
 
         // Preflight first so we don't keep popping prompts after first deny.
@@ -531,5 +606,47 @@ mod tests {
             settings_url("system-audio"),
             settings_url("screen-capture"),
         );
+    }
+
+    /// Regression: startup Accessibility registration MUST pass the
+    /// `{ kAXTrustedCheckOptionPrompt: true }` options dict, not null. A null
+    /// options dict registers the app silently and never shows the prompt,
+    /// leaving users who haven't granted Accessibility with meeting-detect
+    /// quietly broken (the bug this guards against).
+    ///
+    /// We assert the dict handed to `AXIsProcessTrustedWithOptions`
+    /// round-trips the prompt key as a true boolean. We deliberately do NOT
+    /// call `AXIsProcessTrustedWithOptions` itself — that would pop a real
+    /// system dialog during `cargo test`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ax_prompt_options_dict_sets_prompt_true() {
+        use objc2::rc::autoreleasepool;
+        use objc2::{
+            class, msg_send,
+            runtime::{AnyClass, AnyObject, Bool},
+        };
+
+        autoreleasepool(|_| {
+            let dict = macos::ax_prompt_options_dict();
+            assert!(!dict.is_null(), "options dict must build");
+
+            // SAFETY: dict is a valid autoreleased NSDictionary; we only read
+            // it back. NSString / boolValue are documented and always present.
+            unsafe {
+                let ns_string_cls: &AnyClass = class!(NSString);
+                let key: *mut AnyObject = msg_send![
+                    ns_string_cls,
+                    stringWithUTF8String: b"AXTrustedCheckOptionPrompt\0".as_ptr() as *const i8
+                ];
+                let value: *mut AnyObject = msg_send![dict, objectForKey: key];
+                assert!(
+                    !value.is_null(),
+                    "dict must contain the kAXTrustedCheckOptionPrompt key"
+                );
+                let b: Bool = msg_send![value, boolValue];
+                assert!(b.as_bool(), "prompt option must be true, not false/null");
+            }
+        });
     }
 }

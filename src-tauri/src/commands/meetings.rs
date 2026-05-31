@@ -860,9 +860,33 @@ pub async fn meetings_notify_detected(
         .clone()
         .unwrap_or_default();
     let platform_for_thread = platform_lc.clone();
+    let title_for_thread = build_notification_title(&platform_lc);
     let body_for_thread = body.clone();
     let app_for_thread = app.clone();
     std::thread::spawn(move || {
+        // ── Clickable delivery: UNUserNotificationCenter ────────────────
+        // When notification permission is *granted*, deliver through
+        // UNUserNotificationCenter instead of osascript. A UN banner carries
+        // a click callback (via the delegate installed at launch in
+        // `un_notify.rs`), so clicking the banner opens the desktop-alt
+        // "HQ Meetings" window — even on a *cold* click where no frontend
+        // `notification:meeting-action` listener exists yet (the delegate
+        // opens the window straight from Rust). UN silently DROPS the request
+        // when status != "granted", so we gate strictly on "granted" and fall
+        // through to the always-visible osascript path otherwise — zero
+        // regression for non-granted users. One delivery path per branch, so
+        // there's never a double banner.
+        #[cfg(target_os = "macos")]
+        if crate::commands::notifications::current_authorization_status() == "granted" {
+            crate::commands::un_notify::deliver_clickable(
+                &title_for_thread,
+                &body_for_thread,
+                &window_id_for_thread,
+                &platform_for_thread,
+            );
+            return;
+        }
+
         // ── Primary delivery: AppleScript ───────────────────────────────
         // macOS 26 (Sequoia) blocks NSUserNotification from being mixed
         // with UNUserNotificationCenter in the same process. usernoted
@@ -889,7 +913,7 @@ pub async fn meetings_notify_detected(
         // UNNotificationCategory + UNNotificationAction("RECORD") so the
         // Record button comes back. Tracked as a follow-up.
         let osa_body = body_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
-        let osa_title = "Meeting detected".to_string();
+        let osa_title = title_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
         let script = format!(
             "display notification \"{osa_body}\" with title \"{osa_title}\""
         );
@@ -931,7 +955,7 @@ pub async fn meetings_notify_detected(
         // failure mode is visible.
         let mut notification = mac_notification_sys::Notification::default();
         notification
-            .title("Meeting detected")
+            .title(&title_for_thread)
             .message(&body_for_thread)
             // `main_button` attaches a single action button labelled
             // "Record". On older macOS this surfaces inline (alert
@@ -1055,6 +1079,31 @@ fn build_notification_body(
             _ => format!("{display} meeting"),
         },
     }
+}
+
+/// Build the notification *title* for a detected meeting.
+///
+/// Kept separate from [`build_notification_body`] — that function's output is
+/// pinned by a battery of regression tests, so the title gets its own builder
+/// rather than threading platform formatting through the body path.
+///
+/// Format:
+/// - Known platform: `"<Platform> meeting detected"` (e.g. `"Zoom meeting
+///   detected"`) — less generic than the old flat `"Meeting detected"`, which
+///   gave the user no hint which app triggered it.
+/// - Empty platform: `"Meeting detected"` (graceful fallback; avoids the
+///   awkward `" meeting detected"` / doubled-word shapes).
+///
+/// `platform_lc` is the lowercased platform discriminator (e.g. `"zoom"`).
+fn build_notification_title(platform_lc: &str) -> String {
+    if platform_lc.is_empty() {
+        return "Meeting detected".to_string();
+    }
+    let mut display = platform_lc.to_string();
+    if let Some(c) = display.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    format!("{display} meeting detected")
 }
 
 /// Allows only `[a-zA-Z0-9._-]+` — matches Recall.ai bot id shape (UUID with
@@ -1284,6 +1333,27 @@ mod tests {
         // ^^ ugly-but-stable; this path requires both platform AND url AND
         // summary to be missing, which currently can't happen — the bridge
         // always sends at least the synthetic URL. Keeps the function total.
+    }
+
+    // ── build_notification_title ─────────────────────────────────────────────
+    // The title names the platform so the banner isn't the generic
+    // "Meeting detected" — e.g. "Zoom meeting detected". Empty platform must
+    // degrade gracefully to the bare "Meeting detected" (no doubled words, no
+    // leading space).
+
+    #[test]
+    fn build_notification_title_names_known_platform() {
+        assert_eq!(build_notification_title("zoom"), "Zoom meeting detected");
+        assert_eq!(build_notification_title("meet"), "Meet meeting detected");
+        assert_eq!(build_notification_title("teams"), "Teams meeting detected");
+    }
+
+    #[test]
+    fn build_notification_title_falls_back_on_empty_platform() {
+        // Must not produce " meeting detected" or "Meeting meeting detected".
+        let title = build_notification_title("");
+        assert_eq!(title, "Meeting detected");
+        assert!(!title.starts_with(' '), "leading space leaked: {title:?}");
     }
 
     #[test]

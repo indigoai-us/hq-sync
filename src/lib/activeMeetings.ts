@@ -36,6 +36,19 @@ interface MeetingDetectedPayload {
   windowId?: string;
 }
 
+/** Shape of `MeetingDetectedEvent` returned by `meetings_list_active_detections`
+ *  (serde `rename_all = "camelCase"`). Mirrors the live `meeting:detected`
+ *  payload plus the registry-only `detectedAt`/`source` fields. */
+interface BackendDetection {
+  windowId?: string;
+  detectionId?: string;
+  meetingUrl?: string;
+  platform?: string;
+  detectedAt?: string;
+  source?: string;
+  sourceEventId?: string;
+}
+
 export const activeMeetings = writable<ActiveMeeting[]>([]);
 
 // Recording-company context, mirrored from the classic popover. The picker in
@@ -212,7 +225,16 @@ async function installActiveMeetingListeners(): Promise<() => void> {
           return;
         }
         if (action === 'open') {
-          invoke('show_main_window').catch(() => undefined);
+          // Open the desktop-alt "HQ Meetings" window (Indigo-gated) on the
+          // Meetings screen — the click came from a meeting prompt. If that
+          // command is unavailable/denied, fall back to focusing the popover
+          // so the click is never a dead end. NB: this warm path only fires
+          // for the legacy mac-notification-sys Click response; UN-delivered
+          // banners are handled entirely by the Rust delegate (un_notify.rs),
+          // which opens the same window directly (idempotent — no double open).
+          invoke('open_desktop_alt_window', { route: 'meetings' }).catch(() => {
+            invoke('show_main_window').catch(() => undefined);
+          });
           invoke('meetings_clear_prompt_badge').catch(() => undefined);
         }
       },
@@ -277,5 +299,56 @@ async function handleMeetingDetected(event: { payload: MeetingDetectedPayload })
     });
   } catch (err) {
     console.error('meeting:detected handler error:', err);
+  }
+}
+
+/**
+ * Seed `$activeMeetings` from the backend active-detection registry. The
+ * desktop-alt window is created on-demand (after launch), so its JS context
+ * misses any `meeting:detected` events that fired before it existed — which is
+ * why a meeting detected before the window opened didn't show up. This pulls
+ * the currently-active detections the SDK has recorded and runs each through
+ * the same idempotent `upsertActiveMeeting` the live listener uses, so a
+ * meeting detected while the window was closed appears (with a Record control)
+ * the moment the window opens. Unlike the live handler this does NOT re-notify
+ * or re-check bots — these detections already went through that path. Fail-soft:
+ * a backend hiccup must never blank the Meetings UX.
+ */
+export async function seedActiveMeetingsFromBackend(): Promise<void> {
+  let detections: BackendDetection[];
+  try {
+    detections = await invoke<BackendDetection[]>('meetings_list_active_detections');
+  } catch (err) {
+    console.warn('meetings_list_active_detections failed; skipping seed:', err);
+    return;
+  }
+  for (const d of detections ?? []) {
+    const meetingUrl = d.meetingUrl;
+    const isSyntheticUrl =
+      typeof meetingUrl === 'string' && meetingUrl.startsWith('recall-window:');
+    const windowId =
+      d.windowId ??
+      (isSyntheticUrl ? meetingUrl!.slice('recall-window:'.length) : (meetingUrl ?? ''));
+    if (!windowId) continue;
+    const existing = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
+    upsertActiveMeeting({
+      ...existing,
+      windowId,
+      platform: d.platform ?? existing?.platform ?? 'other',
+      meetingUrl: meetingUrl ?? existing?.meetingUrl ?? '',
+      detectedAt: d.detectedAt ?? existing?.detectedAt ?? new Date().toISOString(),
+      state: existing?.state ?? 'detected',
+      // Same attribution as the live handler: keep an explicit choice, else seed
+      // the validated default (back-filled later by loadRecordingCompanyContext
+      // if the context hasn't resolved yet).
+      companyUid: existing?.companyUserSet
+        ? (existing.companyUid ?? null)
+        : (resolveValidDefault(defaultRecordingCompanyUid, get(recordingMemberships)) ??
+          existing?.companyUid ??
+          null),
+      companyUserSet: existing?.companyUserSet ?? false,
+      summary: existing?.summary,
+      sourceEventId: d.sourceEventId ?? existing?.sourceEventId,
+    });
   }
 }

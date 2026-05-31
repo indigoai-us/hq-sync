@@ -18,11 +18,12 @@
 //! command shape, but `is_indigo_user()` itself never errors — the Ok arm
 //! is always taken.
 use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -411,13 +412,62 @@ pub async fn get_company_secrets(slug: String) -> Result<Vec<SecretEnv>, String>
     parse_secrets_response(status, &text)
 }
 
+/// Route the desktop-alt window should land on the next time it mounts. Set by
+/// callers that open the window with a specific intent — e.g. a "meeting
+/// detected" notification click wants the Meetings screen, not the default Sync
+/// screen. The frontend consumes this once on mount via
+/// `desktop_alt_consume_pending_route`. For an already-open window we instead
+/// emit `desktop:navigate` (see `open_desktop_alt_window_inner`), so the
+/// pending slot is only relevant to a fresh build.
+static PENDING_ROUTE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn pending_route_cell() -> &'static Mutex<Option<String>> {
+    PENDING_ROUTE.get_or_init(|| Mutex::new(None))
+}
+
+fn set_pending_route(route: Option<&str>) {
+    if let Ok(mut cell) = pending_route_cell().lock() {
+        *cell = route.map(|r| r.to_string());
+    }
+}
+
+/// Take (and clear) the route the desktop-alt window should open on. Returns
+/// `None` when nothing was queued — the frontend then keeps its default initial
+/// route. Called once by `DesktopApp` on mount.
+#[tauri::command]
+pub fn desktop_alt_consume_pending_route() -> Option<String> {
+    pending_route_cell()
+        .lock()
+        .ok()
+        .and_then(|mut cell| cell.take())
+}
+
 /// Open or focus the Indigo-only alternate desktop UX window.
 ///
 /// The window is declared in `tauri.conf.json` as hidden, so normal app
 /// startup does not surface it. This command is still defensive and can
 /// rebuild the window if it was closed earlier in the session.
+///
+/// `route` (optional) lands the window on a specific screen — e.g. `"meetings"`
+/// from the meeting-detected notification. Omitted (the manual "open new UX"
+/// button) keeps the default Sync screen.
 #[tauri::command]
-pub async fn open_desktop_alt_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_desktop_alt_window(app: AppHandle, route: Option<String>) -> Result<(), String> {
+    open_desktop_alt_window_inner(app, route.as_deref()).await
+}
+
+/// Window open/focus body, callable from non-command contexts (e.g. the
+/// `UNUserNotificationCenter` delegate handling a cold notification click,
+/// where no `#[tauri::command]` invocation is in flight). Keeps the Indigo
+/// gate so the delegate path is defense-in-depth too.
+///
+/// `route` routes the window to a screen: an already-open window gets a live
+/// `desktop:navigate` event; a fresh build queues the route for the frontend
+/// to consume on mount.
+pub async fn open_desktop_alt_window_inner(
+    app: AppHandle,
+    route: Option<&str>,
+) -> Result<(), String> {
     if !desktop_alt_enabled().await? {
         return Err("desktop-alt is Indigo-only".to_string());
     }
@@ -425,8 +475,17 @@ pub async fn open_desktop_alt_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
+        // Already mounted: it won't re-consume a pending route, so push the
+        // navigation live. Fire-and-forget — a missing listener is harmless.
+        if let Some(route) = route {
+            let _ = app.emit("desktop:navigate", route);
+        }
         return Ok(());
     }
+
+    // Fresh build: queue the route so the window picks it up on mount via
+    // `desktop_alt_consume_pending_route`.
+    set_pending_route(route);
 
     tauri::WebviewWindowBuilder::new(
         &app,

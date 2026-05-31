@@ -289,6 +289,17 @@
     // user ever navigates to Meetings — the page then reads the warm store on
     // remount (instant) instead of running a blocking fetch each nav. Idempotent.
     startMeetingsStore();
+    // A notification click can request a specific screen (e.g. Meetings) before
+    // this window existed. The opener queued it; consume it once on mount so we
+    // land on the right screen instead of the default Sync route. The
+    // already-open case is handled live by the `desktop:navigate` listener below.
+    void invoke<string | null>('desktop_alt_consume_pending_route')
+      .then((pending) => {
+        if (mounted && pending === 'meetings') {
+          navigate({ kind: 'meetings' });
+        }
+      })
+      .catch(() => undefined);
     window.addEventListener('keydown', handleKeydown);
     window.addEventListener('focus', hydrateMeetingStatus);
     window.addEventListener('storage', hydrateMeetingStatus);
@@ -471,6 +482,15 @@
       }),
       listen<ActivityEntry[]>('activity:list', (event) => {
         activity = event.payload;
+      }),
+      // Live navigation request from the backend — fired when the window is
+      // already open and a notification click (or other intent) wants a
+      // specific screen. The fresh-window case is handled by the
+      // `desktop_alt_consume_pending_route` consume above.
+      listen<string>('desktop:navigate', (event) => {
+        if (event.payload === 'meetings') {
+          navigate({ kind: 'meetings' });
+        }
       }),
     ]).then((offs) => {
       if (mounted) {

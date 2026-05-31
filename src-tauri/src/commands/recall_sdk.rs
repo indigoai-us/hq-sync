@@ -140,6 +140,75 @@ fn write_bridge_command(value: &serde_json::Value) -> Result<(), String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Active-detection registry
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The Recall SDK fires `meeting:detected` once when a meeting window appears
+// and keeps no state of its own. The classic popover's `main` window is alive
+// from launch so it never misses the event, but the Indigo desktop-alt window
+// is created on demand (e.g. from a notification click) and therefore misses
+// any detection that fired before it existed. We retain the most recent
+// detection per meeting window here so a freshly opened desktop-alt window can
+// seed `$activeMeetings` via `meetings_list_active_detections` and show the
+// in-progress meeting (with its Record control) immediately.
+//
+// Keyed by `window_id` (always populated by the current bridge; falls back to
+// `meeting_url` defensively). Insert on `meeting:detected`, remove on
+// `meeting:closed` — mirroring the frontend's upsert/remove lifecycle so the
+// retained set and the live event stream converge on the same state.
+
+static ACTIVE_DETECTIONS: OnceLock<Mutex<HashMap<String, MeetingDetectedEvent>>> = OnceLock::new();
+
+fn active_detections_cell() -> &'static Mutex<HashMap<String, MeetingDetectedEvent>> {
+    ACTIVE_DETECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Key a detection by its window id, falling back to the meeting URL when the
+/// bridge omitted the window id (defensive — the current bridge always sets it).
+fn detection_key(event: &MeetingDetectedEvent) -> String {
+    event
+        .window_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| event.meeting_url.clone())
+}
+
+/// Record (or replace) the retained detection for a meeting window.
+fn record_active_detection(event: &MeetingDetectedEvent) {
+    if let Ok(mut map) = active_detections_cell().lock() {
+        map.insert(detection_key(event), event.clone());
+    }
+}
+
+/// Drop the retained detection for a closed meeting window. The close event's
+/// `window_id` is the same key the detection was inserted under (both come from
+/// the bridge's window identity).
+fn remove_active_detection(window_id: &str) {
+    if let Ok(mut map) = active_detections_cell().lock() {
+        map.remove(window_id);
+    }
+}
+
+/// Snapshot of every retained detection (one per open meeting window). Order is
+/// unspecified (HashMap); the frontend upsert is idempotent so order is moot.
+fn active_detections_snapshot() -> Vec<MeetingDetectedEvent> {
+    active_detections_cell()
+        .lock()
+        .map(|map| map.values().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Return the meeting detections currently retained in-process (one per open
+/// meeting window). The Indigo desktop-alt window calls this on mount to seed
+/// `$activeMeetings` with meetings detected *before* the window existed — the
+/// live `meeting:detected` stream only covers detections that happen while a
+/// listener is attached. Empty when the SDK isn't running or no meeting is open.
+#[tauri::command]
+pub async fn meetings_list_active_detections() -> Result<Vec<MeetingDetectedEvent>, String> {
+    Ok(active_detections_snapshot())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Eligibility gate
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -503,6 +572,11 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.meeting_url
                                 ),
                             );
+                            // Record into the active-detection registry so an
+                            // on-demand desktop-alt window opened *after* this
+                            // fired can seed `$activeMeetings` via
+                            // `meetings_list_active_detections`.
+                            record_active_detection(&payload);
                             if let Err(e) = app_bg.emit(EVENT_MEETING_DETECTED, &payload) {
                                 log(
                                     LOG_TAG,
@@ -518,6 +592,10 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.window_id, payload.platform
                                 ),
                             );
+                            // Drop from the active-detection registry so a
+                            // freshly opened desktop-alt window won't seed a
+                            // meeting that has already ended.
+                            remove_active_detection(&payload.window_id);
                             if let Err(e) = app_bg.emit(EVENT_MEETING_CLOSED, &payload) {
                                 log(
                                     LOG_TAG,
@@ -1040,7 +1118,7 @@ mod tests {
         // codebase. If the broader `meetings_feature_enabled` ever
         // diverges from this one, the menubar UI surfaces and the SDK
         // boot will disagree about who's an Indigo user.
-        use crate::commands::meetings::is_allowed_email;
+        use crate::util::feature_gate::is_allowed_email;
         for email in [
             "stefan@getindigo.ai",
             "Anyone@GetIndigo.AI",
