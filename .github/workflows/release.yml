@@ -70,11 +70,21 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
+      # pnpm must be installed BEFORE setup-node: `cache: pnpm` makes
+      # setup-node shell out to `pnpm store path` to locate the cache dir, so
+      # the binary has to exist first. Major-pinned to 10 to match the pnpm
+      # that generated/maintains pnpm-lock.yaml (lockfileVersion 9.0) — a v9
+      # runner can read it but --frozen-lockfile is happiest on the same major.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
 
       # Classify channel + resolve dry-run AFTER checkout (we read the version
       # out of tauri.conf.json and assert tag↔conf parity, so the working tree
@@ -136,14 +146,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Tag $TAG → channel=$CHANNEL prerelease=$IS_PRE dry_run=$DRY_RUN"
 
-      # sidecar:install uses pnpm; the runner doesn't ship it.
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # arm64 only — the Recall SDK is non-fat arm64, so a universal build is
       # pointless dead weight at best and a lipo failure at worst.
@@ -177,7 +181,7 @@ jobs:
           SENTRY_ORG: indigo-d0
           SENTRY_PROJECT: hq-sync-web
         run: |
-          npm run sidecar:install
+          pnpm run sidecar:install
           ./node_modules/.bin/tauri build --target aarch64-apple-darwin --bundles app
 
           BUNDLE_MACOS_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
