@@ -1,10 +1,11 @@
 {
   "name": "hq-sync",
   "private": true,
-  "version": "0.1.111",
+  "version": "0.4.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:preview": "vite --config vite.preview.config.ts",
     "build": "vite build",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "svelte-check --tsconfig ./tsconfig.json --threshold error",

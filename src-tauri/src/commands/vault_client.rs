@@ -156,6 +156,34 @@ impl MembershipInfo {
     }
 }
 
+/// Resolved sync-mode for a membership — `GET /v1/memberships/{id}/sync-config`.
+/// `syncMode` governs what a sync DOWNLOADS locally (footprint), NOT access.
+/// `isDefault: true` means no explicit sync-config row exists (effective `all`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MembershipSyncConfig {
+    pub membership_id: String,
+    /// "all" | "shared" | "custom".
+    pub sync_mode: String,
+    pub is_default: bool,
+    /// Present only when mode is `custom` (and a row exists).
+    #[serde(default)]
+    pub custom_paths: Option<Vec<String>>,
+    /// PersonUid of the last writer; present only when a row exists.
+    #[serde(default)]
+    pub updated_by: Option<String>,
+}
+
+/// Body for `PUT /v1/memberships/{id}/sync-config`. The server validates the
+/// combination — `customPaths` is required when `syncMode` is `custom`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetMembershipSyncConfigInput {
+    pub sync_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_paths: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VendSelfInput {
@@ -204,6 +232,23 @@ pub struct VaultClient {
     base_url: String,
     auth_token: String,
     client: Client,
+}
+
+/// Percent-encode a single URL path segment. Membership keys are the composite
+/// `personUid#companyUid`; the `#` (and any stray reserved char) must be encoded
+/// so it isn't treated as a fragment delimiter. Conservative allow-list: only
+/// RFC 3986 unreserved chars pass through unescaped.
+fn encode_path_segment(seg: &str) -> String {
+    let mut out = String::with_capacity(seg.len());
+    for b in seg.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 impl VaultClient {
@@ -334,6 +379,48 @@ impl VaultClient {
         let wrapper: serde_json::Value = self.handle_response(resp).await?;
         serde_json::from_value(wrapper["memberships"].clone())
             .map_err(|e| VaultClientError::Json(e.to_string()))
+    }
+
+    /// `GET /v1/memberships/{id}/sync-config` — resolve a membership's current
+    /// sync-mode (what a sync downloads locally). `id` is the composite
+    /// `membership_key` (`personUid#companyUid`); the `#` is percent-encoded.
+    pub async fn get_membership_sync_config(
+        &self,
+        membership_id: &str,
+    ) -> Result<MembershipSyncConfig, VaultClientError> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}/v1/memberships/{}/sync-config",
+                self.base_url,
+                encode_path_segment(membership_id)
+            ))
+            .bearer_auth(&self.auth_token)
+            .send()
+            .await?;
+        self.handle_response(resp).await
+    }
+
+    /// `PUT /v1/memberships/{id}/sync-config` — set a membership's sync-mode.
+    /// Footprint only — does NOT change access (owner/admin keep role-bypass).
+    /// The server validates the body (`customPaths` required for `custom`).
+    pub async fn set_membership_sync_config(
+        &self,
+        membership_id: &str,
+        input: &SetMembershipSyncConfigInput,
+    ) -> Result<MembershipSyncConfig, VaultClientError> {
+        let resp = self
+            .client
+            .put(format!(
+                "{}/v1/memberships/{}/sync-config",
+                self.base_url,
+                encode_path_segment(membership_id)
+            ))
+            .bearer_auth(&self.auth_token)
+            .json(input)
+            .send()
+            .await?;
+        self.handle_response(resp).await
     }
 
     /// `POST /provision/bucket` — provision (or idempotently confirm) an S3 bucket for `uid`.
@@ -880,5 +967,90 @@ mod tests {
             matches!(err, VaultClientError::SelfOwnershipMismatch),
             "expected SelfOwnershipMismatch, got: {err}"
         );
+    }
+
+    #[test]
+    fn encode_path_segment_escapes_membership_key_hash() {
+        // membership keys are personUid#companyUid — the # must be encoded so
+        // it isn't parsed as a URL fragment delimiter.
+        assert_eq!(encode_path_segment("prs_a#cmp_b"), "prs_a%23cmp_b");
+        // unreserved chars pass through untouched.
+        assert_eq!(encode_path_segment("knowledge_v1.2-x~y"), "knowledge_v1.2-x~y");
+        // a stray slash would also be encoded (can't split the path).
+        assert_eq!(encode_path_segment("a/b"), "a%2Fb");
+    }
+
+    #[tokio::test]
+    async fn get_membership_sync_config_roundtrip() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            // membership_key `prs_a#cmp_b` is percent-encoded in the path.
+            .and(path("/v1/memberships/prs_a%23cmp_b/sync-config"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "membershipId": "prs_a#cmp_b",
+                "syncMode": "shared",
+                "isDefault": false,
+                "customPaths": null,
+                "updatedBy": "prs_a"
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = client(&server.uri())
+            .get_membership_sync_config("prs_a#cmp_b")
+            .await
+            .unwrap();
+        assert_eq!(cfg.sync_mode, "shared");
+        assert!(!cfg.is_default);
+        assert_eq!(cfg.updated_by.as_deref(), Some("prs_a"));
+    }
+
+    #[tokio::test]
+    async fn get_membership_sync_config_default_all() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/memberships/prs_a%23cmp_b/sync-config"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "membershipId": "prs_a#cmp_b",
+                "syncMode": "all",
+                "isDefault": true
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = client(&server.uri())
+            .get_membership_sync_config("prs_a#cmp_b")
+            .await
+            .unwrap();
+        assert_eq!(cfg.sync_mode, "all");
+        assert!(cfg.is_default);
+        assert!(cfg.custom_paths.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_membership_sync_config_roundtrip() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/v1/memberships/prs_a%23cmp_b/sync-config"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&json!({
+                "membershipId": "prs_a#cmp_b",
+                "syncMode": "shared",
+                "isDefault": false
+            })))
+            .mount(&server)
+            .await;
+
+        let cfg = client(&server.uri())
+            .set_membership_sync_config(
+                "prs_a#cmp_b",
+                &SetMembershipSyncConfigInput {
+                    sync_mode: "shared".to_string(),
+                    custom_paths: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(cfg.sync_mode, "shared");
+        assert!(!cfg.is_default);
     }
 }

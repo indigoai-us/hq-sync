@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dm-banner",
+  "description": "Capability set for the dm-banner custom notification window. Receives the DM payload via IPC (core:event) and invokes banner_window_ready (ready-handshake show), banner_action (re-emit notification:dm-action → App.svelte opens detail / copies prompt), and dismiss_banner (auto-timeout / close). Without this file the banner's invoke()/listen calls silently fail the capability check and the window (created visible:false, shown only by the handshake) never appears. Mirrors dm-detail.json.",
+  "windows": ["dm-banner"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-size"
+  ]
+}

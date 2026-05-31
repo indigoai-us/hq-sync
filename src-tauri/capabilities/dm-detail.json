@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "dm-detail",
+  "description": "Capability set for the dm-detail secondary window. Receives the DM event via IPC (core:event) and invokes the dm_detail_window_ready handshake + show/focus. Without this file the window's invoke()/listen calls silently fail the capability check, so dm_detail_window_ready never reaches Rust and the window (created visible:false, shown only by the handshake) never appears — the symptom is clicking 'Open details' on a DM notification doing nothing. Mirrors share-detail.json.",
+  "windows": ["dm-detail"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
+  ]
+}

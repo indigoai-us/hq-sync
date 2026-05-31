@@ -11,6 +11,15 @@
     source: string;
   }
 
+  interface Props {
+    /** Open the Recent Changes (activity log) window. When provided, the
+     *  "Last synced" row becomes a clickable history affordance — replaces
+     *  the old footer "Recent Changes" action. Omitted → static row. */
+    onhistory?: () => void;
+  }
+
+  let { onhistory }: Props = $props();
+
   let status = $state<SyncStatus | null>(null);
   let loading = $state(true);
   let error = $state('');
@@ -61,16 +70,40 @@
   {:else if error}
     <p class="stats-error">{error}</p>
   {:else if status}
-    <div class="stat-row">
-      <svg class="stat-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-        <path d="M8 4.5V8l2.5 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-      <span class="stat-label">Last synced</span>
-      <span class="stat-value">
-        {status.lastSyncAt ? timeAgo(status.lastSyncAt) : 'never'}
-      </span>
-    </div>
+    {#if onhistory}
+      <!-- Clickable: opens Recent Changes (activity log). The clock icon +
+           trailing chevron signal that the synced state is browsable. -->
+      <button
+        type="button"
+        class="stat-row stat-row-action"
+        onclick={onhistory}
+        title="View recent changes"
+        aria-label="View recent changes"
+      >
+        <svg class="stat-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
+          <path d="M8 4.5V8l2.5 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="stat-label">Last synced</span>
+        <span class="stat-value">
+          {status.lastSyncAt ? timeAgo(status.lastSyncAt) : 'never'}
+        </span>
+        <svg class="stat-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+    {:else}
+      <div class="stat-row">
+        <svg class="stat-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
+          <path d="M8 4.5V8l2.5 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+        <span class="stat-label">Last synced</span>
+        <span class="stat-value">
+          {status.lastSyncAt ? timeAgo(status.lastSyncAt) : 'never'}
+        </span>
+      </div>
+    {/if}
 
     {#if status.conflicts > 0}
       <div class="stat-row conflict">
@@ -168,6 +201,40 @@
     font-weight: 500;
   }
 
+  /* "Last synced" rendered as a history button. Negative margins let the
+     hover background bleed to the card edges while the row stays visually
+     aligned with a static stat-row. */
+  .stat-row-action {
+    width: calc(100% + 1.5rem);
+    margin: -0.35rem -0.75rem;
+    padding: 0.35rem 0.75rem;
+    background: none;
+    border: none;
+    font-family: inherit;
+    color: inherit;
+    cursor: pointer;
+    border-radius: var(--radius-md);
+    transition: background-color 0.1s ease;
+  }
+
+  .stat-row-action:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+  }
+
+  /* Trailing chevron — sits flush right after the value, nudges on hover to
+     reinforce the navigability. */
+  .stat-chevron {
+    flex-shrink: 0;
+    margin-left: 0.25rem;
+    color: #a0a0b0;
+    transition: transform 0.12s ease, color 0.12s ease;
+  }
+
+  .stat-row-action:hover .stat-chevron {
+    color: #e0e0e0;
+    transform: translateX(2px);
+  }
+
   /* Conflict row: same calm grey as a normal stat row. The Copy-prompt button
      to the right of the value carries the affordance; severity colour was
      removed (per design: errors/warnings of any kind are a grey friendly
@@ -195,6 +262,14 @@
     }
 
     .stat-value {
+      color: #111113;
+    }
+
+    .stat-chevron {
+      color: #6b7280;
+    }
+
+    .stat-row-action:hover .stat-chevron {
       color: #111113;
     }
 

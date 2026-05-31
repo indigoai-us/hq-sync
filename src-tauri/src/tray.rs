@@ -242,9 +242,24 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     // while a picker is in flight; we check it and skip the hide.
     if let Some(window) = app.get_webview_window("main") {
         let win_clone = window.clone();
+        let disable_blur_hide = std::env::var("HQ_DISABLE_BLUR_HIDE").ok().as_deref() == Some("1");
         window.on_window_event(move |event| {
             if let WindowEvent::Focused(false) = event {
-                if !is_modal_open() {
+                // Don't dismiss the popover when focus moved to one of OUR OWN
+                // secondary windows (drift / new-files / DM / share detail). A
+                // sync or notification that opens such a window steals key
+                // focus from the popover and fires `Focused(false)`; hiding
+                // here made the popover vanish out from under the user mid-
+                // interaction (and made the Install/Restore buttons impossible
+                // to click — the window closed before the click landed). Only
+                // hide on a genuine click-away, i.e. when no other HQ window is
+                // visible. `is_modal_open()` still covers native pickers.
+                let secondary_open = win_clone
+                    .app_handle()
+                    .webview_windows()
+                    .iter()
+                    .any(|(label, w)| label != "main" && w.is_visible().unwrap_or(false));
+                if !is_modal_open() && !secondary_open && !disable_blur_hide {
                     let _ = win_clone.hide();
                 }
             }
@@ -268,6 +283,25 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     // Listen for sync events to auto-update tray state
     setup_sync_listeners(app);
+
+    // Dev helper: open popover at launch when HQ_DEV_SHOW_ON_LAUNCH=1
+    if std::env::var("HQ_DEV_SHOW_ON_LAUNCH").ok().as_deref() == Some("1") {
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if let Some(window) = app_handle.get_webview_window("main") {
+                eprintln!("[dev-show] showing main window");
+                let _ = window.center();
+                let _ = window.set_always_on_top(true);
+                let _ = window.show();
+                let _ = window.set_focus();
+                let visible = window.is_visible().unwrap_or(false);
+                eprintln!("[dev-show] is_visible={}", visible);
+            } else {
+                eprintln!("[dev-show] main window not found");
+            }
+        });
+    }
 
     Ok(())
 }

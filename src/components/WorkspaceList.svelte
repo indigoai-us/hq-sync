@@ -6,6 +6,7 @@
   import { parseLocalEnvFailure } from '../lib/copy-prompts';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
+  import SyncModeToggle from './SyncModeToggle.svelte';
 
   interface Props {
     workspaces: Workspace[];
@@ -115,6 +116,14 @@
   }
 
   function isCompanyClickable(w: Workspace): boolean {
+    return w.kind === 'company' && (w.state === 'synced' || w.state === 'cloud-only');
+  }
+
+  // Show the sync-mode toggle only for cloud-backed company rows. `cloud-only`
+  // is included on purpose: a user can pre-set `shared` before the first
+  // download so a never-synced company never pulls its full tree. The personal
+  // vault has no membership sync-config, so it never gets the toggle.
+  function showSyncMode(w: Workspace): boolean {
     return w.kind === 'company' && (w.state === 'synced' || w.state === 'cloud-only');
   }
 
@@ -293,6 +302,16 @@
             <span class="row-meta">Cloud unreachable</span>
           {/if}
         </div>
+
+        <!-- Sync-mode toggle (Shared / All) — local download footprint, not
+             access. Cloud-backed company rows only. Hidden until the row is
+             hovered or keyboard-focused (focus-within keeps it reachable
+             without a mouse); the tooltip on the toggle explains what it does. -->
+        {#if showSyncMode(w)}
+          <div class="sync-mode-slot">
+            <SyncModeToggle slug={w.slug} {cloudReachable} />
+          </div>
+        {/if}
 
         <!-- Connect icon button — for local-only AND broken rows. The same
              command (connect_workspace_to_cloud) handles both: for local-only
@@ -545,6 +564,22 @@
 
   .workspace-row:hover .row-meta-lastsync {
     display: inline;
+  }
+
+  /* Sync-mode toggle: revealed only on row hover / keyboard focus so it
+     doesn't add visual noise to every row. Opacity (not display) so it can
+     transition and so layout doesn't jump as it appears. Stays interactive
+     only when shown — pointer-events follow visibility. */
+  .sync-mode-slot {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+  }
+
+  .workspace-row:hover .sync-mode-slot,
+  .workspace-row:focus-within .sync-mode-slot {
+    opacity: 1;
+    pointer-events: auto;
   }
 
   /* "Connect failed" / "Manifest out of sync" meta lines — same muted grey
