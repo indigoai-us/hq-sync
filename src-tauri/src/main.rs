@@ -166,6 +166,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::quit_app,
+            commands::app::open_settings_window,
             commands::app::open_claude_code_link,
             commands::process::spawn_process,
             commands::process::cancel_process,
@@ -212,6 +213,12 @@ fn main() {
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
             commands::meetings::meetings_feature_enabled,
+            commands::desktop_alt::desktop_alt_enabled,
+            commands::desktop_alt::get_company_summary,
+            commands::desktop_alt::get_company_board,
+            commands::desktop_alt::get_company_activity,
+            commands::desktop_alt::get_company_deployments,
+            commands::desktop_alt::get_company_secrets,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,
@@ -221,6 +228,7 @@ fn main() {
             commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
             commands::meetings::open_meetings_window,
+            commands::desktop_alt::open_desktop_alt_window,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,

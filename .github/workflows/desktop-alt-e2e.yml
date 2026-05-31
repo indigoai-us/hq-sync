@@ -1,0 +1,43 @@
+name: Desktop Alt E2E
+
+on:
+  pull_request:
+    paths:
+      - "src/desktop-alt/**"
+      - "src/components/Popover.svelte"
+      - "src/App.svelte"
+      - "src-tauri/src/commands/desktop_alt.rs"
+      - "src-tauri/tauri.conf.json"
+      - "e2e/desktop-alt/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/desktop-alt-e2e.yml"
+
+jobs:
+  desktop-alt-e2e:
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Desktop alt E2E
+        run: pnpm test:e2e:desktop-alt

@@ -116,6 +116,14 @@
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
 
+  // Desktop-alt UX feature flag (US-001) — driven by `desktop_alt_enabled`
+  // (Rust side delegates to the same `@getindigo.ai` gate as
+  // `meetings_feature_enabled`; the OnceLock cache is shared). Defaults
+  // false so non-Indigo users never see the alt UX surface even if the
+  // gate command hasn't resolved yet. Subsequent stories (US-003/US-004)
+  // gate the toggle button + alt popover render path on this flag.
+  let desktopAltEnabled = $state(false);
+
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
   // legacy "No companies yet" dead-end with a union over Person + memberships
   // + local company folders. `null` = first invocation in flight; non-null
@@ -252,6 +260,14 @@
       coreState = s;
     } catch (err) {
       console.error('check_core_state failed:', err);
+    }
+  }
+
+  async function refreshDesktopAltEnabled() {
+    try {
+      desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled');
+    } catch {
+      desktopAltEnabled = false;
     }
   }
 
@@ -1051,6 +1067,11 @@
         meetingsEnabled = false;
       });
 
+    // Desktop-alt UX gate (US-001). Same @getindigo.ai check as
+    // `meetings_feature_enabled`; errors fall back to false so a misfiring
+    // gate command can never accidentally expose the alt UX.
+    refreshDesktopAltEnabled();
+
     return () => {
       unlisteners.forEach((unlisten) => unlisten());
       unlisteners = [];
@@ -1092,6 +1113,9 @@
 
       authenticated = shouldSkipSignIn(hasToken, state);
       expiresAt = state.expiresAt ?? '';
+      if (authenticated) {
+        await refreshDesktopAltEnabled();
+      }
     } catch {
       authenticated = false;
     } finally {
@@ -1102,6 +1126,7 @@
   function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string }) {
     authenticated = auth.authenticated;
     expiresAt = auth.expiresAt;
+    void refreshDesktopAltEnabled();
   }
 </script>
 
@@ -1159,6 +1184,7 @@
       oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
+      {desktopAltEnabled}
       onmeetingsclick={() => {
         // Spawn the detached Upcoming Meetings window (label: meetings-window).
         // Fire-and-forget — the Rust handler focuses an existing window if

@@ -98,6 +98,7 @@ pub struct Workspace {
     pub has_local_folder: bool,
     pub local_path: Option<String>,
     pub membership_status: Option<String>,
+    pub role: Option<String>,
     pub last_synced_at: Option<String>,
     /// Human-readable diagnostic when state is Broken. UI surfaces in the tooltip.
     pub broken_reason: Option<String>,
@@ -802,6 +803,12 @@ where
                 .find(|m| m.company_uid == ent.uid)
                 .map(|m| m.status.clone())
         });
+        let role = cloud_entity_for_slug.and_then(|ent| {
+            memberships
+                .iter()
+                .find(|m| m.company_uid == ent.uid)
+                .and_then(|m| m.role.clone())
+        });
 
         let (state, cloud_uid, bucket_name, broken_reason) = match (&entry.cloud_uid, cloud_entity_for_slug, cloud_reachable) {
             // Manifest says connected, cloud confirms (UIDs match) → Synced.
@@ -865,6 +872,7 @@ where
                 has_local_folder: true,
                 local_path: local_path_str,
                 membership_status,
+                role,
                 last_synced_at: last_synced_lookup(&entry.slug),
                 broken_reason,
             },
@@ -897,6 +905,7 @@ where
                 has_local_folder: false,
                 local_path: None,
                 membership_status: Some(mem.status.clone()),
+                role: mem.role.clone(),
                 last_synced_at: last_synced_lookup(&entity.slug),
                 broken_reason: None,
             },
@@ -923,6 +932,7 @@ where
         has_local_folder: personal_local,
         local_path: personal_local.then(|| hq_root.to_string_lossy().to_string()),
         membership_status: None,
+        role: None,
         last_synced_at: last_synced_lookup("personal"),
         broken_reason: None,
     });

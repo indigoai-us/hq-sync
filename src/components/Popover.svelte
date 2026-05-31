@@ -202,6 +202,8 @@
     /** Click handler for the meeting icon — toggles the modal open state
      *  in App.svelte (where the modal itself is rendered). */
     onmeetingsclick?: () => void;
+    /** Indigo-only dogfood gate for the desktop alternate window toggle. */
+    desktopAltEnabled?: boolean;
   }
 
   let {
@@ -251,7 +253,45 @@
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
+    desktopAltEnabled = false,
   }: Props = $props();
+
+  let desktopAltError = $state('');
+  let desktopAltErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearDesktopAltErrorTimer() {
+    if (desktopAltErrorTimer) {
+      clearTimeout(desktopAltErrorTimer);
+      desktopAltErrorTimer = null;
+    }
+  }
+
+  function showDesktopAltError(message: string) {
+    clearDesktopAltErrorTimer();
+    desktopAltError = message;
+    desktopAltErrorTimer = setTimeout(() => {
+      desktopAltError = '';
+      desktopAltErrorTimer = null;
+    }, 5000);
+  }
+
+  async function openDesktopAltWindow() {
+    desktopAltError = '';
+    clearDesktopAltErrorTimer();
+
+    try {
+      await invoke('open_desktop_alt_window');
+    } catch (e) {
+      console.error('open_desktop_alt_window failed:', e);
+      showDesktopAltError('Could not open desktop view.');
+    }
+  }
+
+  $effect(() => {
+    return () => {
+      clearDesktopAltErrorTimer();
+    };
+  });
 
   // Instance ref for SyncStats so parent can trigger refresh
   let statsEl: SyncStats | undefined = $state();
@@ -425,7 +465,7 @@
 
 <div class="popover">
   <!-- Header -->
-  <header class="popover-header" data-tauri-drag-region>
+  <header class="popover-header" class:has-desktop-alt-controls={desktopAltEnabled} data-tauri-drag-region>
     <div class="header-icon">
       <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <rect width="48" height="48" rx="12" fill="currentColor" opacity="0.92" />
@@ -442,6 +482,39 @@
            @getindigo.ai via `meetings_feature_enabled` (SYNC-1) so this
            branch is dead code for non-Indigo users. -->
       <MeetingIcon onclick={onmeetingsclick} />
+    {/if}
+
+    {#if desktopAltEnabled}
+      <div class="header-utility-actions">
+        <button
+          class="header-icon-button desktop-alt-toggle"
+          type="button"
+          onclick={openDesktopAltWindow}
+          title="Open desktop view"
+          aria-label="Open desktop view (Indigo dogfood)"
+          data-testid="desktop-alt-toggle"
+        >
+          <!-- Window/dashboard icon, intentionally distinct from the Settings gear. -->
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5" />
+            <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <path d="M6 6v7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <path d="M9 9h2.5M9 11.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+        </button>
+        <button
+          class="header-icon-button header-settings-toggle"
+          type="button"
+          onclick={onsettings}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5" />
+            <path d="M8 1v1.5M8 13.5V15M14.5 8H13M3 8H1.5M12.6 3.4l-1.06 1.06M4.46 11.54l-1.06 1.06M12.6 12.6l-1.06-1.06M4.46 4.46L3.4 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
     {/if}
 
     <!-- Sync button — right-aligned in the header so it's always visible
@@ -498,6 +571,10 @@
       {/if}
     </button>
   </header>
+
+  {#if desktopAltError}
+    <p class="header-inline-error" role="status">{desktopAltError}</p>
+  {/if}
 
   <div class="popover-divider"></div>
 
@@ -967,6 +1044,11 @@
     padding: 0.625rem 1rem;
   }
 
+  .popover-header.has-desktop-alt-controls {
+    flex-wrap: wrap;
+    row-gap: 0.375rem;
+  }
+
   .header-icon {
     display: flex;
     align-items: center;
@@ -987,6 +1069,11 @@
     flex: 1;
   }
 
+  .popover-header.has-desktop-alt-controls .header-text {
+    order: 2;
+    flex: 1 0 100%;
+  }
+
   .header-text h1 {
     font-size: 0.9375rem;
     font-weight: 600;
@@ -1000,6 +1087,67 @@
     color: var(--popover-text-muted, #a0a0b0);
     margin: 0.125rem 0 0 0;
     line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .header-utility-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    flex-shrink: 0;
+  }
+
+  .header-icon-button {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+    color: var(--popover-text, #e0e0e0);
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 8px;
+    cursor: pointer;
+    transform: translateY(0);
+    transition:
+      background-color 0.12s ease,
+      color 0.12s ease,
+      border-color 0.12s ease,
+      box-shadow 0.12s ease,
+      transform 0.12s ease;
+    -webkit-app-region: no-drag;
+  }
+
+  .header-icon-button:hover {
+    color: var(--popover-text-heading, #ffffff);
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  .header-icon-button:active {
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    transform: translateY(0);
+    transition-duration: 0.08s;
+  }
+
+  .header-icon-button:focus-visible {
+    outline: 2px solid var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    outline-offset: 2px;
+    color: var(--popover-text-heading, #ffffff);
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  .header-inline-error {
+    margin: -0.1875rem 1rem 0.5rem 3.625rem;
+    color: var(--popover-notice-strong, #ffffff);
+    font-size: 0.75rem;
+    line-height: 1.35;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1027,6 +1175,10 @@
     cursor: pointer;
     transition: background-color 0.15s ease, opacity 0.15s ease, color 0.15s ease;
     -webkit-app-region: no-drag;
+  }
+
+  .popover-header.has-desktop-alt-controls .header-sync {
+    margin-left: auto;
   }
 
   .header-sync:hover:not(:disabled) {
@@ -1069,6 +1221,22 @@
   @keyframes header-sync-spin {
     to {
       transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .header-icon-button {
+      transition:
+        background-color 0.12s ease,
+        color 0.12s ease,
+        border-color 0.12s ease,
+        box-shadow 0.12s ease;
+    }
+
+    .header-icon-button,
+    .header-icon-button:hover,
+    .header-icon-button:active {
+      transform: none;
     }
   }
 

@@ -24,6 +24,20 @@
         "transparent": true,
         "shadow": true,
         "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "desktop-alt",
+        "title": "HQ",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 960,
+        "minHeight": 600,
+        "decorations": true,
+        "transparent": false,
+        "titleBarStyle": "Overlay",
+        "url": "desktop-alt.html",
+        "visible": false,
+        "create": false
       }
     ],
     "security": {
