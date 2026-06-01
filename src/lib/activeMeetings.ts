@@ -1,6 +1,13 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { get, writable } from 'svelte/store';
+import {
+  activeMemberships,
+  resolveStartCompany,
+  resolveValidDefault,
+  shouldBackfill,
+  type RecordingMembership,
+} from './recordingCompany';
 
 export type ActiveMeetingState = 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
 
@@ -13,6 +20,10 @@ export interface ActiveMeeting {
   recordingId?: string;
   error?: string;
   companyUid: string | null;
+  /** True once the user has explicitly picked a company for this row (incl. an
+   *  explicit "Personal" = null). Guards the resolved-default + back-fill paths
+   *  from clobbering a deliberate choice. */
+  companyUserSet?: boolean;
   summary?: string;
   sourceEventId?: string;
 }
@@ -25,7 +36,27 @@ interface MeetingDetectedPayload {
   windowId?: string;
 }
 
+/** Shape of `MeetingDetectedEvent` returned by `meetings_list_active_detections`
+ *  (serde `rename_all = "camelCase"`). Mirrors the live `meeting:detected`
+ *  payload plus the registry-only `detectedAt`/`source` fields. */
+interface BackendDetection {
+  windowId?: string;
+  detectionId?: string;
+  meetingUrl?: string;
+  platform?: string;
+  detectedAt?: string;
+  source?: string;
+  sourceEventId?: string;
+}
+
 export const activeMeetings = writable<ActiveMeeting[]>([]);
+
+// Recording-company context, mirrored from the classic popover. The picker in
+// LiveNowCard reads `recordingMemberships` (active-filtered); `startRecording`
+// and the detection seed resolve attribution against the validated default.
+// Loaded via `loadRecordingCompanyContext` at store start + on focus.
+export const recordingMemberships = writable<RecordingMembership[]>([]);
+let defaultRecordingCompanyUid: string | null = null;
 
 let unlisteners: UnlistenFn[] | null = null;
 let listenerPromise: Promise<() => void> | null = null;
@@ -62,10 +93,18 @@ export function removeActiveMeeting(windowId: string): void {
 export async function startRecording(windowId: string): Promise<void> {
   updateActiveMeeting(windowId, { state: 'starting', error: undefined });
   const row = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
+  // Resolve attribution the same way the classic popover does: an explicit
+  // user choice wins, else the validated default, else whatever the row had.
+  // Persist the resolved uid back so the row reflects the company we recorded
+  // under (e.g. a detected row that only had the default reflected applied).
+  const companyUid = resolveStartCompany(row, defaultRecordingCompanyUid, get(recordingMemberships));
+  if (row && row.companyUid !== companyUid) {
+    updateActiveMeeting(windowId, { companyUid });
+  }
   try {
     const recordingId = await invoke<string>('start_recording', {
       windowId,
-      companyUid: row?.companyUid ?? null,
+      companyUid,
     });
     updateActiveMeeting(windowId, { recordingId });
   } catch (err) {
@@ -87,6 +126,48 @@ export async function stopRecording(windowId: string): Promise<void> {
       state: 'recording',
       error: typeof err === 'string' ? err : String(err),
     });
+  }
+}
+
+/**
+ * Record an explicit per-meeting company choice from the LiveNowCard picker.
+ * `companyUserSet: true` marks it deliberate so the resolved-default and the
+ * focus-time back-fill leave it alone. `null` is a valid choice (Personal).
+ */
+export function setRecordingCompany(windowId: string, companyUid: string | null): void {
+  updateActiveMeeting(windowId, { companyUid, companyUserSet: true });
+}
+
+/**
+ * Load the recording-company context (active memberships + validated default)
+ * from the backend, then back-fill any already-detected rows that loaded
+ * before this resolved. Mirrors classic App.svelte's memberships/default load.
+ *
+ * Both invokes fail soft to an empty/neutral result: the picker is an additive
+ * affordance, so a transient backend hiccup must never blank the live meeting
+ * or throw on the focus path.
+ */
+export async function loadRecordingCompanyContext(): Promise<void> {
+  const [list, settings] = await Promise.all([
+    invoke<RecordingMembership[]>('meetings_list_memberships').catch(
+      () => [] as RecordingMembership[],
+    ),
+    invoke<{ defaultRecordingCompanyUid?: string | null }>('get_settings').catch(
+      () => ({}) as { defaultRecordingCompanyUid?: string | null },
+    ),
+  ]);
+  const active = activeMemberships(list ?? []);
+  recordingMemberships.set(active);
+  defaultRecordingCompanyUid = resolveValidDefault(
+    settings?.defaultRecordingCompanyUid ?? null,
+    active,
+  );
+  // Seed the resolved default onto rows detected before this loaded — without
+  // overwriting an explicit user choice (shouldBackfill guards that).
+  for (const m of get(activeMeetings)) {
+    if (shouldBackfill(m, defaultRecordingCompanyUid)) {
+      updateActiveMeeting(m.windowId, { companyUid: defaultRecordingCompanyUid });
+    }
   }
 }
 
@@ -144,7 +225,16 @@ async function installActiveMeetingListeners(): Promise<() => void> {
           return;
         }
         if (action === 'open') {
-          invoke('show_main_window').catch(() => undefined);
+          // Open the desktop-alt "HQ Meetings" window (Indigo-gated) on the
+          // Meetings screen — the click came from a meeting prompt. If that
+          // command is unavailable/denied, fall back to focusing the popover
+          // so the click is never a dead end. NB: this warm path only fires
+          // for the legacy mac-notification-sys Click response; UN-delivered
+          // banners are handled entirely by the Rust delegate (un_notify.rs),
+          // which opens the same window directly (idempotent — no double open).
+          invoke('open_desktop_alt_window', { route: 'meetings' }).catch(() => {
+            invoke('show_main_window').catch(() => undefined);
+          });
           invoke('meetings_clear_prompt_badge').catch(() => undefined);
         }
       },
@@ -172,7 +262,15 @@ async function handleMeetingDetected(event: { payload: MeetingDetectedPayload })
       meetingUrl: meetingUrl ?? existing?.meetingUrl ?? '',
       detectedAt: new Date().toISOString(),
       state: existing?.state ?? 'detected',
-      companyUid: existing?.companyUid ?? null,
+      // Keep an explicit choice; otherwise seed the validated default so a
+      // fresh detection is attributed correctly out of the gate (back-filled
+      // later if the context wasn't loaded yet).
+      companyUid: existing?.companyUserSet
+        ? (existing.companyUid ?? null)
+        : (resolveValidDefault(defaultRecordingCompanyUid, get(recordingMemberships)) ??
+          existing?.companyUid ??
+          null),
+      companyUserSet: existing?.companyUserSet ?? false,
       summary: summary ?? existing?.summary,
       sourceEventId: sourceEventId ?? existing?.sourceEventId,
     });
@@ -201,5 +299,56 @@ async function handleMeetingDetected(event: { payload: MeetingDetectedPayload })
     });
   } catch (err) {
     console.error('meeting:detected handler error:', err);
+  }
+}
+
+/**
+ * Seed `$activeMeetings` from the backend active-detection registry. The
+ * desktop-alt window is created on-demand (after launch), so its JS context
+ * misses any `meeting:detected` events that fired before it existed — which is
+ * why a meeting detected before the window opened didn't show up. This pulls
+ * the currently-active detections the SDK has recorded and runs each through
+ * the same idempotent `upsertActiveMeeting` the live listener uses, so a
+ * meeting detected while the window was closed appears (with a Record control)
+ * the moment the window opens. Unlike the live handler this does NOT re-notify
+ * or re-check bots — these detections already went through that path. Fail-soft:
+ * a backend hiccup must never blank the Meetings UX.
+ */
+export async function seedActiveMeetingsFromBackend(): Promise<void> {
+  let detections: BackendDetection[];
+  try {
+    detections = await invoke<BackendDetection[]>('meetings_list_active_detections');
+  } catch (err) {
+    console.warn('meetings_list_active_detections failed; skipping seed:', err);
+    return;
+  }
+  for (const d of detections ?? []) {
+    const meetingUrl = d.meetingUrl;
+    const isSyntheticUrl =
+      typeof meetingUrl === 'string' && meetingUrl.startsWith('recall-window:');
+    const windowId =
+      d.windowId ??
+      (isSyntheticUrl ? meetingUrl!.slice('recall-window:'.length) : (meetingUrl ?? ''));
+    if (!windowId) continue;
+    const existing = get(activeMeetings).find((meeting) => meeting.windowId === windowId);
+    upsertActiveMeeting({
+      ...existing,
+      windowId,
+      platform: d.platform ?? existing?.platform ?? 'other',
+      meetingUrl: meetingUrl ?? existing?.meetingUrl ?? '',
+      detectedAt: d.detectedAt ?? existing?.detectedAt ?? new Date().toISOString(),
+      state: existing?.state ?? 'detected',
+      // Same attribution as the live handler: keep an explicit choice, else seed
+      // the validated default (back-filled later by loadRecordingCompanyContext
+      // if the context hasn't resolved yet).
+      companyUid: existing?.companyUserSet
+        ? (existing.companyUid ?? null)
+        : (resolveValidDefault(defaultRecordingCompanyUid, get(recordingMemberships)) ??
+          existing?.companyUid ??
+          null),
+      companyUserSet: existing?.companyUserSet ?? false,
+      summary: existing?.summary,
+      sourceEventId: d.sourceEventId ?? existing?.sourceEventId,
+    });
   }
 }

@@ -381,6 +381,220 @@ pub struct SyncPersonalFirstPushSkippedEvent {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Meeting detection events (Recall Desktop SDK → Svelte)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Platform discriminator for `MeetingDetectedEvent`.
+///
+/// Matches the platforms the Recall Desktop SDK can detect. `Other` is a
+/// catch-all for any platform string the SDK emits that we have not
+/// explicitly enumerated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum MeetingPlatform {
+    Zoom,
+    Meet,
+    Teams,
+    Slack,
+    Webex,
+    Other,
+}
+
+/// Detection source: SDK detected via a calendar-imminent event, or via the
+/// active-app detector (the user launched a meeting client).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetectionSource {
+    SdkCalendar,
+    SdkActiveApp,
+}
+
+/// Payload for the `meeting:detected` Tauri event forwarded from the
+/// Recall Desktop SDK.
+///
+/// The SDK emits this on its stdout as ndjson. Recall's server-side SDK
+/// documentation and our hq-sync sidecar contract agree on this shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingDetectedEvent {
+    /// Recall-assigned stable ID for this detection (used for dedup).
+    pub detection_id: String,
+    /// The meeting URL (Zoom, Meet, Teams, etc.) that was detected.
+    pub meeting_url: String,
+    /// SDK window id for the detected meeting. Canonical handle for
+    /// `RecallAiSdk.startRecording({ windowId })` and `meeting-closed`
+    /// matching. Optional for back-compat with older bridge versions
+    /// that only emitted `meetingUrl`; current bridge always populates.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub window_id: Option<String>,
+    /// The video-conferencing platform.
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the detection fired.
+    pub detected_at: String,
+    /// Whether the detection came from a calendar event or the active app.
+    pub source: DetectionSource,
+    /// Optional: the calendar event id this detection was derived from
+    /// (present for `sdk-calendar` detections; absent for `sdk-active-app`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_event_id: Option<String>,
+}
+
+/// Tauri event channel name for `MeetingDetectedEvent`.
+pub const EVENT_MEETING_DETECTED: &str = "meeting:detected";
+
+/// Payload for `meeting:closed` — emitted by the SDK when the meeting
+/// window goes away (user quit the app, Zoom call ended, Slack huddle
+/// closed, etc.). Used by the UI to clear an active-meeting row that
+/// was never recorded.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingClosedEvent {
+    pub window_id: String,
+    pub platform: MeetingPlatform,
+    pub closed_at: String,
+}
+
+/// Tauri event channel name for `MeetingClosedEvent`.
+pub const EVENT_MEETING_CLOSED: &str = "meeting:closed";
+
+/// Payload for `notification:meeting-action` — emitted by the Rust side
+/// when the user interacts with a "Meeting detected" macOS notification.
+///
+/// Fired in two cases:
+/// - User clicked the notification body itself (`action: "open"`)
+/// - User clicked the "Record" action button (`action: "record"`)
+///
+/// The Svelte side routes these to the popover or
+/// `invoke('start_recording', { windowId })` respectively. `windowId`
+/// is the SDK window the notification was emitted for; the renderer
+/// uses it to look up the corresponding `ActiveMeeting` row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationMeetingActionEvent {
+    /// `"open"` — user clicked the notification body; the renderer should
+    /// open/focus the popover so the row is visible.
+    /// `"record"` — user clicked the Record action button; the renderer
+    /// should call `start_recording(windowId)` directly.
+    pub action: String,
+    /// SDK window id for the meeting the notification was emitted for.
+    /// Empty when the notification predates per-meeting bookkeeping
+    /// (defensive — shouldn't happen in practice).
+    pub window_id: String,
+    /// Platform discriminator from the original detection (lowercase).
+    pub platform: String,
+}
+
+/// Tauri event channel name for `NotificationMeetingActionEvent`.
+pub const EVENT_NOTIFICATION_MEETING_ACTION: &str = "notification:meeting-action";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Recording lifecycle events
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Payload for `recording:started` — emitted by the SDK bridge after
+/// `RecallAiSdk.startRecording({ windowId, uploadToken })` resolves
+/// successfully. The `windowId` keys back to the detection that
+/// triggered the recording so the Svelte side can flip the UI to
+/// "Recording…" for the matching row.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingStartedEvent {
+    /// SDK window id for the recording.
+    pub window_id: String,
+    /// Platform discriminator (`zoom`, `meet`, …). Same enum as detections.
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the bridge confirmed the start.
+    pub started_at: String,
+}
+
+/// Payload for `recording:ended` — emitted when the SDK ends the recording,
+/// whether triggered by an explicit `stopRecording` from Rust or by the
+/// meeting window closing (the SDK auto-stops in that case).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingEndedEvent {
+    /// SDK window id for the recording that ended.
+    pub window_id: String,
+    /// Platform discriminator (`zoom`, `meet`, …).
+    pub platform: MeetingPlatform,
+    /// ISO 8601 timestamp when the bridge confirmed the end.
+    pub ended_at: String,
+}
+
+/// Payload for `recording:media-capture` — emitted by the SDK as it
+/// latches onto audio / video sources after `startRecording`. Useful
+/// for distinguishing "recording started but no audio yet" (likely a
+/// TCC issue) from "recording fully live".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingMediaCaptureEvent {
+    pub window_id: String,
+    /// One of `audio`, `video`, `screenshare` from the SDK.
+    pub capture_type: String,
+    /// True when the source is actively streaming; false when it stops.
+    pub capturing: bool,
+}
+
+/// Payload for `recording:error` — emitted by the bridge when a
+/// start/stop command throws inside the SDK. Carries the command
+/// name + windowId + a human-readable message so the UI can surface a
+/// specific failure instead of just spinning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingErrorEvent {
+    /// The bridge command that failed (`start-recording`, `stop-recording`, …).
+    pub cmd: String,
+    pub window_id: String,
+    /// Human-readable error message from the SDK.
+    pub message: String,
+}
+
+/// Tauri event channel name for `RecordingStartedEvent`.
+pub const EVENT_RECORDING_STARTED: &str = "recording:started";
+/// Tauri event channel name for `RecordingEndedEvent`.
+pub const EVENT_RECORDING_ENDED: &str = "recording:ended";
+/// Tauri event channel name for `RecordingMediaCaptureEvent`.
+pub const EVENT_RECORDING_MEDIA_CAPTURE: &str = "recording:media-capture";
+/// Tauri event channel name for `RecordingErrorEvent`.
+pub const EVENT_RECORDING_ERROR: &str = "recording:error";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Permission events (US-011)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One of the five macOS permissions the Recall Desktop SDK can request.
+/// Mirrors `Permission` in @recallai/desktop-sdk's index.d.ts (kebab-case).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum RecallPermission {
+    Accessibility,
+    ScreenCapture,
+    Microphone,
+    SystemAudio,
+    FullDiskAccess,
+}
+
+/// Per-permission status emitted by the SDK on init and whenever the user
+/// changes it in System Settings. Status strings the SDK uses:
+/// `granted`, `denied`, `not-determined`, and (rarely) `restricted`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PermissionStatusEvent {
+    pub permission: RecallPermission,
+    /// Free-form so we don't break on a new SDK status value; the UI treats
+    /// anything other than "granted" as missing.
+    pub status: String,
+}
+
+/// Tauri event channel name for `PermissionStatusEvent`.
+pub const EVENT_PERMISSION_STATUS: &str = "permission:status";
+
+/// Convenience signal — all required permissions have been granted; the UI
+/// can collapse the missing-permissions banner without checking individual
+/// rows. No payload.
+pub const EVENT_PERMISSIONS_ALL_GRANTED: &str = "permissions:all-granted";
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -710,6 +924,58 @@ mod tests {
         let json = r#"not valid json"#;
         let result: Result<SyncEvent, _> = serde_json::from_str(json);
         assert!(result.is_err());
+    }
+
+    // ── MeetingDetectedEvent ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_meeting_detected_event_round_trips() {
+        let payload = MeetingDetectedEvent {
+            detection_id: "det_123".to_string(),
+            meeting_url: "https://zoom.us/j/12345".to_string(),
+            window_id: Some("win-abc".to_string()),
+            platform: MeetingPlatform::Zoom,
+            detected_at: "2026-05-20T10:00:00Z".to_string(),
+            source: DetectionSource::SdkCalendar,
+            source_event_id: Some("evt_abc".to_string()),
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        let parsed: MeetingDetectedEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(payload, parsed);
+    }
+
+    #[test]
+    fn test_meeting_detected_event_omits_none_source_event_id() {
+        let payload = MeetingDetectedEvent {
+            detection_id: "det_456".to_string(),
+            meeting_url: "https://meet.google.com/abc-def-ghi".to_string(),
+            window_id: None,
+            platform: MeetingPlatform::Meet,
+            detected_at: "2026-05-20T10:00:00Z".to_string(),
+            source: DetectionSource::SdkActiveApp,
+            source_event_id: None,
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(!json.contains("\"sourceEventId\""));
+        assert!(json.contains("\"platform\":\"meet\""));
+        assert!(json.contains("\"source\":\"sdk-active-app\""));
+    }
+
+    #[test]
+    fn test_meeting_detected_event_parses_camel_case_from_sdk() {
+        let json = r#"{
+            "detectionId": "det_789",
+            "meetingUrl": "https://teams.microsoft.com/l/meetup-join/abc",
+            "platform": "teams",
+            "detectedAt": "2026-05-20T11:00:00Z",
+            "source": "sdk-calendar",
+            "sourceEventId": "cal_evt_99"
+        }"#;
+        let payload: MeetingDetectedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(payload.detection_id, "det_789");
+        assert_eq!(payload.platform, MeetingPlatform::Teams);
+        assert_eq!(payload.source, DetectionSource::SdkCalendar);
+        assert_eq!(payload.source_event_id.as_deref(), Some("cal_evt_99"));
     }
 
     #[test]

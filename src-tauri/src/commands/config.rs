@@ -24,6 +24,26 @@ pub struct HqConfig {
     pub hq_folder_path: Option<String>,
 }
 
+/// Meeting-detection notification preferences, nested under
+/// `meetingDetectNotify` in `~/.hq/menubar.json`.
+///
+/// Absent when the feature has never been configured; defaults are applied
+/// in `get_settings` (enabled=true, platforms=all five).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingDetectNotifyPrefs {
+    /// When false, all `meeting:detected` events are suppressed regardless
+    /// of the `platforms` list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Allow-list of platform strings. A detected meeting whose `platform`
+    /// is NOT in this list is silently suppressed. An empty vec means
+    /// nothing is allowed; `None` means the field was absent (apply default
+    /// = all platforms allowed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<String>>,
+}
+
 /// Menubar preferences stored in ~/.hq/menubar.json.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,6 +157,22 @@ pub struct MenubarPrefs {
     /// See `util::release_channel::effective_channel`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_channel: Option<String>,
+    /// Meeting detect-notify settings (US-007). Absent when not yet
+    /// configured; `get_settings` supplies defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meeting_detect_notify: Option<MeetingDetectNotifyPrefs>,
+    /// Default company UID for SDK-local recordings (US-010). The popover
+    /// active-meetings row presets its company dropdown to this value
+    /// when a meeting is detected; the user can override per-recording.
+    /// Same shape as the URL-invite picker in MeetingsWindow:
+    ///   - `None` (absent) → "Personal" (no company attribution)
+    ///   - `Some("co_…")` → that company's vault
+    /// Validation that the UID matches an active membership lives in
+    /// hq-pro (`/v1/recall/upload-token?companyId=…`); the client doesn't
+    /// re-check so stale values just degrade to a "company-access-denied"
+    /// 403 the user can resolve by picking a different option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_recording_company_uid: Option<String>,
 }
 
 /// Read ~/.hq/menubar.json as an untyped Value map, insert a new v4 UUID under

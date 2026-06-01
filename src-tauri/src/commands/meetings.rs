@@ -21,6 +21,8 @@
 //!   POST   /v1/bot/invite                            — schedule a new bot
 //!   POST   /v1/bot/{botId}/cancel                    — cancel scheduled bot
 
+use std::sync::OnceLock;
+
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -122,12 +124,83 @@ pub struct ScheduledBot {
     pub error_message: Option<String>,
 }
 
+/// Mirrors hq-pro's `OntologyParticipant` — resolved participant from the
+/// ontology endpoint attached to the invite payload before the bot is created.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OntologyParticipant {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    pub canonical_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    /// "invitee" | "organizer" | "ontology" | "historical" | "recall"
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InviteBotBody {
     meeting_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     calendar_event_id: Option<String>,
+    /// Ontology-resolved participants (US-005). Absent when fetch timed out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    participants: Vec<OntologyParticipant>,
+}
+
+/// Fetch ontology-resolved participants for a meeting, with a hard 2-second
+/// timeout. Returns an empty vec on any error (timeout, network, non-200) so
+/// the bot invite is never blocked. Called just before `POST /v1/bot/invite`.
+async fn fetch_participants_best_effort(
+    base: &str,
+    auth: &str,
+    meeting_url: &str,
+    event_id: Option<&str>,
+) -> Vec<OntologyParticipant> {
+    let mut req = build_client()
+        .get(format!("{base}/v1/ontology/participants"))
+        .header("authorization", auth)
+        .query(&[("meetingUrl", meeting_url)]);
+    if let Some(id) = event_id.filter(|s| !s.is_empty()) {
+        req = req.query(&[("eventId", id)]);
+    }
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        req.send(),
+    )
+    .await;
+    let res = match result {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            crate::util::logfile::log(
+                "meetings",
+                &format!("participants fetch error: {e}"),
+            );
+            return vec![];
+        }
+        Err(_elapsed) => {
+            crate::util::logfile::log("meetings", "participants fetch timed out (2s)");
+            return vec![];
+        }
+    };
+    if !res.status().is_success() {
+        return vec![];
+    }
+    let text = match res.text().await {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    #[derive(Deserialize)]
+    struct ParticipantsResponse {
+        #[serde(default)]
+        participants: Vec<OntologyParticipant>,
+    }
+    serde_json::from_str::<ParticipantsResponse>(&text)
+        .map(|r| r.participants)
+        .unwrap_or_default()
 }
 
 // ── Detail window (Upcoming Meetings) ────────────────────────────────────────
@@ -435,9 +508,20 @@ pub async fn meetings_invite_bot(
             url.push_str(&format!("?companyId={cid}"));
         }
     }
+    // Fetch ontology-resolved participants best-effort (US-005).
+    // 2-second deadline; empty vec on any failure so the invite always fires.
+    let participants = fetch_participants_best_effort(
+        &base,
+        &auth,
+        &meeting_url,
+        calendar_event_id.as_deref(),
+    )
+    .await;
+
     let body = InviteBotBody {
         meeting_url,
         calendar_event_id,
+        participants,
     };
     let res = build_client()
         .post(url)
@@ -486,6 +570,14 @@ pub async fn meetings_join_bot_now(
     let body = InviteBotBody {
         meeting_url,
         calendar_event_id,
+        // join-now reuses an existing bot record when one already exists
+        // for the meeting; if not, the server creates a fresh one. We
+        // don't have ontology participants in scope here (we'd need a
+        // calendar event id resolvable to the meeting), so let the server
+        // either reuse the existing bot's `participants` array or accept
+        // an empty list for the fresh-create case. Best-effort enrichment
+        // for the bot-invite path lives in `meetings_invite_bot`.
+        participants: Vec::new(),
     };
     let res = build_client()
         .post(url)
@@ -574,6 +666,444 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
         return Err(format!("bot/cancel HTTP {status}: {text}"));
     }
     Ok(())
+}
+
+// ── Detection-triggered notification commands ─────────────────────────────────
+
+/// Payload for [`meetings_notify_detected`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotifyDetectedPayload {
+    /// The detected meeting URL (primary stable key for dedup).
+    pub meeting_url: Option<String>,
+    /// SDK window id for the detection — used by the notification's
+    /// action-button thread to route a Record click back to
+    /// `start_recording`. Caller passes `event.payload.windowId` straight
+    /// through; absent only for very old bridge versions.
+    pub window_id: Option<String>,
+    /// Platform string from the SDK (e.g. "zoom", "meet").
+    pub platform: Option<String>,
+    /// Meeting title or calendar event summary, if known.
+    pub summary: Option<String>,
+    /// SDK source event id — fallback stable key when `meeting_url` is absent.
+    pub source_event_id: Option<String>,
+}
+
+/// Check whether an active bot already exists for the given meeting URL.
+///
+/// Returns `Some(bot)` when a bot with an active status (`scheduled`,
+/// `joining_call`, `in_call_recording`, `in_call_not_recording`) is found.
+/// The Svelte handler calls this before `meetings_notify_detected`; a bot
+/// already in the room means we should skip the notification.
+///
+/// Query: `GET /v1/bot/list?meetingUrl=<url>[&eventId=<id>]`
+#[tauri::command]
+pub async fn meetings_check_bot_for_url(
+    meeting_url: String,
+    event_id: Option<String>,
+) -> Result<Option<ScheduledBot>, String> {
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let mut req = build_client()
+        .get(format!("{base}/v1/bot/list"))
+        .header("authorization", &auth)
+        .query(&[("meetingUrl", meeting_url.as_str())]);
+    if let Some(id) = event_id.as_deref().filter(|s| !s.is_empty()) {
+        req = req.query(&[("eventId", id)]);
+    }
+    let res = req.send().await.map_err(|e| format!("bot/list check: {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| format!("bot/list check read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("bot/list check HTTP {status}: {text}"));
+    }
+    let parsed: BotsResponse = serde_json::from_str(&text)
+        .map_err(|e| format!("bot/list check parse: {e} — body: {text}"))?;
+    let active = parsed.bots.into_iter().find(|b| {
+        matches!(
+            b.status.as_str(),
+            "scheduled" | "joining_call" | "in_call_recording" | "in_call_not_recording"
+        )
+    });
+    Ok(active)
+}
+
+/// Fire a macOS notification for a detected meeting, gated on:
+///
+/// 1. `notifications` pref in `~/.hq/menubar.json` (read fresh on each call
+///    so pref changes take effect without restart — US-007 requirement)
+/// 2. `meetingDetectNotify.enabled` and the per-platform allow-list
+/// 3. Meeting-notify ledger dedup (suppress if already notified within 6 h)
+///
+/// Returns `true` when the notification was fired, `false` if suppressed.
+/// Also increments the tray `Prompt` badge on a successful fire.
+#[tauri::command]
+pub async fn meetings_notify_detected(
+    app: AppHandle,
+    payload: NotifyDetectedPayload,
+) -> Result<bool, String> {
+    use crate::commands::settings::get_settings;
+    use crate::tray::{get_prompt_pending, set_prompt_badge};
+    use crate::util::meeting_ledger::{
+        mark, read_ledger, should_suppress, stable_key, write_ledger, LedgerAction,
+    };
+    use chrono::Utc;
+    use tauri::Emitter;
+
+    // 1. Top-level notifications pref.
+    let settings = get_settings().await?;
+    if !settings.notifications.unwrap_or(true) {
+        return Ok(false);
+    }
+
+    // 2. Meeting-detect-notify sub-pref + per-platform filter.
+    let mdn = settings.meeting_detect_notify.as_ref();
+    if !mdn.and_then(|m| m.enabled).unwrap_or(true) {
+        return Ok(false);
+    }
+    let platform_lc = payload
+        .platform
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !platform_lc.is_empty() {
+        if let Some(allowed) = mdn.and_then(|m| m.platforms.as_ref()) {
+            if !allowed.is_empty()
+                && !allowed.iter().any(|p| p.to_ascii_lowercase() == platform_lc)
+            {
+                return Ok(false);
+            }
+        }
+    }
+
+    // 3. Dedup via ledger.
+    let key = match stable_key(
+        payload.meeting_url.as_deref(),
+        payload.source_event_id.as_deref(),
+    ) {
+        Some(k) => k,
+        None => return Ok(false),
+    };
+    let mut ledger = read_ledger().unwrap_or_default();
+    let now = Utc::now();
+    if should_suppress(&ledger, &key, now) {
+        return Ok(false);
+    }
+
+    // 4. Build notification body: "<Platform>: <summary or url>".
+    let body = build_notification_body(
+        &platform_lc,
+        payload.summary.as_deref(),
+        payload.meeting_url.as_deref(),
+    );
+
+    // 5. Fire the notification via `mac-notification-sys` directly so we
+    // can attach a "Record" action button AND learn when the user clicks
+    // the notification body. `tauri-plugin-notification` 2.3.3's desktop
+    // path ignores `action_type_id` (it's mobile-only at that layer), so
+    // we bypass it for this specific surface and keep the rest of the
+    // app's plugin-based notifications unchanged.
+    //
+    // Wire shape:
+    //   Notification body click  → emit `notification:meeting-action`
+    //                              with action="open"
+    //   "Record" action button   → emit `notification:meeting-action`
+    //                              with action="record"
+    //   Anything else (dismiss,  → no event (silently dropped)
+    //   ignore, timeout)
+    //
+    // The Svelte side listens for the event and either focuses the
+    // popover (action=open) or invokes `start_recording` directly
+    // (action=record).
+    //
+    // mac-notification-sys's `send()` is blocking when `wait_for_click`
+    // is true — it returns the response only after the user interacts.
+    // We spawn a dedicated thread per notification so the async Tauri
+    // command itself never blocks; the thread captures the windowId via
+    // closure and lives until the user dismisses the notification (or
+    // macOS auto-dismisses it).
+    // Register the bundle identifier with mac-notification-sys once per
+    // process lifetime. Without this, the library calls
+    // `get_bundle_identifier_or_default("use_default")` internally, which
+    // triggers a macOS "Choose Application" picker because Launch
+    // Services can't resolve the literal string "use_default" to an
+    // installed app (observed in field test on 2026-05-25). Calling
+    // `set_application` with our real bundle id makes notifications
+    // attribute correctly to HQ Sync and skips the picker.
+    //
+    // `set_application` itself is guarded by an internal `Once`, so
+    // calling it on every notification send would be safe — but wrapping
+    // in our own OnceLock keeps the log line at one-per-process.
+    static NOTIFICATION_APP_INIT: OnceLock<()> = OnceLock::new();
+    NOTIFICATION_APP_INIT.get_or_init(|| {
+        const BUNDLE_ID: &str = "ai.indigo.hq-sync-menubar";
+        match mac_notification_sys::set_application(BUNDLE_ID) {
+            Ok(()) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("mac-notification-sys: registered bundle {BUNDLE_ID}"),
+                );
+            }
+            Err(e) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!(
+                        "mac-notification-sys: set_application({BUNDLE_ID}) failed: {e}"
+                    ),
+                );
+            }
+        }
+    });
+
+    let window_id_for_thread = payload
+        .window_id
+        .clone()
+        .unwrap_or_default();
+    let platform_for_thread = platform_lc.clone();
+    let title_for_thread = build_notification_title(&platform_lc);
+    let body_for_thread = body.clone();
+    let app_for_thread = app.clone();
+    std::thread::spawn(move || {
+        // ── Clickable delivery: UNUserNotificationCenter ────────────────
+        // When notification permission is *granted*, deliver through
+        // UNUserNotificationCenter instead of osascript. A UN banner carries
+        // a click callback (via the delegate installed at launch in
+        // `un_notify.rs`), so clicking the banner opens the desktop-alt
+        // "HQ Meetings" window — even on a *cold* click where no frontend
+        // `notification:meeting-action` listener exists yet (the delegate
+        // opens the window straight from Rust). UN silently DROPS the request
+        // when status != "granted", so we gate strictly on "granted" and fall
+        // through to the always-visible osascript path otherwise — zero
+        // regression for non-granted users. One delivery path per branch, so
+        // there's never a double banner.
+        #[cfg(target_os = "macos")]
+        if crate::commands::notifications::current_authorization_status() == "granted" {
+            crate::commands::un_notify::deliver_clickable(
+                &title_for_thread,
+                &body_for_thread,
+                &window_id_for_thread,
+                &platform_for_thread,
+            );
+            return;
+        }
+
+        // ── Primary delivery: AppleScript ───────────────────────────────
+        // macOS 26 (Sequoia) blocks NSUserNotification from being mixed
+        // with UNUserNotificationCenter in the same process. usernoted
+        // logs:
+        //   Error: Legacy client ai.indigo.hq-sync-menubar connecting to
+        //   modern client. Denying message N from <LegacyConnection>.
+        // Once anything in the process touches UN (the
+        // `notification_permission_state` IPC probe is enough), the
+        // legacy `mac-notification-sys` deliver path is silently denied
+        // forever. `osascript display notification` doesn't go through
+        // the per-process legacy/modern gate — it's NotificationCenter's
+        // own scripting bridge — so it fires reliably regardless.
+        //
+        // Trade-off vs. the legacy library: no action button. We lose
+        // the inline "Record" button on the banner. Mitigation: the
+        // popover's calendar icon now tints yellow on detection (see
+        // MeetingIcon.svelte), so the user has an obvious in-app affordance
+        // to act on the detection. Click on the notification body still
+        // focuses HQ Sync (macOS's default behavior for any app's
+        // notification), and our `notification:meeting-action` event
+        // listener treats that as action="open" via the popover.
+        //
+        // Long-term: migrate to UNUserNotificationCenter via objc2 +
+        // UNNotificationCategory + UNNotificationAction("RECORD") so the
+        // Record button comes back. Tracked as a follow-up.
+        let osa_body = body_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
+        let osa_title = title_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "display notification \"{osa_body}\" with title \"{osa_title}\""
+        );
+        match std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &script])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                crate::util::logfile::log(
+                    "meetings",
+                    "osascript notification fired",
+                );
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!(
+                        "osascript notification non-zero exit ({}): {}",
+                        out.status, stderr
+                    ),
+                );
+            }
+            Err(e) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("osascript spawn failed: {e}"),
+                );
+            }
+        }
+
+        // ── Secondary delivery: legacy mac-notification-sys ────────────
+        // Still attempted because: (1) some users may be on older macOS
+        // where the legacy path works (Catalina/Big Sur/Monterey/Ventura),
+        // and (2) it carries the Record action button via the response
+        // thread. On Sequoia+ this thread's `send()` is denied by
+        // usernoted and either errors immediately or returns
+        // NotificationResponse::None — both paths are logged below so the
+        // failure mode is visible.
+        let mut notification = mac_notification_sys::Notification::default();
+        notification
+            .title(&title_for_thread)
+            .message(&body_for_thread)
+            // `main_button` attaches a single action button labelled
+            // "Record". On older macOS this surfaces inline (alert
+            // style) or on hover (banner style). Sequoia denies the
+            // whole deliver, so this never reaches the user there.
+            .main_button(mac_notification_sys::MainButton::SingleAction("Record"))
+            // Block the thread until the user interacts (or macOS
+            // auto-dismisses, which surfaces as None).
+            .wait_for_click(true);
+        match notification.send() {
+            Ok(resp) => {
+                // Log the raw response variant so a "user said they got no
+                // notification" report can be cross-referenced against what
+                // mac-notification-sys actually returned. None/timeout reads
+                // identically to "macOS silently dropped the banner due to
+                // missing UNUserNotificationCenter authorization" in the
+                // logs — surfacing the variant makes that distinguishable.
+                let variant = match &resp {
+                    mac_notification_sys::NotificationResponse::ActionButton(n) => {
+                        format!("ActionButton({n})")
+                    }
+                    mac_notification_sys::NotificationResponse::Click => "Click".to_string(),
+                    mac_notification_sys::NotificationResponse::CloseButton(_) => {
+                        "CloseButton".to_string()
+                    }
+                    mac_notification_sys::NotificationResponse::Reply(_) => "Reply".to_string(),
+                    mac_notification_sys::NotificationResponse::None => "None".to_string(),
+                };
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("mac-notification-sys response: {variant}"),
+                );
+                let action = match resp {
+                    mac_notification_sys::NotificationResponse::ActionButton(name)
+                        if name.eq_ignore_ascii_case("record") =>
+                    {
+                        Some("record")
+                    }
+                    mac_notification_sys::NotificationResponse::Click => Some("open"),
+                    // CloseButton, Reply, None — no actionable signal for us.
+                    _ => None,
+                };
+                if let Some(action) = action {
+                    let payload = crate::events::NotificationMeetingActionEvent {
+                        action: action.to_string(),
+                        window_id: window_id_for_thread,
+                        platform: platform_for_thread,
+                    };
+                    if let Err(e) = app_for_thread
+                        .emit(crate::events::EVENT_NOTIFICATION_MEETING_ACTION, &payload)
+                    {
+                        crate::util::logfile::log(
+                            "meetings",
+                            &format!(
+                                "emit notification:meeting-action failed: {e}"
+                            ),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                crate::util::logfile::log(
+                    "meetings",
+                    &format!("mac-notification-sys send failed: {e}"),
+                );
+            }
+        }
+    });
+
+    // 6. Mark ledger + bump tray badge.
+    mark(&mut ledger, key, LedgerAction::Notified, now);
+    let _ = write_ledger(&ledger);
+    set_prompt_badge(&app, get_prompt_pending() + 1);
+
+    Ok(true)
+}
+
+/// Decrement the meeting-prompt tray badge by one (saturating).
+///
+/// Call when the user opens MeetingsWindow or acts on a notification.
+/// Saturating so a double-call doesn't underflow to `usize::MAX`.
+#[tauri::command]
+pub async fn meetings_clear_prompt_badge(app: AppHandle) {
+    use crate::tray::{get_prompt_pending, set_prompt_badge};
+    set_prompt_badge(&app, get_prompt_pending().saturating_sub(1));
+}
+
+/// Build the notification body for a detected meeting.
+///
+/// Format:
+/// - With a summary: `"<Platform>: <summary>"` (calendar-derived path)
+/// - With a real URL: `"<Platform>: <url>"` (active-app path)
+/// - With a synthetic `recall-window:<id>` URL or no URL at all:
+///   `"<Platform> meeting"` (URL-less SDK detection — typical for
+///   unscheduled Zoom meetings joined from the desktop app; we don't want
+///   to leak the synthetic key into the user-visible notification)
+///
+/// `platform_lc` is the lowercased platform discriminator (e.g. `"zoom"`).
+/// Empty falls back to `"Meeting"`.
+fn build_notification_body(
+    platform_lc: &str,
+    summary: Option<&str>,
+    meeting_url: Option<&str>,
+) -> String {
+    let display = {
+        let mut p = if platform_lc.is_empty() {
+            "Meeting".to_string()
+        } else {
+            platform_lc.to_string()
+        };
+        if let Some(c) = p.get_mut(0..1) {
+            c.make_ascii_uppercase();
+        }
+        p
+    };
+    let is_synthetic_url = |u: &str| u.starts_with("recall-window:");
+    match summary.filter(|s| !s.is_empty()) {
+        Some(s) => format!("{display}: {s}"),
+        None => match meeting_url.filter(|s| !s.is_empty()) {
+            Some(u) if !is_synthetic_url(u) => format!("{display}: {u}"),
+            _ => format!("{display} meeting"),
+        },
+    }
+}
+
+/// Build the notification *title* for a detected meeting.
+///
+/// Kept separate from [`build_notification_body`] — that function's output is
+/// pinned by a battery of regression tests, so the title gets its own builder
+/// rather than threading platform formatting through the body path.
+///
+/// Format:
+/// - Known platform: `"<Platform> meeting detected"` (e.g. `"Zoom meeting
+///   detected"`) — less generic than the old flat `"Meeting detected"`, which
+///   gave the user no hint which app triggered it.
+/// - Empty platform: `"Meeting detected"` (graceful fallback; avoids the
+///   awkward `" meeting detected"` / doubled-word shapes).
+///
+/// `platform_lc` is the lowercased platform discriminator (e.g. `"zoom"`).
+fn build_notification_title(platform_lc: &str) -> String {
+    if platform_lc.is_empty() {
+        return "Meeting detected".to_string();
+    }
+    let mut display = platform_lc.to_string();
+    if let Some(c) = display.get_mut(0..1) {
+        c.make_ascii_uppercase();
+    }
+    format!("{display} meeting detected")
 }
 
 /// Allows only `[a-zA-Z0-9._-]+` — matches Recall.ai bot id shape (UUID with
@@ -734,5 +1264,103 @@ mod tests {
                 .map(Vec::len),
             Some(1),
         );
+    }
+
+    // ── build_notification_body ──────────────────────────────────────────────
+    // Regression: URL-less SDK detections (typically unscheduled Zoom from
+    // the desktop app) reach us with a synthetic `recall-window:<id>` URL
+    // from the bridge. The notification body must NOT leak that key — it
+    // should render as "<Platform> meeting" instead.
+
+    #[test]
+    fn build_notification_body_uses_summary_when_present() {
+        let body = build_notification_body(
+            "zoom",
+            Some("Weekly standup"),
+            Some("https://zoom.us/j/123"),
+        );
+        assert_eq!(body, "Zoom: Weekly standup");
+    }
+
+    #[test]
+    fn build_notification_body_uses_url_when_no_summary() {
+        let body = build_notification_body(
+            "meet",
+            None,
+            Some("https://meet.google.com/abc-defg-hij"),
+        );
+        assert_eq!(body, "Meet: https://meet.google.com/abc-defg-hij");
+    }
+
+    #[test]
+    fn build_notification_body_hides_synthetic_recall_window_url() {
+        // The bridge emits this shape when the SDK detects a meeting window
+        // but can't scrape a real join URL.
+        let body = build_notification_body(
+            "zoom",
+            None,
+            Some("recall-window:43F5EBF4-8949-4DD4-B075-2E8EF68AAA30"),
+        );
+        assert_eq!(body, "Zoom meeting");
+        // Hard check: no part of the synthetic key leaks.
+        assert!(!body.contains("recall-window"), "synthetic key leaked: {body}");
+        assert!(!body.contains("43F5EBF4"), "windowId leaked: {body}");
+    }
+
+    #[test]
+    fn build_notification_body_summary_wins_over_synthetic_url() {
+        // If for some reason the SDK gave us both, summary should still win.
+        let body = build_notification_body(
+            "zoom",
+            Some("Quick chat"),
+            Some("recall-window:abc"),
+        );
+        assert_eq!(body, "Zoom: Quick chat");
+    }
+
+    #[test]
+    fn build_notification_body_falls_back_when_url_and_summary_missing() {
+        let body = build_notification_body("teams", None, None);
+        assert_eq!(body, "Teams meeting");
+    }
+
+    #[test]
+    fn build_notification_body_handles_unknown_platform() {
+        // Bridge maps unrecognised platforms to "other" — verify graceful
+        // rendering without panicking on the first-char uppercase.
+        let body = build_notification_body("", None, None);
+        assert_eq!(body, "Meeting meeting");
+        // ^^ ugly-but-stable; this path requires both platform AND url AND
+        // summary to be missing, which currently can't happen — the bridge
+        // always sends at least the synthetic URL. Keeps the function total.
+    }
+
+    // ── build_notification_title ─────────────────────────────────────────────
+    // The title names the platform so the banner isn't the generic
+    // "Meeting detected" — e.g. "Zoom meeting detected". Empty platform must
+    // degrade gracefully to the bare "Meeting detected" (no doubled words, no
+    // leading space).
+
+    #[test]
+    fn build_notification_title_names_known_platform() {
+        assert_eq!(build_notification_title("zoom"), "Zoom meeting detected");
+        assert_eq!(build_notification_title("meet"), "Meet meeting detected");
+        assert_eq!(build_notification_title("teams"), "Teams meeting detected");
+    }
+
+    #[test]
+    fn build_notification_title_falls_back_on_empty_platform() {
+        // Must not produce " meeting detected" or "Meeting meeting detected".
+        let title = build_notification_title("");
+        assert_eq!(title, "Meeting detected");
+        assert!(!title.starts_with(' '), "leading space leaked: {title:?}");
+    }
+
+    #[test]
+    fn build_notification_body_treats_empty_strings_as_missing() {
+        // The Svelte handler can forward `meetingUrl: ""` / `summary: ""`
+        // depending on how the payload was constructed.
+        let body = build_notification_body("zoom", Some(""), Some(""));
+        assert_eq!(body, "Zoom meeting");
     }
 }

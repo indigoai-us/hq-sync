@@ -415,6 +415,152 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] Click tray icon -> popover opens
 - [ ] Right-click tray icon -> context menu shows: Sync Now, Settings, Quit
 
+### Meeting detect-notify (US-001, US-004, US-005, US-006, US-007)
+
+> These steps require the Recall Desktop SDK to be installed and the user to be signed into Recall.
+> Run after building with `npm run tauri dev` or from a packaged `.app`.
+
+#### MDN-001: Recall SDK sidecar starts on launch
+
+- [ ] Launch HQ Sync.app
+- [ ] Verify `~/.hq/sync-debug.log` does NOT contain `RECALL_SDK_UNAVAILABLE`
+- [ ] With the SDK binary absent: rename it, relaunch → verify `RECALL_SDK_UNAVAILABLE` is written to the log and the app continues running (no crash, tray icon appears)
+- [ ] Restore the binary and relaunch → verify the error disappears
+
+#### MDN-002: Synthetic detected event surfaces a macOS notification
+
+- [ ] Inject a synthetic `meeting:detected` Tauri event for a Zoom URL (via `__TAURI_INVOKE__` in devtools or a test harness):
+  ```js
+  window.__TAURI__.event.emit('meeting:detected', {
+    detectionId: 'test-1',
+    meetingUrl: 'https://zoom.us/j/999000111',
+    platform: 'zoom',
+    detectedAt: new Date().toISOString(),
+    source: 'sdk-active-app'
+  })
+  ```
+- [ ] Verify a macOS notification appears with title `Meeting detected` and body containing `zoom`
+- [ ] Verify the tray icon gains a badge dot (Prompt state)
+- [ ] Click the tray icon → open MeetingsWindow → verify the badge dot clears
+
+#### MDN-003: Dedup against an existing bot suppresses the notification
+
+- [ ] Start a bot for the test Zoom URL (via MeetingsWindow or curl `POST /v1/bot/invite`)
+- [ ] Inject the same `meeting:detected` event for that URL
+- [ ] Verify **no** new macOS notification fires
+- [ ] Verify the tray badge does **not** appear (or does not increment if already showing)
+- [ ] Verify `sync-debug.log` contains a `dedup-hit` or suppression log line
+
+#### MDN-004: Record action wires through bot invite with ontology participants
+
+- [ ] Inject a `meeting:detected` event for a URL with no existing bot
+- [ ] From the resulting notification (or MeetingsWindow row), click **Record**
+- [ ] Verify a bot invite is sent (`POST /v1/bot/invite` in network tab or DDB record created)
+- [ ] If the company has ontology person entities, verify `metadata.participants` is non-empty on the bot record in DynamoDB
+
+#### MDN-005: Ledger deduplication persists across restarts
+
+- [ ] Inject a `meeting:detected` event → notification fires
+- [ ] Quit HQ Sync.app
+- [ ] Verify `~/.hq/meeting-notify-ledger.json` contains an entry for the test URL with `action: "notified"`
+- [ ] Relaunch HQ Sync.app
+- [ ] Inject the same `meeting:detected` event within 6 hours of the first
+- [ ] Verify **no** duplicate notification fires (ledger suppressed it)
+- [ ] Manually edit the `notifiedAt` timestamp in the ledger to be >6 hours ago
+- [ ] Inject the event again → verify the notification fires (suppression window expired)
+
+#### MDN-006: Per-platform disable suppresses events for that platform
+
+- [ ] Open Settings → Meeting detection section
+- [ ] Uncheck `Zoom` while leaving others checked
+- [ ] Inject a `meeting:detected` event with `platform: 'zoom'`
+- [ ] Verify **no** notification fires
+- [ ] Inject a `meeting:detected` event with `platform: 'meet'`
+- [ ] Verify a notification **does** fire (Google Meet is still enabled)
+- [ ] Re-enable Zoom in Settings — verify subsequent Zoom events surface again (no restart required)
+
+#### MDN-007: Global detection toggle off suppresses all events
+
+- [ ] Open Settings → Meeting detection → toggle `Detect upcoming meetings` to OFF
+- [ ] Inject `meeting:detected` events for zoom, meet, teams
+- [ ] Verify **no** notifications fire and tray badge does not appear
+- [ ] Toggle back ON → verify next event surfaces immediately (no restart)
+
+#### MDN-008: notifications:false in menubar.json suppresses everything
+
+- [ ] Quit HQ Sync.app
+- [ ] Edit `~/.hq/menubar.json` to set `"notifications": false`
+- [ ] Relaunch HQ Sync.app
+- [ ] Inject a `meeting:detected` event with no existing bot
+- [ ] Verify **no** macOS notification fires and **no** tray badge appears
+
+### MeetingsWindow: list refresh resilience
+
+> Regression coverage for the 2026-04 hq-pro KMS-IAM outage where
+> `/v1/calendar/events` and `/v1/google/accounts` 500'd for hours.
+> MeetingsWindow used to (a) show a raw `events HTTP 500: {"message":"…"}`
+> blob and (b) require close + reopen to recover after the server fix
+> deployed. Two changes were shipped: a 15s/5s request+connect timeout on
+> the shared reqwest client (`util/client_info.rs`), and per-call `.catch()`
+> wrappers on `meetings_list_upcoming` / `meetings_list_scheduled_bots`
+> piped through `friendlyError()`.
+
+#### MWR-001: 500 from a list call surfaces a friendly one-liner
+
+- [ ] 1. Open MeetingsWindow against healthy prod — verify event rows render
+- [ ] 2. Open the MeetingsWindow's devtools (right-click → Inspect Element on
+   any row; the window is a separate webview from the popover)
+- [ ] 3. In the devtools console, monkey-patch `invoke` to reject
+   `meetings_list_upcoming` with the exact shape hq-pro returns on a 500:
+   ```js
+   const __orig = window.__TAURI__.core.invoke;
+   window.__TAURI__.core.invoke = (cmd, args) =>
+     cmd === 'meetings_list_upcoming'
+       ? Promise.reject('events HTTP 500: {"message":"Internal Server Error"}')
+       : __orig(cmd, args);
+   ```
+- [ ] 4. Click the refresh button (top-right of the window)
+- [ ] 5. Verify the body now shows a single readable sentence —
+   **"Server hiccup — try again in a moment."** — and **does NOT** contain
+   the literal substring `HTTP 500`, `{"message"`, or `Internal Server Error`
+- [ ] 6. Repeat steps 3–5 stubbing `meetings_list_scheduled_bots` instead.
+   Verify the same friendly sentence renders (same upstream-error vocabulary
+   for both calls)
+
+#### MWR-002: Failed refresh recovers on next poll without close + reopen
+
+- [ ] 1. Continuing from MWR-001 step 5 (stubbed invoke, error banner showing)
+- [ ] 2. Restore the original invoke in the devtools console:
+   ```js
+   window.__TAURI__.core.invoke = __orig;
+   ```
+- [ ] 3. **Without closing or reopening the window**, wait up to 30 seconds
+   for the next poll cycle (or click the refresh button to force it)
+- [ ] 4. Verify the friendly error banner disappears and the event list
+   re-renders with fresh rows
+- [ ] 5. Verify the row-level bot affordances (Invite / In Call / Done etc.)
+   render correctly — proves both list calls re-engaged, not just the
+   upcoming-events one
+
+#### MWR-003: Hung upstream times out within the request budget
+
+> Verifies `util/client_info.rs::build_client()`'s 15s request timeout.
+> Without it, a network partition or hung load balancer would leave the
+> Tauri command awaiting forever and the `if (loading) return` guard in
+> `refresh()` would block every subsequent 30s poll attempt.
+
+- [ ] 1. With MeetingsWindow open, simulate a hung upstream by pointing the
+   vault URL at a blackhole. Easiest: in `~/.hq/menubar.json`, set
+   `"vaultApiUrlOverride"` to a TCP-accepting-but-non-responding endpoint
+   (e.g. `nc -l 9999` in a terminal, then `http://127.0.0.1:9999`)
+- [ ] 2. Restart HQ Sync.app so the new vault URL is picked up
+- [ ] 3. Open MeetingsWindow and click refresh
+- [ ] 4. Verify the friendly error banner appears within ~16 seconds
+   (15s request budget + a beat of slack), **not** after a multi-minute
+   OS-level keepalive timeout
+- [ ] 5. Stop the `nc` listener and remove the override; verify the next
+   poll cycle (≤30s) restores the event list
+
 ### US-004 / US-005 / US-006 / US-007 (Share Notifications): End-to-End Walkthrough
 
 > **Prerequisite:** Logged-in user must have an `@getindigo.ai` email (dogfood gate). All steps

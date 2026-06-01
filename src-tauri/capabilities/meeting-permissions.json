@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "meeting-permissions",
+  "description": "Capability set for the meeting-permissions wizard window. Self-fetches state via `meetings_permissions_state` and deep-links to System Settings panes via `permissions_open_settings` — no event-handshake needed.",
+  "windows": ["meeting-permissions"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "shell:allow-open"
+  ]
+}

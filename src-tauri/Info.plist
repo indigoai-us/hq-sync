@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Info.plist fragment merged into the generated bundle Info.plist via
+  `bundle.macOS.infoPlist` in tauri.conf.json. Keep this file minimal —
+  only entries that aren't already populated by Tauri's defaults.
+
+  Usage descriptions are MANDATORY for any TCC-controlled resource our
+  code accesses. Without a key here, macOS instantly kills the process
+  the moment AVCaptureDevice / AVCaptureDeviceDiscoverySession / EventKit
+  / etc. is called — with a log line like "This app has crashed because
+  it attempted to access privacy-sensitive data without a usage
+  description." (We hit exactly that crash on the first SDK boot of the
+  meeting-detect-notify rollout — see commits dated 2026-05-25.)
+
+  Microphone: required because `permissions_force_native_register` in
+  src-tauri/src/commands/permissions.rs calls
+  `+[AVCaptureDevice requestAccessForMediaType:completionHandler:]` for
+  AVMediaTypeAudio. The Recall Desktop SDK helper makes its own AV calls
+  too, but those are attributed to this bundle's TCC identity once HQ
+  Sync's main process registers first.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>HQ Sync uses the microphone to detect when you join a meeting and (with your opt-in) to capture your audio for the transcript. Required by Recall.ai's Desktop SDK.</string>
+</dict>
+</plist>

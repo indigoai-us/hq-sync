@@ -1,13 +1,55 @@
 name: Release
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Manual aarch64 build → repair → inside-out sign → notarize → updater + DMG.
+#
+# Why this is NOT a tauri-action@v0 pipeline anymore (the previous shape):
+#
+#   1. The Recall Desktop SDK we bundle is arm64-ONLY (desktop_sdk_macos_exe
+#      and the ~100 GStreamer plugin dylibs are non-fat arm64). A
+#      `--target universal-apple-darwin` build either fails to lipo or ships
+#      a half-broken fat binary. So we build aarch64-apple-darwin natively
+#      (macos-latest runners are Apple Silicon) and keep the consumer-facing
+#      "universal" filenames as aliases only.
+#
+#   2. Tauri's bundler flattens the GStreamer.framework Versions/Current
+#      symlinks during `bundle.resources` copy → the SDK SIGABRT-loops at
+#      boot. scripts/fix-recall-framework-symlinks.sh repairs them AFTER the
+#      build, BEFORE signing.
+#
+#   3. `codesign --deep` (what tauri-action / tauri's own signer use) mangles
+#      the GStreamer dylib load commands. This repo hard-bans it
+#      (policy hq-sync-codesign-deep-is-deprecated). We must run the 8-phase
+#      inside-out scripts/sign-bundle.sh ourselves, which means tauri must NOT
+#      sign — hence `--bundles app` (produce the raw .app only) and a manual
+#      sign/notarize/tarball/DMG sequence on top.
+#
+#   4. Notarization REQUIRES the hardened runtime, which turns on library
+#      validation → the Team-ID-less GStreamer dylibs get rejected unless the
+#      loader binary carries com.apple.security.cs.disable-library-validation.
+#      That entitlement lives in src-tauri/Entitlements.plist and is applied
+#      globally by sign-bundle.sh (HQ_SIGN_ENTITLEMENTS), so it lands on
+#      desktop_sdk_macos_exe (the GStreamer loader) as well as our own binary.
+#
+# Dry-run: workflow_dispatch defaults to dry_run=true → build/sign/notarize
+# everything and upload the assets as a workflow ARTIFACT, but publish NOTHING
+# to GitHub Releases. A pushed tag is always a REAL release. Set dry_run=false
+# on a manual dispatch to publish from a dispatch too.
+# ─────────────────────────────────────────────────────────────────────────────
+
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
     inputs:
+      dry_run:
+        description: "Build/sign/notarize but DO NOT publish — uploads the signed assets as a workflow artifact for smoke-testing."
+        required: false
+        type: boolean
+        default: true
       tag:
-        description: "Tag to release (e.g. v0.1.0). If empty, uses the current commit."
+        description: "Tag to release (e.g. v0.4.4-beta.2). If empty, derives from tauri.conf.json version."
         required: false
         type: string
 
@@ -17,151 +59,147 @@ env:
 jobs:
   release:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: write
 
     steps:
-      # Tag must be either:
-      #   vX.Y.Z              → Stable channel
-      #   vX.Y.Z-beta.N       → Beta channel (prerelease)
-      #   vX.Y.Z-alpha.N      → Alpha channel (prerelease)
-      #
-      # Other pre-release patterns (`-rc.N`, `-pre`, `-dev`, raw `-beta`
-      # without a number) are REJECTED at validation time so they can't
-      # silently produce releases that the client-side resolver in
-      # `util/release_channel.rs::parse_channel_from_tag` won't classify.
-      # Strict here = typos fail fast in CI rather than producing a
-      # published release that the auto-updater never advertises.
-      #
-      # `is_prerelease` is wired into the tauri-action `prerelease:` input
-      # below. The GitHub /releases/latest/ alias already filters to
-      # non-prereleases, so flipping this is what keeps a stable-channel
-      # user's static-endpoint poll from accidentally picking up a beta.
-      - name: Validate tag format + classify channel
-        id: classify
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            CHANNEL="stable"
-            IS_PRE="false"
-          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
-            CHANNEL="beta"
-            IS_PRE="true"
-          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
-            CHANNEL="alpha"
-            IS_PRE="true"
-          else
-            echo "::error::Tag must match vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N — got: $TAG"
-            exit 1
-          fi
-          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=$IS_PRE" >> "$GITHUB_OUTPUT"
-          echo "Tag $TAG classified as channel=$CHANNEL prerelease=$IS_PRE"
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
+      # pnpm must be installed BEFORE setup-node: `cache: pnpm` makes
+      # setup-node shell out to `pnpm store path` to locate the cache dir, so
+      # the binary has to exist first. Major-pinned to 10 to match the pnpm
+      # that generated/maintains pnpm-lock.yaml (lockfileVersion 9.0) — a v9
+      # runner can read it but --frozen-lockfile is happiest on the same major.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
 
-      # tauri-action auto-detects the package manager from the lockfile and
-      # invokes `pnpm tauri build` when pnpm-lock.yaml is present. The runner
-      # doesn't ship with pnpm, so without this step the build step ENOENTs
-      # within seconds (v0.1.18 first attempt). Frontend deps still come from
-      # `npm ci` against package-lock.json — tauri-action only needs pnpm on
-      # PATH to spawn its build command, not to install dependencies.
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
+      # Classify channel + resolve dry-run AFTER checkout (we read the version
+      # out of tauri.conf.json and assert tag↔conf parity, so the working tree
+      # must exist first).
+      #
+      # Tag must be one of:
+      #   vX.Y.Z              → stable  (prerelease=false)
+      #   vX.Y.Z-beta.N       → beta    (prerelease=true)
+      #   vX.Y.Z-alpha.N      → alpha   (prerelease=true)
+      # Anything else is REJECTED so it can't produce a release the client-side
+      # resolver in util/release_channel.rs::parse_channel_from_tag won't see.
+      - name: Resolve tag, classify channel, resolve dry-run
+        id: classify
+        run: |
+          CONF_VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+
+          # dry-run only ever applies to a manual dispatch; a pushed tag is
+          # always a real release.
+          DRY_RUN=false
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.dry_run }}" != "false" ]; then
+            DRY_RUN=true
+          fi
+
+          # Resolve the tag: explicit input → pushed tag → derived from conf.
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            if [ "${{ github.event_name }}" = "push" ]; then
+              TAG="${{ github.ref_name }}"
+            else
+              TAG="v$CONF_VERSION"
+            fi
+          fi
+          VERSION="${TAG#v}"
+
+          # Tag must match the version baked into tauri.conf.json, otherwise the
+          # updater would advertise a version the binary doesn't report.
+          if [ "$VERSION" != "$CONF_VERSION" ]; then
+            echo "::error::Tag $TAG (version $VERSION) does not match tauri.conf.json version $CONF_VERSION"
+            exit 1
+          fi
+
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            CHANNEL="stable"; IS_PRE="false"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$ ]]; then
+            CHANNEL="beta"; IS_PRE="true"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
+            CHANNEL="alpha"; IS_PRE="true"
+          else
+            echo "::error::Tag must match vX.Y.Z, vX.Y.Z-beta.N, or vX.Y.Z-alpha.N — got: $TAG"
+            exit 1
+          fi
+
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "channel=$CHANNEL"
+            echo "is_prerelease=$IS_PRE"
+            echo "dry_run=$DRY_RUN"
+          } >> "$GITHUB_OUTPUT"
+          echo "Tag $TAG → channel=$CHANNEL prerelease=$IS_PRE dry_run=$DRY_RUN"
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
+      # arm64 only — the Recall SDK is non-fat arm64, so a universal build is
+      # pointless dead weight at best and a lipo failure at worst.
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
 
-      # Signing + notarization uses the same Apple Developer identity as the
-      # indigo-nx Electron app. Secret-name mapping:
+      # Build the raw .app ONLY (--bundles app). We deliberately do NOT let
+      # tauri build the DMG or updater tarball, because both must be derived
+      # from the inside-out-signed + notarized + stapled .app produced later.
       #
-      #   indigo-nx (CSC_LINK, CSC_KEY_PASSWORD, APPLE_ID, APPLE_ID_PASSWORD,
-      #              ASC_PROVIDER)
-      #   → hq-sync (APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_ID,
-      #              APPLE_PASSWORD, APPLE_TEAM_ID)
-      #
-      # tauri-action reads these env vars natively:
-      #   - APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD — imports the .p12
-      #     into a temporary keychain automatically; no manual `security
-      #     import` step needed.
-      #   - APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID — notarytool submits
-      #     the signed bundle to Apple using an app-specific password
-      #     (same method electron-builder uses on indigo-nx).
-      - name: Build, sign, and notarize universal DMG
-        uses: tauri-apps/tauri-action@v0
-        id: tauri
+      # TAURI_SIGNING_PRIVATE_KEY is set even though we sign the updater tarball
+      # ourselves: with createUpdaterArtifacts:true + a pubkey in conf, tauri
+      # hard-errors ("A public key has been found, but no private key") if the
+      # var is absent. The Sentry vars are consumed by build.rs (env!) and the
+      # @sentry/vite-plugin during `npm run build` (beforeBuildCommand).
+      - name: Build app bundle (aarch64)
+        id: build
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: "Developer ID Application"
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Tauri updater bundle signing. The public half of this keypair
-          # lives in tauri.conf.json → plugins.updater.pubkey. Users get
-          # auto-updates only if the .tar.gz's detached signature verifies
-          # against that pubkey, so losing these secrets means shipping a
-          # new pubkey + forcing every user to manually reinstall.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # build.rs reads this via env!("SENTRY_DSN") — must be present at compile time
-          # so the signed binary has a wired DSN rather than the empty-string no-op path.
           HQ_SYNC_SENTRY_DSN: ${{ secrets.HQ_SYNC_SENTRY_DSN }}
-          # Webview (Svelte) Sentry integration. VITE_SENTRY_DSN is inlined by Vite at
-          # build time; the other three vars are consumed by @sentry/vite-plugin to
-          # upload source maps and create the release during `vite build`.
           VITE_SENTRY_DSN: ${{ secrets.VITE_HQ_SYNC_SENTRY_DSN }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: indigo-d0
           SENTRY_PROJECT: hq-sync-web
-        with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: "HQ Sync ${{ github.event.inputs.tag || github.ref_name }}"
-          releaseBody: "See the [changelog](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details."
-          releaseDraft: true
-          # Driven by the classify step above: stable tags ship as
-          # `prerelease: false` (default user-facing channel), beta/alpha
-          # tags ship as `prerelease: true` so the GitHub UI labels them
-          # as such AND the /releases/latest/ redirect skips them. The
-          # client tag-suffix filter is authoritative for which release a
-          # given channel sees — this flag is the second line of defense
-          # for stable users who poll the static endpoint.
-          prerelease: ${{ steps.classify.outputs.is_prerelease }}
-          args: --target universal-apple-darwin
+        run: |
+          pnpm run sidecar:install
+          ./node_modules/.bin/tauri build --target aarch64-apple-darwin --bundles app
 
-      # Sentry symbol upload is best-effort — must never gate a release. The
-      # universal-apple-darwin build doesn't reliably emit .dSYM bundles in
-      # the per-arch target dirs the script searches (tauri-action's lipo
-      # cleans intermediates), so the prior exit-1-on-zero-uploaded behavior
-      # wedged v0.1.17 with the .app, .tar.gz, .sig, and latest.json all
-      # uploaded but the publish-draft step skipped. Allowing the step to
-      # fail loudly lets the rest of the pipeline (styled DMG, versionless
-      # alias, publish) proceed. Same fix landed on hq-installer earlier.
-      - name: Create Sentry release and upload Rust debug symbols
+          BUNDLE_MACOS_DIR="src-tauri/target/aarch64-apple-darwin/release/bundle/macos"
+          APP_PATH=$(find "$BUNDLE_MACOS_DIR" -maxdepth 1 -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "::error::No .app bundle found under $BUNDLE_MACOS_DIR"
+            exit 1
+          fi
+          echo "Built app: $APP_PATH"
+          echo "BUNDLE_MACOS_DIR=$BUNDLE_MACOS_DIR" >> "$GITHUB_ENV"
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+      # Best-effort symbol upload — never gates a release. The Sentry release
+      # OBJECT (new/set-commits/finalize) is only created for a real release;
+      # dSYM upload is harmless on a dry-run (keyed by debug-id) so we always do
+      # it. Note: Rust debug symbols go to the `hq-sync` project (the webview
+      # build above uploads source maps to `hq-sync-web`).
+      - name: Upload Rust debug symbols to Sentry
         continue-on-error: true
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
@@ -171,138 +209,178 @@ jobs:
           curl -sL "https://sentry.io/get-cli/" | INSTALL_DIR="$INSTALL_DIR" INSTALL_VERSION=2.41.1 sh
           export PATH="$INSTALL_DIR:$PATH"
 
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          RELEASE="hq-sync@${VERSION}"
-
           UPLOADED=0
-          for TARGET_DIR in \
-            src-tauri/target/universal-apple-darwin \
-            src-tauri/target/aarch64-apple-darwin \
-            src-tauri/target/x86_64-apple-darwin; do
-            if [ -d "$TARGET_DIR" ]; then
-              while read -r dsym; do
-                sentry-cli debug-files upload \
-                  --org indigo-d0 --project hq-sync \
-                  --include-sources --wait "$dsym"
-                UPLOADED=$((UPLOADED + 1))
-              done < <(find "$TARGET_DIR" -name "*.dSYM" -type d)
-            fi
-          done
-          if [ "$UPLOADED" -eq 0 ]; then
-            echo "::error::No .dSYM bundles found in any target tree — symbolication will be broken"
-            exit 1
-          fi
+          while IFS= read -r dsym; do
+            sentry-cli debug-files upload \
+              --org indigo-d0 --project hq-sync \
+              --include-sources --wait "$dsym"
+            UPLOADED=$((UPLOADED + 1))
+          done < <(find src-tauri/target/aarch64-apple-darwin -name "*.dSYM" -type d)
           echo "Uploaded $UPLOADED dSYM bundle(s)"
 
-          sentry-cli releases new "$RELEASE" --org indigo-d0 --project hq-sync
-          sentry-cli releases set-commits "$RELEASE" --auto --org indigo-d0 --project hq-sync
-          sentry-cli releases finalize "$RELEASE" --org indigo-d0 --project hq-sync
+          if [ "${{ steps.classify.outputs.dry_run }}" != "true" ]; then
+            RELEASE="hq-sync@${{ steps.classify.outputs.version }}"
+            sentry-cli releases new "$RELEASE" --org indigo-d0 --project hq-sync
+            sentry-cli releases set-commits "$RELEASE" --auto --org indigo-d0 --project hq-sync
+            sentry-cli releases finalize "$RELEASE" --org indigo-d0 --project hq-sync
+          fi
 
-      # Tauri-action produces a DMG by default; this step builds a styled
-      # one (custom background, window geometry) and uploads it, overriding
-      # the default.
-      - name: Create styled DMG
+      # Restore the GStreamer.framework symlink layout tauri flattened.
+      - name: Repair GStreamer framework symlinks
+        run: bash scripts/fix-recall-framework-symlinks.sh "$APP_PATH"
+
+      # Import the Developer ID Application cert into a throwaway keychain.
+      # (tauri-action used to do this; we sign ourselves now, so it's manual.)
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          APP_PATH=$(find src-tauri/target/universal-apple-darwin/release/bundle -name "*.app" -type d | head -1)
-          if [ -z "$APP_PATH" ]; then
-            echo "::error::Could not find .app bundle"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PW=$(openssl rand -base64 24)
+
+          echo -n "$APPLE_CERTIFICATE" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PW" "$KEYCHAIN_PATH"
+          # Prepend our keychain to the search list so codesign finds the identity.
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/"//g')
+
+          echo "Imported identities:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      # 8-phase inside-out sign with hardened runtime + secure timestamp +
+      # the disable-library-validation entitlement (HQ_SIGN_ENTITLEMENTS).
+      - name: Sign app (inside-out, hardened runtime + entitlements)
+        env:
+          HARDENED_RUNTIME: "1"
+          TIMESTAMP: "1"
+          HQ_SIGN_ENTITLEMENTS: src-tauri/Entitlements.plist
+        run: bash scripts/sign-bundle.sh "$APP_PATH" "Developer ID Application"
+
+      # Notarize the signed .app, then staple the ticket so Gatekeeper passes
+      # offline. notarytool needs a zip/dmg/pkg, not a bare .app — staple the
+      # .app itself afterward (the ticket attaches to the bundle, not the zip).
+      - name: Notarize and staple app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          ZIP="$RUNNER_TEMP/HQ-Sync-notarize.zip"
+          ditto -c -k --keepParent "$APP_PATH" "$ZIP"
+
+          echo "Submitting app to Apple notary service…"
+          SUBMIT_OUTPUT=$(xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --output-format json)
+          echo "$SUBMIT_OUTPUT"
+          STATUS=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
+          SUBMIT_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::App notarization failed (status: $STATUS)"
+            if [ -n "$SUBMIT_ID" ]; then
+              xcrun notarytool log "$SUBMIT_ID" \
+                --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            fi
             exit 1
           fi
-          echo "Found app at: $APP_PATH"
+          xcrun stapler staple "$APP_PATH"
+          echo "App notarized + stapled."
 
-          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
-          VERSION="${VERSION#v}"
+      # Updater tarball, built from the stapled .app so auto-updated installs
+      # are already notarized+stapled. Then sign it with the Tauri updater key.
+      #
+      # `tauri signer sign` is expected to write <tarball>.sig next to the
+      # tarball. The .sig assertion below is the PRIMARY dry-run validation
+      # target — if tauri prints the signature to stdout instead of writing the
+      # file (version-dependent behavior), the dry-run fails loudly here with
+      # the captured stdout so we can adjust before cutting a real tag.
+      - name: Build and sign updater tarball
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          APP_NAME=$(basename "$APP_PATH")
+          TARBALL="$BUNDLE_MACOS_DIR/HQ-Sync.app.tar.gz"
+          # COPYFILE_DISABLE keeps macOS ._AppleDouble files out of the tar.
+          COPYFILE_DISABLE=1 tar -czf "$TARBALL" -C "$BUNDLE_MACOS_DIR" "$APP_NAME"
+
+          set +e
+          SIGN_OUT=$(./node_modules/.bin/tauri signer sign "$TARBALL" 2>&1)
+          SIGN_RC=$?
+          set -e
+          echo "$SIGN_OUT"
+          if [ "$SIGN_RC" -ne 0 ]; then
+            echo "::error::tauri signer sign exited $SIGN_RC"
+            exit 1
+          fi
+          if [ ! -f "${TARBALL}.sig" ]; then
+            echo "::error::tauri signer sign did not produce ${TARBALL}.sig — inspect stdout above and adjust the pipeline before a real release"
+            exit 1
+          fi
+          echo "TARBALL=$TARBALL" >> "$GITHUB_ENV"
+          echo "Updater tarball signed: ${TARBALL}.sig"
+
+      # Styled DMG built from the stapled .app, then signed (Developer ID, no
+      # hardened runtime — a disk image isn't an executable), notarized, and
+      # stapled in its own right so first-open Gatekeeper passes offline.
+      - name: Build, sign, notarize, staple DMG
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          VERSION="${{ steps.classify.outputs.version }}"
           DMG_PATH="src-tauri/target/HQ-Sync_${VERSION}_universal.dmg"
-
           chmod +x scripts/create-dmg.sh
           ./scripts/create-dmg.sh "$APP_PATH" "$DMG_PATH"
 
-      # tauri-action uploaded its own default DMG named "HQ.Sync_*.dmg" (dot
-      # in the product name). Our styled DMG uses "HQ-Sync_*.dmg" (dash).
-      # Ship only one — delete the tauri-action default before uploading
-      # the styled one. hq-installer picks "the first .dmg asset" and the
-      # release would otherwise end up with both.
-      - name: Remove tauri-action default DMG from release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          DEFAULT_DMG="HQ.Sync_${VERSION}_universal.dmg"
-          if gh release view "$TAG" --json assets -q '.assets[].name' | grep -Fxq "$DEFAULT_DMG"; then
-            echo "Deleting default DMG: $DEFAULT_DMG"
-            gh release delete-asset "$TAG" "$DEFAULT_DMG" --yes
-          else
-            echo "Default DMG not present — nothing to delete"
-          fi
+          codesign --force --timestamp --sign "Developer ID Application" "$DMG_PATH"
 
-      - name: Upload styled DMG to release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          DMG_PATH=$(find src-tauri/target -maxdepth 1 -name "HQ-Sync_*.dmg" | head -1)
-          if [ -n "$DMG_PATH" ]; then
-            gh release upload "$TAG" "$DMG_PATH" --clobber
-          fi
-
-      # Versionless DMG alias. Uploading a second copy of the styled DMG
-      # under a stable filename gives us a permanent one-click URL:
-      #   https://github.com/indigoai-us/hq-sync/releases/latest/download/HQ-Sync_universal.dmg
-      # GitHub auto-redirects /releases/latest/download/<name> to whatever
-      # is current. Consumers (hq-installer "Download manually" button, the
-      # hq-onboarding flow's future sibling alias) can hardcode this URL and
-      # never have to hit the API to discover the latest version.
-      - name: Upload versionless DMG alias
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          DMG_PATH=$(find src-tauri/target -maxdepth 1 -name "HQ-Sync_*.dmg" | head -1)
-          if [ -z "$DMG_PATH" ]; then
-            echo "::warning::No styled DMG found — skipping versionless alias"
-            exit 0
-          fi
-          ALIAS_PATH="src-tauri/target/HQ-Sync_universal.dmg"
-          cp "$DMG_PATH" "$ALIAS_PATH"
-          gh release upload "$TAG" "$ALIAS_PATH" --clobber
-
-      # Auto-updater manifest. tauri-action already produces the .tar.gz
-      # + .tar.gz.sig; here we translate those into the latest.json shape
-      # Tauri's updater plugin polls at the endpoint in tauri.conf.json.
-      - name: Generate and upload latest.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
-          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-          UPDATER_BUNDLE=$(find src-tauri/target/universal-apple-darwin/release/bundle -name "*.tar.gz" | head -1)
-          if [ -z "$UPDATER_BUNDLE" ]; then
-            echo "::warning::No updater bundle found — skipping latest.json"
-            exit 0
-          fi
-
-          if [ ! -f "${UPDATER_BUNDLE}.sig" ]; then
-            echo "::error::Updater signature file missing: ${UPDATER_BUNDLE}.sig"
+          echo "Submitting DMG to Apple notary service…"
+          SUBMIT_OUTPUT=$(xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            --wait --output-format json)
+          echo "$SUBMIT_OUTPUT"
+          STATUS=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('status',''))")
+          SUBMIT_ID=$(echo "$SUBMIT_OUTPUT" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',''))")
+          if [ "$STATUS" != "Accepted" ]; then
+            echo "::error::DMG notarization failed (status: $STATUS)"
+            if [ -n "$SUBMIT_ID" ]; then
+              xcrun notarytool log "$SUBMIT_ID" \
+                --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" || true
+            fi
             exit 1
           fi
-          SIGNATURE=$(cat "${UPDATER_BUNDLE}.sig")
+          xcrun stapler staple "$DMG_PATH"
+          echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
+          echo "DMG notarized + stapled: $DMG_PATH"
 
-          # tauri-action renames the uploaded .tar.gz (e.g. local
-          # "HQ Sync.app.tar.gz" becomes "HQ.Sync_universal.app.tar.gz" on the
-          # release). basename of the local path produced a URL with a space
-          # that 404'd — v0.1.1's latest.json pointed at a nonexistent asset.
-          # Query the real asset name from the release after tauri-action.
-          UPLOADED_NAME=$(gh release view "$TAG" --json assets -q '.assets[] | select(.name | endswith(".tar.gz")) | .name' | head -1)
-          if [ -z "$UPLOADED_NAME" ]; then
-            echo "::error::Could not find uploaded .tar.gz asset on release $TAG"
-            exit 1
-          fi
-          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${UPLOADED_NAME}"
+      # Stage every publishable asset under release-assets/ with clean,
+      # space-free names, and synthesize latest.json. Consumers (hq-installer,
+      # hq-onboarding) hardcode the versionless HQ-Sync_universal.dmg alias and
+      # the 3-platform latest.json map, so both are preserved even though the
+      # content is arm64-only.
+      - name: Assemble release assets + latest.json
+        run: |
+          VERSION="${{ steps.classify.outputs.version }}"
+          TAG="${{ steps.classify.outputs.tag }}"
+          mkdir -p release-assets
+
+          cp "$DMG_PATH" "release-assets/HQ-Sync_${VERSION}_universal.dmg"
+          cp "$DMG_PATH" "release-assets/HQ-Sync_universal.dmg"
+          cp "$TARBALL" "release-assets/HQ-Sync.app.tar.gz"
+          cp "${TARBALL}.sig" "release-assets/HQ-Sync.app.tar.gz.sig"
+
+          SIGNATURE=$(cat "release-assets/HQ-Sync.app.tar.gz.sig")
+          DOWNLOAD_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/HQ-Sync.app.tar.gz"
           NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${TAG}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
           python3 -c "
           import json, sys
@@ -316,24 +394,44 @@ jobs:
               'darwin-x86_64':   {'signature': sys.argv[4], 'url': sys.argv[5]}
             }
           }
-          json.dump(data, open('latest.json','w'), indent=2)
+          json.dump(data, open('release-assets/latest.json','w'), indent=2)
           " "$VERSION" "$NOTES_URL" "$DATE" "$SIGNATURE" "$DOWNLOAD_URL"
 
-          gh release upload "$TAG" latest.json --clobber
+          echo "Staged assets:"
+          ls -la release-assets
 
-      # tauri-action creates the release as a draft (releaseDraft: true
-      # above) so we can sanity-check assets before it's visible. Now that
-      # all required assets are uploaded (both DMGs, tar.gz, .sig,
-      # latest.json), publish it — otherwise /releases/latest keeps
-      # pointing at the previous version and the versionless aliases 404.
-      #
-      # Before this step existed, v0.1.2 had to be published by hand with
-      # `gh release edit v0.1.2 --draft=false` — don't repeat that.
-      - name: Publish draft release
+      # ── DRY RUN: upload assets as an artifact, publish nothing ──────────────
+      - name: Upload dry-run artifact
+        if: steps.classify.outputs.dry_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hq-sync-${{ steps.classify.outputs.version }}-dryrun
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 7
+
+      # ── REAL RELEASE: create (if needed), upload, verify, publish ───────────
+      - name: Publish release
+        if: steps.classify.outputs.dry_run != 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          TAG="${{ steps.classify.outputs.tag }}"
+          PRE_FLAG=""
+          if [ "${{ steps.classify.outputs.is_prerelease }}" = "true" ]; then
+            PRE_FLAG="--prerelease"
+          fi
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "HQ Sync $TAG" \
+              --notes "See the [changelog](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." \
+              --draft $PRE_FLAG \
+              --target "${{ github.sha }}"
+          fi
+
+          gh release upload "$TAG" release-assets/* --clobber
+
           ASSETS=$(gh release view "$TAG" --json assets -q '.assets[].name')
           for REQUIRED in ".dmg" ".tar.gz" ".tar.gz.sig" "latest.json" "HQ-Sync_universal.dmg"; do
             if ! echo "$ASSETS" | grep -q "$REQUIRED"; then
@@ -341,4 +439,11 @@ jobs:
               exit 1
             fi
           done
+
           gh release edit "$TAG" --draft=false
+          echo "Published $TAG (prerelease=${{ steps.classify.outputs.is_prerelease }})"
+
+      - name: Clean up signing keychain
+        if: ${{ always() }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" 2>/dev/null || true

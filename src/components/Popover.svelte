@@ -202,8 +202,53 @@
     /** Click handler for the meeting icon — toggles the modal open state
      *  in App.svelte (where the modal itself is rendered). */
     onmeetingsclick?: () => void;
+    /** Active meeting detections from the Recall Desktop SDK. Rendered as
+     *  rows above the sync section with Record/Stop controls. */
+    activeMeetings?: ActiveMeeting[];
+    /** Triggers `start_recording(windowId)` on the Rust side. Owner is
+     *  App.svelte, which also flips the row state on the response. */
+    onstartrecording?: (windowId: string) => void | Promise<void>;
+    /** Triggers `stop_recording(windowId)` on the Rust side. */
+    onstoprecording?: (windowId: string) => void | Promise<void>;
+    /**
+     * Company memberships the user can attribute new recordings to.
+     * Empty when the user is Personal-only or memberships are still
+     * loading — the row still renders with "Personal" as the only
+     * option in that case.
+     */
+    recordingCompanies?: Array<{
+      companyUid: string;
+      companyName: string | null;
+      role: string | null;
+      status: string;
+    }>;
+    /**
+     * Fires when the user picks a different company in the row's
+     * dropdown (pre-recording only). `companyUid = null` means
+     * Personal. The Rust upload-token mint reads the snapshot at
+     * `start_recording` time, so changes made post-recording are
+     * frontend-only.
+     */
+    onchangerecordingcompany?: (
+      windowId: string,
+      companyUid: string | null,
+    ) => void;
     /** Indigo-only dogfood gate for the desktop alternate window toggle. */
     desktopAltEnabled?: boolean;
+  }
+
+  /** Mirror of `App.svelte`'s `ActiveMeeting` interface — duplicated here
+   *  so we don't pull a runtime import from a parent. */
+  interface ActiveMeeting {
+    windowId: string;
+    platform: string;
+    meetingUrl: string;
+    detectedAt: string;
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    recordingId?: string;
+    error?: string;
+    /** Company UID to attribute the recording to. `null` = Personal. */
+    companyUid: string | null;
   }
 
   let {
@@ -253,6 +298,11 @@
     bindStatsRefresh,
     meetingsEnabled = false,
     onmeetingsclick,
+    activeMeetings = [],
+    onstartrecording,
+    onstoprecording,
+    recordingCompanies = [],
+    onchangerecordingcompany,
     desktopAltEnabled = false,
   }: Props = $props();
 
@@ -480,8 +530,26 @@
     {#if meetingsEnabled && onmeetingsclick}
       <!-- Discreet meeting-invite icon, sits just left of Sync. Gated to
            @getindigo.ai via `meetings_feature_enabled` (SYNC-1) so this
-           branch is dead code for non-Indigo users. -->
-      <MeetingIcon onclick={onmeetingsclick} />
+           branch is dead code for non-Indigo users.
+
+           Tinted from the same `activeMeetings` snapshot the (now-removed)
+           in-popover Detected row used to consume — yellow when one is
+           awaiting Record, red while any is recording. The Detected/Record
+           row itself was moved into MeetingsWindow so the popover stays
+           focused on sync state; the calendar icon is now the in-popover
+           hook into the meeting flow. -->
+      <MeetingIcon
+        onclick={onmeetingsclick}
+        detected={activeMeetings.some(
+          (m) => m.state === 'detected' || m.state === 'error',
+        )}
+        recording={activeMeetings.some(
+          (m) =>
+            m.state === 'recording' ||
+            m.state === 'starting' ||
+            m.state === 'stopping',
+        )}
+      />
     {/if}
 
     {#if desktopAltEnabled}
@@ -577,6 +645,16 @@
   {/if}
 
   <div class="popover-divider"></div>
+
+  <!-- Active meeting detections used to render here as a Detected/Record
+       row above the sync list. They were moved to the top of
+       MeetingsWindow so the popover stays focused on sync state — the
+       calendar icon in the header now tints yellow (detected) / red
+       (recording) and clicking it opens the meetings window where the
+       same controls live. The `activeMeetings` / `onstartrecording` /
+       `onstoprecording` / `onchangerecordingcompany` props are still
+       received by this component (they drive the MeetingIcon tint) but
+       no longer rendered inline. -->
 
   <!-- Body -->
   <section class="popover-body">
@@ -1685,4 +1763,13 @@
     color: var(--popover-text-muted, #a0a0b0);
     line-height: 1.4;
   }
+
+  /* The active-meetings row UI (Detected/Record + company-attribution
+     select + Stop button) moved to MeetingsWindow.svelte on
+     2026-05-30. Its CSS (`.active-meetings` / `.meeting-row` /
+     `.meeting-company` / `.recording-dot` / `@keyframes
+     recording-pulse` etc) lived here previously; the equivalent
+     `.active-*` classes now live alongside the markup in
+     MeetingsWindow's <style> block. Removed from this file so
+     `vite-plugin-svelte` doesn't flag them as unused. */
 </style>

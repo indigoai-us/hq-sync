@@ -13,9 +13,22 @@
 
 use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::Client;
+use std::time::Duration;
 
 pub const CLIENT_NAME: &str = "hq-sync";
 pub const CLIENT_VERSION: &str = env!("APP_VERSION");
+
+/// Total per-request budget. Long enough to cover the slowest legitimate
+/// vault endpoint (`/v1/calendar/events` fans out across calendars) but
+/// short enough that a hung upstream surfaces as a clean reqwest error.
+/// 2026-04 regression: hq-pro's KMS-IAM bug 500'd `/v1/calendar/events` and
+/// `/v1/google/accounts` for hours; without a timeout the MeetingsWindow
+/// refresh sat on a pending future and never re-engaged the 30s poll.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Connect budget — fires before the full request timeout so a misrouted
+/// host (DNS pointing nowhere, network partition) errors quickly instead of
+/// burning the whole 15s on a TCP handshake that's never going to complete.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Build a HeaderMap with our standard client-attribution headers.
 ///
@@ -41,9 +54,64 @@ pub fn client_headers() -> HeaderMap {
 /// Build a reqwest Client preconfigured with the standard client headers as
 /// defaults. Callers can layer more headers per request — `default_headers`
 /// is merged with per-call headers by reqwest.
+///
+/// Request + connect timeouts apply to *every* caller of this helper. Sync
+/// streaming (`commands/sync.rs`) is a separate subprocess pipeline and is
+/// not affected. The ontology-participants helper in `commands/meetings.rs`
+/// wraps its call in `tokio::time::timeout(2s)` for a tighter budget; that
+/// wrapper becomes redundant once the client itself has a default, but it
+/// stays as defense-in-depth for the bot-invite hot path.
 pub fn build_client() -> Client {
     Client::builder()
         .default_headers(client_headers())
+        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
         .build()
         .unwrap_or_else(|_| Client::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Regression test for the 2026-04 hq-pro KMS-IAM 500 outage:
+    /// `/v1/calendar/events` returned 500 for hours and the MeetingsWindow
+    /// refresh path sat on a pending future because `build_client()` had
+    /// no timeout. Lock in a request timeout so a hung upstream surfaces
+    /// as a clean reqwest error in well under the wiremock-side delay.
+    ///
+    /// Slow on purpose (~15s): the test wedges a 30s server-side delay
+    /// behind the configured 15s budget. If the timeout regresses to
+    /// unset, the test will block past 20s and the elapsed-time assertion
+    /// will fail.
+    #[tokio::test]
+    async fn build_client_times_out_on_slow_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+
+        let client = build_client();
+        let start = Instant::now();
+        let result = client.get(server.uri()).send().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "expected timeout error from build_client(), got {result:?}",
+        );
+        // 15s configured + 5s slack for slow CI runners. Anything past
+        // 20s means the timeout silently dropped from the builder.
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "build_client() did not time out (elapsed {elapsed:?}) — \
+             a timeout regression has shipped",
+        );
+    }
 }

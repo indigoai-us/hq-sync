@@ -1,6 +1,6 @@
 [package]
 name = "hq-sync-menubar"
-version = "0.4.4-beta.1"
+version = "0.4.4-beta.2"
 edition = "2021"
 
 [build-dependencies]
@@ -14,6 +14,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-single-instance = "2"
 window-vibrancy = "0.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -92,21 +93,33 @@ split-debuginfo = "packed"
 # any stale NSOpenPanel/NSSavePanel before opening a new picker. rfd
 # doesn't expose the panel handle, so we reach into AppKit directly.
 objc2 = "0.6"
-# Completion-handler blocks for the async UNUserNotificationCenter APIs
-# (getNotificationSettings / requestAuthorization) used in commands::notifications
-# to read the *real* OS authorization status. tauri-plugin-notification's desktop
-# impl hardcodes PermissionState::Granted, so we query UNUserNotificationCenter
-# directly. RcBlock (heap, refcounted) outlives our stack frame so a late
-# completion callback after a recv timeout can't use-after-free.
+# block2 has two callers in the menubar app, both needing ObjC completion
+# blocks for Apple APIs whose contract requires a non-nil block:
+#
+# 1. commands/notifications.rs — UNUserNotificationCenter
+#    getNotificationSettings / requestAuthorization, so we can read the
+#    *real* OS authorization state instead of the hardcoded
+#    PermissionState::Granted that tauri-plugin-notification's desktop
+#    impl returns. RcBlock (heap, refcounted) outlives our stack frame so
+#    a late completion callback after a recv timeout can't use-after-free.
+#
+# 2. commands/permissions.rs — AVCaptureDevice
+#    requestAccessForMediaType: for TCC microphone registration from HQ
+#    Sync's main process. Passing nil for the completion handler crashes
+#    per Apple's contract, so block2 constructs a valid one.
 block2 = "0.6"
 # Direct dep on mac-notification-sys for action-button notifications.
-# tauri-plugin-notification (2.3.3) on macOS uses notify-rust which
-# wraps NSUserNotification but DOES NOT expose action buttons —
-# `register_action_types` is mobile-only and there's no on_action
-# callback for desktop. mac-notification-sys (a transitive dep already)
-# does support MainButton::DropdownActions + wait_for_click for the
-# canonical macOS Sonoma/Sequoia hover-to-reveal action UX.
-# Pattern proven in commands/meetings.rs notification flow.
+# tauri-plugin-notification (2.3.3) on macOS uses notify-rust which wraps
+# NSUserNotification but DOES NOT expose action buttons —
+# `register_action_types` is mobile-only and there's no on_action callback
+# for desktop. Going one layer down to mac-notification-sys (already a
+# transitive dep via notify-rust) gives us MainButton::SingleAction for a
+# "Record" button on the meeting-detect notification, MainButton::DropdownActions
+# for the share-notify dropdown UX, AND a blocking wait_for_click that
+# returns the response (Click / ActionButton(name) / Reply / Dismiss). We
+# spawn one thread per notification to await the response so the async
+# Tauri command itself never blocks. Pattern shared between
+# commands/meetings.rs and commands/share_notify.rs.
 mac-notification-sys = "0.6"
 
 [features]

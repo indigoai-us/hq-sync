@@ -91,8 +91,12 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
       'const liveMeeting = $derived(pickLiveMeeting([...cachedActiveRecordings, ...$activeMeetings]))',
     );
     expect(meetingsPage).toContain('activeRecordingsFromScheduledBots(events, botsByEventId)');
-    expect(meetingsPage).toContain(
-      '<LiveNowCard meeting={liveMeeting} onstart={startRecording} onstop={stopRecording} />',
+    // The Live now card now also receives the active memberships and an
+    // oncompany callback so the user can attribute the recording (parity with
+    // the classic popover). Normalized to tolerate the multi-line element.
+    const page = normalize(meetingsPage);
+    expect(page).toContain(
+      '<LiveNowCard meeting={liveMeeting} memberships={$recordingMemberships} onstart={startRecording} onstop={stopRecording} oncompany={setRecordingCompany} />',
     );
 
     const card = normalize(liveNowCard);
@@ -102,6 +106,14 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     expect(card).toContain('Stop recording');
     expect(activeMeetings).toContain("invoke<string>('start_recording'");
     expect(activeMeetings).toContain("await invoke('stop_recording'");
+    // Per-meeting recording-company picker: a "Record as" <select> that
+    // delegates the choice through the oncompany callback (card stays
+    // invoke-free — attribution helpers live in the store layer).
+    expect(card).toContain('Record as');
+    expect(card).toContain('onchange={(e) => oncompany(');
+    expect(activeMeetings).toContain('setRecordingCompany');
+    expect(activeMeetings).toContain('loadRecordingCompanyContext');
+    expect(meetingsStore).toContain('loadRecordingCompanyContext');
   });
 
   it('renders every upcoming meeting grouped by day with Up next, cached signal totals, and recent signals', () => {

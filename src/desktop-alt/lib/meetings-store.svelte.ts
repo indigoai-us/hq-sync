@@ -1,5 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
-import { ensureActiveMeetingListeners } from '../../lib/activeMeetings';
+import {
+  ensureActiveMeetingListeners,
+  loadRecordingCompanyContext,
+  seedActiveMeetingsFromBackend,
+} from '../../lib/activeMeetings';
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
 import { eventMeetingUrl, friendlyError } from './meetings-model';
 import type {
@@ -341,6 +345,16 @@ export function startMeetingsStore(): void {
 
   hydrateFromCache();
   void ensureActiveMeetingListeners();
+  // The desktop-alt window is created on-demand (after launch), so its JS
+  // context misses `meeting:detected` events that fired before it existed.
+  // Seed any already-active detections from the backend registry so a meeting
+  // detected while the window was closed shows up (with a Record control) the
+  // moment we open. The live listener above covers everything from here on.
+  void seedActiveMeetingsFromBackend();
+  // Resolve the recording-company context (active memberships + validated
+  // default) so a detected meeting is attributed correctly out of the gate;
+  // back-fills any rows that detected before this resolved. Fails soft.
+  void loadRecordingCompanyContext();
   void refresh();
 
   pollTimer = setInterval(() => {
@@ -349,6 +363,7 @@ export function startMeetingsStore(): void {
 
   const onFocus = () => {
     hydrateFromCache();
+    void loadRecordingCompanyContext();
     void refresh();
   };
   const onStorage = () => hydrateFromCache();

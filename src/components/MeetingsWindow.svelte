@@ -8,6 +8,7 @@
    */
 
   import { invoke } from '@tauri-apps/api/core';
+  import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import {
@@ -126,6 +127,85 @@
   let loading = $state(false);
   let listError = $state<string | null>(null);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
+
+  // ── Live meeting-detect bridge ────────────────────────────────────────
+  // Mirror of App.svelte's `ActiveMeeting` + the supporting picker data.
+  // Filled by the `popover:meetings-snapshot` Tauri event (App.svelte is
+  // the canonical owner of this state). Empty until the snapshot arrives.
+  //
+  // The corresponding row UI used to live above the popover's sync list;
+  // it moved into this window on 2026-05-30 so the popover stays focused
+  // on sync state. The MeetingIcon in the popover header tints
+  // yellow/red to signal there's something here to act on.
+  interface ActiveMeeting {
+    windowId: string;
+    platform: string;
+    meetingUrl: string;
+    detectedAt: string;
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    recordingId?: string;
+    error?: string;
+    companyUid: string | null;
+    companyUserSet?: boolean;
+  }
+  interface ActiveMembership {
+    companyUid: string;
+    companyName: string | null;
+    role: string | null;
+    status: string;
+  }
+  let activeMeetings = $state<ActiveMeeting[]>([]);
+  let recordingMemberships = $state<ActiveMembership[]>([]);
+  // `defaultRecordingCompanyUid` is informational here — the row's
+  // dropdown defaults to whatever App.svelte's resolver picked, so we
+  // don't strictly need to know the default ourselves. Kept on the
+  // snapshot interface for symmetry / future use.
+
+  function activePlatformLabel(platform: string): string {
+    const p = (platform ?? '').toLowerCase();
+    if (p === 'zoom') return 'Zoom';
+    if (p === 'meet' || p === 'google-meet' || p === 'googlemeet') return 'Google Meet';
+    if (p === 'teams') return 'Teams';
+    if (p === 'slack') return 'Slack';
+    if (p === 'webex') return 'Webex';
+    return platform || 'Meeting';
+  }
+
+  function dispatchActiveAction(
+    action: 'start' | 'stop' | 'change-company',
+    windowId: string,
+    companyUid?: string | null,
+  ) {
+    // Optimistic local mutation so the row reflects the intent without
+    // waiting for App.svelte's snapshot re-broadcast (which can lag by
+    // a tick over the cross-window event channel). The next snapshot
+    // emit from App.svelte still wins — the canonical state machine
+    // lives there, including 'starting' → 'recording' transitions
+    // driven by SDK confirmation events.
+    if (action === 'change-company') {
+      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
+      if (idx >= 0) {
+        activeMeetings[idx] = {
+          ...activeMeetings[idx],
+          companyUid: companyUid ?? null,
+          companyUserSet: true,
+        };
+      }
+    } else if (action === 'start') {
+      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
+      if (idx >= 0) {
+        activeMeetings[idx] = { ...activeMeetings[idx], state: 'starting' };
+      }
+    } else if (action === 'stop') {
+      const idx = activeMeetings.findIndex((m) => m.windowId === windowId);
+      if (idx >= 0) {
+        activeMeetings[idx] = { ...activeMeetings[idx], state: 'stopping' };
+      }
+    }
+    emit('meetings-window:action', { action, windowId, companyUid }).catch((err) => {
+      console.warn('meetings-window:action emit failed', err);
+    });
+  }
 
   /**
    * Distill an upstream error (Tauri command Result::Err string, fetch
@@ -248,6 +328,44 @@
     };
   });
 
+  // Subscribe to the popover's active-meetings snapshot and request an
+  // immediate seed on mount. Mounts before the refresh effect so the
+  // strip can paint as soon as the snapshot arrives (typically <1 tick).
+  $effect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        unlisten = await listen<{
+          activeMeetings?: ActiveMeeting[];
+          memberships?: ActiveMembership[];
+          defaultRecordingCompanyUid?: string | null;
+        }>('popover:meetings-snapshot', (event) => {
+          const next = event.payload ?? {};
+          activeMeetings = Array.isArray(next.activeMeetings)
+            ? next.activeMeetings
+            : [];
+          recordingMemberships = Array.isArray(next.memberships)
+            ? next.memberships
+            : [];
+        });
+        if (cancelled) {
+          unlisten?.();
+          return;
+        }
+        // Request initial snapshot — App.svelte responds by re-emitting
+        // the current state immediately.
+        emit('meetings-window:request-snapshot').catch(() => {});
+      } catch (err) {
+        console.warn('meetings-snapshot subscribe failed', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  });
+
   $effect(() => {
     void refresh();
 
@@ -304,13 +422,26 @@
     listError = null;
     try {
       // Fetch events + bots + memberships + connected accounts in parallel.
-      // Accounts is best-effort — falls back to [] so a person with zero
-      // connected Google accounts still gets the (empty) events render
-      // instead of a hard error.
+      //
+      // Catch the two primary list calls individually instead of letting
+      // Promise.all reject on first failure: an outage that 500s
+      // /v1/calendar/events should not blank in-memory bot state, and
+      // vice versa, so the 30s poll can recover one independently. Memberships
+      // and accounts already swallow to [] for the same reason — a person
+      // with zero connected Google accounts still wants the events render
+      // (the empty-state below handles that branch).
+      let upcomingErr: unknown = null;
+      let botsErr: unknown = null;
       const [evts, bots, memberships, accts] = await Promise.all([
-        invoke<MeetingEvent[]>('meetings_list_upcoming'),
+        invoke<MeetingEvent[]>('meetings_list_upcoming').catch((err: unknown) => {
+          upcomingErr = err;
+          return null;
+        }),
         invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
           calendarEventIds: null,
+        }).catch((err: unknown) => {
+          botsErr = err;
+          return null;
         }),
         // Memberships are tiny + rarely change — fetched on every open is
         // cheap and avoids stale company-name display after the user joins
@@ -320,8 +451,12 @@
           () => [] as GoogleAccount[],
         ),
       ]);
-      events = evts ?? [];
-      botsByEventId = buildBotMap(bots ?? []);
+      // Only overwrite on success so a transient 500 keeps the last good
+      // snapshot in memory until recovery. The error banner still wins in
+      // the render branch order, but the cached state is correct for the
+      // next successful refresh.
+      if (evts !== null) events = evts;
+      if (bots !== null) botsByEventId = buildBotMap(bots);
       companyNamesByUid = buildCompanyNameMap(memberships ?? []);
       accounts = accts ?? [];
       accountEmailById = new Map(
@@ -335,6 +470,16 @@
       // accountId as the badge fallback.
       await loadCalendarsForAccounts(accts ?? []);
 
+      // Surface the upstream error through friendlyError() so the user
+      // sees "Server hiccup — try again in a moment." instead of a raw
+      // `events HTTP 500: {"message":"Internal Server Error"}` blob.
+      // listError gets cleared at the top of the next refresh(), so the
+      // 30s poll drops this banner the moment hq-pro recovers.
+      const firstErr = upcomingErr ?? botsErr;
+      if (firstErr !== null) {
+        listError = friendlyError(firstErr, 'Could not load meetings.');
+      }
+
       // Persist after EVERYTHING (events + calendars) so the next open
       // hydrates a complete view — calendar maps need to be in the cache
       // too or the filter dropdown would be empty on next paint until the
@@ -342,7 +487,11 @@
       // inside saveMeetingsCache and never breaks this code path.
       persistSnapshot();
     } catch (err) {
-      listError = String(err);
+      // Defensive backstop. Network errors are caught per-call above; this
+      // only fires on an unexpected throw in the post-Promise.all body
+      // (e.g. a serialization bug). Route through friendlyError() too so
+      // a programming bug doesn't dump a stack trace into the UI either.
+      listError = friendlyError(err, 'Could not load meetings.');
     } finally {
       loading = false;
     }
@@ -1151,6 +1300,73 @@
   </div>
 
   <section class="meetings-body">
+    <!-- Active meeting detections — relocated from Popover.svelte on
+         2026-05-30. Rendered inside the scroll container so it scrolls
+         with the upcoming-meetings list rather than pinning above (the
+         user can re-summon focus via the calendar icon's tint anyway). -->
+    {#if activeMeetings.length > 0}
+      <div class="active-meetings" aria-label="Active meetings">
+        <p class="active-meetings-label">In progress</p>
+        {#each activeMeetings as meeting (meeting.windowId)}
+          {@const pickerDisabled =
+            meeting.state === 'starting' || meeting.state === 'stopping'}
+          <div class="active-row" data-state={meeting.state}>
+            <div class="active-info">
+              <span class="active-platform">{activePlatformLabel(meeting.platform)} meeting</span>
+              {#if meeting.state === 'recording'}
+                <span class="active-status active-status-recording">
+                  <span class="active-dot"></span>
+                  Recording
+                </span>
+              {:else if meeting.state === 'starting'}
+                <span class="active-status">Starting…</span>
+              {:else if meeting.state === 'stopping'}
+                <span class="active-status">Stopping…</span>
+              {:else if meeting.state === 'error' && meeting.error}
+                <span class="active-status active-status-error" title={meeting.error}>Error</span>
+              {:else}
+                <span class="active-status">Detected</span>
+              {/if}
+            </div>
+            <select
+              class="active-company"
+              aria-label="Attribute recording to"
+              value={meeting.companyUid ?? ''}
+              disabled={pickerDisabled}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                dispatchActiveAction(
+                  'change-company',
+                  meeting.windowId,
+                  v === '' ? null : v,
+                );
+              }}
+            >
+              <option value="">Personal</option>
+              {#each recordingMemberships as c (c.companyUid)}
+                <option value={c.companyUid}>{c.companyName ?? c.companyUid}</option>
+              {/each}
+            </select>
+            {#if meeting.state === 'recording'}
+              <button
+                type="button"
+                class="active-action active-action-stop"
+                onclick={() => dispatchActiveAction('stop', meeting.windowId)}
+              >Stop</button>
+            {:else if meeting.state === 'starting' || meeting.state === 'stopping'}
+              <button type="button" class="active-action" disabled>…</button>
+            {:else}
+              <button
+                type="button"
+                class="active-action active-action-record"
+                onclick={() => dispatchActiveAction('start', meeting.windowId)}
+              >Record</button>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
     {#if loading && events.length === 0}
       <p class="meetings-placeholder">Loading…</p>
     {:else if listError}
@@ -1488,6 +1704,156 @@
     flex: 1 1 auto;
     overflow-y: auto;
     padding: 8px 18px 16px;
+  }
+
+  /* ── Active meeting detections ─────────────────────────────────────
+     Mirrors the row UI that used to live above Popover's sync list;
+     scoped with `.active-*` class names so we don't collide with the
+     other meeting-row selectors below (which target upcoming calendar
+     events, not live SDK detections).
+
+     Sits at the top of `.meetings-body` so it scrolls with the rest of
+     the list — the user can still bring focus back to it via the
+     popover's yellow/red calendar icon. */
+  .active-meetings {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 0 12px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .active-meetings-label {
+    margin: 0 0 2px;
+    font-size: 10px;
+    font-weight: 600;
+    color: #a1a1aa;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .active-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .active-row[data-state='recording'] {
+    background: rgba(239, 68, 68, 0.07);
+    border-color: rgba(239, 68, 68, 0.22);
+  }
+  .active-row[data-state='error'] {
+    background: rgba(239, 68, 68, 0.05);
+    border-color: rgba(239, 68, 68, 0.18);
+  }
+  .active-info {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+  }
+  .active-platform {
+    font-size: 13px;
+    font-weight: 500;
+    color: #fafafa;
+  }
+  .active-status {
+    font-size: 11px;
+    color: rgba(250, 250, 250, 0.62);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .active-status-recording {
+    color: #f87171;
+    font-weight: 500;
+  }
+  .active-status-error {
+    color: #fca5a5;
+    cursor: help;
+  }
+  /* Pulsing red dot during recording — visual echo of the popover icon
+     tint. Animation lifted from the previous Popover.svelte version. */
+  .active-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ef4444;
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+    animation: active-recording-pulse 1.6s ease-out infinite;
+  }
+  @keyframes active-recording-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+    70%  { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+  }
+  .active-company {
+    flex: 0 0 auto;
+    max-width: 160px;
+    font-size: 12px;
+    font-family: inherit;
+    padding: 5px 22px 5px 9px;
+    background: rgba(255, 255, 255, 0.06);
+    color: #fafafa;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    cursor: pointer;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+  }
+  .active-company:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+  .active-company:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.24);
+  }
+  .active-company:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .active-action {
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 11px;
+    background: rgba(255, 255, 255, 0.08);
+    color: #fafafa;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 100ms ease, border-color 100ms ease;
+  }
+  .active-action:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+  .active-action:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .active-action-record {
+    background: rgba(239, 68, 68, 0.16);
+    border-color: rgba(239, 68, 68, 0.34);
+    color: #fecaca;
+  }
+  .active-action-record:hover:not(:disabled) {
+    background: rgba(239, 68, 68, 0.24);
+    border-color: rgba(239, 68, 68, 0.48);
+  }
+  .active-action-stop {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.18);
   }
   .meetings-placeholder,
   .meetings-error {

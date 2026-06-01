@@ -94,6 +94,24 @@ pub async fn notification_request_permission(app: AppHandle) -> Result<String, S
     }
 }
 
+/// Synchronous, side-effect-free read of the current notification authorization
+/// status. Unlike `notification_request_permission`, this never shows the system
+/// dialog — it just reports the tri-state contract (`"granted" | "denied" |
+/// "prompt" | "unknown"`). Used by the meeting-detection path to decide whether
+/// the clickable `UNUserNotificationCenter` delivery will actually surface
+/// (UN silently drops requests when status != granted) before choosing it over
+/// the always-visible `osascript` fallback.
+pub(crate) fn current_authorization_status() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        macos::read_authorization_status()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "unknown".to_string()
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use super::auth_status_to_str;

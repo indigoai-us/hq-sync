@@ -1,14 +1,17 @@
 <script lang="ts">
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { ActiveMeeting } from '../../lib/activeMeetings';
+  import type { RecordingMembership } from '../../lib/recordingCompany';
 
   interface Props {
     meeting: ActiveMeeting | null;
+    memberships?: RecordingMembership[];
     onstart: (windowId: string) => void;
     onstop: (windowId: string) => void;
+    oncompany?: (windowId: string, companyUid: string | null) => void;
   }
 
-  let { meeting, onstart, onstop }: Props = $props();
+  let { meeting, memberships = [], onstart, onstop, oncompany }: Props = $props();
 
   const isRecording = $derived(meeting?.state === 'recording' || meeting?.state === 'stopping');
   const isBusy = $derived(meeting?.state === 'starting' || meeting?.state === 'stopping');
@@ -22,6 +25,10 @@
       : null,
   );
   const detectedLabel = $derived(meeting ? relativeFromNow(meeting.detectedAt) : '');
+  // The per-meeting recording-company picker only makes sense for live
+  // detections the user can attribute. Scheduled-bot rows carry baked
+  // attribution from the calendar event, so they get no picker.
+  const showCompanyPicker = $derived(!!meeting && !meeting.windowId.startsWith('scheduled-bot:'));
 
   function platformLabel(platform?: string): string {
     if (!platform) return '';
@@ -88,6 +95,24 @@
         <p class="live-error">{meeting.error}</p>
       {/if}
 
+      {#if showCompanyPicker && oncompany}
+        <div class="live-company">
+          <label class="lc-label" for="live-company-select">Record as</label>
+          <select
+            id="live-company-select"
+            class="lc-select"
+            value={meeting.companyUid ?? ''}
+            onchange={(e) => oncompany(meeting.windowId, (e.currentTarget as HTMLSelectElement).value || null)}
+            disabled={isBusy}
+          >
+            <option value="">Personal</option>
+            {#each memberships as m (m.companyUid)}
+              <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
+
       <div class="live-actions">
         {#if isRecording}
           <button type="button" class="btn" onclick={() => onstop(meeting.windowId)} disabled={isBusy}>
@@ -134,6 +159,12 @@
   .live-name { overflow: hidden; color: var(--fg); font-size: 15px; font-weight: 650; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
   .live-sub { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
   .live-error { margin: 12px 0 0; color: var(--red); font-size: 12px; line-height: 18px; }
+  .live-company { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .lc-label { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-weight: 650; line-height: 16px; }
+  .lc-select { min-width: 0; flex: 1 1 auto; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; font-size: 12px; line-height: 16px; cursor: default; }
+  .lc-select:hover:not(:disabled) { border-color: var(--border-strong); }
+  .lc-select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .lc-select:disabled { opacity: 0.56; }
   .live-actions { display: flex; gap: 8px; margin-top: 14px; }
   .empty-copy { margin: 0; color: var(--muted); font-size: 12px; line-height: 18px; }
   .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: default; transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1), opacity 140ms cubic-bezier(.2,.7,.2,1); }

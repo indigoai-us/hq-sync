@@ -2,12 +2,16 @@
   import { invoke } from '@tauri-apps/api/core';
   import { getVersion } from '@tauri-apps/api/app';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
+  import { permissionState, loadMeetingPermissions } from '../lib/permissionState.svelte';
 
   interface Props {
     onback: () => void;
   }
 
   let { onback }: Props = $props();
+
+  const ALL_PLATFORMS = ['zoom', 'meet', 'teams', 'slack', 'webex'] as const;
+  type Platform = (typeof ALL_PLATFORMS)[number];
 
   let hqPath = $state<string | null>(null);
   let syncOnLaunch = $state(false);
@@ -27,6 +31,28 @@
   // convention; the backend only honors it for @getindigo.ai (Phase 1
   // event_push_eligible) identities. See src-tauri/src/commands/daemon.rs.
   let instantSync = $state(true);
+  // Meeting detect-notify state (US-007) — only ever applied on @getindigo.ai
+  // accounts, gate enforced in Rust. The Settings UI hides the Meetings
+  // section entirely when the user isn't eligible.
+  let meetingDetectEnabled = $state(true);
+  let meetingDetectPlatforms = $state<string[]>([...ALL_PLATFORMS]);
+  // Default company UID for SDK-local recordings (US-010). `null` means
+  // Personal (no company attribution). Mirrors the URL-invite dropdown in
+  // MeetingsWindow where `null` is the Personal option. The popover's
+  // active-meetings row reads this on detection and presets its own
+  // dropdown; per-recording overrides don't write back here.
+  let defaultRecordingCompanyUid = $state<string | null>(null);
+  // Memberships for the dropdown, loaded via `meetings_list_memberships`
+  // (same Tauri command MeetingsWindow uses). Empty for non-Indigo users —
+  // the row still renders so they can confirm "Personal" is the implicit
+  // destination, but the only option is Personal.
+  type CompanyMembership = {
+    companyUid: string;
+    companyName: string | null;
+    role: string | null;
+    status: string;
+  };
+  let memberships = $state<CompanyMembership[]>([]);
   // Share notifications — dogfood gate: section only rendered for @getindigo.ai
   // users. Same gate as meetings_feature_enabled (both call is_indigo_user()
   // on the Rust side). Re-read on each poll cycle in share_notify.rs so the
@@ -105,7 +131,7 @@
 
   async function loadSettings() {
     try {
-      const [settings, autostart, indigoUser, channels] = await Promise.all([
+      const [settings, autostart, indigoUser, channels, memberships_] = await Promise.all([
         invoke<{
           hqPath: string | null;
           syncOnLaunch: boolean | null;
@@ -118,6 +144,11 @@
           dmNotifications: boolean | null;
           stagingChannel: boolean | null;
           releaseChannel: string | null;
+          meetingDetectNotify?: {
+            enabled: boolean | null;
+            platforms: string[] | null;
+          } | null;
+          defaultRecordingCompanyUid?: string | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
         // Shared @getindigo.ai gate for share-notify section AND
@@ -128,6 +159,11 @@
         // Returns ["stable"] for non-indigo users, ["stable","beta","alpha"]
         // for @getindigo.ai. The picker only renders when length > 1.
         invoke<string[]>('available_channels'),
+        // Memberships drive the default-recording-company dropdown. Same
+        // Tauri command MeetingsWindow uses for its URL-invite picker.
+        // Errors degrade to an empty list (Personal-only); we never want
+        // a vault hiccup to block the rest of Settings from rendering.
+        invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => []),
       ]);
 
       hqPath = settings.hqPath;
@@ -148,6 +184,20 @@
       // picker. The displayed channel is derived in `displayedChannel`.
       const raw = settings.releaseChannel as Channel | null;
       storedChannel = raw && availableChannels.includes(raw) ? raw : null;
+      meetingDetectEnabled = settings.meetingDetectNotify?.enabled ?? true;
+      meetingDetectPlatforms = settings.meetingDetectNotify?.platforms ?? [...ALL_PLATFORMS];
+      // Keep only active memberships for the dropdown — pending / revoked
+      // memberships are filtered server-side too, but defense-in-depth
+      // here lets the UI degrade gracefully if a stale row sneaks through.
+      memberships = (memberships_ ?? []).filter((m) => m.status === 'active');
+      // Validate the stored default against the live membership list. If
+      // the user's lost access (or never had a default), drop to null
+      // (Personal) — same fallback shape as MeetingsWindow's company
+      // picker after a stale invite is revoked.
+      const storedUid = settings.defaultRecordingCompanyUid ?? null;
+      defaultRecordingCompanyUid = storedUid && memberships.some((m) => m.companyUid === storedUid)
+        ? storedUid
+        : null;
     } catch (err) {
       console.error('Failed to load settings:', err);
     } finally {
@@ -184,6 +234,15 @@
           // and locks in the resolved default. Only `handleChannelChange`
           // mutates `storedChannel`.
           releaseChannel: storedChannel,
+          meetingDetectNotify: {
+            enabled: meetingDetectEnabled,
+            platforms: meetingDetectPlatforms,
+          },
+          // Round-trip the raw value — `null` is Personal, a `co_…` uid
+          // is a specific company. Rust skip_serializing_if=None drops
+          // `null` from disk so older builds reading the file don't
+          // see an unknown key.
+          defaultRecordingCompanyUid,
         },
       });
       showSaved();
@@ -327,6 +386,36 @@
     await saveAll();
   }
 
+  async function handleToggleMeetingDetect() {
+    meetingDetectEnabled = !meetingDetectEnabled;
+    await saveAll();
+  }
+
+  async function handleTogglePlatform(platform: Platform) {
+    if (meetingDetectPlatforms.includes(platform)) {
+      meetingDetectPlatforms = meetingDetectPlatforms.filter((p) => p !== platform);
+    } else {
+      meetingDetectPlatforms = [...meetingDetectPlatforms, platform];
+    }
+    await saveAll();
+  }
+
+  async function handleOpenMeetingPermissionsWizard() {
+    try {
+      await invoke('open_meeting_permissions_window');
+    } catch (err) {
+      console.error('open_meeting_permissions_window failed:', err);
+    }
+  }
+
+  async function handleChangeDefaultRecordingCompany(next: string | null) {
+    // The `<select>` binds via `bind:value`; this is just the persistence
+    // hook so the change lands in menubar.json on selection (no save
+    // button — same pattern as every other toggle in this view).
+    defaultRecordingCompanyUid = next;
+    await saveAll();
+  }
+
   async function handleCheckForUpdates() {
     if (updateChecking) return;
     updateChecking = true;
@@ -352,14 +441,24 @@
   $effect(() => {
     loadSettings();
     loadNotifPermission();
+    // Read the meeting-permissions snapshot whether or not the user is
+    // currently eligible — the response is non-prompting and cheap. The
+    // row below only renders when `permissionState.meetingDetectEligible`
+    // is true, so non-Indigo users still see nothing.
+    loadMeetingPermissions();
     getVersion()
       .then((v) => {
         appVersion = v;
       })
       .catch((err) => console.error('Failed to read app version:', err));
-    // Re-read permission whenever the window regains focus — covers the
-    // common flow of granting/blocking in System Settings then returning.
-    const onFocus = () => loadNotifPermission();
+    // Re-read permission state whenever the window regains focus —
+    // covers the common flow of granting/blocking in System Settings
+    // then returning. Both notification permission AND meeting
+    // permissions refresh on focus so the pills track macOS reality.
+    const onFocus = () => {
+      loadNotifPermission();
+      loadMeetingPermissions();
+    };
     window.addEventListener('focus', onFocus);
     return () => {
       window.removeEventListener('focus', onFocus);
@@ -597,6 +696,167 @@
           {/if}
         </div>
       </section>
+
+      <!-- ===== Group: Notifications ===================================
+           Share notifications — dogfood gate: only rendered for
+           @getindigo.ai users. Persists shareNotifications in
+           menubar.json; the poll in share_notify.rs re-reads on each
+           cycle so the toggle takes effect on the next sync:complete
+           without restart. -->
+      {#if isIndigoUser}
+        <section class="settings-group-wrap">
+          <h2 class="settings-group-title">Notifications</h2>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
+                <span class="setting-desc">Show a notification when someone shares files with you</span>
+              </div>
+              <button
+                id="toggle-share-notifications"
+                class="toggle"
+                class:active={shareNotifications}
+                onclick={handleToggleShareNotifications}
+                role="switch"
+                aria-checked={shareNotifications}
+                aria-label="Share notifications"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+          </div>
+        </section>
+      {/if}
+
+      <!-- ===== Group: Meetings ========================================
+           Detect upcoming meetings + per-recording attribution +
+           permissions wizard. Gated on
+           `permissionState.meetingDetectEligible` so users outside the
+           allowlist don't see toggles for an SDK that won't spawn. The
+           Rust side (`commands::recall_sdk::meeting_detect_eligible`) is
+           the authoritative gate; this is UX-only. macOS permissions are
+           handled by native first-use prompts — no parallel UI here. -->
+      {#if permissionState.meetingDetectEligible}
+        <section class="settings-group-wrap">
+          <h2 class="settings-group-title">Meetings</h2>
+          <div class="settings-group">
+            <div class="setting-row">
+              <div class="setting-info">
+                <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
+                <span class="setting-desc">Notify when a new meeting is detected</span>
+              </div>
+              <button
+                id="toggle-meeting-detect"
+                class="toggle"
+                class:active={meetingDetectEnabled}
+                onclick={handleToggleMeetingDetect}
+                role="switch"
+                aria-checked={meetingDetectEnabled}
+                aria-label="Detect upcoming meetings"
+              >
+                <span class="toggle-knob"></span>
+              </button>
+            </div>
+
+            {#if meetingDetectEnabled}
+              <div class="platform-rows">
+                {#each ALL_PLATFORMS as platform}
+                  {@const checked = meetingDetectPlatforms.includes(platform)}
+                  <div class="platform-row">
+                    <label class="platform-label" for="platform-{platform}">{platform}</label>
+                    <button
+                      id="platform-{platform}"
+                      class="platform-check"
+                      class:checked
+                      onclick={() => handleTogglePlatform(platform)}
+                      role="checkbox"
+                      aria-checked={checked}
+                      aria-label="Enable {platform} meeting detection"
+                    >
+                      {#if checked}
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                      {/if}
+                    </button>
+                  </div>
+                {/each}
+                <div class="ledger-path-row">
+                  <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
+                </div>
+              </div>
+            {/if}
+
+            <!-- Default recording company — preselects the company-attribution
+                 dropdown in the popover's active-meetings row. The user can
+                 still override per-recording via that dropdown. Empty / no
+                 selection = Personal vault (no company tag on the Recall
+                 metadata). Memberships come from `meetings_list_memberships`
+                 — same source as MeetingsWindow's URL-invite picker, so the
+                 two surfaces stay in lockstep when a membership is added or
+                 revoked.
+
+                 Layout deviates from the other `.setting-row` entries: the
+                 label sits above a full-width select instead of sharing a row
+                 with it. The default-company description is awkward to
+                 compress and the constrained `max-width: 140px` pill on the
+                 right read as cramped + ugly when the company name was long.
+                 Stacking keeps the select wide enough to show full names and
+                 gives the row visual room to breathe. -->
+            <div class="setting-row setting-row-stacked">
+              <div class="setting-info">
+                <label class="setting-label" for="default-recording-company">Default recording</label>
+                <span class="setting-desc">
+                  Attribution for new recordings. Changeable per-recording.
+                </span>
+              </div>
+              <select
+                id="default-recording-company"
+                class="default-recording-company"
+                aria-label="Default recording company"
+                value={defaultRecordingCompanyUid}
+                onchange={(e) => {
+                  const v = (e.currentTarget as HTMLSelectElement).value;
+                  void handleChangeDefaultRecordingCompany(v === '' ? null : v);
+                }}
+              >
+                <option value="">Personal</option>
+                {#each memberships as m (m.companyUid)}
+                  <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
+                {/each}
+              </select>
+            </div>
+
+            <!-- Meeting permissions monitor — opens the wizard window where
+                 the user can grant (or revoke) each macOS TCC permission
+                 the SDK needs. The button label stays "Manage" regardless
+                 of current state, since the wizard handles both directions:
+                 - all granted  → user may want to audit / revoke
+                 - some missing → user grants the missing ones
+
+                 The descriptive text below the label still reflects the
+                 current state so the Settings overview reads correctly at a
+                 glance without opening the wizard. -->
+            <div class="setting-row">
+              <div class="setting-info">
+                <span class="setting-label">Meeting permissions</span>
+                <span class="setting-desc">
+                  {#if !permissionState.meetingPermissions}
+                    Checking macOS privacy grants…
+                  {:else if permissionState.meetingPermissions.allRequiredGranted}
+                    Accessibility, screen recording &amp; microphone all granted
+                  {:else}
+                    One or more macOS permissions need attention
+                  {/if}
+                </span>
+              </div>
+              <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
+                Manage
+              </button>
+            </div>
+          </div>
+        </section>
+      {/if}
 
       <!-- ===== Group: Updates =========================================
            Everything that controls what the Update pill targets and which
@@ -865,6 +1125,15 @@
     padding: var(--space-3);
   }
 
+  /* Vertical variant — label/desc on top, control on a second row spanning
+     full width. Used by the Default recording row where a long company name
+     would otherwise look cramped inside the 140px right-column pill. */
+  .setting-row-stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
+  }
+
   .setting-info {
     display: flex;
     flex-direction: column;
@@ -919,6 +1188,38 @@
   .change-button:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+
+  /* Native <select> styled to read as the row's primary control. Sits on
+     its own line inside `.setting-row-stacked` so the full width is
+     available — long company names no longer clip behind the chevron.
+     Caret colour follows the muted text so the control reads as inactive
+     until hovered/focused. */
+  .default-recording-company {
+    font-size: 0.8125rem;
+    font-family: inherit;
+    padding: 0.4375rem 1.75rem 0.4375rem 0.625rem;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    color: var(--popover-text, #e0e0e0);
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-radius: 9px;
+    cursor: pointer;
+    width: 100%;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+  }
+  .default-recording-company:hover {
+    background-color: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
+  }
+  .default-recording-company:focus {
+    outline: none;
+    border-color: var(--popover-border, rgba(255, 255, 255, 0.18));
   }
 
   /* Permission status pill — informational, green-tinted "Enabled" state.
@@ -1026,5 +1327,52 @@
        the pill. Flip the knob to the inverted contrast color when active so
        it stays visible against the filled pill. */
     background: var(--popover-primary-text, #111113);
+  }
+
+  /* Platform sub-rows (shown when meeting detection is enabled) */
+  .platform-rows {
+    display: flex;
+    flex-direction: column;
+    padding: 0 1rem 0.25rem 1.75rem;
+    gap: 0.125rem;
+  }
+
+  .platform-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.2rem 0;
+  }
+
+  .platform-label {
+    font-size: 0.75rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    text-transform: capitalize;
+    cursor: default;
+  }
+
+  .platform-check {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.12));
+    border-radius: 5px;
+    cursor: pointer;
+    color: var(--popover-primary-text, #111113);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .platform-check.checked {
+    background: var(--popover-primary, #ffffff);
+    border-color: var(--popover-primary, #ffffff);
+  }
+
+  .ledger-path-row {
+    padding-top: 0.375rem;
   }
 </style>

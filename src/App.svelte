@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as Sentry from '@sentry/svelte';
   import { invoke } from '@tauri-apps/api/core';
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
@@ -9,7 +9,12 @@
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
+  import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
+  import {
+    handleMeetingDetected,
+    type MeetingDetectedPayload,
+  } from './lib/meetingDetection';
   import './styles/popover.css';
 
   interface Config {
@@ -115,6 +120,209 @@
   // `meetings-window` (mirrors the `new-files-detail` window pattern) — the
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
+
+  // Memberships drive the company picker in the active-meetings row.
+  // Loaded once on mount (same source as MeetingsWindow's URL-invite
+  // dropdown). Errors degrade to an empty list — the row still renders
+  // with Personal as the only option, never blocking detection or
+  // recording on a vault hiccup.
+  interface MembershipRow {
+    companyUid: string;
+    companyName: string | null;
+    role: string | null;
+    status: string;
+  }
+  let memberships = $state<MembershipRow[]>([]);
+  // Default company UID for new recordings — read from menubar.json on
+  // mount. Per-recording overrides happen in the popover row dropdown
+  // and never write back here; that mutation belongs to Settings.
+  let defaultRecordingCompanyUid = $state<string | null>(null);
+
+  /**
+   * Active meeting detections — populated as the Recall Desktop SDK fires
+   * `meeting:detected` events. Lives only in-memory: we don't persist
+   * across app restarts because the SDK re-emits detections after restart
+   * if a meeting window is still active.
+   *
+   * Keyed implicitly by `windowId` (the SDK's stable handle for the
+   * meeting window). Entries are added on `meeting:detected`, mutated
+   * on `recording:started` / `recording:ended` / `recording:error`,
+   * and removed on `meeting:closed`.
+   *
+   * Surfaced to the user via the Popover's "Active meetings" section,
+   * where each entry gets a Record / Stop button wired back into the
+   * `start_recording` / `stop_recording` Tauri commands.
+   */
+  interface ActiveMeeting {
+    /** SDK window id (stable for the duration of the meeting). */
+    windowId: string;
+    /** Lowercase platform discriminator (`zoom`, `meet`, ...). */
+    platform: string;
+    /** Meeting URL — real or synthetic `recall-window:<id>`. */
+    meetingUrl: string;
+    /** ISO 8601 timestamp when the detection fired. */
+    detectedAt: string;
+    /** Lifecycle state — drives the Record/Stop button label. */
+    state: 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
+    /** Recall.ai recording id (returned by start_recording). */
+    recordingId?: string;
+    /** Last error message from a failed start/stop, if any. */
+    error?: string;
+    /**
+     * Company attribution for this recording. `null` = Personal vault.
+     * Seeded from `defaultRecordingCompanyUid` at detection, but the
+     * default may not have loaded yet when a detection fires — so the
+     * authoritative resolution happens at `handleStartRecording` time
+     * (and we back-fill rows when the default finishes loading).
+     */
+    companyUid: string | null;
+    /**
+     * True once the user has explicitly picked a company for this row via
+     * the dropdown. Distinguishes an intentional "Personal" (companyUid =
+     * null, userSet = true) from "default hasn't loaded yet" (companyUid =
+     * null, userSet = false). Only the latter gets back-filled / resolved
+     * to the default.
+     */
+    companyUserSet?: boolean;
+  }
+  let activeMeetings = $state<ActiveMeeting[]>([]);
+
+  function upsertActiveMeeting(m: ActiveMeeting) {
+    const idx = activeMeetings.findIndex((x) => x.windowId === m.windowId);
+    if (idx >= 0) {
+      activeMeetings[idx] = m;
+    } else {
+      activeMeetings = [...activeMeetings, m];
+    }
+  }
+  function updateActiveMeeting(
+    windowId: string,
+    patch: Partial<ActiveMeeting>,
+  ) {
+    const idx = activeMeetings.findIndex((x) => x.windowId === windowId);
+    if (idx < 0) return;
+    activeMeetings[idx] = { ...activeMeetings[idx], ...patch };
+  }
+  function removeActiveMeeting(windowId: string) {
+    activeMeetings = activeMeetings.filter((x) => x.windowId !== windowId);
+  }
+
+  /**
+   * The persisted default company, but only if it's still a company the
+   * user is an active member of. Returns null (Personal) otherwise — never
+   * pre-select a stale uid the user can't record to (hq-pro would 403).
+   */
+  function resolveValidDefault(): string | null {
+    return defaultRecordingCompanyUid &&
+      memberships.some((m) => m.companyUid === defaultRecordingCompanyUid)
+      ? defaultRecordingCompanyUid
+      : null;
+  }
+
+  async function handleStartRecording(windowId: string) {
+    updateActiveMeeting(windowId, { state: 'starting', error: undefined });
+    // Resolve the company at START time, not just whatever was frozen on
+    // the row at detection. The detection may have fired before the
+    // default-company context finished loading (it's a fire-and-forget
+    // load after an async feature-gate check), leaving companyUid null on
+    // the row. Unless the user *explicitly* picked a company, fall back to
+    // the current valid default — this is what fixes the notification
+    // "Record" path attributing to Personal even when a default is set.
+    const row = activeMeetings.find((m) => m.windowId === windowId);
+    const companyUid = row?.companyUserSet
+      ? (row.companyUid ?? null)
+      : (resolveValidDefault() ?? row?.companyUid ?? null);
+    // Reflect the resolved attribution back onto the row so the popover
+    // dropdown shows what we actually recorded against.
+    if (row && row.companyUid !== companyUid) {
+      updateActiveMeeting(windowId, { companyUid });
+    }
+    try {
+      const recordingId = await invoke<string>('start_recording', {
+        windowId,
+        companyUid,
+      });
+      updateActiveMeeting(windowId, { recordingId });
+      // The actual flip to `recording` happens on the `recording:started`
+      // event listener below — that confirms the SDK accepted the start,
+      // not just that the bridge dispatched it.
+    } catch (err) {
+      console.error('start_recording failed:', err);
+      updateActiveMeeting(windowId, {
+        state: 'error',
+        error: typeof err === 'string' ? err : String(err),
+      });
+    }
+  }
+
+  function handleChangeRecordingCompany(windowId: string, companyUid: string | null) {
+    // User explicitly picked a company — mark it so the start-time resolver
+    // and the default back-fill both respect this choice (including an
+    // intentional "Personal").
+    //
+    // The dropdown is editable during recording too. NOTE: changing it
+    // mid-recording updates the row's intent but does NOT yet re-attribute
+    // the recording — the Recall metadata is baked at upload-token mint
+    // (start) time. True "company at end" requires the hq-pro `/finalize`
+    // endpoint (a tracked follow-up); until that ships, the START company
+    // is what routes. We still capture the value here so the finalize
+    // wiring is a drop-in once that endpoint exists.
+    updateActiveMeeting(windowId, { companyUid, companyUserSet: true });
+  }
+
+  /**
+   * Load the memberships list + the persisted default-recording-company
+   * UID into module state. Called once on mount when the meeting-detect
+   * feature is enabled for this user. Best-effort — both reads degrade
+   * to empty / null on error so a vault hiccup never blocks the popover
+   * from rendering or the user from recording (the row just shows
+   * Personal as the only option, which is the safe default).
+   */
+  async function loadRecordingCompanyContext() {
+    try {
+      const [list, settings] = await Promise.all([
+        invoke<MembershipRow[]>('meetings_list_memberships').catch(() => []),
+        invoke<{ defaultRecordingCompanyUid?: string | null }>('get_settings').catch(
+          () => ({} as { defaultRecordingCompanyUid?: string | null }),
+        ),
+      ]);
+      memberships = (list ?? []).filter((m) => m.status === 'active');
+      const storedUid = settings?.defaultRecordingCompanyUid ?? null;
+      defaultRecordingCompanyUid = storedUid && memberships.some((m) => m.companyUid === storedUid)
+        ? storedUid
+        : null;
+      // Back-fill any detections that fired before this load completed:
+      // rows the user hasn't explicitly touched should reflect the default
+      // (or stay Personal if there's no valid default). Without this, a
+      // meeting detected during cold-start keeps companyUid=null and the
+      // notification "Record" path attributes it to Personal.
+      const validDefault = resolveValidDefault();
+      if (validDefault) {
+        for (const m of activeMeetings) {
+          if (!m.companyUserSet && m.companyUid !== validDefault) {
+            updateActiveMeeting(m.windowId, { companyUid: validDefault });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('loadRecordingCompanyContext failed (non-blocking):', err);
+    }
+  }
+  async function handleStopRecording(windowId: string) {
+    updateActiveMeeting(windowId, { state: 'stopping' });
+    try {
+      await invoke('stop_recording', { windowId });
+      // Flip to detected/closed on `recording:ended` event.
+    } catch (err) {
+      console.error('stop_recording failed:', err);
+      // Roll back to recording — the bridge errored before the SDK got
+      // the stop, so we're still recording.
+      updateActiveMeeting(windowId, {
+        state: 'recording',
+        error: typeof err === 'string' ? err : String(err),
+      });
+    }
+  }
 
   // Desktop-alt UX feature flag (US-001) — driven by `desktop_alt_enabled`
   // (Rust side delegates to the same `@getindigo.ai` gate as
@@ -848,6 +1056,175 @@
       )
     );
 
+    // --- Meeting-detection listener ---
+    // Fired by the Recall Desktop SDK sidecar when a supported video-call app
+    // becomes active. The dedup + surface decision lives in
+    // `handleMeetingDetected` (src/lib/meetingDetection.ts) so it can be
+    // unit-tested without Tauri IPC; this wrapper only binds the Tauri
+    // `invoke` + active-meeting store collaborators to it.
+    //
+    // The rule it enforces: a meeting already covered by an active hq-pro bot
+    // (a scheduled calendar bot, or one already in the call) surfaces NEITHER
+    // a recordable popover row NOR a macOS notification — the bot is handling
+    // it. Everything else (no bot, synthetic/URL-less detection, or a failed
+    // bot check) surfaces both.
+    unlisteners.push(
+      await listen<MeetingDetectedPayload>('meeting:detected', async (event) => {
+        try {
+          await handleMeetingDetected(event.payload, {
+            checkActiveBot: async (meetingUrl, eventId) => {
+              const bot = await invoke<{ botId: string } | null>(
+                'meetings_check_bot_for_url',
+                { meetingUrl, eventId },
+              );
+              return !!bot;
+            },
+            upsertRow: (seed) => upsertActiveMeeting(seed),
+            removeRow: (windowId) => removeActiveMeeting(windowId),
+            notify: async (payload) => {
+              await invoke('meetings_notify_detected', { payload });
+            },
+            resolveValidDefault,
+            now: () => new Date().toISOString(),
+            warn: (msg, err) => console.warn(msg, err),
+          });
+        } catch (err) {
+          console.error('meeting:detected handler error:', err);
+        }
+      }),
+    );
+
+    // Recording lifecycle — flip the active-meeting row state machine as
+    // the bridge confirms each transition. The Tauri commands above
+    // (handleStart/StopRecording) only know "we asked the bridge to do
+    // this"; these events confirm the SDK accepted it. We keep the row
+    // in `starting` / `stopping` until the SDK confirms, then flip to
+    // `recording` / removed.
+    unlisteners.push(
+      await listen<{ windowId: string; platform: string; startedAt: string }>(
+        'recording:started',
+        (event) => {
+          updateActiveMeeting(event.payload.windowId, {
+            state: 'recording',
+            error: undefined,
+          });
+        },
+      ),
+    );
+    unlisteners.push(
+      await listen<{ windowId: string; platform: string; endedAt: string }>(
+        'recording:ended',
+        (event) => {
+          // Recording over — drop the row. (Future: keep the row for a
+          // few seconds showing "Saved" so the user gets confirmation
+          // before it disappears.)
+          removeActiveMeeting(event.payload.windowId);
+        },
+      ),
+    );
+    unlisteners.push(
+      await listen<{ cmd: string; windowId: string; message: string }>(
+        'recording:error',
+        (event) => {
+          updateActiveMeeting(event.payload.windowId, {
+            state: 'error',
+            error: `${event.payload.cmd}: ${event.payload.message}`,
+          });
+        },
+      ),
+    );
+    unlisteners.push(
+      await listen<{ windowId: string; platform: string; closedAt: string }>(
+        'meeting:closed',
+        (event) => {
+          // User closed the meeting app without recording — drop the row
+          // so the popover doesn't show stale detections.
+          removeActiveMeeting(event.payload.windowId);
+        },
+      ),
+    );
+
+    // --- Cross-window bridge to MeetingsWindow ---
+    // The Detected/Record row used to live inside Popover.svelte. As of
+    // 2026-05-30 it moved to MeetingsWindow's top strip so the popover
+    // stays focused on sync state. MeetingsWindow runs in a separate
+    // webview, so we ship the snapshot + dispatch actions over Tauri
+    // custom events instead of via props.
+    //
+    // Three event channels:
+    //   popover:meetings-snapshot           ← App.svelte → MeetingsWindow
+    //     Whole snapshot {activeMeetings, memberships, defaultRecordingCompanyUid}.
+    //     Re-broadcast on every $effect tick when any of those mutate.
+    //   meetings-window:request-snapshot    ← MeetingsWindow → App.svelte
+    //     Fired on MeetingsWindow mount so it gets an immediate seed
+    //     without having to wait for the next mutation.
+    //   meetings-window:action              ← MeetingsWindow → App.svelte
+    //     Dispatch for Record / Stop / company-change. The handler maps
+    //     each to its existing local handler so the bridge doesn't
+    //     duplicate company-resolution / state-machine logic.
+    unlisteners.push(
+      await listen('meetings-window:request-snapshot', () => {
+        // Best-effort emit — `emit` returns a Promise but we don't await
+        // (the request is fire-and-forget UX).
+        emit('popover:meetings-snapshot', {
+          activeMeetings,
+          memberships,
+          defaultRecordingCompanyUid,
+        }).catch((err) => {
+          console.warn('meetings-snapshot re-emit failed', err);
+        });
+      }),
+    );
+    unlisteners.push(
+      await listen<{
+        action: 'start' | 'stop' | 'change-company';
+        windowId: string;
+        companyUid?: string | null;
+      }>('meetings-window:action', (event) => {
+        const { action, windowId, companyUid } = event.payload;
+        if (action === 'start') {
+          void handleStartRecording(windowId);
+        } else if (action === 'stop') {
+          void handleStopRecording(windowId);
+        } else if (action === 'change-company') {
+          handleChangeRecordingCompany(windowId, companyUid ?? null);
+        }
+      }),
+    );
+
+    // Notification action dispatch — fired by the Rust mac-notification-sys
+    // worker thread when the user interacts with a "Meeting detected"
+    // notification. Two cases:
+    //   action="open"   → user clicked the notification body. Open the
+    //                     popover so the active-meetings row is visible.
+    //   action="record" → user clicked the Record action button. Skip
+    //                     the popover and start recording directly.
+    unlisteners.push(
+      await listen<{ action: string; windowId: string; platform: string }>(
+        'notification:meeting-action',
+        async (event) => {
+          const { action, windowId } = event.payload;
+          if (action === 'record' && windowId) {
+            await handleStartRecording(windowId);
+            // Clear the prompt-tray badge — the user acted on the
+            // detection, even if the recording itself errors.
+            invoke('meetings_clear_prompt_badge').catch(() => {});
+            return;
+          }
+          if (action === 'open') {
+            // Pop the main popover into view. Tauri doesn't expose a
+            // direct "open popover" command — the tray click is what
+            // normally toggles visibility. We invoke `show_main_window`
+            // (defined in main.rs) which focuses the popover window.
+            invoke('show_main_window').catch((err) => {
+              console.warn('show_main_window failed:', err);
+            });
+            invoke('meetings_clear_prompt_badge').catch(() => {});
+          }
+        },
+      ),
+    );
+
     // --- Share-notification event listener (US-005) ---
     // Rust emits `share:new-events` after each poll when new events are found.
     // The Rust side has already fired one macOS notification per event AND
@@ -1052,6 +1429,12 @@
     // open instead of waiting 30s for the bg checker.
     loadCoreState();
     setupTrayListeners();
+    // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
+    // Settings.svelte hides the meeting-detect toggle when this is false.
+    // (Per-permission TCC status tracking was removed 2026-05-25 — see
+    // permissionState.svelte.ts for why; native macOS prompts are
+    // sufficient.)
+    loadMeetingDetectEligible();
     // One-time OS notification permission prompt. macOS only shows the system
     // dialog while status is `prompt` (not determined); once granted/denied it
     // returns silently, so calling this every launch never re-nags. Fire-and-
@@ -1062,6 +1445,12 @@
     invoke<boolean>('meetings_feature_enabled')
       .then((v) => {
         meetingsEnabled = v;
+        // Lazy-load the recording-company picker data only for users who
+        // can actually trigger a detection. Saves a vault round-trip for
+        // non-eligible accounts and keeps the cold-start trace cleaner.
+        if (v) {
+          void loadRecordingCompanyContext();
+        }
       })
       .catch(() => {
         meetingsEnabled = false;
@@ -1078,11 +1467,47 @@
     };
   });
 
-  // Ask macOS for notification authorization once. The Rust command wraps
-  // tauri-plugin-notification's request_permission(); macOS shows the system
-  // dialog only when the status is `prompt`, so this is safe to call on every
-  // launch (no re-nag). We skip the request entirely when already determined
-  // to avoid a needless IPC round-trip.
+  // Broadcast the active-meetings snapshot to MeetingsWindow whenever the
+  // pieces it renders mutate. Tauri `emit` fans out to every webview
+  // (including the popover itself, which ignores its own emit by virtue
+  // of the popover not subscribing). The snapshot is shaped to match
+  // what MeetingsWindow renders 1:1 so the receiver is a dumb consumer.
+  //
+  // Don't depend on the receiver being mounted — `emit` is best-effort
+  // and lost emits while MeetingsWindow is closed are recovered the
+  // next time it mounts via `meetings-window:request-snapshot`.
+  $effect(() => {
+    if (!meetingsEnabled) return;
+    emit('popover:meetings-snapshot', {
+      activeMeetings,
+      memberships,
+      defaultRecordingCompanyUid,
+    }).catch((err) => {
+      console.warn('meetings-snapshot emit failed', err);
+    });
+  });
+
+  // Ask macOS for notification authorization once on cold start.
+  //
+  // The call is GATED on `state === 'prompt'` because of an interaction
+  // discovered on macOS 26.4 (Sequoia) on 2026-05-30: calling
+  // `requestAuthorizationWithOptions` registers the process as a
+  // UNUserNotificationCenter "modern" client. After that, usernoted
+  // rejects any NSUserNotification deliveries from the same process
+  // with:
+  //   Error: Legacy client <bundle> connecting to modern client.
+  //   You can't mix modern clients with legacy clients.
+  //   Denying message N from connection <LegacyConnection ...>
+  // Our meeting-detect path goes through `mac-notification-sys` (0.6),
+  // which is still on NSUserNotification — calling `request_authorization`
+  // unconditionally bricks it. The conservative gate keeps the app on
+  // the legacy track unless the OS dialog is actually needed.
+  //
+  // Long-term fix: migrate `meetings_notify_detected` (and the
+  // share/dm-notify paths) to UNUserNotificationCenter via objc2 so the
+  // whole app is a modern client. Tracked as a follow-up. For now the
+  // meeting-detect handler falls back to `osascript display notification`
+  // when the legacy deliver gets denied (see commands/meetings.rs).
   async function requestNotificationPermissionOnce() {
     try {
       const state = await invoke<string>('notification_permission_state');
@@ -1191,8 +1616,16 @@
         // already open, otherwise creates a fresh one. Errors are swallowed
         // since they'd be infra-level (Tauri failure) and there's nothing
         // useful to show inline.
+        // Also clear the tray Prompt badge — the user is now acting on any
+        // pending meeting detections.
         invoke('open_meetings_window').catch(() => {});
+        invoke('meetings_clear_prompt_badge').catch(() => {});
       }}
+      {activeMeetings}
+      onstartrecording={handleStartRecording}
+      onstoprecording={handleStopRecording}
+      recordingCompanies={memberships}
+      onchangerecordingcompany={handleChangeRecordingCompany}
     />
   {:else}
     <SignInPrompt onsuccess={handleAuthSuccess} />
