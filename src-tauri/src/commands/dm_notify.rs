@@ -278,6 +278,132 @@ pub async fn send_dm(to_person_uid: String, body: String) -> Result<(), String> 
     Err(server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16())))
 }
 
+// ── Conversation thread (history) ───────────────────────────────────────────────
+//
+// The DM detail window renders a two-way thread, not just the single DM that
+// triggered the notification. The backend stores a conversation-keyed mirror of
+// every DM (see hq-pro `dm-thread.ts`) and exposes it at
+// `GET /v1/notify/thread?withPersonUid=…`. `fetch_dm_thread` pulls that thread
+// for whichever person the open DM is with, so the window can show the history
+// above the live message + reply box.
+
+/// One message in a conversation thread, as returned by `/v1/notify/thread`.
+/// `direction` is tagged by the server relative to the signed-in caller:
+/// `"out"` = the caller sent it, `"in"` = the counterparty sent it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadMessage {
+    pub event_id: String,
+    pub from_person_uid: String,
+    pub from_email: String,
+    pub from_display_name: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    pub created_at: String,
+    pub direction: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadResponse {
+    pub messages: Vec<ThreadMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Build the `GET /v1/notify/thread` URL. Pure + side-effect-free so the query
+/// shape is unit-testable. urlencoding isn't pulled in here; personUids and the
+/// base64 cursor are URL-safe, so simple concatenation is sufficient. An
+/// empty/blank cursor is omitted so the server returns the first (newest) page.
+fn build_thread_url(
+    base_url: &str,
+    with_person_uid: &str,
+    limit: Option<u32>,
+    cursor: Option<&str>,
+) -> String {
+    let mut url = format!(
+        "{}/v1/notify/thread?withPersonUid={}",
+        base_url, with_person_uid
+    );
+    if let Some(n) = limit {
+        url.push_str(&format!("&limit={}", n));
+    }
+    if let Some(c) = cursor.filter(|c| !c.is_empty()) {
+        url.push_str(&format!("&cursor={}", c));
+    }
+    url
+}
+
+/// Tauri command: fetch the conversation thread with one person. Returns the
+/// messages newest-first plus an optional opaque `nextCursor` for loading older
+/// pages. Surfaces failures to the caller so the window can show a load error
+/// (and still render the single live DM it already has).
+#[tauri::command]
+pub async fn fetch_dm_thread(
+    with_person_uid: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+) -> Result<ThreadResponse, String> {
+    let target = with_person_uid.trim();
+    if target.is_empty() {
+        return Err("withPersonUid must not be empty".to_string());
+    }
+
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FAIL auth: {e}"));
+        format!("Not signed in: {e}")
+    })?;
+
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FAIL vault url: {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let url = build_thread_url(&base_url, target, limit, cursor.as_deref());
+
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FAIL network: {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_THREAD_FAIL status={status} msg={server_msg:?}"),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Failed to load thread (status {})", status.as_u16()))
+        );
+    }
+
+    let thread = resp.json::<ThreadResponse>().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FAIL parse: {e}"));
+        format!("Could not parse thread response: {e}")
+    })?;
+
+    log(
+        LOG_TAG,
+        &format!("DM_NOTIFY_THREAD_OK with={target} count={}", thread.messages.len()),
+    );
+    Ok(thread)
+}
+
 // ── Core poll logic (mirrors share_notify::do_poll) ─────────────────────────────
 
 async fn do_poll(app: &AppHandle) {
@@ -645,5 +771,59 @@ mod tests {
         assert_eq!(dm.body, "hi");
         assert!(dm.prompt.is_none());
         assert!(dm.details.is_none());
+    }
+
+    #[test]
+    fn thread_url_includes_person_and_optional_params() {
+        // Base case: just the recipient.
+        assert_eq!(
+            build_thread_url("https://api.example.com", "prs_x", None, None),
+            "https://api.example.com/v1/notify/thread?withPersonUid=prs_x",
+        );
+        // Limit + cursor appended in order.
+        assert_eq!(
+            build_thread_url("https://api.example.com", "prs_x", Some(25), Some("Y3Vy")),
+            "https://api.example.com/v1/notify/thread?withPersonUid=prs_x&limit=25&cursor=Y3Vy",
+        );
+        // A blank cursor is omitted (server returns the newest page).
+        assert_eq!(
+            build_thread_url("https://api.example.com", "prs_x", None, Some("")),
+            "https://api.example.com/v1/notify/thread?withPersonUid=prs_x",
+        );
+    }
+
+    #[test]
+    fn thread_response_deserializes_camel_case_with_direction() {
+        // Server tags `direction` relative to the caller; the window renders
+        // "out" right-aligned and "in" left-aligned. nextCursor is optional.
+        let json = r#"{
+            "messages": [
+                {
+                    "eventId": "evt_2",
+                    "fromPersonUid": "prs_me",
+                    "fromEmail": "me@b.com",
+                    "fromDisplayName": "Me",
+                    "body": "my reply",
+                    "createdAt": "2026-05-29T00:01:00Z",
+                    "direction": "out"
+                },
+                {
+                    "eventId": "evt_1",
+                    "fromPersonUid": "prs_them",
+                    "fromEmail": "them@b.com",
+                    "fromDisplayName": "Them",
+                    "body": "their msg",
+                    "createdAt": "2026-05-29T00:00:00Z",
+                    "direction": "in"
+                }
+            ]
+        }"#;
+        let thread: ThreadResponse =
+            serde_json::from_str(json).expect("ThreadResponse parses");
+        assert_eq!(thread.messages.len(), 2);
+        assert_eq!(thread.messages[0].direction, "out");
+        assert_eq!(thread.messages[0].from_person_uid, "prs_me");
+        assert_eq!(thread.messages[1].direction, "in");
+        assert!(thread.next_cursor.is_none());
     }
 }

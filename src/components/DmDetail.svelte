@@ -4,7 +4,10 @@
   import '../styles/popover.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { tick } from 'svelte';
 
+  // The DM that opened the window (the reply target). Also the most recent
+  // inbound message — it anchors who the conversation is with.
   interface DmEvent {
     eventId: string;
     fromPersonUid: string;
@@ -16,13 +19,84 @@
     createdAt: string;
   }
 
+  // One rendered message in the thread. `direction` is relative to the signed-in
+  // user: "out" = I sent it, "in" = the other person sent it.
+  interface ThreadMessage {
+    eventId: string;
+    fromPersonUid: string;
+    fromEmail: string;
+    fromDisplayName: string;
+    body: string;
+    details?: string | null;
+    prompt?: string | null;
+    createdAt: string;
+    direction: 'in' | 'out';
+  }
+
+  interface ThreadResponse {
+    messages: ThreadMessage[];
+    nextCursor?: string | null;
+  }
+
   let event = $state<DmEvent | null>(null);
-  let copied = $state(false);
+  let messages = $state<ThreadMessage[]>([]);
+  let loadingThread = $state(false);
+  let threadError = $state<string | null>(null);
+  let copiedId = $state<string | null>(null);
 
   let replyText = $state('');
   let sending = $state(false);
-  let sent = $state(false);
   let sendError = $state<string | null>(null);
+
+  let scrollEl = $state<HTMLDivElement | null>(null);
+
+  async function scrollToBottom(): Promise<void> {
+    await tick();
+    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+  }
+
+  /**
+   * Merge the server thread (newest-first) into chronological order and ensure
+   * the live DM that opened the window is present — the conversation mirror is
+   * written best-effort server-side, so the just-arrived DM may not be in the
+   * thread response yet. Dedupe by eventId.
+   */
+  function buildThread(serverMsgs: ThreadMessage[], live: DmEvent | null): ThreadMessage[] {
+    const chrono = [...serverMsgs].reverse();
+    if (live && !chrono.some((m) => m.eventId === live.eventId)) {
+      chrono.push({
+        eventId: live.eventId,
+        fromPersonUid: live.fromPersonUid,
+        fromEmail: live.fromEmail,
+        fromDisplayName: live.fromDisplayName,
+        body: live.body,
+        details: live.details ?? null,
+        prompt: live.prompt ?? null,
+        createdAt: live.createdAt,
+        direction: 'in',
+      });
+    }
+    return chrono;
+  }
+
+  async function loadThread(forEvent: DmEvent): Promise<void> {
+    loadingThread = true;
+    threadError = null;
+    try {
+      const resp = await invoke<ThreadResponse>('fetch_dm_thread', {
+        withPersonUid: forEvent.fromPersonUid,
+      });
+      messages = buildThread(resp.messages ?? [], forEvent);
+    } catch (err) {
+      // Non-fatal: still show the single live message + composer.
+      threadError = typeof err === 'string' ? err : 'Could not load earlier messages';
+      messages = buildThread([], forEvent);
+      console.error('dm-detail: fetch_dm_thread failed', err);
+    } finally {
+      loadingThread = false;
+      void scrollToBottom();
+    }
+  }
 
   async function sendReply(): Promise<void> {
     const text = replyText.trim();
@@ -31,11 +105,24 @@
     sendError = null;
     try {
       await invoke('send_dm', { toPersonUid: event.fromPersonUid, body: text });
+      // Optimistically append the sent message so the thread updates instantly;
+      // the durable copy lands in the mirror and shows on the next open.
+      messages = [
+        ...messages,
+        {
+          eventId: `local-${messages.length}-${text.length}`,
+          fromPersonUid: 'me',
+          fromEmail: '',
+          fromDisplayName: 'You',
+          body: text,
+          details: null,
+          prompt: null,
+          createdAt: new Date().toISOString(),
+          direction: 'out',
+        },
+      ];
       replyText = '';
-      sent = true;
-      setTimeout(() => {
-        sent = false;
-      }, 1800);
+      void scrollToBottom();
     } catch (err) {
       sendError = typeof err === 'string' ? err : 'Failed to send reply';
       console.error('dm-detail: send_dm failed', err);
@@ -51,25 +138,25 @@
     }
   }
 
-  function formatDate(iso: string): string {
+  function formatTime(iso: string): string {
     try {
       return new Intl.DateTimeFormat(undefined, {
-        dateStyle: 'medium',
-        timeStyle: 'short',
+        hour: 'numeric',
+        minute: '2-digit',
       }).format(new Date(iso));
     } catch {
-      return iso;
+      return '';
     }
   }
 
-  async function copyPrompt(): Promise<void> {
-    const p = event?.prompt?.trim();
+  async function copyPrompt(id: string, prompt: string | null | undefined): Promise<void> {
+    const p = prompt?.trim();
     if (!p) return;
     try {
       await navigator.clipboard.writeText(p);
-      copied = true;
+      copiedId = id;
       setTimeout(() => {
-        copied = false;
+        if (copiedId === id) copiedId = null;
       }, 1800);
     } catch (err) {
       console.error('dm-detail: clipboard write failed', err);
@@ -81,6 +168,7 @@
 
     listen<DmEvent>('dm:detail-event', (e) => {
       event = e.payload;
+      void loadThread(e.payload);
     }).then((fn) => {
       unlisten = fn;
       // Ready-handshake: tell Rust the listener is mounted so it emits the
@@ -96,9 +184,9 @@
 
 <div class="detail-window">
   <header class="detail-header">
-    <h1>Direct Message</h1>
-    {#if event}
-      <span class="detail-count">{formatDate(event.createdAt)}</span>
+    <h1>{event ? event.fromDisplayName : 'Direct Message'}</h1>
+    {#if event?.fromEmail}
+      <span class="detail-count">{event.fromEmail}</span>
     {/if}
   </header>
 
@@ -107,28 +195,34 @@
       <p>Waiting for message…</p>
     </div>
   {:else}
-    <div class="dm-body-wrap">
-      <div class="dm-from">
-        <span class="dm-from-name">{event.fromDisplayName}</span>
-        {#if event.fromEmail}
-          <span class="dm-from-email">{event.fromEmail}</span>
-        {/if}
-      </div>
-
-      <p class="dm-message">{event.body}</p>
-
-      {#if event.details}
-        <div class="dm-details">{event.details}</div>
+    <div class="dm-thread" bind:this={scrollEl}>
+      {#if loadingThread}
+        <p class="dm-thread-status">Loading conversation…</p>
+      {/if}
+      {#if threadError}
+        <p class="dm-thread-status dm-thread-error" role="alert">{threadError}</p>
       {/if}
 
-      {#if event.prompt}
-        <div class="dm-actions">
-          <button class="btn btn-copy" onclick={copyPrompt} aria-label="Copy agent prompt to clipboard">
-            {copied ? 'Copied!' : 'Copy prompt'}
-          </button>
-          <span class="dm-actions-hint">Paste into your agent session</span>
+      {#each messages as msg (msg.eventId)}
+        <div class="dm-msg dm-msg-{msg.direction}">
+          <div class="dm-bubble">
+            <p class="dm-bubble-body">{msg.body}</p>
+            {#if msg.details}
+              <div class="dm-bubble-details">{msg.details}</div>
+            {/if}
+            {#if msg.prompt}
+              <button
+                class="btn btn-copy"
+                onclick={() => copyPrompt(msg.eventId, msg.prompt)}
+                aria-label="Copy agent prompt to clipboard"
+              >
+                {copiedId === msg.eventId ? 'Copied!' : 'Copy prompt'}
+              </button>
+            {/if}
+          </div>
+          <span class="dm-msg-time">{formatTime(msg.createdAt)}</span>
         </div>
-      {/if}
+      {/each}
     </div>
 
     <div class="dm-reply">
@@ -144,8 +238,6 @@
       <div class="dm-reply-footer">
         {#if sendError}
           <span class="dm-reply-error" role="alert">{sendError}</span>
-        {:else if sent}
-          <span class="dm-reply-sent">Sent ✓</span>
         {:else}
           <span class="dm-reply-hint">⌘↵ to send</span>
         {/if}
@@ -198,6 +290,9 @@
     font-size: 1rem;
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .detail-count {
@@ -220,84 +315,106 @@
     margin: 0;
   }
 
-  .dm-body-wrap {
+  /* ── Thread (scrollable conversation) ─────────────────────────────────── */
+
+  .dm-thread {
     flex: 1;
     overflow-y: auto;
     padding: 1rem 1.25rem;
     display: flex;
     flex-direction: column;
-    gap: 0.875rem;
+    gap: 0.5rem;
     scrollbar-width: thin;
     scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
   }
 
-  .dm-body-wrap::-webkit-scrollbar {
+  .dm-thread::-webkit-scrollbar {
     width: 6px;
   }
 
-  .dm-body-wrap::-webkit-scrollbar-thumb {
+  .dm-thread::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.12);
     border-radius: 3px;
   }
 
-  .dm-from {
-    display: flex;
-    align-items: baseline;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-
-  .dm-from-name {
-    font-size: 0.9375rem;
-    font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
-  }
-
-  .dm-from-email {
-    font-size: 0.75rem;
+  .dm-thread-status {
+    margin: 0 auto;
+    font-size: 0.6875rem;
     color: var(--popover-text-muted, #a0a0b0);
   }
 
-  .dm-message {
+  .dm-thread-error {
+    color: #ff9b9b;
+  }
+
+  .dm-msg {
+    display: flex;
+    flex-direction: column;
+    max-width: 80%;
+  }
+
+  .dm-msg-in {
+    align-self: flex-start;
+    align-items: flex-start;
+  }
+
+  .dm-msg-out {
+    align-self: flex-end;
+    align-items: flex-end;
+  }
+
+  .dm-bubble {
+    padding: 0.5rem 0.75rem;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .dm-msg-in .dm-bubble {
+    background: rgba(255, 255, 255, 0.07);
+    border-bottom-left-radius: 4px;
+  }
+
+  .dm-msg-out .dm-bubble {
+    background: rgba(120, 170, 255, 0.22);
+    border-bottom-right-radius: 4px;
+  }
+
+  .dm-bubble-body {
     margin: 0;
     font-size: 0.875rem;
     line-height: 1.45;
-    color: var(--popover-text, #e0e0e0);
+    color: var(--popover-text, #e8e8ee);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
-  .dm-details {
+  .dm-bubble-details {
     font-size: 0.8125rem;
     line-height: 1.5;
     color: var(--popover-text, #e0e0e0);
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(0, 0, 0, 0.18);
     border-left: 2px solid rgba(255, 255, 255, 0.15);
-    padding: 0.625rem 0.75rem;
+    padding: 0.5rem 0.625rem;
     border-radius: 0 6px 6px 0;
     white-space: pre-wrap;
     word-break: break-word;
   }
 
-  .dm-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-    margin-top: 0.25rem;
-  }
-
-  .dm-actions-hint {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+  .dm-msg-time {
+    font-size: 0.625rem;
+    color: var(--popover-text-muted, #8a8a98);
+    margin: 0.125rem 0.25rem 0;
   }
 
   .btn {
     display: inline-flex;
     align-items: center;
-    padding: 0.375rem 0.75rem;
+    align-self: flex-start;
+    padding: 0.3125rem 0.625rem;
     border-radius: 6px;
-    font-size: 0.75rem;
+    font-size: 0.6875rem;
     font-weight: 500;
     cursor: pointer;
     border: none;
@@ -306,13 +423,15 @@
   }
 
   .btn-copy {
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.12);
     color: var(--popover-text, #e0e0e0);
   }
 
   .btn-copy:hover {
-    background: rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.2);
   }
+
+  /* ── Reply composer ───────────────────────────────────────────────────── */
 
   .dm-reply {
     flex-shrink: 0;
@@ -356,11 +475,6 @@
   .dm-reply-hint {
     font-size: 0.6875rem;
     color: var(--popover-text-muted, #a0a0b0);
-  }
-
-  .dm-reply-sent {
-    font-size: 0.75rem;
-    color: #7ee2a8;
   }
 
   .dm-reply-error {
