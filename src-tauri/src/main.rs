@@ -287,6 +287,7 @@ fn main() {
             commands::banner::preview_dm_banner,
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
+            commands::banner::preview_meeting_banner,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at

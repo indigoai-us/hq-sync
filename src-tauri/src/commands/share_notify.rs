@@ -215,38 +215,108 @@ pub struct PendingShareEvents(pub Mutex<Vec<ShareEvent>>);
 
 // ── Cursor persistence ────────────────────────────────────────────────────────
 
-/// Cursor store: `{ "<machineId>": "<ISO8601 createdAt of newest seen event>" }`
-type CursorStore = HashMap<String, String>;
+/// Upper bound on the per-machine `notified` ring. The repeated boundary events
+/// (the cause of the re-notify bug) are always the newest, so they never reach
+/// the eviction end of the FIFO — 200 is comfortably more than any single
+/// `?since=` page (`limit=50`).
+const NOTIFIED_CAP: usize = 200;
+
+/// Per-machine cursor state.
+///
+/// `cursor` is the ISO8601 `createdAt` of the newest event seen so far (the
+/// `?since=` value). `notified` is a bounded FIFO of recently-notified
+/// `eventId`s: the `shared-with-me` endpoint treats `?since=` as **inclusive**,
+/// so the boundary event(s) are returned on every subsequent poll. Without an
+/// id-level guard that re-delivers the same banner on every poll/launch (the
+/// 2026-05-29 "same 8 events, cursor stuck" symptom). Deduping by id makes
+/// re-notification impossible regardless of the server's `since` semantics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CursorEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor: Option<String>,
+    #[serde(default)]
+    notified: Vec<String>,
+}
+
+/// Back-compat shim: pre-0.4.4 stored a bare ISO string per machine. Accept both
+/// the new object form and the legacy string form on read so an upgrade doesn't
+/// re-notify every historical share once.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CursorEntryCompat {
+    Entry(CursorEntry),
+    Legacy(String),
+}
+
+impl From<CursorEntryCompat> for CursorEntry {
+    fn from(c: CursorEntryCompat) -> Self {
+        match c {
+            CursorEntryCompat::Entry(e) => e,
+            CursorEntryCompat::Legacy(s) => CursorEntry {
+                cursor: Some(s),
+                notified: Vec::new(),
+            },
+        }
+    }
+}
+
+type CursorStore = HashMap<String, CursorEntry>;
 
 fn cursor_path() -> Result<std::path::PathBuf, String> {
     paths::hq_config_dir().map(|d| d.join("share-notify-cursor.json"))
 }
 
-fn read_cursor(machine_id: &str) -> Option<String> {
-    let path = cursor_path().ok()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
-    let store: CursorStore = serde_json::from_str(&contents).ok()?;
-    store.get(machine_id).cloned()
+/// Read the whole store, normalising any legacy bare-string entries to the
+/// current object shape.
+fn read_cursor_store() -> CursorStore {
+    let Ok(path) = cursor_path() else {
+        return CursorStore::default();
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return CursorStore::default();
+    };
+    match serde_json::from_str::<HashMap<String, CursorEntryCompat>>(&contents) {
+        Ok(store) => store.into_iter().map(|(k, v)| (k, v.into())).collect(),
+        Err(_) => CursorStore::default(),
+    }
 }
 
-fn write_cursor(machine_id: &str, since: &str) {
+fn read_cursor_entry(machine_id: &str) -> CursorEntry {
+    read_cursor_store().remove(machine_id).unwrap_or_default()
+}
+
+fn write_cursor_entry(machine_id: &str, entry: &CursorEntry) {
     let Ok(path) = cursor_path() else { return };
-
-    let mut store: CursorStore = path
-        .exists()
-        .then(|| {
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-        })
-        .flatten()
-        .unwrap_or_default();
-
-    store.insert(machine_id.to_string(), since.to_string());
-
+    // Re-read (with normalisation) so we never clobber other machines' entries.
+    let mut store = read_cursor_store();
+    store.insert(machine_id.to_string(), entry.clone());
     if let Ok(json) = serde_json::to_string_pretty(&store) {
         let _ = std::fs::write(&path, json);
     }
+}
+
+/// Split a poll's events into the subset to notify (dropping any whose `eventId`
+/// is already in `notified`, preserving order) and the updated `notified` ring
+/// (bounded to [`NOTIFIED_CAP`], newest at the end). Pure so it is unit-testable
+/// without the filesystem or network.
+fn partition_unnotified(
+    events: &[ShareEvent],
+    notified: &[String],
+) -> (Vec<ShareEvent>, Vec<String>) {
+    let seen: std::collections::HashSet<&str> =
+        notified.iter().map(String::as_str).collect();
+    let fresh: Vec<ShareEvent> = events
+        .iter()
+        .filter(|e| !seen.contains(e.event_id.as_str()))
+        .cloned()
+        .collect();
+
+    let mut updated = notified.to_vec();
+    updated.extend(fresh.iter().map(|e| e.event_id.clone()));
+    if updated.len() > NOTIFIED_CAP {
+        updated.drain(0..updated.len() - NOTIFIED_CAP);
+    }
+    (fresh, updated)
 }
 
 // ── Gate check ───────────────────────────────────────────────────────────────
@@ -381,7 +451,8 @@ async fn do_poll(app: &AppHandle) {
         }
     };
 
-    let since = read_cursor(&machine_id);
+    let entry = read_cursor_entry(&machine_id);
+    let since = entry.cursor.clone();
     let url = match since.as_deref() {
         Some(s) => format!(
             "{}/v1/files/shared-with-me?since={}&limit=50",
@@ -434,22 +505,49 @@ async fn do_poll(app: &AppHandle) {
                         return;
                     }
 
-                    // Advance cursor to the newest event's createdAt.
+                    // Dedupe by eventId BEFORE notifying: the endpoint's `?since=`
+                    // is inclusive, so the boundary event(s) come back every poll.
+                    // `fresh` is the never-notified subset; `notified` is the
+                    // updated ring we persist below.
+                    let (fresh, notified) =
+                        partition_unnotified(&body.events, &entry.notified);
+
+                    // Advance the timestamp cursor to the newest event seen this
+                    // poll (across ALL returned events, not just fresh) so the
+                    // `?since=` window keeps narrowing over time.
                     let newest = body
                         .events
                         .iter()
                         .map(|e| e.created_at.as_str())
                         .max()
                         .unwrap_or_default();
-                    if !newest.is_empty() {
-                        write_cursor(&machine_id, newest);
+                    write_cursor_entry(
+                        &machine_id,
+                        &CursorEntry {
+                            cursor: (!newest.is_empty())
+                                .then(|| newest.to_string())
+                                .or(entry.cursor.clone()),
+                            notified,
+                        },
+                    );
+
+                    if fresh.is_empty() {
+                        log(
+                            LOG_TAG,
+                            &format!(
+                                "SHARE_NOTIFY_POLL_OK no new events ({} already notified)",
+                                body.events.len()
+                            ),
+                        );
+                        return;
                     }
 
                     log(
                         LOG_TAG,
                         &format!(
-                            "SHARE_NOTIFY_POLL_OK {} event(s), cursor→{}",
+                            "SHARE_NOTIFY_POLL_OK {} event(s) ({} new), cursor→{}",
                             body.events.len(),
+                            fresh.len(),
                             newest
                         ),
                     );
@@ -497,9 +595,9 @@ async fn do_poll(app: &AppHandle) {
                     if crate::commands::banner::custom_banner_enabled() {
                         log(
                             LOG_TAG,
-                            &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", body.events.len()),
+                            &format!("SHARE_NOTIFY_CUSTOM_BANNER {} event(s)", fresh.len()),
                         );
-                        for evt in &body.events {
+                        for evt in &fresh {
                             if let Err(e) = crate::commands::banner::show_share_banner(
                                 app.clone(),
                                 evt.clone(),
@@ -510,7 +608,7 @@ async fn do_poll(app: &AppHandle) {
                             }
                         }
                     } else {
-                    for evt in &body.events {
+                    for evt in &fresh {
                         let body_text = notification_body(evt.note.as_deref(), &evt.paths);
                         let title = notification_title(&evt.issuer_display_name);
                         let app_for_thread = app.clone();
@@ -622,12 +720,12 @@ async fn do_poll(app: &AppHandle) {
                     }
                     } // end else — native firing path
 
-                    // Badge the tray icon with the unacknowledged event count.
-                    crate::tray::set_share_badge(app, body.events.len());
+                    // Badge the tray icon with the count of newly-notified events.
+                    crate::tray::set_share_badge(app, fresh.len());
 
                     // Emit to frontend — US-005 listens here (currently no-op
                     // after the eager-open removal, kept for future popover UI).
-                    let _ = app.emit(EVENT_SHARE_NEW_EVENTS, &body.events);
+                    let _ = app.emit(EVENT_SHARE_NEW_EVENTS, &fresh);
                 }
             }
         }
@@ -825,14 +923,75 @@ mod tests {
         let mut store = CursorStore::default();
         store.insert(
             "machine-abc".to_string(),
-            "2026-05-25T12:00:00.000Z".to_string(),
+            CursorEntry {
+                cursor: Some("2026-05-25T12:00:00.000Z".to_string()),
+                notified: vec!["e1".to_string(), "e2".to_string()],
+            },
         );
         let json = serde_json::to_string(&store).unwrap();
-        let parsed: CursorStore = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            parsed.get("machine-abc").unwrap(),
-            "2026-05-25T12:00:00.000Z"
+        let parsed: HashMap<String, CursorEntryCompat> =
+            serde_json::from_str(&json).unwrap();
+        let entry: CursorEntry = parsed.into_iter().next().unwrap().1.into();
+        assert_eq!(entry.cursor.as_deref(), Some("2026-05-25T12:00:00.000Z"));
+        assert_eq!(entry.notified, vec!["e1", "e2"]);
+    }
+
+    #[test]
+    fn test_cursor_store_reads_legacy_bare_string() {
+        // Pre-0.4.4 format: bare ISO string per machine. Must upgrade cleanly to
+        // the object form without losing the cursor or re-notifying history.
+        let legacy = r#"{"machine-abc":"2026-05-25T12:00:00.000Z"}"#;
+        let parsed: HashMap<String, CursorEntryCompat> =
+            serde_json::from_str(legacy).unwrap();
+        let entry: CursorEntry = parsed.into_iter().next().unwrap().1.into();
+        assert_eq!(entry.cursor.as_deref(), Some("2026-05-25T12:00:00.000Z"));
+        assert!(entry.notified.is_empty());
+    }
+
+    fn share_event(id: &str, created_at: &str) -> ShareEvent {
+        let json = format!(
+            r#"{{"eventId":"{id}","issuerEmail":"a@b.com","issuerDisplayName":"A",
+                "paths":["/x.md"],"permission":"read","createdAt":"{created_at}"}}"#
         );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[test]
+    fn test_partition_unnotified_drops_already_seen() {
+        // The stuck-cursor symptom: the same events come back every poll. Once an
+        // id is in `notified`, it must never be returned for notification again.
+        let events = vec![
+            share_event("e1", "2026-05-29T03:19:02.349Z"),
+            share_event("e2", "2026-05-29T03:19:02.349Z"),
+        ];
+        let notified = vec!["e1".to_string(), "e2".to_string()];
+        let (fresh, updated) = partition_unnotified(&events, &notified);
+        assert!(fresh.is_empty(), "already-notified events must not re-fire");
+        assert_eq!(updated, vec!["e1", "e2"]);
+    }
+
+    #[test]
+    fn test_partition_unnotified_returns_only_new() {
+        let events = vec![
+            share_event("e1", "2026-05-29T00:00:00.000Z"), // already seen
+            share_event("e3", "2026-05-30T00:00:00.000Z"), // new
+        ];
+        let notified = vec!["e1".to_string()];
+        let (fresh, updated) = partition_unnotified(&events, &notified);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].event_id, "e3");
+        assert_eq!(updated, vec!["e1", "e3"]);
+    }
+
+    #[test]
+    fn test_partition_unnotified_caps_ring_keeping_newest() {
+        let notified: Vec<String> = (0..NOTIFIED_CAP).map(|i| format!("old{i}")).collect();
+        let events = vec![share_event("brand-new", "2026-06-01T00:00:00.000Z")];
+        let (fresh, updated) = partition_unnotified(&events, &notified);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(updated.len(), NOTIFIED_CAP);
+        assert_eq!(updated.last().unwrap(), "brand-new");
+        assert_eq!(updated.first().unwrap(), "old1"); // old0 evicted
     }
 
     #[test]
@@ -879,13 +1038,21 @@ mod tests {
         let ts = "2026-05-25T12:34:56.789Z";
 
         let mut store = CursorStore::default();
-        store.insert(machine_id.to_string(), ts.to_string());
+        store.insert(
+            machine_id.to_string(),
+            CursorEntry {
+                cursor: Some(ts.to_string()),
+                notified: vec!["e1".to_string()],
+            },
+        );
         let json = serde_json::to_string_pretty(&store).unwrap();
         std::fs::write(&cursor_file, &json).unwrap();
 
-        let loaded: CursorStore =
+        let loaded: HashMap<String, CursorEntryCompat> =
             serde_json::from_str(&std::fs::read_to_string(&cursor_file).unwrap()).unwrap();
-        assert_eq!(loaded.get(machine_id).unwrap(), ts);
+        let entry: CursorEntry = loaded.into_iter().next().unwrap().1.into();
+        assert_eq!(entry.cursor.as_deref(), Some(ts));
+        assert_eq!(entry.notified, vec!["e1"]);
     }
 
     #[test]

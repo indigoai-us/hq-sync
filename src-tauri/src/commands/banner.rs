@@ -119,14 +119,19 @@ struct BannerActionEvent {
 /// additive and picked up live on the next poll (no restart). Shared by
 /// `dm_notify`, `share_notify`, and `updater`.
 pub(crate) fn custom_banner_enabled() -> bool {
-    let Ok(dir) = crate::util::paths::hq_config_dir() else {
-        return true;
-    };
-    let Ok(contents) = std::fs::read_to_string(dir.join("menubar.json")) else {
-        return true;
-    };
-    serde_json::from_str::<serde_json::Value>(&contents)
+    let contents = crate::util::paths::hq_config_dir()
         .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("menubar.json")).ok());
+    custom_banner_enabled_from(contents.as_deref())
+}
+
+/// Pure gate decision from `menubar.json` contents — ON unless `customBanner` is
+/// explicitly `false`. Missing file, unreadable, malformed JSON, or absent key
+/// all default ON. Split out so the routing rule (shared by DM / share / meeting
+/// / update) is unit-testable without the filesystem.
+pub(crate) fn custom_banner_enabled_from(contents: Option<&str>) -> bool {
+    contents
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
         .and_then(|j| j.get("customBanner").and_then(|v| v.as_bool()))
         .unwrap_or(true)
 }
@@ -341,6 +346,33 @@ pub async fn show_share_banner(
     show_banner(app, payload).await
 }
 
+/// Meeting-detected → banner. Body-click opens the Meetings window; the chip
+/// starts recording. `data` carries `{ windowId, platform }` so `App.svelte`'s
+/// banner-action router can drive the same flow as the native
+/// `notification:meeting-action` path. Replaces the native UN/osascript banner
+/// when `customBanner` is on (the native path remains as the off fallback).
+pub async fn show_meeting_banner(
+    app: AppHandle,
+    title: String,
+    body: String,
+    window_id: String,
+    platform: String,
+) -> Result<(), String> {
+    let payload = BannerPayload {
+        kind: "meeting".to_string(),
+        title,
+        body,
+        // System source → the HQ mark renders in the avatar regardless of
+        // icon_text, so this is purely a non-macOS / fallback glyph.
+        icon_text: Some("●".to_string()),
+        action_label: Some("Record".to_string()),
+        action_id: Some("record".to_string()),
+        click_action_id: "open".to_string(),
+        data: serde_json::json!({ "windowId": window_id, "platform": platform }),
+    };
+    show_banner(app, payload).await
+}
+
 /// New HQ Sync version → banner. The chip installs; a body-click reveals the
 /// popover (which carries the full update UI) without forcing a restart.
 pub async fn show_update_banner(
@@ -463,4 +495,49 @@ pub async fn preview_share_banner(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn preview_update_banner(app: AppHandle) -> Result<(), String> {
     show_update_banner(app, "0.4.0".to_string(), Some("instant DMs + custom banners".to_string())).await
+}
+
+/// Fabricate a meeting-detected event and show its banner (manual QA).
+#[tauri::command]
+pub async fn preview_meeting_banner(app: AppHandle) -> Result<(), String> {
+    show_meeting_banner(
+        app,
+        "Zoom meeting detected".to_string(),
+        "Zoom: Weekly sync".to_string(),
+        "preview-window-1".to_string(),
+        "zoom".to_string(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_defaults_on_when_absent_or_unreadable() {
+        assert!(custom_banner_enabled_from(None));
+        assert!(custom_banner_enabled_from(Some("not json")));
+        assert!(custom_banner_enabled_from(Some("{}")));
+        assert!(custom_banner_enabled_from(Some(r#"{"other":true}"#)));
+    }
+
+    #[test]
+    fn gate_on_when_explicitly_true() {
+        assert!(custom_banner_enabled_from(Some(r#"{"customBanner":true}"#)));
+    }
+
+    #[test]
+    fn gate_off_only_when_explicitly_false() {
+        assert!(!custom_banner_enabled_from(Some(r#"{"customBanner":false}"#)));
+        // Non-bool values are ignored → default ON.
+        assert!(custom_banner_enabled_from(Some(r#"{"customBanner":"false"}"#)));
+    }
+
+    #[test]
+    fn initials_handles_names() {
+        assert_eq!(initials("Corey Epstein"), "CE");
+        assert_eq!(initials("Alice"), "AL");
+        assert_eq!(initials(""), "?");
+    }
 }

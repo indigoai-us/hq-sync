@@ -797,7 +797,37 @@ pub async fn meetings_notify_detected(
         payload.meeting_url.as_deref(),
     );
 
-    // 5. Fire the notification via `mac-notification-sys` directly so we
+    // 5. Custom-banner path (default). When `customBanner` is on, deliver the
+    // detection through the in-app liquid-glass banner — the same HQ-branded
+    // surface as DM / share / update — instead of the native UN/osascript/legacy
+    // stack below. The banner runs in-process, so a body-click opens the Meetings
+    // window straight from `App.svelte`'s banner-action router (no UN delegate
+    // needed) and the chip starts recording. The native delivery below is kept
+    // only as the `customBanner: false` fallback (older macOS / opt-out).
+    if crate::commands::banner::custom_banner_enabled() {
+        let title = build_notification_title(&platform_lc);
+        let window_id = payload.window_id.clone().unwrap_or_default();
+        if let Err(e) = crate::commands::banner::show_meeting_banner(
+            app.clone(),
+            title,
+            body.clone(),
+            window_id,
+            platform_lc.clone(),
+        )
+        .await
+        {
+            crate::util::logfile::log(
+                "meetings",
+                &format!("custom meeting banner failed: {e}"),
+            );
+        }
+        mark(&mut ledger, key, LedgerAction::Notified, now);
+        let _ = write_ledger(&ledger);
+        set_prompt_badge(&app, get_prompt_pending() + 1);
+        return Ok(true);
+    }
+
+    // 6. Native fallback (customBanner off). Fire via `mac-notification-sys` directly so we
     // can attach a "Record" action button AND learn when the user clicks
     // the notification body. `tauri-plugin-notification` 2.3.3's desktop
     // path ignores `action_type_id` (it's mobile-only at that layer), so
