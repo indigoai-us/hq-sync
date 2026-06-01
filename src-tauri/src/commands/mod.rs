@@ -21,6 +21,7 @@ pub mod hq_core_state;
 pub mod hq_core_update;
 pub mod meetings;
 pub mod new_files;
+pub mod packages;
 pub mod notifications;
 pub mod oauth;
 pub mod permissions;

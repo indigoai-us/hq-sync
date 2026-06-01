@@ -38,6 +38,20 @@
         "url": "desktop-alt.html",
         "visible": false,
         "create": false
+      },
+      {
+        "label": "packages",
+        "title": "HQ Packages",
+        "width": 720,
+        "height": 600,
+        "minWidth": 520,
+        "minHeight": 420,
+        "decorations": true,
+        "transparent": false,
+        "titleBarStyle": "Overlay",
+        "url": "packages.html",
+        "visible": false,
+        "create": false
       }
     ],
     "security": {

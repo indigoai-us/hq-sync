@@ -35,6 +35,7 @@ export default defineConfig({
       input: {
         main: resolve(rootDir, "index.html"),
         desktopAlt: resolve(rootDir, "desktop-alt.html"),
+        packages: resolve(rootDir, "packages.html"),
       },
     },
   },
