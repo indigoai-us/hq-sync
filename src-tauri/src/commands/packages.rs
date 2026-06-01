@@ -59,6 +59,10 @@ async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
     let folder = resolve_hq_folder();
     let output = Command::new(&hq)
         .args(args)
+        // `hq` is a `#!/usr/bin/env node` script; a Dock/launchd-spawned app
+        // gets a minimal PATH where `env` can't find node (exit 127). Hand it
+        // the same enriched PATH the sync runner uses. See util::paths.
+        .env("PATH", paths::child_path())
         .current_dir(&folder)
         .env("HQ_NO_UPDATE_CHECK", "1")
         .env("HQ_ROOT", &folder)
@@ -141,6 +145,8 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
     );
     let mut child = Command::new(&hq)
         .args(&args)
+        // node-shebang PATH fix — see run_hq_json.
+        .env("PATH", paths::child_path())
         .current_dir(&folder)
         .env("HQ_NO_UPDATE_CHECK", "1")
         .env("HQ_ROOT", &folder)
