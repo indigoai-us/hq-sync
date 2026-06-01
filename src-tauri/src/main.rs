@@ -122,10 +122,10 @@ fn main() {
 
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
-    // Cmd+Shift+H — global hotkey to summon the popover from anywhere.
+    // Opt+Shift+H — global hotkey to summon the popover from anywhere.
     // Defined up front so the plugin builder and the setup-time `register`
     // call agree on the exact key combo.
-    let show_shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyH);
+    let show_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
 
     tauri::Builder::default()
         // single-instance MUST be the first plugin: it runs before any other
@@ -410,7 +410,7 @@ fn main() {
                 _ => {}
             }
 
-            // Register Cmd+Shift+H globally so the popover can be summoned
+            // Register Opt+Shift+H globally so the popover can be summoned
             // from any app. The handler (configured on the plugin builder
             // above) calls `tray::show_window_at_tray`. Registration can
             // fail if another app already holds the chord — log and
@@ -418,11 +418,11 @@ fn main() {
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
                 let shortcut =
-                    Shortcut::new(Some(Modifiers::SUPER | Modifiers::SHIFT), Code::KeyH);
+                    Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
                 if let Err(e) = app.global_shortcut().register(shortcut) {
                     util::logfile::log(
                         "ui",
-                        &format!("global shortcut Cmd+Shift+H register FAILED: {e}"),
+                        &format!("global shortcut Opt+Shift+H register FAILED: {e}"),
                     );
                 }
             }
