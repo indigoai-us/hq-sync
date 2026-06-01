@@ -112,3 +112,50 @@ export const popoverProps = {
   bindStatsRefresh: () => {},
   onmeetingsclick: () => {},
 };
+
+/**
+ * Banner-notification fixtures for `?view=banner&kind=...`. Shapes mirror the
+ * Rust `BannerPayload` (camelCase) so the harness preview matches production.
+ */
+export const bannerFixtures: Record<string, Record<string, unknown>> = {
+  share: {
+    kind: 'share',
+    title: 'Stefan Schmidt',
+    body: 'Sharing the Q1 forecast — take a look before our sync.',
+    iconText: '●',
+    actionLabel: 'Open',
+    actionId: 'open',
+    clickActionId: 'open',
+    data: {},
+  },
+  meeting: {
+    kind: 'meeting',
+    title: 'Zoom meeting detected',
+    body: 'Zoom: Weekly sync',
+    iconText: '●',
+    actionLabel: 'Record',
+    actionId: 'record',
+    clickActionId: 'open',
+    data: { windowId: 'preview-window-1', platform: 'zoom' },
+  },
+  dm: {
+    kind: 'dm',
+    title: 'Corey Epstein',
+    body: 'Can you review the notification banner change when you get a sec?',
+    iconText: '●',
+    actionLabel: 'Copy prompt',
+    actionId: 'copy',
+    clickActionId: 'open',
+    data: {},
+  },
+  update: {
+    kind: 'update',
+    title: 'New version',
+    body: 'Version 0.4.4 is ready — custom HQ-branded notification banners.',
+    iconText: '⬆',
+    actionLabel: 'Update now',
+    actionId: 'update',
+    clickActionId: 'open',
+    data: { version: '0.4.4' },
+  },
+};

@@ -60,14 +60,17 @@ const EVENT_BANNER: &str = "banner:event";
 /// for the CUSTOM banner path (the native paths still emit their own events).
 const EVENT_BANNER_ACTION: &str = "notification:banner-action";
 
-/// Banner geometry (logical px). `BANNER_H` is sized tight to the card content
-/// (avatar + title + two-line body + action row) so the vibrancy backdrop and
-/// the rounded card coincide with no dead padding. We do NOT resize the window
-/// from the webview: resizing an NSWindow leaves the NSVisualEffectView's
-/// rounded-corner mask at the old geometry, exposing square corners behind the
-/// card. Fixed size keeps the corners clean.
+/// Banner geometry (logical px). `BANNER_H` is the INITIAL height the window is
+/// created at; the frontend measures its rendered content on mount and calls
+/// `resize_banner` to shrink/grow the window to fit (so a one-line DM isn't
+/// padded out to a three-line share). Resizing is safe because the rounded
+/// corners are clipped via the contentView layer's `cornerRadius` +
+/// `masksToBounds`, which follows the new bounds (see `reclip_banner_corners`).
 const BANNER_W: f64 = 366.0;
 const BANNER_H: f64 = 104.0;
+/// Clamp bounds for the content-driven resize.
+const BANNER_H_MIN: f64 = 56.0;
+const BANNER_H_MAX: f64 = 260.0;
 const MARGIN_RIGHT: f64 = 14.0;
 const MARGIN_TOP: f64 = 40.0;
 
@@ -119,14 +122,19 @@ struct BannerActionEvent {
 /// additive and picked up live on the next poll (no restart). Shared by
 /// `dm_notify`, `share_notify`, and `updater`.
 pub(crate) fn custom_banner_enabled() -> bool {
-    let Ok(dir) = crate::util::paths::hq_config_dir() else {
-        return true;
-    };
-    let Ok(contents) = std::fs::read_to_string(dir.join("menubar.json")) else {
-        return true;
-    };
-    serde_json::from_str::<serde_json::Value>(&contents)
+    let contents = crate::util::paths::hq_config_dir()
         .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("menubar.json")).ok());
+    custom_banner_enabled_from(contents.as_deref())
+}
+
+/// Pure gate decision from `menubar.json` contents — ON unless `customBanner` is
+/// explicitly `false`. Missing file, unreadable, malformed JSON, or absent key
+/// all default ON. Split out so the routing rule (shared by DM / share / meeting
+/// / update) is unit-testable without the filesystem.
+pub(crate) fn custom_banner_enabled_from(contents: Option<&str>) -> bool {
+    contents
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
         .and_then(|j| j.get("customBanner").and_then(|v| v.as_bool()))
         .unwrap_or(true)
 }
@@ -341,6 +349,33 @@ pub async fn show_share_banner(
     show_banner(app, payload).await
 }
 
+/// Meeting-detected → banner. Body-click opens the Meetings window; the chip
+/// starts recording. `data` carries `{ windowId, platform }` so `App.svelte`'s
+/// banner-action router can drive the same flow as the native
+/// `notification:meeting-action` path. Replaces the native UN/osascript banner
+/// when `customBanner` is on (the native path remains as the off fallback).
+pub async fn show_meeting_banner(
+    app: AppHandle,
+    title: String,
+    body: String,
+    window_id: String,
+    platform: String,
+) -> Result<(), String> {
+    let payload = BannerPayload {
+        kind: "meeting".to_string(),
+        title,
+        body,
+        // System source → the HQ mark renders in the avatar regardless of
+        // icon_text, so this is purely a non-macOS / fallback glyph.
+        icon_text: Some("●".to_string()),
+        action_label: Some("Record".to_string()),
+        action_id: Some("record".to_string()),
+        click_action_id: "open".to_string(),
+        data: serde_json::json!({ "windowId": window_id, "platform": platform }),
+    };
+    show_banner(app, payload).await
+}
+
 /// New HQ Sync version → banner. The chip installs; a body-click reveals the
 /// popover (which carries the full update UI) without forcing a restart.
 pub async fn show_update_banner(
@@ -408,6 +443,56 @@ pub async fn dismiss_banner(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the banner window to fit its rendered content. `BannerNotification`
+/// measures its card height after each payload and calls this so the window
+/// hugs the content instead of a fixed 104px (which over-pads short banners).
+/// Keeps the top-right anchor (a content-size change can shift the macOS
+/// bottom-left origin) and re-asserts the rounded corners on the new bounds.
+#[tauri::command]
+pub async fn resize_banner(app: AppHandle, height: f64) -> Result<(), String> {
+    let h = height.clamp(BANNER_H_MIN, BANNER_H_MAX);
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        window
+            .set_size(tauri::LogicalSize::new(BANNER_W, h))
+            .map_err(|e| e.to_string())?;
+        let _ = window.set_position(top_right_position(&app));
+        #[cfg(target_os = "macos")]
+        reclip_banner_corners(&app);
+    }
+    Ok(())
+}
+
+/// Re-assert the rounded-corner clip on the banner window's contentView layer.
+/// Idempotent — the layer's `cornerRadius`/`masksToBounds` follows the view's
+/// bounds, so calling this after a resize re-rounds the new geometry (including
+/// the NSVisualEffectView subview, whose own mask image would otherwise be
+/// stale). macOS-only.
+#[cfg(target_os = "macos")]
+fn reclip_banner_corners(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        use objc2::{msg_send, runtime::AnyObject};
+        let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+            return;
+        };
+        if let Ok(ns_win) = window.ns_window() {
+            let ns_win = ns_win as *mut AnyObject;
+            // SAFETY: main thread (run_on_main_thread); public AppKit selectors.
+            unsafe {
+                let content: *mut AnyObject = msg_send![ns_win, contentView];
+                if !content.is_null() {
+                    let _: () = msg_send![content, setWantsLayer: true];
+                    let layer: *mut AnyObject = msg_send![content, layer];
+                    if !layer.is_null() {
+                        let _: () = msg_send![layer, setCornerRadius: 18.0_f64];
+                        let _: () = msg_send![layer, setMasksToBounds: true];
+                    }
+                }
+            }
+        }
+    });
+}
+
 fn dismiss_banner_inner(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.close();
@@ -463,4 +548,49 @@ pub async fn preview_share_banner(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub async fn preview_update_banner(app: AppHandle) -> Result<(), String> {
     show_update_banner(app, "0.4.0".to_string(), Some("instant DMs + custom banners".to_string())).await
+}
+
+/// Fabricate a meeting-detected event and show its banner (manual QA).
+#[tauri::command]
+pub async fn preview_meeting_banner(app: AppHandle) -> Result<(), String> {
+    show_meeting_banner(
+        app,
+        "Zoom meeting detected".to_string(),
+        "Zoom: Weekly sync".to_string(),
+        "preview-window-1".to_string(),
+        "zoom".to_string(),
+    )
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gate_defaults_on_when_absent_or_unreadable() {
+        assert!(custom_banner_enabled_from(None));
+        assert!(custom_banner_enabled_from(Some("not json")));
+        assert!(custom_banner_enabled_from(Some("{}")));
+        assert!(custom_banner_enabled_from(Some(r#"{"other":true}"#)));
+    }
+
+    #[test]
+    fn gate_on_when_explicitly_true() {
+        assert!(custom_banner_enabled_from(Some(r#"{"customBanner":true}"#)));
+    }
+
+    #[test]
+    fn gate_off_only_when_explicitly_false() {
+        assert!(!custom_banner_enabled_from(Some(r#"{"customBanner":false}"#)));
+        // Non-bool values are ignored → default ON.
+        assert!(custom_banner_enabled_from(Some(r#"{"customBanner":"false"}"#)));
+    }
+
+    #[test]
+    fn initials_handles_names() {
+        assert_eq!(initials("Corey Epstein"), "CE");
+        assert_eq!(initials("Alice"), "AL");
+        assert_eq!(initials(""), "?");
+    }
 }

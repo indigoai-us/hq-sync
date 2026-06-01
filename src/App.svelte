@@ -1407,6 +1407,18 @@
               } else if (action === 'open') {
                 await invoke('show_main_window');
               }
+            } else if (kind === 'meeting') {
+              // Mirrors the native `notification:meeting-action` handler:
+              // record → start recording the detected window; open → focus the
+              // popover (active-meetings row). Either way clear the prompt badge.
+              const windowId = data?.windowId ?? '';
+              if (action === 'record' && windowId) {
+                await handleStartRecording(windowId);
+                invoke('meetings_clear_prompt_badge').catch(() => {});
+              } else if (action === 'open') {
+                await invoke('show_main_window');
+                invoke('meetings_clear_prompt_badge').catch(() => {});
+              }
             }
           } catch (err) {
             console.error('banner-action failed', kind, action, err);

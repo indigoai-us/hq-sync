@@ -283,10 +283,12 @@ fn main() {
             commands::banner::banner_window_ready,
             commands::banner::banner_action,
             commands::banner::dismiss_banner,
+            commands::banner::resize_banner,
             commands::banner::show_main_window,
             commands::banner::preview_dm_banner,
             commands::banner::preview_share_banner,
             commands::banner::preview_update_banner,
+            commands::banner::preview_meeting_banner,
         ])
         .setup(|app| {
             // One-shot migration of any legacy `/deploy`-skill stub at
@@ -387,10 +389,11 @@ fn main() {
 
             // SPIKE: env-var trigger to preview the custom notification banner
             // without devtools / real inbound events. Pops one representative
-            // banner per source — DM (2s), share (10s), update (18s) — spaced
-            // past the 6s auto-dismiss so each is seen in turn. No-op when unset.
+            // banner per source — DM (2s), share (10s), update (18s), meeting
+            // (26s) — spaced past the 6s auto-dismiss so each is seen in turn.
+            // No-op when unset.
             //   HQ_SYNC_PREVIEW_BANNER=1     → DM only
-            //   HQ_SYNC_PREVIEW_BANNER=all   → DM, then share, then update
+            //   HQ_SYNC_PREVIEW_BANNER=all   → DM, share, update, meeting
             match std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() {
                 Ok("1") | Ok("all") => {
                     let all = std::env::var("HQ_SYNC_PREVIEW_BANNER").as_deref() == Ok("all");
@@ -404,6 +407,8 @@ fn main() {
                             let _ = commands::banner::preview_share_banner(h.clone()).await;
                             tokio::time::sleep(Duration::from_secs(8)).await;
                             let _ = commands::banner::preview_update_banner(h.clone()).await;
+                            tokio::time::sleep(Duration::from_secs(8)).await;
+                            let _ = commands::banner::preview_meeting_banner(h.clone()).await;
                         }
                     });
                 }
