@@ -130,7 +130,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     });
     expect(summary).toContain("void invoke<CompanySummary>('get_company_summary', { slug })");
     expect(summary).toContain('summary = emptyCompanySummary();');
-    expect(summary).toContain('return () => { cancelled = true; };');
+    expect(summary).toContain('if (myRequest === requestId) {');
     expect(rustDesktopAlt).toContain('pub struct CompanySummary');
     expect(rustDesktopAlt).toContain('pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>');
     expect(rustMain).toContain('commands::desktop_alt::get_company_summary');

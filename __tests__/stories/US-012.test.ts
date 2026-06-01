@@ -75,7 +75,7 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     );
 
     expect(getCompanySecrets).toContain('let url = secrets_url(&vault_base()?, &company_uid)?;');
-    expect(getCompanySecrets).toContain('build_client() .get(url)');
+    expect(getCompanySecrets).toContain('build_client() .get(&url)');
     expect(getCompanySecrets).toContain('parse_secrets_response(status, &text)');
     expect(urlBuilder).toContain('format!( "{}/secrets/{}", base.trim_end_matches(\'/\'), company_uid )');
     expect(getCompanySecrets).not.toMatch(/\.(post|put|patch)\s*\(/);
