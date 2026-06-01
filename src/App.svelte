@@ -15,6 +15,11 @@
     handleMeetingDetected,
     type MeetingDetectedPayload,
   } from './lib/meetingDetection';
+  import {
+    armStopWatchdog,
+    clearStopWatchdog,
+    resolveStopTimeout,
+  } from './lib/stopWatchdog';
   import './styles/popover.css';
 
   interface Config {
@@ -310,13 +315,23 @@
   }
   async function handleStopRecording(windowId: string) {
     updateActiveMeeting(windowId, { state: 'stopping' });
+    // Backstop the SDK confirmation: if no `recording:ended`/`recording:error`
+    // arrives (SDK crashed, bridge stalled, event dropped) the row would hang
+    // in `stopping` forever — force it to `error` once the watchdog fires.
+    armStopWatchdog(windowId, (id) => {
+      const row = activeMeetings.find((m) => m.windowId === id);
+      const patch = resolveStopTimeout(row?.state);
+      if (patch) updateActiveMeeting(id, patch);
+    });
     try {
       await invoke('stop_recording', { windowId });
       // Flip to detected/closed on `recording:ended` event.
     } catch (err) {
       console.error('stop_recording failed:', err);
       // Roll back to recording — the bridge errored before the SDK got
-      // the stop, so we're still recording.
+      // the stop, so we're still recording. Cancel the watchdog so it
+      // doesn't later flip this still-recording row to `error`.
+      clearStopWatchdog(windowId);
       updateActiveMeeting(windowId, {
         state: 'recording',
         error: typeof err === 'string' ? err : String(err),
@@ -1104,6 +1119,7 @@
       await listen<{ windowId: string; platform: string; startedAt: string }>(
         'recording:started',
         (event) => {
+          clearStopWatchdog(event.payload.windowId);
           updateActiveMeeting(event.payload.windowId, {
             state: 'recording',
             error: undefined,
@@ -1115,6 +1131,7 @@
       await listen<{ windowId: string; platform: string; endedAt: string }>(
         'recording:ended',
         (event) => {
+          clearStopWatchdog(event.payload.windowId);
           // Recording over — drop the row. (Future: keep the row for a
           // few seconds showing "Saved" so the user gets confirmation
           // before it disappears.)
@@ -1126,6 +1143,7 @@
       await listen<{ cmd: string; windowId: string; message: string }>(
         'recording:error',
         (event) => {
+          clearStopWatchdog(event.payload.windowId);
           updateActiveMeeting(event.payload.windowId, {
             state: 'error',
             error: `${event.payload.cmd}: ${event.payload.message}`,
@@ -1137,6 +1155,7 @@
       await listen<{ windowId: string; platform: string; closedAt: string }>(
         'meeting:closed',
         (event) => {
+          clearStopWatchdog(event.payload.windowId);
           // User closed the meeting app without recording — drop the row
           // so the popover doesn't show stale detections.
           removeActiveMeeting(event.payload.windowId);

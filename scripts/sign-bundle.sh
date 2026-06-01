@@ -64,6 +64,40 @@ fi
 # cert that requires the hardened runtime + specific entitlements like
 # Apple Events / sandboxed network access / disable-library-validation
 # for unsigned-by-Apple SDK dylibs).
+#
+# These flags are applied GLOBALLY across the inside-out signing pass, so
+# every Mach-O — including the Recall SDK's child binary
+# desktop_sdk_macos_exe (signed below) — receives the same entitlements.
+# That global application is load-bearing for the JIT keys below: ORC runs
+# in-process inside desktop_sdk_macos_exe, not in hq-sync-menubar.
+#
+# Rationale for each key in src-tauri/Entitlements.plist (kept HERE, not in
+# the plist — Apple's AMFI entitlements parser rejects XML comments and
+# every `codesign --entitlements` call aborts if the plist contains one;
+# see repo policy hq-sync-entitlements-plist-no-xml-comments):
+#
+#   com.apple.security.cs.disable-library-validation
+#       Lets the hardened runtime load the Recall SDK's GStreamer dylibs,
+#       which carry their own (non-Apple, Team-ID-less) signatures.
+#
+#   com.apple.security.cs.allow-jit
+#   com.apple.security.cs.allow-unsigned-executable-memory
+#       The Recall SDK bundles GStreamer, whose ORC (Optimized Inner Loop
+#       Runtime Compiler) JITs media code at runtime. Under the hardened
+#       runtime, allocating write+exec memory is denied unless these keys
+#       are present, so ORC aborts with "Failed to create write and exec
+#       mmap regions" and the SDK server SIGABRT-loops the instant a
+#       recording starts (recording:started fires, then the process dies
+#       ~1.5s later and never confirms stop — the UI hangs in "Stopping…").
+#       allow-jit covers the MAP_JIT path; allow-unsigned-executable-memory
+#       covers ORC's legacy single-RWX-region path — the error wording
+#       ("write and exec" in one region) is the legacy path, so both are
+#       required. Root-caused 2026-06-01 from ~/.hq/logs/hq-sync.log.
+#
+#   com.apple.security.device.audio-input
+#       Hardened-runtime Microphone access (see policy
+#       hq-sync-hardened-runtime-device-entitlements); without it
+#       AVCaptureDevice never prompts and mic reads denied forever.
 if [ -n "${HQ_SIGN_ENTITLEMENTS:-}" ] && [ -f "$HQ_SIGN_ENTITLEMENTS" ]; then
   SIGN_FLAGS+=(--entitlements "$HQ_SIGN_ENTITLEMENTS")
 fi

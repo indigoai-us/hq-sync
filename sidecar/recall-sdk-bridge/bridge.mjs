@@ -43,6 +43,7 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
+import { createRecordingTracker } from "./recording-tracker.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -190,6 +191,29 @@ setTimeout(() => {
   }
 }, 2500);
 
+// --- In-flight recording bookkeeping ---
+//
+// When the SDK server process dies mid-recording (e.g. an ORC/GStreamer
+// SIGABRT under a misconfigured hardened runtime) it never fires
+// `recording-ended`, so without this the Svelte UI is stranded in the
+// `stopping`/`recording` state forever. We track which windows are actively
+// recording and, on a fatal SDK event, synthesize a terminal `recording:error`
+// for each so the UI unwedges with an explanatory error instead of an infinite
+// spinner. `drainOnFatal` is idempotent — the paired `error`+`shutdown` a
+// crash fires only emits one set of terminal errors.
+const recordings = createRecordingTracker();
+
+function failActiveRecordings(reason) {
+  const events = recordings.drainOnFatal(reason);
+  for (const ev of events) emitNdjson(ev);
+  if (events.length > 0) {
+    emitLog(
+      "warn",
+      `synthesized recording:error for ${events.length} in-flight recording(s): ${reason}`,
+    );
+  }
+}
+
 // --- Event wiring ---
 
 RecallAiSdk.addEventListener("meeting-detected", (event) => {
@@ -247,6 +271,17 @@ RecallAiSdk.addEventListener("meeting-detected", (event) => {
 
 RecallAiSdk.addEventListener("error", (event) => {
   emitLog("warn", `sdk error: ${event?.type ?? "?"} — ${event?.message ?? ""}`);
+  // A `process` error means the SDK's native server exited unexpectedly — any
+  // in-flight recording is gone and will never get a `recording-ended`. Fail
+  // them now so the UI doesn't hang. Skipped during our own graceful shutdown,
+  // where the exit is expected and Rust is already tearing us down.
+  if (event?.type === "process" && !shuttingDown) {
+    failActiveRecordings(
+      event?.message
+        ? `Recording engine crashed: ${event.message}`
+        : "Recording engine crashed",
+    );
+  }
 });
 
 RecallAiSdk.addEventListener("log", (event) => {
@@ -302,6 +337,13 @@ RecallAiSdk.addEventListener("meeting-closed", (event) => {
 
 RecallAiSdk.addEventListener("shutdown", (event) => {
   emitLog("info", `SDK shutdown (code=${event?.code} signal=${event?.signal})`);
+  // The SDK process is gone. If we weren't the ones asking it to stop, any
+  // in-flight recording died with it — fail them so the UI doesn't hang in
+  // "Stopping…".
+  if (!shuttingDown) {
+    const signal = event?.signal ? ` (signal=${event.signal})` : "";
+    failActiveRecordings(`Recording engine stopped unexpectedly${signal}`);
+  }
 });
 
 // --- Recording lifecycle events ---
@@ -314,9 +356,11 @@ RecallAiSdk.addEventListener("shutdown", (event) => {
 
 RecallAiSdk.addEventListener("recording-started", (event) => {
   const window = event?.window ?? {};
+  const windowId = typeof window.id === "string" ? window.id : "";
+  recordings.started(windowId);
   emitNdjson({
     type: "recording:started",
-    windowId: typeof window.id === "string" ? window.id : "",
+    windowId,
     platform: normalisePlatform(window.platform),
     startedAt: new Date().toISOString(),
   });
@@ -328,9 +372,11 @@ RecallAiSdk.addEventListener("recording-started", (event) => {
 
 RecallAiSdk.addEventListener("recording-ended", (event) => {
   const window = event?.window ?? {};
+  const windowId = typeof window.id === "string" ? window.id : "";
+  recordings.ended(windowId);
   emitNdjson({
     type: "recording:ended",
-    windowId: typeof window.id === "string" ? window.id : "",
+    windowId,
     platform: normalisePlatform(window.platform),
     endedAt: new Date().toISOString(),
   });
@@ -415,6 +461,9 @@ async function handleCommand(cmd) {
       "error",
       `command ${cmd.cmd} (windowId=${windowId}) failed: ${err?.message ?? err}`,
     );
+    // The command failed, so this window isn't (or is no longer) recording —
+    // drop it from in-flight tracking so a later SDK crash doesn't re-fail it.
+    recordings.ended(windowId);
     // Surface failures back to Rust as a typed error event so the UI
     // can show "couldn't start recording" instead of just spinning.
     emitNdjson({
