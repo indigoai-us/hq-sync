@@ -98,6 +98,20 @@ export const popoverProps = {
   coreInstalling: false,
   coreInstallLastResult: null,
   meetingsEnabled: true,
+  // Indigo-gated header extras, on by default in the harness so the full
+  // header (meeting + desktop-view + Sync) is previewable. One detected
+  // meeting exercises the monochrome "detected" state.
+  desktopAltEnabled: true,
+  activeMeetings: [
+    {
+      windowId: 'w1',
+      platform: 'zoom',
+      meetingUrl: 'https://zoom.us/j/1',
+      detectedAt: '2026-06-01T09:00:00Z',
+      state: 'detected' as const,
+      companyUid: null,
+    },
+  ],
   onsync: () => console.debug('[harness] sync'),
   oncancel: () => console.debug('[harness] cancel'),
   onsettings: () => (window.location.search = '?view=settings'),

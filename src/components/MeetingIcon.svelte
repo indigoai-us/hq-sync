@@ -102,57 +102,54 @@
 </button>
 
 <style>
+  /* Matches the .header-icon-button vocabulary in Popover.svelte (32px, 8px
+     radius, popover tokens) so the header action cluster is one consistent
+     control family. Spacing is owned by the parent `.header-actions` gap. */
   .meeting-icon-btn {
     position: relative;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
-    border-radius: 7px;
-    /* Stronger border + slightly brighter background than the prior version,
-       so the glyph reads against the Liquid Glass header background. */
-    border: 1px solid rgba(255, 255, 255, 0.20);
-    background: rgba(255, 255, 255, 0.10);
-    /* High-contrast glyph color — was inheriting the muted popover text;
-       now uses a near-white so the calendar reads at a glance. */
-    color: #f4f4f5;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 8px;
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
+    color: var(--popover-text, #e0e0e0);
     cursor: pointer;
-    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
     padding: 0;
-    margin-right: 8px;
+    -webkit-app-region: no-drag;
   }
   .meeting-icon-btn:hover {
-    background: rgba(255, 255, 255, 0.18);
-    border-color: rgba(255, 255, 255, 0.32);
+    color: var(--popover-text-heading, #ffffff);
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
   .meeting-icon-btn:focus-visible {
-    outline: 2px solid rgba(180, 180, 255, 0.7);
-    outline-offset: 1px;
+    outline: 2px solid var(--popover-highlight, rgba(255, 255, 255, 0.34));
+    outline-offset: 2px;
+    color: var(--popover-text-heading, #ffffff);
   }
-  /* Detected — yellow/amber. A meeting is in progress and the user has
-     not yet pressed Record. Matches the macOS HUD amber for "attention
-     needed but non-urgent". */
+  /* Detected — a meeting is up and not yet recorded. Monochrome "attention":
+     brighter glyph on a stronger surface (no amber). The calendar's filled dot
+     carries the "something's live" cue; the app uses no severity colour. */
   .meeting-icon-btn[data-state='detected'] {
-    color: #facc15;
-    background: rgba(250, 204, 21, 0.16);
-    border-color: rgba(250, 204, 21, 0.42);
+    color: var(--popover-text-heading, #ffffff);
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
-  .meeting-icon-btn[data-state='detected']:hover {
-    background: rgba(250, 204, 21, 0.24);
-    border-color: rgba(250, 204, 21, 0.62);
-  }
-  /* Recording — red. A SDK upload is actively in flight (the "live
-     indicator" on the calendar dot). Same palette as the popover Stop
-     button so the user reads it as the same state. */
+  /* Recording — capture in flight. The strongest, most "active" treatment: the
+     primary fill with an inverted glyph, mirroring the selected/primary
+     language used across the popover. Still monochrome — no red. */
   .meeting-icon-btn[data-state='recording'] {
-    color: #f87171;
-    background: rgba(248, 113, 113, 0.16);
-    border-color: rgba(248, 113, 113, 0.45);
+    color: var(--popover-primary-text, #111113);
+    background: var(--popover-primary, #ffffff);
+    border-color: var(--popover-primary, #ffffff);
   }
   .meeting-icon-btn[data-state='recording']:hover {
-    background: rgba(248, 113, 113, 0.24);
-    border-color: rgba(248, 113, 113, 0.65);
+    background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
+    border-color: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
   .meeting-icon-badge {
     position: absolute;
@@ -162,8 +159,8 @@
     height: 14px;
     padding: 0 3px;
     border-radius: 7px;
-    background: #ff4d4f;
-    color: white;
+    background: var(--popover-primary, #ffffff);
+    color: var(--popover-primary-text, #111113);
     font-size: 9px;
     font-weight: 600;
     line-height: 14px;
