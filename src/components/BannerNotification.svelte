@@ -7,6 +7,7 @@
   // (open DM/share detail, copy prompt, install update). Auto-dismisses; hover
   // pauses.
   import '../styles/popover.css';
+  import { tick } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
 
@@ -27,6 +28,23 @@
   let leaving = $state(false);
   let paused = $state(false);
   let dismissTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Card content (title + body + optional action row). Measured after each
+  // payload so the window can hug the content height — see fitHeight().
+  let contentEl = $state<HTMLDivElement | undefined>(undefined);
+  const AVATAR_H = 38; // px — the HQ chip; the window never shrinks below it
+  const CARD_PAD = 28; // px — vertical padding (0.875rem top + bottom)
+
+  /** Measure the rendered card and resize the native window to fit it, so a
+   *  one-line banner isn't padded out to the tallest (share/meeting) layout. */
+  async function fitHeight(): Promise<void> {
+    await tick();
+    requestAnimationFrame(() => {
+      const ch = contentEl?.getBoundingClientRect().height ?? 0;
+      const target = Math.round(Math.max(ch, AVATAR_H) + CARD_PAD);
+      void invoke('resize_banner', { height: target }).catch(() => {});
+    });
+  }
 
   function armDismiss(): void {
     clearTimeout(dismissTimer);
@@ -66,7 +84,9 @@
     let unlisten: (() => void) | undefined;
     listen<BannerPayload>('banner:event', (e) => {
       payload = e.payload;
+      leaving = false; // a fresh banner reusing the window must not stay faded.
       armDismiss(); // (re)start the countdown each time a notification arrives.
+      void fitHeight(); // size the window to the new content.
     }).then((fn) => {
       unlisten = fn;
       // Ready-handshake: tell Rust the listener is mounted so it emits the
@@ -106,7 +126,7 @@
       </svg>
     </div>
 
-    <div class="content">
+    <div class="content" bind:this={contentEl}>
       <div class="top">
         <span class="app">HQ Sync</span>
         <span class="sep">·</span>

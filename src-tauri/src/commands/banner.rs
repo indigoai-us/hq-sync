@@ -60,14 +60,17 @@ const EVENT_BANNER: &str = "banner:event";
 /// for the CUSTOM banner path (the native paths still emit their own events).
 const EVENT_BANNER_ACTION: &str = "notification:banner-action";
 
-/// Banner geometry (logical px). `BANNER_H` is sized tight to the card content
-/// (avatar + title + two-line body + action row) so the vibrancy backdrop and
-/// the rounded card coincide with no dead padding. We do NOT resize the window
-/// from the webview: resizing an NSWindow leaves the NSVisualEffectView's
-/// rounded-corner mask at the old geometry, exposing square corners behind the
-/// card. Fixed size keeps the corners clean.
+/// Banner geometry (logical px). `BANNER_H` is the INITIAL height the window is
+/// created at; the frontend measures its rendered content on mount and calls
+/// `resize_banner` to shrink/grow the window to fit (so a one-line DM isn't
+/// padded out to a three-line share). Resizing is safe because the rounded
+/// corners are clipped via the contentView layer's `cornerRadius` +
+/// `masksToBounds`, which follows the new bounds (see `reclip_banner_corners`).
 const BANNER_W: f64 = 366.0;
 const BANNER_H: f64 = 104.0;
+/// Clamp bounds for the content-driven resize.
+const BANNER_H_MIN: f64 = 56.0;
+const BANNER_H_MAX: f64 = 260.0;
 const MARGIN_RIGHT: f64 = 14.0;
 const MARGIN_TOP: f64 = 40.0;
 
@@ -438,6 +441,56 @@ pub async fn banner_action(
 pub async fn dismiss_banner(app: AppHandle) -> Result<(), String> {
     dismiss_banner_inner(&app);
     Ok(())
+}
+
+/// Resize the banner window to fit its rendered content. `BannerNotification`
+/// measures its card height after each payload and calls this so the window
+/// hugs the content instead of a fixed 104px (which over-pads short banners).
+/// Keeps the top-right anchor (a content-size change can shift the macOS
+/// bottom-left origin) and re-asserts the rounded corners on the new bounds.
+#[tauri::command]
+pub async fn resize_banner(app: AppHandle, height: f64) -> Result<(), String> {
+    let h = height.clamp(BANNER_H_MIN, BANNER_H_MAX);
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        window
+            .set_size(tauri::LogicalSize::new(BANNER_W, h))
+            .map_err(|e| e.to_string())?;
+        let _ = window.set_position(top_right_position(&app));
+        #[cfg(target_os = "macos")]
+        reclip_banner_corners(&app);
+    }
+    Ok(())
+}
+
+/// Re-assert the rounded-corner clip on the banner window's contentView layer.
+/// Idempotent — the layer's `cornerRadius`/`masksToBounds` follows the view's
+/// bounds, so calling this after a resize re-rounds the new geometry (including
+/// the NSVisualEffectView subview, whose own mask image would otherwise be
+/// stale). macOS-only.
+#[cfg(target_os = "macos")]
+fn reclip_banner_corners(app: &AppHandle) {
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        use objc2::{msg_send, runtime::AnyObject};
+        let Some(window) = app.get_webview_window(WINDOW_LABEL) else {
+            return;
+        };
+        if let Ok(ns_win) = window.ns_window() {
+            let ns_win = ns_win as *mut AnyObject;
+            // SAFETY: main thread (run_on_main_thread); public AppKit selectors.
+            unsafe {
+                let content: *mut AnyObject = msg_send![ns_win, contentView];
+                if !content.is_null() {
+                    let _: () = msg_send![content, setWantsLayer: true];
+                    let layer: *mut AnyObject = msg_send![content, layer];
+                    if !layer.is_null() {
+                        let _: () = msg_send![layer, setCornerRadius: 18.0_f64];
+                        let _: () = msg_send![layer, setMasksToBounds: true];
+                    }
+                }
+            }
+        }
+    });
 }
 
 fn dismiss_banner_inner(app: &AppHandle) {

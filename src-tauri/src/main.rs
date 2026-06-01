@@ -283,6 +283,7 @@ fn main() {
             commands::banner::banner_window_ready,
             commands::banner::banner_action,
             commands::banner::dismiss_banner,
+            commands::banner::resize_banner,
             commands::banner::show_main_window,
             commands::banner::preview_dm_banner,
             commands::banner::preview_share_banner,
