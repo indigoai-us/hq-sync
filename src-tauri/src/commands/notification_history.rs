@@ -1,0 +1,184 @@
+//! Notification history — a unified, re-readable timeline of everything the
+//! menubar surfaced and the user may have dismissed.
+//!
+//! Two server-retained sources are fetched on demand (newest-first, full
+//! history rather than the unseen-delta the live pollers request):
+//!   - DMs:    `GET /v1/notify/inbox?limit=N`        (DmEvent)
+//!   - Shares: `GET /v1/files/shared-with-me?limit=N` (ShareEvent)
+//!
+//! New-file notifications are intentionally NOT fetched here: the runner emits
+//! them per-sync and nothing persists them server-side, so true cross-session
+//! history would need a new backend endpoint. The window includes the current
+//! session's new-file rows client-side via the existing `get_activity_log`
+//! command (entries with `is_new = true`), clearly scoped as session-only.
+//!
+//! Resilience: each source is fetched independently. A single source failing
+//! degrades to its empty list (logged) so the other still renders; only a hard
+//! auth/URL failure (can't even build the request) surfaces as an error.
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
+
+use crate::commands::cognito;
+use crate::commands::dm_notify::DmEvent;
+use crate::commands::share_notify::ShareEvent;
+use crate::commands::sync::resolve_vault_api_url;
+use crate::util::client_info::build_client;
+use crate::util::logfile::log;
+
+const LOG_TAG: &str = "notif-history";
+const WINDOW_LABEL: &str = "notification-history";
+
+/// Default + maximum number of items fetched per source. The server returns
+/// newest-first, so this is the most-recent N; pagination is a future add.
+const DEFAULT_LIMIT: u32 = 100;
+const MAX_LIMIT: u32 = 200;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InboxResponse {
+    events: Vec<DmEvent>,
+    #[allow(dead_code)]
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SharedWithMeResponse {
+    events: Vec<ShareEvent>,
+    #[allow(dead_code)]
+    next_cursor: Option<String>,
+}
+
+/// The two server-retained notification sources, returned to the history window.
+/// New-file (session-scoped) rows are merged client-side from `get_activity_log`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationHistory {
+    pub dms: Vec<DmEvent>,
+    pub shares: Vec<ShareEvent>,
+}
+
+async fn fetch_dms(client: &reqwest::Client, base_url: &str, token: &str, limit: u32) -> Result<Vec<DmEvent>, String> {
+    let url = format!("{}/v1/notify/inbox?limit={}", base_url, limit);
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("status {}", status.as_u16()));
+    }
+    let parsed = resp
+        .json::<InboxResponse>()
+        .await
+        .map_err(|e| format!("parse: {e}"))?;
+    Ok(parsed.events)
+}
+
+async fn fetch_shares(client: &reqwest::Client, base_url: &str, token: &str, limit: u32) -> Result<Vec<ShareEvent>, String> {
+    let url = format!("{}/v1/files/shared-with-me?limit={}", base_url, limit);
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("status {}", status.as_u16()));
+    }
+    let parsed = resp
+        .json::<SharedWithMeResponse>()
+        .await
+        .map_err(|e| format!("parse: {e}"))?;
+    Ok(parsed.events)
+}
+
+/// Fetch the full (newest-N) DM + share history for the history window.
+#[tauri::command]
+pub async fn fetch_notification_history(
+    limit: Option<u32>,
+) -> Result<NotificationHistory, String> {
+    let lim = limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("NOTIF_HISTORY_AUTH_FAIL {e}"));
+        format!("Not signed in: {e}")
+    })?;
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("NOTIF_HISTORY_URL_FAIL {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let client = build_client();
+
+    let dms_res = fetch_dms(&client, &base_url, &access_token, lim).await;
+    let shares_res = fetch_shares(&client, &base_url, &access_token, lim).await;
+
+    // Capture each source's error (if any) while consuming the Result, so a
+    // both-failed check below doesn't need to re-borrow the moved values.
+    let mut dm_err: Option<String> = None;
+    let dms = match dms_res {
+        Ok(v) => v,
+        Err(e) => {
+            log(LOG_TAG, &format!("NOTIF_HISTORY_DM_FAIL {e}"));
+            dm_err = Some(e);
+            Vec::new()
+        }
+    };
+    let mut share_err: Option<String> = None;
+    let shares = match shares_res {
+        Ok(v) => v,
+        Err(e) => {
+            log(LOG_TAG, &format!("NOTIF_HISTORY_SHARE_FAIL {e}"));
+            share_err = Some(e);
+            Vec::new()
+        }
+    };
+
+    // Only fail hard if BOTH sources errored — a one-source outage still renders
+    // the other half of the timeline.
+    if let (Some(de), Some(se)) = (&dm_err, &share_err) {
+        return Err(format!("Could not load notifications (dm: {de}; share: {se})"));
+    }
+
+    log(
+        LOG_TAG,
+        &format!("NOTIF_HISTORY_OK dms={} shares={}", dms.len(), shares.len()),
+    );
+    Ok(NotificationHistory { dms, shares })
+}
+
+/// Open (or focus) the notification-history window. Mirrors the DM/share detail
+/// windows: built at runtime on the shared `index.html`, dispatched by label in
+/// `src/main.ts`. The window fetches its own data on mount.
+#[tauri::command]
+pub async fn open_notification_history(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        WINDOW_LABEL,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Notifications")
+    .inner_size(640.0, 680.0)
+    .min_inner_size(460.0, 420.0)
+    .resizable(true)
+    .decorations(true)
+    .title_bar_style(tauri::TitleBarStyle::Overlay)
+    .visible(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}

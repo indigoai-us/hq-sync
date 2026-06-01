@@ -337,6 +337,14 @@
     }
   }
 
+  async function openNotificationHistory() {
+    try {
+      await invoke('open_notification_history');
+    } catch (e) {
+      console.error('open_notification_history failed:', e);
+    }
+  }
+
   $effect(() => {
     return () => {
       clearDesktopAltErrorTimer();
@@ -533,6 +541,23 @@
          (both identity-gated). Settings is intentionally NOT here — it lives
          once, in the footer. -->
     <div class="header-actions">
+      <!-- Notification history → opens a window listing past DMs, shares, and
+           this session's new files. Always available (not identity-gated). A
+           bell glyph reads as "things that pinged me". -->
+      <button
+        class="header-icon-button notif-history-toggle"
+        type="button"
+        onclick={openNotificationHistory}
+        title="Notification history"
+        aria-label="Notification history"
+        data-testid="notif-history-toggle"
+      >
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M8 1.75a3.5 3.5 0 0 0-3.5 3.5c0 3-1.25 4-1.25 4h9.5s-1.25-1-1.25-4A3.5 3.5 0 0 0 8 1.75Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+          <path d="M6.75 12.25a1.25 1.25 0 0 0 2.5 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </button>
+
       {#if meetingsEnabled && onmeetingsclick}
         <!-- Discreet meeting hook → opens MeetingsWindow. State (detected /
              recording) is carried monochromatically (fill weight), not by a

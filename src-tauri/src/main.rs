@@ -287,6 +287,8 @@ fn main() {
             commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
             commands::dm_notify::fetch_dm_thread,
+            commands::notification_history::fetch_notification_history,
+            commands::notification_history::open_notification_history,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
             commands::banner::banner_window_ready,
