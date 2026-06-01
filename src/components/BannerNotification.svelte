@@ -128,10 +128,6 @@
         </div>
       {/if}
     </div>
-
-    {#if !paused && !leaving}
-      <span class="lifebar" style="animation-duration: {AUTO_DISMISS_MS}ms"></span>
-    {/if}
   </div>
 {/if}
 
@@ -282,25 +278,4 @@
   .chip:hover { background: rgba(120, 170, 255, 0.34); }
 
   .hint { font-size: 0.625rem; color: rgba(255, 255, 255, 0.4); }
-
-  .lifebar {
-    position: absolute;
-    /* Inset from the edges so its square ends can never reach the card's
-       rounded corners. */
-    left: 12px;
-    right: 12px;
-    bottom: 6px;
-    height: 2px;
-    border-radius: 2px;
-    transform-origin: left;
-    background: linear-gradient(90deg, rgba(120, 170, 255, 0.7), rgba(150, 120, 255, 0.6));
-    animation-name: drain;
-    animation-timing-function: linear;
-    animation-fill-mode: forwards;
-  }
-
-  @keyframes drain {
-    from { transform: scaleX(1); }
-    to   { transform: scaleX(0); }
-  }
 </style>
