@@ -515,7 +515,7 @@
 
 <div class="popover">
   <!-- Header -->
-  <header class="popover-header" class:has-desktop-alt-controls={desktopAltEnabled} data-tauri-drag-region>
+  <header class="popover-header" data-tauri-drag-region>
     <div class="header-icon">
       <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <rect width="48" height="48" rx="12" fill="currentColor" opacity="0.92" />
@@ -527,33 +527,34 @@
       <p class="header-path">{folderDisplay}</p>
     </div>
 
-    {#if meetingsEnabled && onmeetingsclick}
-      <!-- Discreet meeting-invite icon, sits just left of Sync. Gated to
-           @getindigo.ai via `meetings_feature_enabled` (SYNC-1) so this
-           branch is dead code for non-Indigo users.
+    <!-- Right-aligned action cluster. `.header-text` (flex:1) pushes it to the
+         edge, so it sits on one line with the identity. For a basic user this
+         is just the Sync button; Indigo adds the meeting + desktop-view entries
+         (both identity-gated). Settings is intentionally NOT here — it lives
+         once, in the footer. -->
+    <div class="header-actions">
+      {#if meetingsEnabled && onmeetingsclick}
+        <!-- Discreet meeting hook → opens MeetingsWindow. State (detected /
+             recording) is carried monochromatically (fill weight), not by a
+             stoplight tint, per the app's no-severity-colour system. -->
+        <MeetingIcon
+          onclick={onmeetingsclick}
+          detected={activeMeetings.some(
+            (m) => m.state === 'detected' || m.state === 'error',
+          )}
+          recording={activeMeetings.some(
+            (m) =>
+              m.state === 'recording' ||
+              m.state === 'starting' ||
+              m.state === 'stopping',
+          )}
+        />
+      {/if}
 
-           Tinted from the same `activeMeetings` snapshot the (now-removed)
-           in-popover Detected row used to consume — yellow when one is
-           awaiting Record, red while any is recording. The Detected/Record
-           row itself was moved into MeetingsWindow so the popover stays
-           focused on sync state; the calendar icon is now the in-popover
-           hook into the meeting flow. -->
-      <MeetingIcon
-        onclick={onmeetingsclick}
-        detected={activeMeetings.some(
-          (m) => m.state === 'detected' || m.state === 'error',
-        )}
-        recording={activeMeetings.some(
-          (m) =>
-            m.state === 'recording' ||
-            m.state === 'starting' ||
-            m.state === 'stopping',
-        )}
-      />
-    {/if}
-
-    {#if desktopAltEnabled}
-      <div class="header-utility-actions">
+      {#if desktopAltEnabled}
+        <!-- Open the full desktop window (Indigo dogfood). An "open in window"
+             glyph reads as "pop this out into the big app" — no longer confused
+             with a settings/config control. -->
         <button
           class="header-icon-button desktop-alt-toggle"
           type="button"
@@ -562,82 +563,65 @@
           aria-label="Open desktop view (Indigo dogfood)"
           data-testid="desktop-alt-toggle"
         >
-          <!-- Window/dashboard icon, intentionally distinct from the Settings gear. -->
           <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <rect x="2" y="2.5" width="12" height="11" rx="2" stroke="currentColor" stroke-width="1.5" />
-            <path d="M2 6h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            <path d="M6 6v7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            <path d="M9 9h2.5M9 11.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <path d="M9.5 2.5H13.5V6.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M13.5 2.5L7.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M11.5 9v2.5A1.5 1.5 0 0 1 10 13H4.5A1.5 1.5 0 0 1 3 11.5V6A1.5 1.5 0 0 1 4.5 4.5H7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </button>
-        <button
-          class="header-icon-button header-settings-toggle"
-          type="button"
-          onclick={onsettings}
-          title="Settings"
-          aria-label="Settings"
-        >
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <circle cx="8" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5" />
-            <path d="M8 1v1.5M8 13.5V15M14.5 8H13M3 8H1.5M12.6 3.4l-1.06 1.06M4.46 11.54l-1.06 1.06M12.6 12.6l-1.06-1.06M4.46 4.46L3.4 3.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          </svg>
-        </button>
-      </div>
-    {/if}
+      {/if}
 
-    <!-- Sync button — right-aligned in the header so it's always visible
-         regardless of how long the workspaces list grows. Same visual
-         weight + icon as the original body button; just labelled "Sync"
-         instead of "Sync Now" and not full-width. -->
-    <button
-      class="header-sync"
-      class:syncing={syncState === 'syncing'}
-      class:error={syncState === 'error'}
-      disabled={syncState === 'auth-error'}
-      onclick={syncState === 'syncing' ? oncancel : onsync}
-      title={
-        syncState === 'syncing'
-          ? 'Click to stop the sync'
-          : syncState === 'error'
-            ? 'Sync initialized — click to resume, or finish in Claude Code'
-            : syncState === 'auth-error'
-              ? 'Sign in again to sync'
-              : 'Sync'
-      }
-    >
-      {#if syncState === 'syncing'}
-        <!-- Stop / square icon — replaces the spinner so the button reads
-             clearly as a Stop affordance, not a busy indicator. -->
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity="0.85" />
-        </svg>
-      {:else if syncState === 'error'}
-        <!-- Retry / alert-circle icon -->
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      {:else}
-        <!-- Refresh / sync icon — same as the legacy body SyncButton. -->
-        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      {/if}
-      {#if syncState === 'syncing'}
-        Stop
-      {:else if syncState === 'error'}
-        Resume
-      {:else if syncState === 'auth-error'}
-        Sign in
-      {:else}
-        Sync
-      {/if}
-    </button>
+      <!-- Sync — the header's primary action, always present. -->
+      <button
+        class="header-sync"
+        class:syncing={syncState === 'syncing'}
+        class:error={syncState === 'error'}
+        disabled={syncState === 'auth-error'}
+        onclick={syncState === 'syncing' ? oncancel : onsync}
+        title={
+          syncState === 'syncing'
+            ? 'Click to stop the sync'
+            : syncState === 'error'
+              ? 'Sync initialized — click to resume, or finish in Claude Code'
+              : syncState === 'auth-error'
+                ? 'Sign in again to sync'
+                : 'Sync'
+        }
+      >
+        {#if syncState === 'syncing'}
+          <!-- Stop / square icon — replaces the spinner so the button reads
+               clearly as a Stop affordance, not a busy indicator. -->
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity="0.85" />
+          </svg>
+        {:else if syncState === 'error'}
+          <!-- Retry / alert-circle icon -->
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        {:else}
+          <!-- Refresh / sync icon — same as the legacy body SyncButton. -->
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M11 1.5v2.5h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        {/if}
+        {#if syncState === 'syncing'}
+          Stop
+        {:else if syncState === 'error'}
+          Resume
+        {:else if syncState === 'auth-error'}
+          Sign in
+        {:else}
+          Sync
+        {/if}
+      </button>
+    </div>
   </header>
 
   {#if desktopAltError}
@@ -1122,11 +1106,6 @@
     padding: 0.625rem 1rem;
   }
 
-  .popover-header.has-desktop-alt-controls {
-    flex-wrap: wrap;
-    row-gap: 0.375rem;
-  }
-
   .header-icon {
     display: flex;
     align-items: center;
@@ -1147,11 +1126,6 @@
     flex: 1;
   }
 
-  .popover-header.has-desktop-alt-controls .header-text {
-    order: 2;
-    flex: 1 0 100%;
-  }
-
   .header-text h1 {
     font-size: 0.9375rem;
     font-weight: 600;
@@ -1170,7 +1144,7 @@
     text-overflow: ellipsis;
   }
 
-  .header-utility-actions {
+  .header-actions {
     display: inline-flex;
     align-items: center;
     gap: 0.375rem;
@@ -1253,10 +1227,6 @@
     cursor: pointer;
     transition: background-color 0.15s ease, opacity 0.15s ease, color 0.15s ease;
     -webkit-app-region: no-drag;
-  }
-
-  .popover-header.has-desktop-alt-controls .header-sync {
-    margin-left: auto;
   }
 
   .header-sync:hover:not(:disabled) {
