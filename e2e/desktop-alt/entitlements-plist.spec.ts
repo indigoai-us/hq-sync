@@ -20,8 +20,12 @@ import { describe, expect, it } from 'vitest';
 //
 // Rule enforced here: the entitlements plist must (a) carry the
 // disable-library-validation entitlement the Team-ID-less GStreamer dylibs need
-// under the hardened runtime, and (b) contain NO XML comments, because AMFI
-// rejects them at sign time. Keep all rationale in scripts/sign-bundle.sh's
+// under the hardened runtime, (b) carry com.apple.security.device.audio-input so
+// the hardened-runtime app can actually be granted Microphone access — without it
+// AVCaptureDevice.authorizationStatus returns .denied and macOS never prompts,
+// while screen capture (which needs no entitlement) still works; that exact
+// asymmetry shipped in v0.4.4-beta.2 — and (c) contain NO XML comments, because
+// AMFI rejects them at sign time. Keep all rationale in scripts/sign-bundle.sh's
 // header (a bash file AMFI never parses), never in the .plist itself.
 
 const plistPath = fileURLToPath(
@@ -36,6 +40,19 @@ describe('src-tauri/Entitlements.plist (hardened-runtime signing entitlements)',
     // dylibs SIGABRT-loop under the hardened runtime.
     expect(plist).toMatch(
       /<key>com\.apple\.security\.cs\.disable-library-validation<\/key>\s*<true\/>/,
+    );
+  });
+
+  it('declares device.audio-input = true (hardened-runtime Microphone access)', () => {
+    // Under the hardened runtime, an app cannot be granted Microphone access
+    // without com.apple.security.device.audio-input: AVCaptureDevice
+    // authorizationStatus returns .denied (2) and requestAccess never prompts.
+    // The v0.4.4-beta.2 build omitted this key, so Screen Recording (no
+    // entitlement required) granted fine but the Meeting Permissions wizard
+    // read Microphone as "Not granted" forever. The <key> must be immediately
+    // followed by <true/> (allowing whitespace).
+    expect(plist).toMatch(
+      /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/,
     );
   });
 
