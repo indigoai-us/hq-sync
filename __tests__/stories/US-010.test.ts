@@ -94,6 +94,11 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
     expect(panel).toContain('<strong title={entry.file}>{entry.file}</strong>');
     expect(panel).toContain('<span>{entry.who} · {entry.what}</span>');
     expect(panel).toContain('<time>{entry.when}</time>');
-    expect(panel).toContain('disabled aria-label={`Open ${entry.file}`}');
+    // US-012: the per-recent-row "Open" affordance is now a live Claude Code
+    // drill-in (replacing the old `disabled` placeholder button), gated to
+    // entries that actually name a file.
+    expect(panel).toContain("import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte'");
+    expect(panel).toContain("{#if entry.file && entry.file !== 'Untitled file'}");
+    expect(panel).toContain('<OpenFileInClaudeCode file={entry.file} folder={hqFolderPath} label="Open" />');
   });
 });
