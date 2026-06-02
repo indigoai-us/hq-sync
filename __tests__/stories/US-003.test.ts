@@ -3,8 +3,8 @@ import type { Workspace } from '../../src/lib/workspaces';
 import {
   DESKTOP_SHELL_LAYOUT,
   getDesktopCompanies,
+  getDesktopActiveCompany,
   getDesktopHotkeyRoute,
-  getDesktopPage,
   getDesktopRouteKey,
   getDesktopSidebarRows,
   initialDesktopRoute,
@@ -54,38 +54,38 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K hotkeys', () => {
-  it('shows the 216px desktop sidebar with Sync, Meetings, and company rows on mount', () => {
+  it('shows the 216px desktop sidebar with Board, Sync, Meetings, and company rows on mount', () => {
     const companies = getDesktopCompanies(workspaces);
     const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
-    const page = getDesktopPage(initialDesktopRoute, companies);
 
     expect(DESKTOP_SHELL_LAYOUT).toEqual({
       sidebarWidthPx: 216,
       statusBarHeightPx: 26,
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(rows.map((row) => row.label)).toEqual(['Sync', 'Meetings', 'Acme Corp']);
-    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3']);
-    expect(rows[0]).toMatchObject({ active: true, route: { kind: 'sync' } });
-    expect(page).toMatchObject({ title: 'Sync', placeholder: 'Sync page - wired in US-005' });
+    // US-007 added Board as the first top-level destination; Sync/Meetings
+    // renumbered after it, and company rows now start at ⌘4.
+    expect(rows.map((row) => row.label)).toEqual(['Board', 'Sync', 'Meetings', 'Acme Corp']);
+    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3', '⌘4']);
+    expect(rows[1]).toMatchObject({ active: true, route: { kind: 'sync' } });
+    // Sync/Meetings are real pages now (US-005) — no active company resolves.
+    expect(getDesktopActiveCompany(initialDesktopRoute, companies)).toBeNull();
   });
 
-  it('switches the main pane to the Meetings placeholder when the user presses ⌘2', () => {
+  it('switches the main pane to Meetings when the user presses ⌘3', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
-      { key: '2', metaKey: true, ctrlKey: false },
+      { key: '3', metaKey: true, ctrlKey: false },
       companies,
     );
 
     expect(nextRoute).toEqual({ kind: 'meetings' });
     expect(getDesktopRouteKey(nextRoute as DesktopRoute)).toBe('meetings');
-    expect(getDesktopPage(nextRoute as DesktopRoute, companies)).toMatchObject({
-      title: 'Meetings',
-      placeholder: 'Meetings page - wired in US-005',
-    });
+    // Meetings is a non-company route — no active company resolves.
+    expect(getDesktopActiveCompany(nextRoute as DesktopRoute, companies)).toBeNull();
   });
 
-  it('switches to the Company placeholder and marks the clicked company row active', () => {
+  it('switches to the Company page and marks the clicked company row active', () => {
     const companies = getDesktopCompanies(workspaces);
     const acmeRow = getDesktopSidebarRows(initialDesktopRoute, companies).find(
       (row) => row.label === 'Acme Corp',
@@ -97,15 +97,11 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     const rowsAfterClick = getDesktopSidebarRows(nextRoute, companies);
 
     expect(getDesktopRouteKey(nextRoute)).toBe('company:acme');
-    expect(getDesktopPage(nextRoute, companies)).toMatchObject({
-      title: 'Acme Corp',
-      placeholder: 'Company page - wired in US-005',
-      activeCompany: expect.objectContaining({ slug: 'acme' }),
-    });
+    expect(getDesktopActiveCompany(nextRoute, companies)).toMatchObject({ slug: 'acme' });
     expect(isDesktopRouteActive(nextRoute, { kind: 'company', slug: 'acme' })).toBe(true);
     expect(rowsAfterClick.find((row) => row.label === 'Acme Corp')).toMatchObject({
       active: true,
-      shortcut: '⌘3',
+      shortcut: '⌘4',
     });
     expect(rowsAfterClick.find((row) => row.label === 'Globex')).toBeUndefined();
   });

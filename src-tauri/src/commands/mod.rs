@@ -29,6 +29,7 @@ pub mod permissions;
 pub mod personal;
 pub mod prewarm;
 pub mod process;
+pub mod projects_local;
 pub mod recall_sdk;
 pub mod provision;
 pub mod run_cli_provision;

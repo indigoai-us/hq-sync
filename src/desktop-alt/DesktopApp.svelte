@@ -8,13 +8,14 @@
   import SyncPage from './pages/SyncPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
+  import BoardPage from './pages/BoardPage.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
   import {
     DESKTOP_SHELL_LAYOUT,
+    getDesktopActiveCompany,
     getDesktopCompanies,
     getDesktopHotkeyRoute,
-    getDesktopPage,
     getDesktopRouteKey,
     initialDesktopRoute,
     type DesktopRoute,
@@ -79,7 +80,7 @@
 
   const companies = $derived(getDesktopCompanies(workspaces));
   const routeKey = $derived(getDesktopRouteKey(route));
-  const page = $derived(getDesktopPage(route, companies));
+  const activeCompany = $derived(getDesktopActiveCompany(route, companies));
   const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles);
   const indexedFiles = $derived(
     syncPlanTotalFiles > 0
@@ -126,24 +127,31 @@
       action: handleOpenSettings,
     },
     {
+      id: 'command-go-board',
+      label: 'Go to Board',
+      detail: 'Show all projects across companies',
+      shortcut: '⌘1',
+      action: () => navigate({ kind: 'board' }),
+    },
+    {
       id: 'command-go-sync',
       label: 'Go to Sync',
       detail: 'Show sync overview',
-      shortcut: '⌘1',
+      shortcut: '⌘2',
       action: () => navigate({ kind: 'sync' }),
     },
     {
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘2',
+      shortcut: '⌘3',
       action: () => navigate({ kind: 'meetings' }),
     },
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
       label: `Go to ${company.displayName}`,
       detail: 'Show company workspace',
-      shortcut: index < 4 ? `⌘${index + 3}` : undefined,
+      shortcut: index < 4 ? `⌘${index + 4}` : undefined,
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);
@@ -522,7 +530,11 @@
     <main class="desktop-main" aria-label="Desktop content">
       <div class="desktop-main-scroll">
         {#key routeKey}
-          {#if route.kind === 'sync'}
+          {#if route.kind === 'board'}
+            <div class="page">
+              <BoardPage companySlug={route.slug ?? null} />
+            </div>
+          {:else if route.kind === 'sync'}
             <div class="page">
               <SyncPage
                 {workspaces}
@@ -550,17 +562,17 @@
             <div class="page">
               <MeetingsPage />
             </div>
-          {:else if page.activeCompany}
+          {:else if activeCompany}
             <div class="page">
-              <CompanyPage company={page.activeCompany} />
+              <CompanyPage company={activeCompany} />
             </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
               <div class="page-header">
-                <h1 id="desktop-page-title">{page.title}</h1>
+                <h1 id="desktop-page-title">Company</h1>
               </div>
               <div class="placeholder-panel">
-                <p>{page.placeholder}</p>
+                <p>This company isn’t synced yet. Run a sync to load its board.</p>
                 {#if workspaceError}
                   <span class="workspace-error">{workspaceError}</span>
                 {/if}

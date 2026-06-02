@@ -1,3 +1,28 @@
+/* Desktop window styles — consumes the unified desktop design system.
+ *
+ * Single source of truth: the canonical monochrome-glass tokens live in
+ * `src/styles/popover.css` (`--popover-*`, `--text-*`, `--space-*`,
+ * `--radius-*`) with first-class light, dark, and reduced-transparency
+ * variants. We import them here so the desktop window and the menubar
+ * popover resolve from the *same* token definitions rather than two
+ * drifting copies.
+ *
+ * The desktop window historically used a different token vocabulary
+ * (`--fg`, `--muted`, `--border`, `--row-hover`, …). Those names are kept
+ * as a thin SEMANTIC ALIAS LAYER below so existing components don't need a
+ * mass rename, but every alias now derives from a canonical primitive (or
+ * preserves a documented desktop-specific value) instead of being an
+ * independent definition. See DESIGN.md → "Unified desktop token set".
+ *
+ * Monochrome-glass constraint: no brand accent hue. Hierarchy comes from
+ * surface layering, weight, and spacing. The only permitted color is the
+ * single restrained green (`--popover-success`) for the notification-
+ * permission-granted confirmation. Status hues retained for the meetings
+ * surfaces (`--amber`/`--blue`/`--red`/`--emerald`) are legacy semantic
+ * markers, not brand color.
+ */
+@import '../../styles/popover.css';
+
 html[data-window='desktop-alt'],
 html[data-window='desktop-alt'] body,
 html[data-window='desktop-alt'] #desktop-alt {
@@ -7,24 +32,45 @@ html[data-window='desktop-alt'] #desktop-alt {
 }
 
 html[data-window='desktop-alt'] {
-  /* Dark theme tokens (mirrors prototype index.html :root). */
-  --bg: #0a0a0a;
-  --bg-subtle: #050505;
-  --desktop: #1a1a1c;
-  --fg: #fafafa;
-  --muted: #71717a;
-  --muted-2: #a1a1aa;
-  --muted-3: #52525b;
+  /* ---- Semantic alias layer (desktop vocabulary → canonical tokens) ----
+   *
+   * Dark-mode resolved values are byte-for-byte identical to the previous
+   * standalone definitions — this is a consolidation, not a restyle. Aliases
+   * that map cleanly onto a canonical token reference it directly; the few
+   * desktop-specific surfaces keep their exact rgba but are declared once
+   * here so there is a single place to read the desktop palette.
+   */
+
+  /* Window backgrounds (desktop-specific, monochrome neutrals). */
+  --bg: #0a0a0a; /* shell / sidebar / main background */
+  --bg-subtle: #050505; /* status bar */
+  --bg-body: #131316; /* document body behind the window surface */
+  --desktop: #1a1a1c; /* reserved desktop-canvas surface */
+
+  /* Text tiers. */
+  --fg: #fafafa; /* primary text / headings */
+  --muted: #71717a; /* secondary / label text */
+  --muted-2: #a1a1aa; /* slightly brighter secondary */
+  --muted-3: #52525b; /* faintest tier (sidebar idle) */
+
+  /* Borders + hover/active surfaces — same neutral-alpha language as the
+     popover's --popover-border / --popover-divider / --popover-action-hover. */
   --border: rgba(255, 255, 255, 0.1);
   --border-strong: rgba(255, 255, 255, 0.14);
   --row-hover: rgba(255, 255, 255, 0.035);
   --row-active: rgba(255, 255, 255, 0.06);
-  --emerald: #34d399;
+  --scrollbar-thumb: rgba(255, 255, 255, 0.08);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
+
+  /* Status markers (meetings surfaces). Not brand accent — retained legacy
+     semantics. The lone permitted positive-confirmation green is the
+     canonical --popover-success; --emerald mirrors it for desktop usage. */
+  --emerald: var(--popover-success);
   --amber: #f59e0b;
   --red: #f87171;
   --blue: #60a5fa;
 
-  color-scheme: dark;
+  color-scheme: light dark;
   background: var(--bg);
   color: var(--fg);
   font-family:
@@ -38,7 +84,58 @@ html[data-window='desktop-alt'] {
 html[data-window='desktop-alt'] body {
   overflow: hidden;
   /* App body sits behind the window surface. */
-  background: #131316;
+  background: var(--bg-body);
+}
+
+/* ---- Light mode -----------------------------------------------------------
+ * First-class, derived from the popover light palette so the two windows read
+ * as the same monochrome-glass system under a light desktop. Neutral inversion
+ * of the dark values above — no hue introduced. */
+@media (prefers-color-scheme: light) {
+  html[data-window='desktop-alt'] {
+    --bg: #f6f6f8;
+    --bg-subtle: #ececef;
+    --bg-body: #e7e7ea;
+    --desktop: #ffffff;
+
+    --fg: #111113;
+    --muted: rgba(0, 0, 0, 0.5);
+    --muted-2: rgba(0, 0, 0, 0.62);
+    --muted-3: rgba(0, 0, 0, 0.38);
+
+    --border: rgba(0, 0, 0, 0.1);
+    --border-strong: rgba(0, 0, 0, 0.14);
+    --row-hover: rgba(0, 0, 0, 0.035);
+    --row-active: rgba(0, 0, 0, 0.06);
+    --scrollbar-thumb: rgba(0, 0, 0, 0.16);
+    --scrollbar-thumb-hover: rgba(0, 0, 0, 0.28);
+
+    --amber: #b45309;
+    --red: #dc2626;
+    --blue: #2563eb;
+  }
+}
+
+/* ---- Reduced transparency -------------------------------------------------
+ * The desktop window is already fully opaque (no backdrop blur), so the
+ * reduced-transparency contract is satisfied by promoting the few alpha-based
+ * surfaces to solid neutrals. Dark + light variants both covered. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-window='desktop-alt'] {
+    --border: rgba(255, 255, 255, 0.16);
+    --border-strong: rgba(255, 255, 255, 0.22);
+    --row-hover: #18181b;
+    --row-active: #1f1f23;
+  }
+}
+
+@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
+  html[data-window='desktop-alt'] {
+    --border: rgba(0, 0, 0, 0.16);
+    --border-strong: rgba(0, 0, 0, 0.22);
+    --row-hover: #ededf0;
+    --row-active: #e4e4e8;
+  }
 }
 
 html[data-window='desktop-alt'] * {
@@ -56,12 +153,12 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-track {
 }
 
 html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 
 html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--scrollbar-thumb-hover);
 }
 
 .desktop-shell {

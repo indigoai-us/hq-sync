@@ -3,8 +3,8 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../src/lib/workspaces';
 import {
+  getDesktopActiveCompany,
   getDesktopCompanies,
-  getDesktopPage,
   getDesktopSidebarRows,
   initialDesktopRoute,
 } from '../../src/desktop-alt/route';
@@ -68,9 +68,9 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     );
 
     expect(acmeRow?.route).toEqual({ kind: 'company', slug: 'acme' });
-    expect(getDesktopPage(acmeRow!.route, companies)).toMatchObject({
-      title: 'Acme Corp',
-      activeCompany: expect.objectContaining({ slug: 'acme', role: 'admin' }),
+    expect(getDesktopActiveCompany(acmeRow!.route, companies)).toMatchObject({
+      slug: 'acme',
+      role: 'admin',
     });
 
     const page = normalize(companyPage);
@@ -81,9 +81,13 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(page).toContain('activity this week ·');
     expect(page).toContain('deployments ·');
     expect(page).toContain('secrets');
-    expect(page).toContain('<button type="button">Open in browser</button>');
-    expect(page).toContain('<button type="button">Invite</button>');
-    expect(tabs).toContain("{ id: 'board' as const, label: 'Board', count: summary.board }");
+    // US-001 wired these to the Tauri shell opener (HQ web console + invite).
+    expect(page).toContain("import { open as openExternal } from '@tauri-apps/plugin-shell';");
+    expect(page).toContain('<button type="button" onclick={openInBrowser}>Open in browser</button>');
+    expect(page).toContain('<button type="button" onclick={openInvite}>Invite</button>');
+    // US-007 (Board surface) moved Board to the top-level destination, so the
+    // company page no longer carries a Board tab — Activity is the first tab.
+    expect(tabs).not.toContain("{ id: 'board' as const, label: 'Board', count: summary.board }");
     expect(tabs).toContain("{ id: 'activity' as const, label: 'Activity', count: summary.activity.last7d }");
     expect(tabs).toContain("{ id: 'deployments' as const, label: 'Deployments', count: summary.deployments }");
     expect(tabs).toContain("{ id: 'secrets' as const, label: 'Secrets', count: summary.secrets }");
@@ -93,7 +97,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     const page = normalize(companyPage);
     const tabs = normalize(companyTabs);
 
-    expect(page).toContain("let activeTab = $state<CompanyTab>('board')");
+    expect(page).toContain("let activeTab = $state<CompanyTab>('activity')");
     expect(page).toContain('function selectTab(tab: CompanyTab) { activeTab = tab; }');
     expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
     expect(page).toContain('<CompanyTabs {activeTab} summary={summaryState.summary} role={company.role} onselect={selectTab} />');
@@ -101,8 +105,9 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(tabs).toContain('class:active={activeTab === tab.id}');
     expect(tabs).toContain('onclick={() => onselect(tab.id)}');
     expect(tabs).toContain('.company-tabs button.active::after');
-    expect(page).toContain("{#if activeTab === 'board'}");
-    expect(page).toContain('<BoardPanel slug={company.slug} />');
+    // Board moved to the top-level surface; the company page opens on Activity
+    // and no longer renders BoardPanel.
+    expect(page).not.toContain('<BoardPanel slug={company.slug} />');
     expect(page).toContain('<ActivityPanel slug={company.slug} />');
     expect(page).toContain('<DeploymentsPanel slug={company.slug} />');
     expect(page).toContain('<SecretsPanel slug={company.slug} />');
@@ -119,7 +124,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     const rustMain = normalize(tauriMain);
 
     expect(page).toContain('let previousSlug = $state<string | null>(null)');
-    expect(page).toContain('if (company.slug !== previousSlug) { previousSlug = company.slug; activeTab = \'board\'; }');
+    expect(page).toContain('if (company.slug !== previousSlug) { previousSlug = company.slug; activeTab = \'activity\'; }');
     expect(page).toContain('const summaryState = useCompanySummary({ slug: () => company.slug })');
 
     expect(emptyCompanySummary()).toEqual({
@@ -130,6 +135,9 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     });
     expect(summary).toContain("void invoke<CompanySummary>('get_company_summary', { slug })");
     expect(summary).toContain('summary = emptyCompanySummary();');
+    // company-summary was refactored from an effect-cleanup `cancelled` flag to
+    // a monotonic request id that discards out-of-order completions.
+    expect(summary).toContain('const myRequest = ++requestId;');
     expect(summary).toContain('if (myRequest === requestId) {');
     expect(rustDesktopAlt).toContain('pub struct CompanySummary');
     expect(rustDesktopAlt).toContain('pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>');

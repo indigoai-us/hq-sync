@@ -21,23 +21,38 @@
 
   let { deployment }: Props = $props();
 
+  let expanded = $state(false);
+
   const stateLabel = $derived(deployment.state.charAt(0).toUpperCase() + deployment.state.slice(1));
+  const detailId = $derived(`deploy-detail-${deployment.sub}`);
 
   async function openDeployment() {
     await open(`https://${deployment.url}`);
   }
+
+  function toggleDetail() {
+    expanded = !expanded;
+  }
 </script>
 
-<div class="deployment-row" aria-label={`${deployment.sub} deployment`}>
+<div class="deployment-row" class:is-open={expanded} aria-label={`${deployment.sub} deployment`}>
   <span class={`status-dot ${deployment.state}`} title={stateLabel} aria-label={stateLabel}></span>
 
-  <div class="subdomain-cell">
+  <button
+    class="subdomain-cell"
+    type="button"
+    aria-expanded={expanded}
+    aria-controls={detailId}
+    title={`Show ${deployment.sub} deployment detail`}
+    onclick={toggleDetail}
+  >
     <span class="subdomain" title={deployment.sub}>{deployment.sub}</span>
     {#if deployment.pwd}
       <span class="lock-icon" title="Password locked" aria-label="Password locked"></span>
     {/if}
+    <span class={`disclosure ${expanded ? 'open' : ''}`} aria-hidden="true"></span>
     <span class="url" title={deployment.url}>{deployment.url}</span>
-  </div>
+  </button>
 
   <time class="last-deploy" title={deployment.lastDeploy}>{deployment.lastDeploy}</time>
   <span class="size" title={deployment.size}>{deployment.size}</span>
@@ -55,15 +70,60 @@
     </button>
     <button
       class="icon-button more-button"
+      class:is-active={expanded}
       type="button"
-      title="More"
-      aria-label={`More actions for ${deployment.sub}`}
-      disabled
+      title="Show detail"
+      aria-label={`Show detail for ${deployment.sub}`}
+      aria-expanded={expanded}
+      aria-controls={detailId}
+      onclick={toggleDetail}
     >
       <span class="more-icon" aria-hidden="true"></span>
     </button>
   </div>
 </div>
+
+{#if expanded}
+  <div class="deployment-detail" id={detailId} role="region" aria-label={`${deployment.sub} deployment detail`}>
+    <dl class="detail-grid">
+      <div class="detail-field">
+        <dt>Status</dt>
+        <dd>
+          <span class={`status-dot ${deployment.state}`} aria-hidden="true"></span>
+          {stateLabel}
+        </dd>
+      </div>
+      <div class="detail-field">
+        <dt>Last deploy</dt>
+        <dd>{deployment.lastDeploy}</dd>
+      </div>
+      <div class="detail-field">
+        <dt>Size</dt>
+        <dd class="mono">{deployment.size}</dd>
+      </div>
+      <div class="detail-field">
+        <dt>Version</dt>
+        <dd class="mono">{deployment.ver}</dd>
+      </div>
+      <div class="detail-field">
+        <dt>URL</dt>
+        <dd>
+          <button class="detail-link" type="button" onclick={openDeployment}>
+            {deployment.url}
+          </button>
+        </dd>
+      </div>
+      <div class="detail-field">
+        <dt>Access</dt>
+        <dd>{deployment.pwd ? 'Password protected' : 'Public'}</dd>
+      </div>
+    </dl>
+
+    <p class="detail-note">
+      Managed via <code>hq-deploy</code> — run <code>/deploy</code> from your terminal to redeploy.
+    </p>
+  </div>
+{/if}
 
 <style>
   .deployment-row {
@@ -78,6 +138,10 @@
 
   .deployment-row:first-child {
     border-top: 0;
+  }
+
+  .deployment-row.is-open {
+    background: var(--row-hover);
   }
 
   .status-dot {
@@ -103,11 +167,43 @@
 
   .subdomain-cell {
     display: grid;
-    grid-template-columns: minmax(0, auto) auto;
+    grid-template-columns: minmax(0, auto) auto auto;
     align-items: center;
     justify-content: start;
     gap: 5px 7px;
     min-width: 0;
+    margin: -4px -6px;
+    padding: 4px 6px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .subdomain-cell:hover {
+    background: var(--row-active);
+  }
+
+  .subdomain-cell:focus-visible,
+  .detail-link:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+
+  .disclosure {
+    width: 6px;
+    height: 6px;
+    border-right: 1.5px solid var(--muted);
+    border-bottom: 1.5px solid var(--muted);
+    transform: rotate(-45deg);
+    transition: transform 0.12s ease;
+  }
+
+  .disclosure.open {
+    transform: rotate(45deg);
   }
 
   .subdomain,
@@ -190,7 +286,7 @@
     font-size: 10px;
     font-weight: 700;
     white-space: nowrap;
-    cursor: default;
+    cursor: pointer;
   }
 
   .icon-button:hover:not(:disabled) {
@@ -198,9 +294,20 @@
     background: var(--row-hover);
   }
 
+  .icon-button:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+
+  .icon-button.is-active {
+    border-color: var(--border-strong);
+    background: var(--row-active);
+  }
+
   .icon-button:disabled {
     color: var(--muted-3);
     background: var(--row-hover);
+    cursor: default;
   }
 
   .open-icon {
@@ -260,6 +367,91 @@
 
   .more-icon::after {
     right: -6px;
+  }
+
+  .deployment-detail {
+    display: grid;
+    gap: 12px;
+    padding: 12px 13px 14px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-subtle);
+  }
+
+  .detail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px 18px;
+    margin: 0;
+  }
+
+  .detail-field {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .detail-field dt {
+    color: var(--muted);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .detail-field dd {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    color: var(--fg);
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 16px;
+  }
+
+  .detail-field dd.mono {
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  .detail-field .status-dot {
+    justify-self: start;
+  }
+
+  .detail-link {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--blue);
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+
+  .detail-link:hover {
+    text-decoration: underline;
+  }
+
+  .detail-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 16px;
+  }
+
+  .detail-note code {
+    padding: 1px 4px;
+    border-radius: 4px;
+    background: var(--row-hover);
+    color: var(--muted-2);
+    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+    font-size: 10px;
   }
 
   @keyframes pulse {

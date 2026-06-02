@@ -6,7 +6,6 @@
     slug: string;
   }
 
-  type BoardMode = 'board' | 'list' | 'timeline';
   type BoardColumn = {
     id: 'inbox' | 'doing' | 'review' | 'done';
     label: string;
@@ -16,8 +15,6 @@
 
   let searchOpen = $state(false);
   let searchTerm = $state('');
-  let toast = $state('');
-  let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
   const boardState = useCompanyBoard({ slug: () => slug });
   const columns: BoardColumn[] = [
@@ -39,22 +36,6 @@
     return id ? id : `${column.id}:${index}:${card.title}`;
   }
 
-  function selectMode(mode: BoardMode) {
-    if (mode === 'board') return;
-    showToast('Coming soon');
-  }
-
-  function showToast(message: string) {
-    toast = message;
-    if (toastTimer) {
-      clearTimeout(toastTimer);
-    }
-    toastTimer = setTimeout(() => {
-      toast = '';
-      toastTimer = null;
-    }, 1800);
-  }
-
   function toggleSearch() {
     searchOpen = !searchOpen;
     if (!searchOpen) {
@@ -72,30 +53,8 @@
 
     <div class="board-controls" aria-label="Board controls">
       <div class="segment-control" role="tablist" aria-label="Board views">
-        <button
-          type="button"
-          role="tab"
-          aria-selected="true"
-          class="active"
-          onclick={() => selectMode('board')}
-        >
+        <button type="button" role="tab" aria-selected="true" class="active">
           Board
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected="false"
-          onclick={() => selectMode('list')}
-        >
-          List
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected="false"
-          onclick={() => selectMode('timeline')}
-        >
-          Timeline
         </button>
       </div>
 
@@ -131,10 +90,6 @@
         aria-label="Search board cards by title"
       />
     </label>
-  {/if}
-
-  {#if toast}
-    <div class="toast" role="status" aria-live="polite">{toast}</div>
   {/if}
 
   {#if boardState.error}
@@ -285,22 +240,6 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-  }
-
-  .toast {
-    justify-self: end;
-    max-width: 240px;
-    overflow: hidden;
-    padding: 6px 10px;
-    border: 1px solid var(--border-strong);
-    border-radius: 6px;
-    background: var(--fg);
-    color: var(--bg);
-    font-size: 12px;
-    font-weight: 650;
-    line-height: 16px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .board-error {

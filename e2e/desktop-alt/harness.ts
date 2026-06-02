@@ -262,7 +262,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     expect(route).toContain("export const initialDesktopRoute: DesktopRoute = { kind: 'sync' }");
     expect(desktopApp).toContain("route.kind === 'sync'");
     expect(desktopApp).toContain("route.kind === 'meetings'");
-    expect(desktopApp).toContain('<CompanyPage company={page.activeCompany} />');
+    expect(desktopApp).toContain('<CompanyPage company={activeCompany} />');
   }
 
   private assertSecretsSourceContracts(): void {

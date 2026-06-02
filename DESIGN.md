@@ -1,6 +1,6 @@
 # DESIGN.md — HQ Sync
 
-> The visual system for HQ Sync. Tokens here are the source of truth; they are encoded as CSS custom properties in `src/styles/popover.css`. Components should consume tokens, not hardcode values. Light, dark, and reduced-transparency are first-class.
+> The visual system for HQ Sync. Tokens here are the source of truth; they are encoded as CSS custom properties in `src/styles/popover.css`, which the desktop window (`src/desktop-alt/styles/desktop-alt.css`) `@import`s so both surfaces share one token system (see "Unified desktop token set"). Components should consume tokens, not hardcode values. Light, dark, and reduced-transparency are first-class.
 
 ## Theme
 
@@ -87,6 +87,8 @@ Transform and opacity only; never animate layout properties. 150–250ms, ease-o
 - **Secondary button** ("Change…", "Check Now", "Enable"). Surface fill, muted text, full border, `--radius-md`.
 - **Pill** (drift count, version, permission status). `--text-xs`, `--radius-sm`. The drift-count pill gets a visible label so "14" is never naked.
 - **Grouped inset list** (the core Settings primitive). Rows live inside a section group: a `--surface` card at `--radius-lg`, hairline dividers *between rows within the group only*, a muted uppercase section header above it, and `--space-5` between groups. This is the macOS System Settings idiom: familiar, scannable, and it collapses a flat 13-row scroll into four labeled clusters.
+- **Story card** (`StoryCard.svelte`, projects board). A focusable `<button>` surface card (`--bg`, `--radius-sm`, hairline border) carrying a monospace story ID, a 2-line-clamped title, up to two `LabelChip`s plus a `+N` overflow pill, a priority badge (`P1`/`P2`/`P3`) and optional model-hint badge, and an acceptance-criteria progress bar. The bar reuses the SourcesList progress-track/fill language (`--blue` fill, `scaleX` transform). Completed stories (`passes`) render at 0.6 opacity; the focus ring is `2px solid var(--blue)`. AC progress carries no per-AC done flags, so it is derived from the story-level `passes` (full when complete, empty otherwise), mirroring hq-desktop.
+- **Label chip** (`LabelChip.svelte`). A small pill whose deterministic monochrome-glass color comes from the US-004 `labelColor()` palette (a single low-saturation slate hue, lightness-swept) fed into inline `--chip-bg`/`--chip-border`/`--chip-fg` custom properties — no indigo/Tailwind palette, no hardcoded hex.
 
 ## The settings architecture
 
@@ -102,3 +104,34 @@ Operator-gated rows (staging channel, share/DM notifications, release channel) a
 ## The footer menu architecture
 
 The popover footer keeps the HQ-core status row (version + labeled drift pill + update action), then a clear separation: primary navigation (Recent Changes, Settings) reads at full weight, while destructive actions (Sign out, Quit) are demoted to a compact, visually distinct row beneath a divider so they can't be hit by reflex.
+
+## Unified desktop token set
+
+HQ Sync ships two surfaces — the menubar **popover** and the Indigo **desktop window** (`src/desktop-alt/`). They are **one design system**, not two. There is a single source of truth for tokens:
+
+- **Canonical tokens** live in `src/styles/popover.css` (`--popover-*`, `--text-*`, `--space-*`, `--radius-*`, `--popover-blur`). They define light, dark, and reduced-transparency variants via `@media (prefers-color-scheme: …)` and `@media (prefers-reduced-transparency: reduce)`.
+- The desktop window's stylesheet (`src/desktop-alt/styles/desktop-alt.css`) **`@import`s `popover.css`**, so both windows resolve from the same definitions. There is no second, drifting copy.
+
+### Desktop semantic alias layer
+
+The desktop window predates the canonical naming and uses a shorter vocabulary. Those names are kept as a thin **alias layer** scoped under `html[data-window='desktop-alt']` so components don't need a mass rename. Every alias derives from a canonical primitive or holds a documented desktop-specific neutral — it is never an independent re-definition.
+
+| Alias | Role | Source / value |
+|---|---|---|
+| `--bg` | shell / sidebar / main background | desktop neutral (`#0a0a0a` dark · `#f6f6f8` light) |
+| `--bg-subtle` | status bar | desktop neutral (`#050505` dark · `#ececef` light) |
+| `--bg-body` | document body behind the window surface | desktop neutral (`#131316` dark · `#e7e7ea` light) |
+| `--desktop` | reserved desktop-canvas surface | desktop neutral (`#1a1a1c` dark · `#ffffff` light) |
+| `--fg` | primary text / headings | desktop neutral (`#fafafa` dark · `#111113` light) |
+| `--muted` / `--muted-2` / `--muted-3` | secondary → faintest text tiers | neutral alpha (same language as `--popover-text-muted`) |
+| `--border` / `--border-strong` | hairlines, dividers | neutral alpha (same language as `--popover-border` / `--popover-divider`) |
+| `--row-hover` / `--row-active` | row interaction surfaces | neutral alpha (same language as `--popover-action-hover`) |
+| `--scrollbar-thumb` / `--scrollbar-thumb-hover` | scrollbar | neutral alpha |
+| `--emerald` | positive-confirmation green | **aliases `--popover-success`** — the one permitted color |
+| `--amber` / `--blue` / `--red` | legacy meetings status markers | retained semantic markers, not brand accent |
+
+### Usage rules
+
+1. **Consume tokens, never hardcode.** New desktop components use the aliases above (or canonical `--popover-*` / `--text-*` / `--space-*` / `--radius-*` directly). Do not introduce new hardcoded hex/rgba for anything a token already covers.
+2. **Monochrome-glass constraint holds.** No brand accent hue. Hierarchy comes from surface layering, weight, and spacing — never color. The only permitted color is the single restrained green (`--popover-success` / its `--emerald` alias) for the notification-permission-granted confirmation. The meetings `--amber`/`--blue`/`--red` markers are pre-existing legacy semantics, not an invitation to add more.
+3. **Light, dark, and reduced-transparency are all first-class** for the desktop window, exactly as for the popover. The window follows system appearance (`color-scheme: light dark`); all three media blocks (`prefers-color-scheme: light`, `prefers-reduced-transparency: reduce`, and their combination) are covered, with dark values preserved byte-for-byte from the pre-unification stylesheet. The desktop window is fully opaque (no backdrop blur), so its reduced-transparency variant only promotes alpha surfaces to solid neutrals.
