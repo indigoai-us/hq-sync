@@ -508,38 +508,21 @@
     }
   }
 
-  let companyDisplay = $derived(
-    config?.companySlug
-      ? config.companySlug.charAt(0).toUpperCase() + config.companySlug.slice(1)
-      : 'HQ'
-  );
-
-  let folderDisplay = $derived(
-    config?.hqFolderPath
-      ? config.hqFolderPath.replace(/^\/Users\/[^/]+/, '~')
-      : '~/hq'
-  );
 </script>
 
 <div class="popover">
   <!-- Header -->
   <header class="popover-header" data-tauri-drag-region>
-    <div class="header-icon">
-      <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <rect width="48" height="48" rx="12" fill="currentColor" opacity="0.92" />
-        <text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="var(--popover-primary-text, #111113)" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-weight="700" font-size="20">HQ</text>
-      </svg>
-    </div>
-    <div class="header-text">
-      <h1>{companyDisplay}</h1>
-      <p class="header-path">{folderDisplay}</p>
-    </div>
+    <!-- Identity (HQ badge + workspace name/path) intentionally omitted — the
+         header left side is just a draggable region that right-aligns the
+         action cluster. -->
+    <div class="header-spacer" data-tauri-drag-region></div>
 
-    <!-- Right-aligned action cluster. `.header-text` (flex:1) pushes it to the
-         edge, so it sits on one line with the identity. For a basic user this
-         is just the Sync button; Indigo adds the meeting + desktop-view entries
-         (both identity-gated). Settings is intentionally NOT here — it lives
-         once, in the footer. -->
+    <!-- Right-aligned action cluster. `.header-spacer` (flex:1) pushes it to the
+         edge, so it sits on one line. For a basic user this is just the Sync
+         button; Indigo adds the meeting + desktop-view entries (both
+         identity-gated). Settings is intentionally NOT here — it lives once,
+         in the footer. -->
     <div class="header-actions">
       <!-- Notification history → opens a window listing past DMs, shares, and
            this session's new files. Always available (not identity-gated). A
@@ -1131,42 +1114,12 @@
     padding: 0.625rem 1rem;
   }
 
-  .header-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 10px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-primary, #ffffff);
-    flex-shrink: 0;
-    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
-  }
-
-  .header-text {
-    min-width: 0;
-    /* flex: 1 lets the title/path block soak up the spare horizontal space
-       so the Sync button sits flush against the right edge of the header. */
+  .header-spacer {
+    /* Soaks up the spare horizontal space (and stays draggable) so the action
+       cluster sits flush against the right edge of the header. */
     flex: 1;
-  }
-
-  .header-text h1 {
-    font-size: 0.9375rem;
-    font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
-    margin: 0;
-    line-height: 1.3;
-  }
-
-  .header-path {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    margin: 0.125rem 0 0 0;
-    line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    min-width: 0;
+    align-self: stretch;
   }
 
   .header-actions {
@@ -1221,7 +1174,7 @@
   }
 
   .header-inline-error {
-    margin: -0.1875rem 1rem 0.5rem 3.625rem;
+    margin: -0.1875rem 1rem 0.5rem 1rem;
     color: var(--popover-notice-strong, #ffffff);
     font-size: 0.75rem;
     line-height: 1.35;
