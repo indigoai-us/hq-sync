@@ -135,6 +135,17 @@
     selectedStoryId = null;
   }
 
+  // US-010: a persisted status change updates the open project + its list row so
+  // the new status survives a back-navigation without a full reload.
+  function onProjectStatusChange(projectId: string, status: string) {
+    if (selected && selected.id === projectId) {
+      selected = { ...selected, status };
+    }
+    projects = projects.map((project) =>
+      project.id === projectId ? { ...project, status } : project,
+    );
+  }
+
   onMount(() => {
     void loadProjects();
   });
@@ -149,6 +160,7 @@
       {storiesError}
       onback={backToList}
       onselectStory={openStory}
+      onStatusChange={onProjectStatusChange}
     />
 
     <StoryDetailPanel

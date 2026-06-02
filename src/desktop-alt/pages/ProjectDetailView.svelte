@@ -14,12 +14,14 @@
    * Markdown is rendered by the dependency-free `lib/markdown.ts` helper (escaped
    * input + a fixed safe tag set — no `marked`, no DOM sanitizer, CSP-safe).
    *
-   * Status control: READ-ONLY for now (US-010 wires persistence). It renders the
-   * project's current editable status and the full editable-status set in a
-   * dropdown; selecting a value does not persist yet.
+   * Status control: WRITABLE (US-010). Selecting a status persists to the
+   * company `board.json` via projects-store with OPTIMISTIC UI — the rendered
+   * status updates immediately, then rolls back + shows a clear error if the
+   * write fails. Persistence + rollback live in `lib/projects-store.svelte.ts`.
    */
   import { onMount } from 'svelte';
   import { loadLocalProjectReadme } from '../lib/local-projects';
+  import { setProjectStatus } from '../lib/projects-store.svelte';
   import { renderMarkdown } from '../lib/markdown';
   import {
     projectDisplayName,
@@ -27,6 +29,7 @@
     toEditableStatus,
     EDITABLE_PROJECT_STATUSES,
     EDITABLE_PROJECT_STATUS_LABEL,
+    type EditableProjectStatus,
     type Project,
     type Story,
   } from '../lib/projects-model';
@@ -45,6 +48,11 @@
     onback: () => void;
     /** Open a story's detail panel. */
     onselectStory: (story: Story) => void;
+    /**
+     * Notify the caller a status persisted (US-010) so it can refresh its list.
+     * Optional — the detail view persists + paints optimistically on its own.
+     */
+    onStatusChange?: (projectId: string, status: EditableProjectStatus) => void;
   }
 
   let {
@@ -54,6 +62,7 @@
     storiesError = null,
     onback,
     onselectStory,
+    onStatusChange,
   }: Props = $props();
 
   // ---- README load (sibling of the prd.json) -------------------------------
@@ -94,9 +103,50 @@
     projectProgress(project.storiesComplete, project.storiesTotal),
   );
 
-  // ---- status control (READ-ONLY — US-010 wires persistence) ---------------
-  const currentStatus = $derived(toEditableStatus(project.status));
+  // ---- status control (WRITABLE — US-010 optimistic persist) ---------------
+  // The rendered status is a local override so it can update optimistically on
+  // select and roll back on a failed write. It re-syncs whenever the open
+  // project (or its raw status) changes — i.e. when a different project mounts.
+  let statusOverride = $state<EditableProjectStatus | null>(null);
+  $effect(() => {
+    // Track the project's raw status; reset the local override when it changes.
+    void project.id;
+    void project.status;
+    statusOverride = null;
+  });
+  const currentStatus = $derived(
+    statusOverride ?? toEditableStatus(project.status),
+  );
   let statusOpen = $state(false);
+  let statusError = $state<string | null>(null);
+  let statusSaving = $state(false);
+
+  async function selectStatus(next: EditableProjectStatus) {
+    statusOpen = false;
+    const previous = currentStatus;
+    if (next === previous) return;
+
+    // Optimistic paint: show the new status immediately, clear any prior error.
+    statusOverride = next;
+    statusError = null;
+    statusSaving = true;
+    try {
+      const result = await setProjectStatus(
+        { id: project.id, company: project.company },
+        previous,
+        next,
+      );
+      if (result.ok) {
+        onStatusChange?.(project.id, next);
+      } else {
+        // Roll back to the prior value and surface the error.
+        statusOverride = previous;
+        statusError = result.error;
+      }
+    } finally {
+      statusSaving = false;
+    }
+  }
 
   // ---- Overview / Board tab ------------------------------------------------
   type Tab = 'overview' | 'board';
@@ -141,7 +191,7 @@
         {/if}
 
         <div class="badges">
-          <!-- Status control (read-only for now; US-010 wires persistence). -->
+          <!-- Status control (writable; US-010 persists with optimistic UI). -->
           <div class="status-control" data-status-control data-testid="status-control">
             <button
               type="button"
@@ -149,6 +199,7 @@
               data-testid="status-trigger"
               aria-haspopup="listbox"
               aria-expanded={statusOpen}
+              disabled={statusSaving}
               onclick={() => (statusOpen = !statusOpen)}
             >
               <span class="status-dot" aria-hidden="true"></span>
@@ -164,7 +215,8 @@
                       class="status-option"
                       role="option"
                       aria-selected={status === currentStatus}
-                      onclick={() => (statusOpen = false)}
+                      data-testid="status-option-{status}"
+                      onclick={() => selectStatus(status)}
                     >
                       <span class="status-dot status-{status}" aria-hidden="true"></span>
                       <span>{EDITABLE_PROJECT_STATUS_LABEL[status]}</span>
@@ -177,6 +229,12 @@
               </ul>
             {/if}
           </div>
+
+          {#if statusError}
+            <span class="status-error" role="alert" data-testid="status-error">
+              {statusError}
+            </span>
+          {/if}
 
           {#if project.company}
             <span class="badge company-badge" data-testid="company-badge">
@@ -498,6 +556,23 @@
     margin-left: auto;
     color: var(--muted-3);
     font-size: var(--text-xs);
+  }
+
+  .status-badge:disabled {
+    cursor: progress;
+    opacity: 0.6;
+  }
+
+  .status-error {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--row-active);
+    color: var(--amber);
+    font-size: var(--text-xs);
+    font-weight: 600;
   }
 
   .indicator {

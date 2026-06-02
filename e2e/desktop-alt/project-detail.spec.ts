@@ -117,15 +117,16 @@ describe('desktop-alt project detail view source contract (US-009)', () => {
     expect(adapter).toContain("invoke<string | null>('get_local_project_readme', { prdPath })");
   });
 
-  it('presents a read-only status control with the editable statuses', () => {
+  it('presents a status control with the editable statuses', () => {
     expect(detail).toContain('data-testid="status-control"');
     expect(detail).toContain('data-testid="status-trigger"');
     expect(detail).toContain('EDITABLE_PROJECT_STATUSES');
     expect(detail).toContain('toEditableStatus');
-    // Read-only for now: selecting an option just closes the menu (no persist,
-    // no onStatusChange prop) — US-010 wires the mutation.
-    expect(detail).not.toContain('onStatusChange');
-    expect(detail).not.toContain('invoke(');
+    // US-010 made this control writable (it was read-only under US-009). The
+    // writable contract is asserted in project-status-write.spec.ts; here we just
+    // confirm the menu still iterates the editable statuses into options.
+    expect(detail).toContain('{#each EDITABLE_PROJECT_STATUSES as status (status)}');
+    expect(detail).toContain('data-testid="status-option-{status}"');
   });
 
   it('embeds the StoryKanban (reachable via a tab) and owns the back affordance', () => {

@@ -433,6 +433,228 @@ fn read_project_readme(hq_root: &Path, prd_path: &str) -> Result<Option<String>,
     }
 }
 
+// ---- writes (US-010) -------------------------------------------------------
+
+/// Persist a project's `status` (and refresh its `updated_at`) back to the
+/// company `board.json` under the resolved HQ folder.
+///
+/// Local-write counterpart to the read commands above — makes the desktop-alt
+/// board a control center (US-010). The frontend updates its store optimistically
+/// and calls this to persist; a returned `Err` is the rollback signal.
+///
+/// Inputs (HQ-relative, validated):
+///   * `board_path` — HQ-folder-relative path ending in `board.json`.
+///   * `project_id` — the `id` of the project entry to mutate.
+///   * `status`     — the new status string (an editable-status value).
+///
+/// Safety/correctness (AC #1, #2):
+///   * Indigo-gated, same as the readers.
+///   * `is_within` lexical guard rejects any `..`/absolute escape, and the target
+///     must be a `board.json` — only `companies/*/board.json` is writable.
+///   * The write is atomic + round-trip-validated: we parse the existing JSON,
+///     mutate the matching project in the parsed tree, re-serialize, write to a
+///     sibling temp file, then rename over the original. A parse/serialize
+///     failure aborts before any rename, so a bad write can never corrupt the
+///     file in place.
+#[tauri::command]
+pub async fn set_local_project_status(
+    board_path: String,
+    project_id: String,
+    status: String,
+) -> Result<(), String> {
+    if !crate::util::feature_gate::is_indigo_user().await {
+        return Err("projects writer is Indigo-only".to_string());
+    }
+    let hq = resolve_hq_folder();
+    write_project_status(&hq, &board_path, &project_id, &status)
+}
+
+/// Pure body for `set_local_project_status` — explicit HQ root for testing.
+fn write_project_status(
+    hq_root: &Path,
+    board_path: &str,
+    project_id: &str,
+    status: &str,
+) -> Result<(), String> {
+    let rel = board_path.trim();
+    if rel.is_empty() {
+        return Err("board_path is required".to_string());
+    }
+    if project_id.trim().is_empty() {
+        return Err("project_id is required".to_string());
+    }
+    let abs = hq_root.join(rel);
+    if !is_within(hq_root, &abs) {
+        return Err(format!("board_path escapes the HQ folder: {board_path:?}"));
+    }
+    if abs.file_name().and_then(|n| n.to_str()) != Some("board.json") {
+        return Err("board_path must point at a board.json file".to_string());
+    }
+
+    // Parse the existing JSON into a generic tree (preserving every field we
+    // don't touch), mutate the matching project, re-serialize.
+    let bytes = std::fs::read(&abs)
+        .map_err(|e| format!("could not read board.json at {board_path:?}: {e}"))?;
+    let mut tree: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("board.json at {board_path:?} is not valid JSON: {e}"))?;
+
+    let projects = tree
+        .get_mut("projects")
+        .and_then(|p| p.as_array_mut())
+        .ok_or_else(|| "board.json has no `projects` array".to_string())?;
+
+    let target = projects
+        .iter_mut()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(project_id))
+        .ok_or_else(|| format!("no project with id {project_id:?} in board.json"))?;
+
+    let obj = target
+        .as_object_mut()
+        .ok_or_else(|| "matched project is not a JSON object".to_string())?;
+    obj.insert(
+        "status".to_string(),
+        serde_json::Value::String(status.to_string()),
+    );
+    obj.insert(
+        "updated_at".to_string(),
+        serde_json::Value::String(now_iso8601()),
+    );
+
+    atomic_write_json(&abs, &tree)
+}
+
+/// Persist a story's `passes` toggle back to the project's `prd.json` (optional
+/// US-010 nicety). Same gate + guard + atomic-write discipline as the status
+/// write; the `prd_path` must point at a `prd.json` inside the HQ folder.
+#[tauri::command]
+pub async fn set_local_story_passes(
+    prd_path: String,
+    story_id: String,
+    passes: bool,
+) -> Result<(), String> {
+    if !crate::util::feature_gate::is_indigo_user().await {
+        return Err("projects writer is Indigo-only".to_string());
+    }
+    let hq = resolve_hq_folder();
+    write_story_passes(&hq, &prd_path, &story_id, passes)
+}
+
+/// Pure body for `set_local_story_passes` — explicit HQ root for testing.
+fn write_story_passes(
+    hq_root: &Path,
+    prd_path: &str,
+    story_id: &str,
+    passes: bool,
+) -> Result<(), String> {
+    let rel = prd_path.trim();
+    if rel.is_empty() {
+        return Err("prd_path is required".to_string());
+    }
+    if story_id.trim().is_empty() {
+        return Err("story_id is required".to_string());
+    }
+    let abs = hq_root.join(rel);
+    if !is_within(hq_root, &abs) {
+        return Err(format!("prd_path escapes the HQ folder: {prd_path:?}"));
+    }
+    if abs.file_name().and_then(|n| n.to_str()) != Some("prd.json") {
+        return Err("prd_path must point at a prd.json file".to_string());
+    }
+
+    let bytes = std::fs::read(&abs)
+        .map_err(|e| format!("could not read prd.json at {prd_path:?}: {e}"))?;
+    let mut tree: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("prd.json at {prd_path:?} is not valid JSON: {e}"))?;
+
+    let stories = tree
+        .get_mut("userStories")
+        .and_then(|s| s.as_array_mut())
+        .ok_or_else(|| "prd.json has no `userStories` array".to_string())?;
+
+    let target = stories
+        .iter_mut()
+        .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(story_id))
+        .ok_or_else(|| format!("no story with id {story_id:?} in prd.json"))?;
+
+    let obj = target
+        .as_object_mut()
+        .ok_or_else(|| "matched story is not a JSON object".to_string())?;
+    obj.insert("passes".to_string(), serde_json::Value::Bool(passes));
+
+    atomic_write_json(&abs, &tree)
+}
+
+/// Atomically write a JSON value to `target` (2-space indent + trailing
+/// newline): serialize first (so a serialize failure aborts before any I/O),
+/// write to a sibling `.tmp` file, fsync it, then rename over the target. The
+/// rename is atomic on the same filesystem, so a reader never sees a partial
+/// file and a crash mid-write leaves the original intact.
+fn atomic_write_json(target: &Path, value: &serde_json::Value) -> Result<(), String> {
+    let mut serialized = serde_json::to_string_pretty(value)
+        .map_err(|e| format!("could not serialize JSON: {e}"))?;
+    serialized.push('\n');
+
+    let dir = target
+        .parent()
+        .ok_or_else(|| "target has no parent directory".to_string())?;
+    // Unique temp name (pid + nanos) so concurrent writes can't clobber a shared
+    // temp file. Same dir as the target → rename stays on one filesystem.
+    let tmp_name = format!(
+        ".{}.{}.{}.tmp",
+        target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("board.json"),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0),
+    );
+    let tmp_path = dir.join(tmp_name);
+
+    {
+        use std::io::Write;
+        let mut f = std::fs::File::create(&tmp_path)
+            .map_err(|e| format!("could not create temp file: {e}"))?;
+        f.write_all(serialized.as_bytes())
+            .map_err(|e| format!("could not write temp file: {e}"))?;
+        f.sync_all()
+            .map_err(|e| format!("could not flush temp file: {e}"))?;
+    }
+
+    std::fs::rename(&tmp_path, target).map_err(|e| {
+        // Best-effort cleanup so a failed rename doesn't leave a stray temp file.
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("could not commit write: {e}")
+    })
+}
+
+/// Current UTC time as an ISO-8601 / RFC-3339 `Z` string (no chrono dep).
+fn now_iso8601() -> String {
+    // Days-since-epoch → civil date via Howard Hinnant's algorithm, then HMS.
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
 /// Parse a JSON file leniently: `None` on missing/unreadable/garbage (never a
 /// panic). Used so one bad file can be skipped instead of failing the scan.
 fn read_json_lenient<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
@@ -754,5 +976,124 @@ mod tests {
         assert!(!is_within(root, Path::new("/Users/x/HQ/../evil")));
         assert!(!is_within(root, Path::new("/etc/passwd")));
         assert!(is_within(root, &root.join("a/./b/../c")));
+    }
+
+    // ---- writes (US-010) ---------------------------------------------------
+
+    #[test]
+    fn write_project_status_persists_and_round_trips() {
+        let root = make_fixture_tree();
+        let board_rel = "companies/indigo/board.json";
+
+        // Sanity: the fixture board has in-proj-001 with status "active".
+        let before: BoardFile =
+            read_json_lenient(&root.join(board_rel)).expect("board parses before");
+        let p0 = before
+            .projects
+            .iter()
+            .find(|p| p.id == "in-proj-001")
+            .expect("in-proj-001 present");
+        assert_eq!(p0.status, "active");
+
+        // Mutate → reread → assert the new status persisted.
+        write_project_status(&root, board_rel, "in-proj-001", "completed")
+            .expect("status write succeeds");
+
+        let after_bytes = fs::read(root.join(board_rel)).unwrap();
+        let after: serde_json::Value = serde_json::from_slice(&after_bytes).expect("still valid JSON");
+        let proj = after["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "in-proj-001")
+            .expect("in-proj-001 still present");
+        assert_eq!(proj["status"], "completed");
+        // updated_at was refreshed to an ISO-8601 Z timestamp.
+        let updated = proj["updated_at"].as_str().expect("updated_at written");
+        assert!(updated.ends_with('Z') && updated.contains('T'), "got: {updated}");
+
+        // Untouched sibling project keeps its original status (no clobber).
+        let other = after["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "in-proj-002")
+            .expect("in-proj-002 preserved");
+        assert_eq!(other["status"], "archived");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_project_status_rejects_malformed_and_missing_targets() {
+        let root = make_fixture_tree();
+
+        // Path traversal / absolute escape is rejected.
+        for evil in ["../../../etc/board.json", "/etc/board.json"] {
+            assert!(
+                write_project_status(&root, evil, "in-proj-001", "completed").is_err(),
+                "traversal {evil:?} must be rejected"
+            );
+        }
+        // A non-board.json target inside the tree is rejected.
+        assert!(
+            write_project_status(
+                &root,
+                "companies/indigo/projects/flagship/prd.json",
+                "in-proj-001",
+                "completed",
+            )
+            .is_err(),
+            "non-board.json target must be rejected"
+        );
+        // An unknown project id is rejected (and the file is left untouched).
+        let before = fs::read(root.join("companies/indigo/board.json")).unwrap();
+        assert!(
+            write_project_status(&root, "companies/indigo/board.json", "nope-id", "completed")
+                .is_err(),
+            "unknown project id must Err"
+        );
+        let after = fs::read(root.join("companies/indigo/board.json")).unwrap();
+        assert_eq!(before, after, "rejected write must not mutate the file");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn write_story_passes_toggles_and_preserves_siblings() {
+        let root = make_fixture_tree();
+        let prd_rel = "companies/indigo/projects/flagship/prd.json";
+
+        // US-003 starts passes=false; flip to true.
+        write_story_passes(&root, prd_rel, "US-003", true).expect("passes write succeeds");
+
+        let prd = read_project_prd(&root, prd_rel).expect("prd still parses");
+        let us3 = prd
+            .user_stories
+            .iter()
+            .find(|s| s.id == "US-003")
+            .expect("US-003 present");
+        assert!(us3.passes, "US-003 must now pass");
+        // A sibling story is untouched.
+        let us1 = prd.user_stories.iter().find(|s| s.id == "US-001").unwrap();
+        assert!(us1.passes, "US-001 still passes");
+
+        // A bad target path is rejected.
+        assert!(
+            write_story_passes(&root, "../../evil/prd.json", "US-003", true).is_err(),
+            "traversal must be rejected"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn now_iso8601_is_well_formed() {
+        let s = now_iso8601();
+        // YYYY-MM-DDTHH:MM:SSZ → 20 chars.
+        assert_eq!(s.len(), 20, "got: {s}");
+        assert!(s.ends_with('Z'));
+        assert_eq!(&s[4..5], "-");
+        assert_eq!(&s[10..11], "T");
     }
 }

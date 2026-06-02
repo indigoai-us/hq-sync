@@ -109,3 +109,30 @@ export async function loadLocalProjectReadme(prdPath: string): Promise<string | 
   const content = await invoke<string | null>('get_local_project_readme', { prdPath });
   return content ?? null;
 }
+
+/**
+ * Persist a project's status to its company `board.json` (US-010). The Rust
+ * command params are `board_path` / `project_id` / `status`; Tauri v2 exposes
+ * them camelCased. Rejects (throws) on a path-escape, a non-board.json target,
+ * an unknown project id, or any write failure — the caller treats a throw as the
+ * optimistic-update rollback signal.
+ */
+export async function saveLocalProjectStatus(
+  boardPath: string,
+  projectId: string,
+  status: string,
+): Promise<void> {
+  await invoke('set_local_project_status', { boardPath, projectId, status });
+}
+
+/**
+ * Persist a story's `passes` toggle to the project's prd.json (US-010). Same
+ * throw-on-failure contract as {@link saveLocalProjectStatus}.
+ */
+export async function saveLocalStoryPasses(
+  prdPath: string,
+  storyId: string,
+  passes: boolean,
+): Promise<void> {
+  await invoke('set_local_story_passes', { prdPath, storyId, passes });
+}
