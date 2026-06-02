@@ -87,6 +87,8 @@ Transform and opacity only; never animate layout properties. 150–250ms, ease-o
 - **Secondary button** ("Change…", "Check Now", "Enable"). Surface fill, muted text, full border, `--radius-md`.
 - **Pill** (drift count, version, permission status). `--text-xs`, `--radius-sm`. The drift-count pill gets a visible label so "14" is never naked.
 - **Grouped inset list** (the core Settings primitive). Rows live inside a section group: a `--surface` card at `--radius-lg`, hairline dividers *between rows within the group only*, a muted uppercase section header above it, and `--space-5` between groups. This is the macOS System Settings idiom: familiar, scannable, and it collapses a flat 13-row scroll into four labeled clusters.
+- **Story card** (`StoryCard.svelte`, projects board). A focusable `<button>` surface card (`--bg`, `--radius-sm`, hairline border) carrying a monospace story ID, a 2-line-clamped title, up to two `LabelChip`s plus a `+N` overflow pill, a priority badge (`P1`/`P2`/`P3`) and optional model-hint badge, and an acceptance-criteria progress bar. The bar reuses the SourcesList progress-track/fill language (`--blue` fill, `scaleX` transform). Completed stories (`passes`) render at 0.6 opacity; the focus ring is `2px solid var(--blue)`. AC progress carries no per-AC done flags, so it is derived from the story-level `passes` (full when complete, empty otherwise), mirroring hq-desktop.
+- **Label chip** (`LabelChip.svelte`). A small pill whose deterministic monochrome-glass color comes from the US-004 `labelColor()` palette (a single low-saturation slate hue, lightness-swept) fed into inline `--chip-bg`/`--chip-border`/`--chip-fg` custom properties — no indigo/Tailwind palette, no hardcoded hex.
 
 ## The settings architecture
 
