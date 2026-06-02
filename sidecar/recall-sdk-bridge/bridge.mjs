@@ -43,7 +43,10 @@
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
-import { createRecordingTracker } from "./recording-tracker.mjs";
+import {
+  createRecordingTracker,
+  stopRecordingIfActive,
+} from "./recording-tracker.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -317,15 +320,43 @@ RecallAiSdk.addEventListener("permissions-granted", () => {
   emitLog("info", "all required permissions granted");
 });
 
-RecallAiSdk.addEventListener("meeting-closed", (event) => {
+RecallAiSdk.addEventListener("meeting-closed", async (event) => {
   // SDK fires this when the meeting window goes away (user quits Zoom,
-  // tab closes, Slack huddle ends, etc.). Lets the UI clear the row from
-  // the active-meetings list so stale rows don't pile up if the user
-  // chose not to record.
+  // tab closes, Slack huddle ends, the host ends the call, everyone leaves).
+  // This is the SDK's ONLY call-ended signal — there is no `participant-left`
+  // / `call-ended` event.
   const window = event?.window ?? {};
+  const windowId = typeof window.id === "string" ? window.id : "";
+
+  // Auto-stop the recording if this window is one we're actively recording.
+  // The SDK does NOT reliably auto-stop when the meeting window closes (its
+  // CHANGELOG documents auto-stop as unreliable per-platform), so without this
+  // a recording keeps running after the call ends. `stopRecording` is a
+  // documented no-op when the window isn't recording, and we deliberately do
+  // NOT clear the tracker here — the resulting `recording-ended` event flows
+  // through its existing handler, which calls `recordings.ended(windowId)`.
+  try {
+    const stopped = await stopRecordingIfActive(recordings, RecallAiSdk, windowId);
+    if (stopped) {
+      emitLog(
+        "info",
+        `meeting-closed → auto-stopping active recording (windowId=${windowId})`,
+      );
+    }
+  } catch (err) {
+    emitLog(
+      "error",
+      `meeting-closed auto-stop failed (windowId=${windowId}): ${err?.message ?? err}`,
+    );
+  }
+
+  // Always emit `meeting:closed` so the UI can finalize the row. The UI treats
+  // a close while still recording as defense-in-depth: it routes through its
+  // own stop path (in case this bridge stop was missed) rather than dropping
+  // the row outright; a non-recording row is just removed.
   emitNdjson({
     type: "meeting:closed",
-    windowId: typeof window.id === "string" ? window.id : "",
+    windowId,
     platform: normalisePlatform(window.platform),
     closedAt: new Date().toISOString(),
   });
