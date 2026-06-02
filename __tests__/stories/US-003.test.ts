@@ -54,7 +54,7 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K hotkeys', () => {
-  it('shows the 216px desktop sidebar with Board, Sync, Meetings, and company rows on mount', () => {
+  it('shows the 216px desktop sidebar with Sync, Meetings, the personal page, and company rows on mount', () => {
     const companies = getDesktopCompanies(workspaces);
     const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
 
@@ -63,19 +63,20 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
       statusBarHeightPx: 26,
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
-    // US-007 added Board as the first top-level destination; Sync/Meetings
-    // renumbered after it, and company rows now start at ⌘4.
-    expect(rows.map((row) => row.label)).toEqual(['Board', 'Sync', 'Meetings', 'Acme Corp']);
+    // The top-level Board surface was removed — the board lives on each
+    // company/personal page now. Top-level destinations are Sync (⌘1) and
+    // Meetings (⌘2); the personal page + synced companies follow from ⌘3.
+    expect(rows.map((row) => row.label)).toEqual(['Sync', 'Meetings', 'Personal', 'Acme Corp']);
     expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3', '⌘4']);
-    expect(rows[1]).toMatchObject({ active: true, route: { kind: 'sync' } });
-    // Sync/Meetings are real pages now (US-005) — no active company resolves.
+    expect(rows[0]).toMatchObject({ active: true, route: { kind: 'sync' } });
+    // Sync/Meetings are real pages — no active company resolves.
     expect(getDesktopActiveCompany(initialDesktopRoute, companies)).toBeNull();
   });
 
-  it('switches the main pane to Meetings when the user presses ⌘3', () => {
+  it('switches the main pane to Meetings when the user presses ⌘2', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
-      { key: '3', metaKey: true, ctrlKey: false },
+      { key: '2', metaKey: true, ctrlKey: false },
       companies,
     );
 
@@ -85,12 +86,17 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     expect(getDesktopActiveCompany(nextRoute as DesktopRoute, companies)).toBeNull();
   });
 
-  it('switches to the Company page and marks the clicked company row active', () => {
+  it('gives personal a navigable page and marks a clicked company row active', () => {
     const companies = getDesktopCompanies(workspaces);
-    const acmeRow = getDesktopSidebarRows(initialDesktopRoute, companies).find(
-      (row) => row.label === 'Acme Corp',
-    );
+    const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
 
+    // Personal is local-first and now gets its own desktop page (⌘3).
+    expect(rows.find((row) => row.label === 'Personal')).toMatchObject({
+      route: { kind: 'company', slug: 'personal' },
+      shortcut: '⌘3',
+    });
+
+    const acmeRow = rows.find((row) => row.label === 'Acme Corp');
     expect(acmeRow?.route).toEqual({ kind: 'company', slug: 'acme' });
 
     const nextRoute = acmeRow!.route;
@@ -103,6 +109,7 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
       active: true,
       shortcut: '⌘4',
     });
+    // Globex is cloud-only (no synced local vault) → no desktop page.
     expect(rowsAfterClick.find((row) => row.label === 'Globex')).toBeUndefined();
   });
 });

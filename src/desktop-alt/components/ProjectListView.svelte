@@ -6,7 +6,7 @@
    * pills (All / Active / In Progress / Completed / Archived), a Status|Company
    * group-by toggle, collapsible sections, and ProjectRow rows that open a
    * project's story Kanban. Presentational + filtering only — the project data
-   * is loaded by the parent BoardPage. Token-driven, monochrome glass.
+   * is loaded by the parent (CompanyBoardPanel). Token-driven, monochrome glass.
    */
   import {
     filterProjectsByQuery,

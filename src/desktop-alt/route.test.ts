@@ -26,7 +26,7 @@ function company(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('desktop-alt routes', () => {
-  it('only exposes synced companies in desktop navigation', () => {
+  it('exposes synced companies plus the local-first personal page in desktop navigation', () => {
     const visible = getDesktopCompanies([
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
       company({ slug: 'local', displayName: 'Local', state: 'local-only', cloudUid: null }),
@@ -41,7 +41,9 @@ describe('desktop-alt routes', () => {
       },
     ]);
 
-    expect(visible.map((workspace) => workspace.slug)).toEqual(['synced']);
+    // Synced companies get a page; non-synced companies don't; personal is
+    // local-first (state 'personal') and always navigable so it gets a board too.
+    expect(visible.map((workspace) => workspace.slug)).toEqual(['synced', 'personal']);
   });
 
   it('maps company hotkeys over the filtered synced company list', () => {
@@ -50,9 +52,10 @@ describe('desktop-alt routes', () => {
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    // Board ⌘1 / Sync ⌘2 / Meetings ⌘3 are the three top-level destinations
-    // (US-007), so company hotkeys now start at ⌘4.
-    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    // Sync ⌘1 / Meetings ⌘2 are the two top-level destinations (the board lives
+    // per-company on the company page now, not as a top-level route), so company
+    // hotkeys start at ⌘3.
+    expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'company',
       slug: 'synced',
     });

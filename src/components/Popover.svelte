@@ -508,39 +508,44 @@
     }
   }
 
-  let companyDisplay = $derived(
-    config?.companySlug
-      ? config.companySlug.charAt(0).toUpperCase() + config.companySlug.slice(1)
-      : 'HQ'
-  );
-
-  let folderDisplay = $derived(
-    config?.hqFolderPath
-      ? config.hqFolderPath.replace(/^\/Users\/[^/]+/, '~')
-      : '~/hq'
-  );
 </script>
 
 <div class="popover">
   <!-- Header -->
   <header class="popover-header" data-tauri-drag-region>
-    <div class="header-icon">
-      <svg width="22" height="22" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <rect width="48" height="48" rx="12" fill="currentColor" opacity="0.92" />
-        <text x="50%" y="54%" dominant-baseline="middle" text-anchor="middle" fill="var(--popover-primary-text, #111113)" font-family="system-ui, -apple-system, BlinkMacSystemFont, sans-serif" font-weight="700" font-size="20">HQ</text>
+    <!-- Left anchor. The HQ identity badge + workspace name/path were removed;
+         a quiet "HQ Sync" wordmark replaces them so the bar has a left edge to
+         balance the right-aligned action cluster (without it, the controls and
+         Sync pill float marooned over dead space). Monochrome, muted, no badge
+         — it reads as a calm window title, not branding. Stays draggable. The
+         legacy empty `.header-spacer` is gone; `.header-wordmark` now soaks the
+         spare width and right-aligns the cluster. -->
+    <div class="header-wordmark" data-tauri-drag-region>
+      <svg
+        class="header-logo"
+        viewBox="0 0 280 161"
+        height="15"
+        fill="currentColor"
+        role="img"
+        aria-label="HQ"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path d="M85.7251 3.66162H118.034V154.434H85.7251V89.8176H32.3085V154.434H0V3.66162H32.3085V57.5091H85.7251V3.66162Z" />
+        <path d="M257.169 160.035L241.014 144.096C235.343 147.973 229.096 150.988 222.276 153.142C215.527 155.296 208.419 156.373 200.952 156.373C190.757 156.373 181.172 154.363 172.197 150.342C163.223 146.25 155.325 140.65 148.505 133.542C141.684 126.362 136.335 118.07 132.458 108.664C128.581 99.187 126.642 89.0278 126.642 78.1865C126.642 67.417 128.581 57.3296 132.458 47.9242C136.335 38.4471 141.684 30.1187 148.505 22.939C155.325 15.7593 163.223 10.1592 172.197 6.1386C181.172 2.0462 190.757 0 200.952 0C211.219 0 220.84 2.0462 229.814 6.1386C238.789 10.1592 246.686 15.7593 253.507 22.939C260.328 30.1187 265.641 38.4471 269.446 47.9242C273.323 57.3296 275.261 67.417 275.261 78.1865C275.261 86.0123 274.184 93.5151 272.031 100.695C269.948 107.803 267.077 114.444 263.415 120.618L280 137.203L257.169 160.035ZM200.952 124.065C203.896 124.065 206.732 123.741 209.46 123.095C212.26 122.449 214.952 121.552 217.537 120.403L208.491 111.357L231.322 88.5252L239.291 96.4946C240.512 93.6946 241.409 90.7509 241.984 87.6637C242.63 84.5764 242.953 81.4173 242.953 78.1865C242.953 71.8684 241.84 65.9452 239.614 60.4168C237.461 54.8885 234.445 50.0422 230.568 45.878C226.691 41.642 222.204 38.3394 217.106 35.9701C212.08 33.529 206.696 32.3085 200.952 32.3085C195.208 32.3085 189.788 33.529 184.69 35.9701C179.664 38.3394 175.213 41.642 171.336 45.878C167.459 50.0422 164.407 54.8885 162.182 60.4168C160.028 65.9452 158.951 71.8684 158.951 78.1865C158.951 84.5046 160.028 90.4637 162.182 96.0639C164.407 101.592 167.459 106.474 171.336 110.71C175.213 114.875 179.664 118.141 184.69 120.511C189.788 122.88 195.208 124.065 200.952 124.065Z" />
       </svg>
     </div>
-    <div class="header-text">
-      <h1>{companyDisplay}</h1>
-      <p class="header-path">{folderDisplay}</p>
-    </div>
 
-    <!-- Right-aligned action cluster. `.header-text` (flex:1) pushes it to the
-         edge, so it sits on one line with the identity. For a basic user this
-         is just the Sync button; Indigo adds the meeting + desktop-view entries
-         (both identity-gated). Settings is intentionally NOT here — it lives
-         once, in the footer. -->
+    <!-- Right-aligned action cluster. `.header-wordmark` (flex:1) pushes it to
+         the edge, so it sits on one line. The three secondary icon buttons
+         group together; a wider gap before Sync sets the primary action apart
+         by separation rather than by crowding. For a basic user this is just
+         the Sync button; Indigo adds the meeting + desktop-view entries (both
+         identity-gated). Settings is intentionally NOT here — it lives once,
+         in the footer. -->
     <div class="header-actions">
+      <!-- Secondary icon controls cluster — visually grouped and set apart from
+           the primary Sync pill by the gap on `.header-sync` below. -->
+      <div class="header-icon-group">
       <!-- Notification history → opens a window listing past DMs, shares, and
            this session's new files. Always available (not identity-gated). A
            bell glyph reads as "things that pinged me". -->
@@ -595,8 +600,11 @@
           </svg>
         </button>
       {/if}
+      </div>
 
-      <!-- Sync — the header's primary action, always present. -->
+      <!-- Sync — the header's primary action, always present. Sits apart from
+           the secondary icon group above via the cluster gap, so it reads as
+           primary without an outsized fill dominating the bar. -->
       <button
         class="header-sync"
         class:syncing={syncState === 'syncing'}
@@ -1124,55 +1132,50 @@
   .popover-header {
     display: flex;
     align-items: center;
-    gap: 0.625rem;
-    /* Tightened from 0.875rem (v0.1.85) to give the body more vertical
-       room for the workspace list. Horizontal padding stays at 1rem so
-       the brand icon doesn't crowd the window edge. */
-    padding: 0.625rem 1rem;
+    gap: var(--space-3);
+    /* Tightened bar height: 0.5rem vertical (down from 0.625rem) reads as a
+       lean title bar now that the identity block is gone. Horizontal inset is
+       var(--space-3) (12px) so the header's left/right edges line up with the
+       body's surface-card insets below for one cohesive column. */
+    padding: var(--space-2) var(--space-3);
   }
 
-  .header-icon {
+  .header-wordmark {
+    /* Left anchor + flex:1 spacer in one: the HQ logomark gives the bar a left
+       edge so the action cluster isn't marooned, while flex:1 soaks the spare
+       width to keep that cluster flush right. Draggable like the bar. */
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 32px;
-    height: 32px;
-    border-radius: 10px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-primary, #ffffff);
-    flex-shrink: 0;
-    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
-  }
-
-  .header-text {
-    min-width: 0;
-    /* flex: 1 lets the title/path block soak up the spare horizontal space
-       so the Sync button sits flush against the right edge of the header. */
-    flex: 1;
-  }
-
-  .header-text h1 {
-    font-size: 0.9375rem;
-    font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
-    margin: 0;
-    line-height: 1.3;
   }
 
-  .header-path {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
-    margin: 0.125rem 0 0 0;
-    line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .header-logo {
+    /* Monochrome mark — inherits currentColor so it flips with light/dark.
+       Height-locked, width auto-derived from the viewBox so the H+Q proportion
+       holds. Slightly held back from full contrast to stay calm in the bar. */
+    flex-shrink: 0;
+    height: 15px;
+    width: auto;
+    opacity: 0.9;
   }
 
   .header-actions {
     display: inline-flex;
     align-items: center;
-    gap: 0.375rem;
+    /* Wider gap between the secondary icon group and the primary Sync pill so
+       Sync reads as primary by separation, not by an outsized fill. */
+    gap: var(--space-2);
+    flex-shrink: 0;
+  }
+
+  .header-icon-group {
+    display: inline-flex;
+    align-items: center;
+    /* Tight inner gap keeps the three secondary controls reading as one
+       grouped unit, distinct from the Sync pill set apart to their right. */
+    gap: var(--space-1);
     flex-shrink: 0;
   }
 
@@ -1181,13 +1184,16 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
+    /* 28px square — matched to the Sync pill height so the whole cluster sits
+       on one optical baseline. Slightly leaner than the prior 32px so the
+       secondary controls don't compete with the primary action. */
+    width: 1.75rem;
+    height: 1.75rem;
     padding: 0;
-    color: var(--popover-text, #e0e0e0);
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: 8px;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     transform: translateY(0);
     transition:
@@ -1221,7 +1227,7 @@
   }
 
   .header-inline-error {
-    margin: -0.1875rem 1rem 0.5rem 3.625rem;
+    margin: -0.1875rem 1rem 0.5rem 1rem;
     color: var(--popover-notice-strong, #ffffff);
     font-size: 0.75rem;
     line-height: 1.35;
@@ -1240,15 +1246,20 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    padding: 0.5rem 0.875rem;
+    gap: var(--space-1);
+    /* 28px tall (matches the icon buttons), tighter horizontal padding so the
+       primary fill is a compact pill rather than the heaviest mass on screen.
+       It still reads as primary — solid `--popover-primary` fill vs. the now
+       transparent secondary controls — just not oversized. */
+    height: 1.75rem;
+    padding: 0 var(--space-3);
     font-family: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--popover-primary-text, #111113);
     background: var(--popover-primary, #ffffff);
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     transition: background-color 0.15s ease, opacity 0.15s ease, color 0.15s ease;
     -webkit-app-region: no-drag;
@@ -1313,23 +1324,25 @@
     }
   }
 
-  /* Divider */
+  /* Divider — inset to var(--space-3) (12px) so its ends line up with the
+     header, body, and footer horizontal insets: one continuous column edge. */
   .popover-divider {
     height: 1px;
     background: var(--popover-divider, rgba(255, 255, 255, 0.06));
-    margin: 0 0.75rem;
+    margin: 0 var(--space-3);
   }
 
   /* Body */
   .popover-body {
-    /* Tightened from 0.75rem 1rem (v0.1.85): vertical padding + inter-card
-       gap collapsed from 12px to 8px. Horizontal padding to 0.75rem so
-       workspace rows get +8px of name room before truncation kicks in. */
-    padding: 0.5rem 0.75rem;
+    /* var(--space-3) (12px) horizontal inset aligns the body's left/right edges
+       with the header, divider, and footer for one cohesive column. A touch
+       more top padding (var(--space-3)) than bottom sets the first card off the
+       divider with deliberate breathing room; the inter-card gap is var(--space-2). */
+    padding: var(--space-3) var(--space-3) var(--space-2);
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-2);
     overflow-y: auto;
     /* Firefox scrollbar styling */
     scrollbar-width: thin;
@@ -1357,18 +1370,29 @@
   }
 
 
-  /* Footer */
+  /* Footer — a calm grouped base. Horizontal inset is var(--space-3) (12px) so
+     it lines up with the body, divider, and header; a small inner row gap gives
+     the three tiers (version → Settings nav → demoted destructive row) a
+     deliberate vertical rhythm rather than crammed-flush stacking. The interior
+     buttons carry an extra -4px horizontal margin so their hover fills bleed to
+     the column edge while their text stays optically aligned at 12px. */
   .popover-footer {
     display: flex;
     flex-direction: column;
-    padding: 0.25rem 0.5rem 0.5rem;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3) var(--space-3);
   }
 
   .footer-action {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    width: 100%;
+    /* -4px horizontal margin lets the hover fill bleed toward the column edge
+       while the icon+label still sit at ~16px from the window edge (footer
+       inset 12px - 4px margin + 8px padding), optically aligned with the
+       version row's icon above it. */
+    width: calc(100% + var(--space-2));
+    margin: 0 calc(-1 * var(--space-1));
     padding: 0.4375rem var(--space-2);
     font-size: var(--text-base);
     font-family: inherit;
@@ -1400,10 +1424,14 @@
 
   /* Destructive actions share one compact, muted row. Each button is
      center-aligned and lighter than a nav row, so the pair reads as
-     secondary and sits clearly apart from Settings above the divider. */
+     secondary and sits clearly apart from Settings above the divider. The
+     matching -4px horizontal margin keeps its hover fills bleeding to the
+     same column edge as the Settings row above. */
   .footer-destructive {
     display: flex;
     gap: var(--space-1);
+    width: calc(100% + var(--space-2));
+    margin: 0 calc(-1 * var(--space-1));
   }
 
   .footer-mini {
@@ -1443,13 +1471,23 @@
     align-items: center;
     /* Wrap the action group to a second line when the version label + pills
        can't share one line, instead of overflowing the 320px popover and
-       overlapping the "HQ vX.Y.Z" label (the count badge + "Restore vX.Y.Z"
-       pill + "✓ update done" chip together exceed one row). The actions group
-       keeps `margin-left:auto` so it stays right-aligned whether it sits beside
-       the label or drops below it. */
+       overlapping the "HQ vX.Y.Z" label. The actions group keeps
+       `margin-left:auto` so it stays right-aligned whether it sits beside the
+       label or drops below it.
+
+       Unlike `.footer-action` (a text-only row that uses a -4px bleed so its
+       hover fill can reach the column edge), this row carries a VISIBLE
+       right-aligned pill — so it must NOT bleed past the inset, or the pill
+       kisses the window edge. It spans the footer content box exactly: the
+       right pill lands at the normal 12px inset (aligned with the body cards),
+       and a small left pad keeps the layers icon optically aligned with the
+       Settings row's icon above it. */
     flex-wrap: wrap;
     gap: 0.375rem 0.5rem;
-    padding: 0.4375rem 0.5rem;
+    box-sizing: border-box;
+    width: 100%;
+    margin: 0;
+    padding: 0.4375rem 0 0.4375rem var(--space-1);
     font-size: 0.8125rem;
     color: var(--popover-text-muted, #a0a0b0);
   }

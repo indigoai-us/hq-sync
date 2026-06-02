@@ -17,7 +17,7 @@ import { readRepoFile } from './harness';
  *
  * Source-contract style (matching the desktop-alt harness): assert the pure
  * markdown helper is safe + correct, the editable-status model is wired, and the
- * ProjectDetailView.svelte + BoardPage.svelte sources wire the header metadata,
+ * ProjectDetailView.svelte + CompanyBoardPanel.svelte sources wire the header metadata,
  * README markdown render, the read-only status control, and the project-open
  * flow that reaches the detail view.
  */
@@ -89,7 +89,7 @@ describe('desktop-alt editable project status (US-009)', () => {
 
 describe('desktop-alt project detail view source contract (US-009)', () => {
   const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
-  const board = readRepoFile('src/desktop-alt/pages/BoardPage.svelte');
+  const board = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
 
   it('wires the header metadata: title, description, company, progress, indicators', () => {
     expect(detail).toContain('data-testid="project-detail-view"');
@@ -138,7 +138,7 @@ describe('desktop-alt project detail view source contract (US-009)', () => {
   });
 
   it('routes the project-open flow through the detail view', () => {
-    // BoardPage drills into ProjectDetailView (not straight into StoryKanban).
+    // CompanyBoardPanel drills into ProjectDetailView (not straight into StoryKanban).
     expect(board).toContain('import ProjectDetailView');
     expect(board).toContain('<ProjectDetailView');
     expect(board).toContain('onback={backToList}');

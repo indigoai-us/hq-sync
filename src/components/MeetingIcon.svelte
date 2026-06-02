@@ -110,12 +110,17 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 8px;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    color: var(--popover-text, #e0e0e0);
+    /* 28px square, transparent at rest — matched to the popover header's
+       `.header-icon-button` so the secondary icon group is one consistent
+       control family. The `detected`/`recording` states below still carry the
+       stronger surface/primary fills, so meaningful state stays prominent
+       while the idle control recedes. */
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: var(--radius-sm, 8px);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
     cursor: pointer;
     transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
     padding: 0;

@@ -95,9 +95,14 @@ describe('US-004: Toggle icon button in the classic popover header', () => {
     // removed when Settings moved to the footer (one settings entry).
     expect(compactSource).toContain('<header class="popover-header" data-tauri-drag-region>');
     expect(compactSource).not.toContain('has-desktop-alt-controls');
-    // `.header-text` pushes the right-aligned action cluster to the edge on one
-    // line; the identity-gated controls sit in `.header-actions`.
-    expect(compactSource).toContain('<div class="header-text">');
+    // The draggable `.header-wordmark` left anchor (a quiet "HQ Sync" label that
+    // replaced the removed HQ badge + workspace name/path) is also the flex
+    // spacer: it soaks the spare width and pushes the right-aligned action
+    // cluster to the edge on one line. The identity-gated controls sit in
+    // `.header-actions`; the old empty `.header-spacer` div is gone.
+    expect(compactSource).toContain('<div class="header-wordmark" data-tauri-drag-region>');
+    expect(compactSource).not.toContain('class="header-spacer"');
+    expect(compactSource).not.toContain('<div class="header-text">');
     expect(compactSource).toContain('<div class="header-actions">');
   });
 });
