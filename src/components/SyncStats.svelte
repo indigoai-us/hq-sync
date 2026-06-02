@@ -73,36 +73,22 @@
     {#if onhistory}
       <!-- Clickable: opens Recent Changes (activity log). The clock icon +
            trailing chevron signal that the synced state is browsable. -->
+      <!-- Naked small grey text — a quiet timestamp, not a card. Still opens
+           Recent Changes on click (no icon/chevron chrome; hover lifts the
+           colour to hint the affordance). -->
       <button
         type="button"
-        class="stat-row stat-row-action"
+        class="last-synced"
         onclick={onhistory}
         title="View recent changes"
         aria-label="View recent changes"
       >
-        <svg class="stat-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-          <path d="M8 4.5V8l2.5 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        <span class="stat-label">Last synced</span>
-        <span class="stat-value">
-          {status.lastSyncAt ? timeAgo(status.lastSyncAt) : 'never'}
-        </span>
-        <svg class="stat-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+        Last synced {status.lastSyncAt ? timeAgo(status.lastSyncAt) : 'never'}
       </button>
     {:else}
-      <div class="stat-row">
-        <svg class="stat-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="8" cy="8" r="6.5" stroke="currentColor" stroke-width="1.5" />
-          <path d="M8 4.5V8l2.5 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        <span class="stat-label">Last synced</span>
-        <span class="stat-value">
-          {status.lastSyncAt ? timeAgo(status.lastSyncAt) : 'never'}
-        </span>
-      </div>
+      <p class="last-synced last-synced-static">
+        Last synced {status.lastSyncAt ? timeAgo(status.lastSyncAt) : 'never'}
+      </p>
     {/if}
 
     {#if status.conflicts > 0}
@@ -126,25 +112,43 @@
 
 <style>
   .sync-stats {
-    /* Fill the popover-body content width. Removed max-width:280px —
-       it left the card left-aligned in a 286px space with 6px of dead
-       space on the right, making "never" / "0 files" look pushed off
-       the edge relative to the centered sync button beneath it.
-       box-sizing:border-box so the 1px border + padding are counted
-       inside width:100% (prevents a 2px horizontal overflow). */
+    /* Naked — no card. The last-synced line is just quiet text in the body;
+       the conflict row (when present) sits directly beneath it. */
     width: 100%;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
-    /* margin-top removed — parent popover-body already has
-       gap:0.75rem between children, stacking margin-top on top of
-       that creates doubled space above the card. */
-    padding: 0.6rem 0.75rem;
-    border-radius: 12px;
-    background: var(--popover-surface, rgba(255, 255, 255, 0.08));
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    box-shadow: inset 0 1px 0 var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  /* "Last synced X ago" — small, grey, no chrome. As a button it stays a
+     Recent-Changes affordance; hover lifts the colour. Left-aligned, hugs
+     its text so it reads as a caption, not a full-width row. */
+  .last-synced {
+    align-self: flex-start;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: none;
+    font-family: inherit;
+    font-size: var(--text-xs, 0.6875rem);
+    line-height: 1.3;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    text-align: left;
+    cursor: pointer;
+    transition: color 0.1s ease;
+  }
+
+  .last-synced-static {
+    cursor: default;
+  }
+
+  .last-synced:hover {
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+  }
+
+  .last-synced-static:hover {
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
   }
 
   .stats-loading {
@@ -201,40 +205,6 @@
     font-weight: 500;
   }
 
-  /* "Last synced" rendered as a history button. Negative margins let the
-     hover background bleed to the card edges while the row stays visually
-     aligned with a static stat-row. */
-  .stat-row-action {
-    width: calc(100% + 1.5rem);
-    margin: -0.35rem -0.75rem;
-    padding: 0.35rem 0.75rem;
-    background: none;
-    border: none;
-    font-family: inherit;
-    color: inherit;
-    cursor: pointer;
-    border-radius: var(--radius-md);
-    transition: background-color 0.1s ease;
-  }
-
-  .stat-row-action:hover {
-    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
-  }
-
-  /* Trailing chevron — sits flush right after the value, nudges on hover to
-     reinforce the navigability. */
-  .stat-chevron {
-    flex-shrink: 0;
-    margin-left: 0.25rem;
-    color: #a0a0b0;
-    transition: transform 0.12s ease, color 0.12s ease;
-  }
-
-  .stat-row-action:hover .stat-chevron {
-    color: #e0e0e0;
-    transform: translateX(2px);
-  }
-
   /* Conflict row: same calm grey as a normal stat row. The Copy-prompt button
      to the right of the value carries the affordance; severity colour was
      removed (per design: errors/warnings of any kind are a grey friendly
@@ -248,11 +218,6 @@
   }
 
   @media (prefers-color-scheme: light) {
-    .sync-stats {
-      background: var(--popover-surface, rgba(255, 255, 255, 0.5));
-      border-color: var(--popover-border, rgba(0, 0, 0, 0.12));
-    }
-
     .stat-icon {
       color: #6b7280;
     }
@@ -262,14 +227,6 @@
     }
 
     .stat-value {
-      color: #111113;
-    }
-
-    .stat-chevron {
-      color: #6b7280;
-    }
-
-    .stat-row-action:hover .stat-chevron {
       color: #111113;
     }
 
