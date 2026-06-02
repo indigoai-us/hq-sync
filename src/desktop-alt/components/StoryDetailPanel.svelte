@@ -17,8 +17,10 @@
    * feed (e.g. hq-desktop's useStoryActivity / get_story_activity command), pass
    * it in and the empty state is replaced with the live render.
    */
+  import { invoke } from '@tauri-apps/api/core';
   import { labelColor, type Story } from '../lib/projects-model';
   import LabelChip from './LabelChip.svelte';
+  import OpenFileInClaudeCode from './OpenFileInClaudeCode.svelte';
 
   /**
    * The US-004 Story type carries no `notes` / `files` / `model_hint` fields, but
@@ -64,6 +66,27 @@
   }
 
   let { story, onclose, onselectDependency, activity = null }: Props = $props();
+
+  // HQ root for the Claude Code session (US-012). Loaded lazily via get_config —
+  // the same command App.svelte uses; Tauri caches the read. Empty until loaded,
+  // at which point each file's "Open in Claude Code" affordance suppresses
+  // itself (see OpenFileInClaudeCode). Best-effort: a failure leaves it empty
+  // and the per-file affordances simply don't render.
+  let hqFolderPath = $state('');
+
+  $effect(() => {
+    let cancelled = false;
+    void invoke<{ hqFolderPath?: string }>('get_config')
+      .then((config) => {
+        if (!cancelled) hqFolderPath = config?.hqFolderPath ?? '';
+      })
+      .catch((err) => {
+        console.error('StoryDetailPanel get_config failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   const acItems = $derived(story?.acceptanceCriteria ?? []);
   const acTotal = $derived(acItems.length);
@@ -238,9 +261,12 @@
       {#if files.length > 0}
         <section class="detail-section">
           <h3 class="section-title">Files</h3>
-          <ul class="file-list">
+          <ul class="file-list" data-testid="story-files">
             {#each files as file (file)}
-              <li class="file-item">{file}</li>
+              <li class="file-item">
+                <span class="file-path">{file}</span>
+                <OpenFileInClaudeCode {file} folder={hqFolderPath} variant="compact" />
+              </li>
             {/each}
           </ul>
         </section>
@@ -542,12 +568,46 @@
   }
 
   .file-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    padding: 2px 4px;
+    border-radius: var(--radius-sm);
+    transition: background 140ms ease;
+  }
+
+  .file-item:hover {
+    background: var(--row-hover);
+  }
+
+  .file-path {
+    flex: 1 1 auto;
+    min-width: 0;
     color: var(--muted);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-xs);
     line-height: 16px;
     word-break: break-all;
+  }
+
+  /* Compact affordance reveals on row hover / keyboard focus — matches the
+     drill-in language used by the board + deployments rows. */
+  .file-item :global(.open-claude-btn.compact) {
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+
+  .file-item:hover :global(.open-claude-btn.compact),
+  .file-item :global(.open-claude-btn.compact:focus-visible) {
+    opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .file-item :global(.open-claude-btn.compact) {
+      transition: none;
+    }
   }
 
   @keyframes backdrop-fade {

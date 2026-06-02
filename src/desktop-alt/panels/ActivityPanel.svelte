@@ -3,6 +3,7 @@
   import { companyStore } from '../lib/company-store.svelte';
   import Sparkline from '../components/Sparkline.svelte';
   import StatTile from '../components/StatTile.svelte';
+  import OpenFileInClaudeCode from '../components/OpenFileInClaudeCode.svelte';
 
   interface Props {
     slug: string;
@@ -54,6 +55,27 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+
+  // HQ root for the Claude Code drill-in (US-012). Loaded lazily via get_config
+  // (same command App.svelte uses; Tauri caches the read). Empty until loaded —
+  // at which point each activity entry's "Open in Claude Code" affordance
+  // suppresses itself. Best-effort: a failure leaves it empty and rows simply
+  // render without the drill-in.
+  let hqFolderPath = $state('');
+
+  $effect(() => {
+    let cancelled = false;
+    void invoke<{ hqFolderPath?: string }>('get_config')
+      .then((config) => {
+        if (!cancelled) hqFolderPath = config?.hqFolderPath ?? '';
+      })
+      .catch((err) => {
+        console.error('ActivityPanel get_config failed:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   const sparklineMax = $derived(Math.max(1, ...activity.sparkline));
   const contributorMax = $derived(Math.max(1, ...activity.top.map((contributor) => contributor.edits)));
@@ -261,16 +283,29 @@
         {/each}
       </div>
     {:else if activity.recent.length > 0}
-      <div class="recent-list">
+      <div class="recent-list" data-testid="activity-recent-list">
         {#each activity.recent as entry, index (`${entry.file}:${index}`)}
-          <div class="recent-row">
+          <div class="recent-row" data-testid="activity-row">
             <span class="avatar" title={entry.who}>{initialFor(entry.who)}</span>
             <div class="recent-copy">
               <strong title={entry.file}>{entry.file}</strong>
               <span>{entry.who} · {entry.what}</span>
             </div>
             <time>{entry.when}</time>
-            <button type="button" disabled aria-label={`Open ${entry.file}`}>Open</button>
+            <!--
+              Drill-in (US-012): the only path the activity data carries is
+              `entry.file`, so the entry drills into that file via the shared
+              Claude Code link util — same mechanism as the story-files
+              affordance. We surface it only for entries that actually name a
+              file (the normalizer falls back to "Untitled file" when absent).
+            -->
+            {#if entry.file && entry.file !== 'Untitled file'}
+              <OpenFileInClaudeCode
+                file={entry.file}
+                folder={hqFolderPath}
+                label="Open"
+              />
+            {/if}
           </div>
         {/each}
       </div>
@@ -566,17 +601,17 @@
     white-space: nowrap;
   }
 
-  .recent-row button {
-    height: 26px;
-    padding: 0 9px;
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    background: var(--row-hover);
-    color: var(--muted-2);
-    font: inherit;
-    font-size: 11px;
-    font-weight: 650;
-    cursor: default;
+  /* The recent-row drill-in (OpenFileInClaudeCode) reveals on row hover /
+     keyboard focus — matching the affordance language of the board +
+     deployments rows. */
+  .recent-row :global(.open-claude-btn) {
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+
+  .recent-row:hover :global(.open-claude-btn),
+  .recent-row :global(.open-claude-btn:focus-visible) {
+    opacity: 1;
   }
 
   .empty-state {
@@ -649,7 +684,7 @@
       grid-template-columns: 28px minmax(0, 1fr) auto;
     }
 
-    .recent-row button {
+    .recent-row :global(.open-claude-btn) {
       display: none;
     }
   }
@@ -662,6 +697,10 @@
     .recent-skeleton span {
       transition: none;
       animation: none;
+    }
+
+    .recent-row :global(.open-claude-btn) {
+      transition: none;
     }
   }
 </style>
