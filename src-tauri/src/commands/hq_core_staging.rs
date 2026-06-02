@@ -126,7 +126,8 @@ impl StagingIndex {
         {
             return StagingStatus::StagingMain;
         }
-        let mut prs_sorted: Vec<&(u32, BTreeMap<String, BTreeSet<String>>)> = self.prs.iter().collect();
+        let mut prs_sorted: Vec<&(u32, BTreeMap<String, BTreeSet<String>>)> =
+            self.prs.iter().collect();
         prs_sorted.sort_by_key(|(n, _)| *n);
         for (num, files) in prs_sorted {
             if files.get(path).is_some_and(|shas| shas.contains(local_sha)) {
@@ -174,9 +175,7 @@ fn is_staging_channel_enabled() -> bool {
         .filter(|p| p.exists())
         .and_then(|p| std::fs::read_to_string(&p).ok())
         .and_then(|s| serde_json::from_str(&s).ok());
-    prefs
-        .and_then(|p| p.staging_channel)
-        .unwrap_or(true)
+    prefs.and_then(|p| p.staging_channel).unwrap_or(true)
 }
 
 /// True when `~/.hq/menubar.json` carries an explicit non-empty
@@ -245,7 +244,10 @@ pub(crate) fn resolve_gh_token() -> Option<String> {
     // 2. Fallback: parse oauth_token for github.com out of hosts.yml. Covers
     //    setups where `gh` isn't on the Tauri app's minimal PATH but the
     //    config file is present.
-    let hosts = dirs::home_dir()?.join(".config").join("gh").join("hosts.yml");
+    let hosts = dirs::home_dir()?
+        .join(".config")
+        .join("gh")
+        .join("hosts.yml");
     let bytes = std::fs::read(&hosts).ok()?;
     let parsed: serde_yaml::Value = serde_yaml::from_slice(&bytes).ok()?;
     let tok = parsed
@@ -512,16 +514,29 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
     )
 }
 
-/// Resolve the bundled rescue script via Tauri's resource API. In dev
-/// (`cargo run` / `tauri dev`) the script ships at `_up_/scripts/...` under
-/// the resource dir (Tauri rewrites `../scripts/...` to `_up_/scripts/...`
-/// during resource staging). In packaged builds the bundler places it in
-/// the .app's `Resources/` directory under the same relative path.
+/// Resolve the rescue script. Tries (in order):
+///   1. Bundled `Resources/_up_/scripts/` — the happy path for any
+///      packaged install whose Tauri auto-update refreshed the resource
+///      dir along with the executable.
+///   2. Dev-fallback `scripts/...` relative to cwd — covers `cargo run`
+///      and `tauri dev` from a repo checkout.
+///   3. **Live-fetch fallback** — download `scripts/replace-rescue.sh`
+///      from `indigoai-us/hq-sync` at the matching version tag (with
+///      `main` as a secondary fallback) into
+///      `~/.hq/cache/hq-sync/scripts/replace-rescue-v{app_version}.sh`
+///      and return the cached path. Closes the gap where the Tauri
+///      updater bumped the executable but left a pre-rename copy in
+///      `Resources/_up_/scripts/` (observed between v0.1.106 and
+///      v0.1.107 around the `replace-from-staging-rescue.sh` →
+///      `replace-rescue.sh` rename in commit cebf307).
+///
+/// Async because of step 3 — the network fetch can't run on the UI thread
+/// without blocking it for the request duration.
 ///
 /// Crate-public: `hq_core_update::install_hq_core_update` reuses this to
 /// spawn the same rescue script against the released hq-core repo (replaces
 /// the old "open Claude Code with /update-hq" CTA for prod users).
-pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) async fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     // New name first (v0.1.104+), old name as fallback so a stale resource
     // dir mid-rebuild (or any pre-rename hq-sync.app still on disk that
     // somehow re-invokes this code path) still resolves cleanly. Both
@@ -539,9 +554,8 @@ pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBu
             }
         }
     }
-    // Last-resort dev fallback: the cwd may be the repo root when
-    // running `cargo run` directly without going through `tauri dev`.
-    // Try the new name first here too.
+    // Dev fallback: the cwd may be the repo root when running `cargo run`
+    // directly without going through `tauri dev`. Try the new name first.
     let cwd = std::env::current_dir().ok();
     for filename in ["replace-rescue.sh", "replace-from-staging-rescue.sh"] {
         if let Some(p) = cwd.as_ref().map(|c| c.join("scripts").join(filename)) {
@@ -550,10 +564,67 @@ pub(crate) fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::PathBu
             }
         }
     }
-    Err(format!(
-        "replace-rescue.sh not found in resource dir (looked at: {:?})",
-        candidates
-    ))
+    // Live-fetch fallback — the bundle was stale. Download the matching
+    // version from GitHub into the per-user cache and return that.
+    //
+    // The fetcher classifies the response into the three variants
+    // `ensure_cached_rescue_script` requires (see rescue_script_cache::
+    // FetchOutcome): only a definitive 404 authorises a fallback from
+    // the tagged URL to `main`. Any other HTTP status (5xx, 403, etc.)
+    // or transport-layer failure (DNS, TLS, timeout) returns
+    // TransientError, which the caller surfaces verbatim instead of
+    // silently caching `main` content under the running version key.
+    let app_version = app.package_info().version.to_string();
+    let home = dirs::home_dir();
+    let fetcher = |url: String| async move {
+        use crate::commands::rescue_script_cache::FetchOutcome;
+        let client = match reqwest::Client::builder()
+            .default_headers(crate::util::client_info::client_headers())
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return FetchOutcome::TransientError(format!("build http client: {e}")),
+        };
+        let resp = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => return FetchOutcome::TransientError(format!("GET {url}: {e}")),
+        };
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return FetchOutcome::NotFound;
+        }
+        if !status.is_success() {
+            return FetchOutcome::TransientError(format!("GET {url}: HTTP {status}"));
+        }
+        match resp.bytes().await {
+            Ok(b) => FetchOutcome::Body(b.to_vec()),
+            Err(e) => FetchOutcome::TransientError(format!("read body for {url}: {e}")),
+        }
+    };
+    match crate::commands::rescue_script_cache::ensure_cached_rescue_script(
+        home.as_deref(),
+        &app_version,
+        fetcher,
+    )
+    .await
+    {
+        Ok((path, source)) => {
+            log(
+                "hq-core-staging",
+                &format!(
+                    "rescue script resolved via {source:?} at {}",
+                    path.display()
+                ),
+            );
+            Ok(path)
+        }
+        Err(e) => Err(format!(
+            "replace-rescue.sh not found in resource dir (looked at: {:?}); \
+             live-fetch fallback also failed: {e}",
+            candidates
+        )),
+    }
 }
 
 /// Tauri command — run the rescue script against the resolved HQ folder.
@@ -601,7 +672,7 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
             hq_folder.display()
         ));
     }
-    let script = resolve_rescue_script(&app)?;
+    let script = resolve_rescue_script(&app).await?;
 
     // Stream the combined output to a per-invocation log file so the user
     // can `tail -f` it during the multi-minute scan and so we have a
@@ -647,7 +718,8 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
         .map_err(|e| format!("spawn rescue script: {e}"))?;
 
     let exit_code = status.code().unwrap_or(-1);
-    let log_tail = tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
+    let log_tail =
+        tail_log(&log_path, 40).unwrap_or_else(|e| format!("(log tail unavailable: {e})"));
 
     log(
         "hq-core-staging",
@@ -668,8 +740,8 @@ pub async fn run_replace_from_staging(app: AppHandle) -> Result<RescueRunResult,
 /// Crate-public so `hq_core_update::install_hq_core_update` can surface the
 /// same trailing-log feedback chip the staging pill uses.
 pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n_lines);
     Ok(lines[start..].join("\n"))
@@ -681,15 +753,30 @@ mod tests {
 
     fn idx() -> StagingIndex {
         let mut main = BTreeMap::new();
-        main.insert("a.md".to_string(), BTreeSet::from(["sha-main-a".to_string()]));
+        main.insert(
+            "a.md".to_string(),
+            BTreeSet::from(["sha-main-a".to_string()]),
+        );
 
         let mut pr182 = BTreeMap::new();
-        pr182.insert("b.md".to_string(), BTreeSet::from(["sha-182-b".to_string()]));
-        pr182.insert("shared.md".to_string(), BTreeSet::from(["sha-shared".to_string()]));
+        pr182.insert(
+            "b.md".to_string(),
+            BTreeSet::from(["sha-182-b".to_string()]),
+        );
+        pr182.insert(
+            "shared.md".to_string(),
+            BTreeSet::from(["sha-shared".to_string()]),
+        );
 
         let mut pr183 = BTreeMap::new();
-        pr183.insert("c.md".to_string(), BTreeSet::from(["sha-183-c".to_string()]));
-        pr183.insert("shared.md".to_string(), BTreeSet::from(["sha-shared".to_string()]));
+        pr183.insert(
+            "c.md".to_string(),
+            BTreeSet::from(["sha-183-c".to_string()]),
+        );
+        pr183.insert(
+            "shared.md".to_string(),
+            BTreeSet::from(["sha-shared".to_string()]),
+        );
 
         StagingIndex {
             main,
@@ -699,13 +786,22 @@ mod tests {
 
     #[test]
     fn classify_main_match() {
-        assert_eq!(idx().classify("a.md", "sha-main-a"), StagingStatus::StagingMain);
+        assert_eq!(
+            idx().classify("a.md", "sha-main-a"),
+            StagingStatus::StagingMain
+        );
     }
 
     #[test]
     fn classify_pr_match() {
-        assert_eq!(idx().classify("b.md", "sha-182-b"), StagingStatus::StagingPr(182));
-        assert_eq!(idx().classify("c.md", "sha-183-c"), StagingStatus::StagingPr(183));
+        assert_eq!(
+            idx().classify("b.md", "sha-182-b"),
+            StagingStatus::StagingPr(182)
+        );
+        assert_eq!(
+            idx().classify("c.md", "sha-183-c"),
+            StagingStatus::StagingPr(183)
+        );
     }
 
     #[test]
@@ -720,8 +816,14 @@ mod tests {
 
     #[test]
     fn classify_unaccounted() {
-        assert_eq!(idx().classify("a.md", "different-sha"), StagingStatus::Unaccounted);
-        assert_eq!(idx().classify("missing.md", "whatever"), StagingStatus::Unaccounted);
+        assert_eq!(
+            idx().classify("a.md", "different-sha"),
+            StagingStatus::Unaccounted
+        );
+        assert_eq!(
+            idx().classify("missing.md", "whatever"),
+            StagingStatus::Unaccounted
+        );
     }
 
     #[test]
