@@ -1,0 +1,2 @@
+allowBuilds:
+  '@recallai/desktop-sdk': set this to true or false
