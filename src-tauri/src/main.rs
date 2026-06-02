@@ -256,6 +256,8 @@ fn main() {
             commands::desktop_alt::get_company_activity,
             commands::desktop_alt::get_company_deployments,
             commands::desktop_alt::get_company_secrets,
+            commands::projects_local::get_local_projects,
+            commands::projects_local::get_local_project_prd,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,
