@@ -507,6 +507,71 @@ export function groupProjects(
     }));
 }
 
+// ---------------------------------------------------------------------------
+// Editable project statuses (US-009 detail-view status control)
+// ---------------------------------------------------------------------------
+
+/**
+ * The statuses a user may manually assign to a project, in display order
+ * (ported from hq-desktop's EDITABLE_STATUSES). Excludes the synthetic `live`
+ * state — that is set by the orchestrator, not the user. The detail-view status
+ * control (US-009) renders these read-only for now; persisting a change is
+ * wired in US-010.
+ */
+export const EDITABLE_PROJECT_STATUSES = [
+  'planned',
+  'prd_created',
+  'in_progress',
+  'completed',
+  'archived',
+] as const;
+
+/** One of the user-assignable project statuses. */
+export type EditableProjectStatus = (typeof EDITABLE_PROJECT_STATUSES)[number];
+
+/** Human-readable label for each editable project status. */
+export const EDITABLE_PROJECT_STATUS_LABEL: Record<EditableProjectStatus, string> = {
+  planned: 'Planned',
+  prd_created: 'PRD Created',
+  in_progress: 'In Progress',
+  completed: 'Completed',
+  archived: 'Archived',
+};
+
+/**
+ * Resolve a project's raw board `status` to the editable-status enum used by the
+ * detail-view control. Raw board statuses are messy (`active`, `live`,
+ * `running`, `complete`, …); this maps them onto the canonical editable set so
+ * the control always has a defined current value. Unknown statuses fall back to
+ * `planned`.
+ */
+export function toEditableStatus(rawStatus: string | undefined | null): EditableProjectStatus {
+  const s = (rawStatus ?? '').toLowerCase().trim();
+  switch (s) {
+    case 'planned':
+    case 'pending':
+    case '':
+      return 'planned';
+    case 'prd_created':
+    case 'prd':
+      return 'prd_created';
+    case 'in_progress':
+    case 'in-progress':
+    case 'active':
+    case 'live':
+    case 'running':
+      return 'in_progress';
+    case 'completed':
+    case 'complete':
+    case 'done':
+      return 'completed';
+    case 'archived':
+      return 'archived';
+    default:
+      return 'planned';
+  }
+}
+
 /** Distinct company slugs present in a project list, alphabetical. */
 export function projectCompanies(projects: Project[]): string[] {
   return [...new Set(projects.map((project) => project.company).filter(Boolean))].sort(

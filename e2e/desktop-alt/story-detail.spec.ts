@@ -95,8 +95,12 @@ describe('desktop-alt story detail slide-over (US-008)', () => {
     expect(page).toContain(
       "import StoryDetailPanel from '../components/StoryDetailPanel.svelte'",
     );
-    // Kanban onselect opens the panel; panel closes + reselects deps.
-    expect(page).toContain('onselect={openStory}');
+    // US-009 moved the Kanban inside ProjectDetailView: BoardPage threads
+    // openStory into the detail view via onselectStory, which forwards it to the
+    // embedded StoryKanban's onselect. The panel itself still lives in BoardPage.
+    expect(page).toContain('onselectStory={openStory}');
+    const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
+    expect(detail).toContain('onselect={onselectStory}');
     expect(page).toContain('story={selectedStory}');
     expect(page).toContain('onclose={closeStory}');
     expect(page).toContain('onselectDependency={selectStoryById}');

@@ -19,12 +19,11 @@
     loadLocalProjectStories,
   } from '../lib/local-projects';
   import {
-    projectDisplayName,
     type Project,
     type Story,
   } from '../lib/projects-model';
   import ProjectListView from '../components/ProjectListView.svelte';
-  import StoryKanban from '../components/StoryKanban.svelte';
+  import ProjectDetailView from './ProjectDetailView.svelte';
   import StoryDetailPanel from '../components/StoryDetailPanel.svelte';
 
   interface Props {
@@ -143,33 +142,14 @@
 
 <section class="board-page" aria-labelledby="board-page-title" aria-label="Board">
   {#if selected}
-    <header class="page-header">
-      <button
-        type="button"
-        class="back-button"
-        data-testid="board-back"
-        onclick={backToList}
-      >
-        <span class="back-chevron" aria-hidden="true">‹</span>
-        <span>Projects</span>
-      </button>
-      <h1 id="board-page-title">{projectDisplayName(selected)}</h1>
-      {#if selected.company}
-        <p class="page-subtitle">{selected.company}</p>
-      {/if}
-    </header>
-
-    <div class="board-drill">
-      {#if storiesError}
-        <div class="drill-error" role="alert">{storiesError}</div>
-      {:else if !selected.prdPath}
-        <div class="drill-empty">
-          <p>This project has no linked PRD yet, so there are no stories to show.</p>
-        </div>
-      {:else}
-        <StoryKanban {stories} loading={storiesLoading} onselect={openStory} />
-      {/if}
-    </div>
+    <ProjectDetailView
+      project={selected}
+      {stories}
+      {storiesLoading}
+      {storiesError}
+      onback={backToList}
+      onselectStory={openStory}
+    />
 
     <StoryDetailPanel
       story={selectedStory}
@@ -222,68 +202,8 @@
     line-height: 18px;
   }
 
-  .back-button {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-1);
-    margin-bottom: var(--space-2);
-    padding: var(--space-1) var(--space-2);
-    margin-left: calc(-1 * var(--space-2));
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--muted);
-    font: inherit;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    cursor: pointer;
-    transition:
-      background 140ms ease,
-      color 140ms ease;
-  }
-
-  .back-button:hover {
-    background: var(--row-hover);
-    color: var(--fg);
-  }
-
-  .back-button:focus-visible {
-    outline: 2px solid var(--blue);
-    outline-offset: 2px;
-  }
-
-  .back-chevron {
-    font-size: var(--text-lg);
-    line-height: 1;
-  }
-
-  .board-list-wrap,
-  .board-drill {
+  .board-list-wrap {
     flex: 1 1 auto;
     min-height: 0;
-  }
-
-  .drill-error {
-    padding: var(--space-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--amber);
-    font-size: var(--text-sm);
-  }
-
-  .drill-empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: var(--space-6);
-    border: 1px dashed var(--border);
-    border-radius: var(--radius-md);
-    color: var(--muted-3);
-    font-size: var(--text-sm);
-  }
-
-  .drill-empty p {
-    margin: 0;
   }
 </style>

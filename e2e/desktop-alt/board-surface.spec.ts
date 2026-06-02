@@ -186,12 +186,18 @@ describe('desktop-alt Board surface (US-007)', () => {
     expect(row).toContain('is-live');
     expect(row).toContain("onselect?.(project)");
 
-    // BoardPage loads projects, drills into the StoryKanban, and offers a back.
+    // BoardPage loads projects, then drills into the ProjectDetailView (US-009),
+    // which embeds the StoryKanban via its Board tab and owns the back affordance.
+    // (Superseded US-007's straight-to-Kanban contract: the StoryKanban import +
+    // the back button now live in ProjectDetailView.svelte, not BoardPage.)
     expect(page).toContain('loadLocalProjects');
     expect(page).toContain('loadLocalProjectStories');
-    expect(page).toContain('import StoryKanban');
-    expect(page).toContain('<StoryKanban {stories}');
-    expect(page).toContain('data-testid="board-back"');
+    expect(page).toContain('import ProjectDetailView');
+    expect(page).toContain('<ProjectDetailView');
+    const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
+    expect(detail).toContain('import StoryKanban');
+    expect(detail).toContain('<StoryKanban {stories}');
+    expect(detail).toContain('data-testid="detail-back"');
     // Best-effort company pre-filter.
     expect(page).toContain('companySlug');
   });

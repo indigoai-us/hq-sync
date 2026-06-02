@@ -99,3 +99,13 @@ export async function loadLocalProjectStories(prdPath: string): Promise<Story[]>
   const prd = await invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
   return (prd?.userStories ?? []).map(toStory);
 }
+
+/**
+ * Load a project's sibling README.md by its prd path (US-009). Returns `null`
+ * when the project has no README — the Rust command returns `Option<String>`,
+ * so a missing README is a normal `null`, not a thrown error.
+ */
+export async function loadLocalProjectReadme(prdPath: string): Promise<string | null> {
+  const content = await invoke<string | null>('get_local_project_readme', { prdPath });
+  return content ?? null;
+}

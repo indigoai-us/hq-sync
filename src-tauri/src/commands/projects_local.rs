@@ -381,6 +381,58 @@ fn read_project_prd(hq_root: &Path, prd_path: &str) -> Result<LocalProjectPrd, S
     Ok(LocalProjectPrd::from(prd))
 }
 
+/// Read a project's sibling `README.md` by the project's HQ-folder-relative
+/// `prd.json` path (US-009).
+///
+/// The README is expected to live alongside the prd (`<dir>/README.md`). We take
+/// the *prd* path rather than a free-form file path so the same path-traversal
+/// guard as `get_local_project_prd` applies and the frontend never has to
+/// construct a README path itself. Returns `Ok(None)` when no README exists (a
+/// project without one is normal, not an error); `Err` only on a path-escape or
+/// an unreadable-but-present file.
+#[tauri::command]
+pub async fn get_local_project_readme(prd_path: String) -> Result<Option<String>, String> {
+    if !crate::util::feature_gate::is_indigo_user().await {
+        return Err("projects reader is Indigo-only".to_string());
+    }
+    let hq = resolve_hq_folder();
+    read_project_readme(&hq, &prd_path)
+}
+
+/// Pure body for `get_local_project_readme` — explicit HQ root for testing.
+///
+/// Derives the project directory from the prd path (its parent), then reads
+/// `<dir>/README.md`. Reuses the same lexical `is_within` guard so a malicious
+/// `prd_path` can't escape the HQ folder.
+fn read_project_readme(hq_root: &Path, prd_path: &str) -> Result<Option<String>, String> {
+    let rel = prd_path.trim();
+    if rel.is_empty() {
+        return Err("prd_path is required".to_string());
+    }
+    let prd_abs = hq_root.join(rel);
+    if !is_within(hq_root, &prd_abs) {
+        return Err(format!("prd_path escapes the HQ folder: {prd_path:?}"));
+    }
+    if prd_abs.file_name().and_then(|n| n.to_str()) != Some("prd.json") {
+        return Err("prd_path must point at a prd.json file".to_string());
+    }
+    let Some(dir) = prd_abs.parent() else {
+        return Ok(None);
+    };
+    let readme = dir.join("README.md");
+    // Defense-in-depth: the derived README must also stay inside the HQ folder.
+    if !is_within(hq_root, &readme) {
+        return Err("README path escapes the HQ folder".to_string());
+    }
+    if !readme.is_file() {
+        return Ok(None);
+    }
+    match std::fs::read_to_string(&readme) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) => Err(format!("could not read README.md: {e}")),
+    }
+}
+
 /// Parse a JSON file leniently: `None` on missing/unreadable/garbage (never a
 /// panic). Used so one bad file can be skipped instead of failing the scan.
 fn read_json_lenient<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
@@ -467,14 +519,22 @@ mod tests {
     use std::fs;
 
     /// Build a throwaway HQ tree under a unique temp dir and return its root.
+    ///
+    /// The dir name mixes pid + a monotonic time component **and** a process-wide
+    /// atomic counter so two fixtures built concurrently (tests run in parallel)
+    /// can never collide on the same path — a same-nanosecond collision would
+    /// otherwise let one test's tree leak into another's scan.
     fn make_fixture_tree() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "hq-projects-local-test-{}-{}",
+            "hq-projects-local-test-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
         ));
         let indigo = root.join("companies").join("indigo");
         let proj = indigo.join("projects").join("flagship");
@@ -642,6 +702,48 @@ mod tests {
         // Non-prd.json filename inside the tree is also rejected.
         let res = read_project_prd(&root, "companies/indigo/board.json");
         assert!(res.is_err(), "non-prd.json target must be rejected");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_readme_returns_sibling_content() {
+        let root = make_fixture_tree();
+        // No README yet → Ok(None).
+        let none = read_project_readme(&root, "companies/indigo/projects/flagship/prd.json")
+            .expect("missing README is Ok(None)");
+        assert!(none.is_none(), "no README → None");
+
+        // Write a sibling README and read it back.
+        let readme_path = root
+            .join("companies")
+            .join("indigo")
+            .join("projects")
+            .join("flagship")
+            .join("README.md");
+        fs::write(&readme_path, "# Flagship\n\nHello **world**.").unwrap();
+        let some = read_project_readme(&root, "companies/indigo/projects/flagship/prd.json")
+            .expect("README reads")
+            .expect("README present");
+        assert!(some.contains("# Flagship"));
+        assert!(some.contains("Hello **world**."));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_readme_rejects_traversal_and_non_prd() {
+        let root = make_fixture_tree();
+        for evil in ["../../../etc/passwd", "companies/../../secrets/prd.json"] {
+            assert!(
+                read_project_readme(&root, evil).is_err(),
+                "traversal {evil:?} must be rejected"
+            );
+        }
+        // A non-prd.json target is rejected before any README is derived.
+        assert!(
+            read_project_readme(&root, "companies/indigo/board.json").is_err(),
+            "non-prd.json target must be rejected"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
