@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../../lib/workspaces';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import BoardPanel from '../panels/BoardPanel.svelte';
@@ -31,6 +32,22 @@
   function selectTab(tab: CompanyTab) {
     activeTab = tab;
   }
+
+  // HQ web console base. Same host the Meetings page links to for
+  // "Open HQ Console Integrations" — the company console lives at /{slug}.
+  const HQ_CONSOLE_BASE = 'https://hq.getindigo.ai';
+
+  function companyConsoleUrl(): string {
+    return `${HQ_CONSOLE_BASE}/${encodeURIComponent(company.slug)}`;
+  }
+
+  function openInBrowser() {
+    void openExternal(companyConsoleUrl());
+  }
+
+  function openInvite() {
+    void openExternal(`${companyConsoleUrl()}/invite`);
+  }
 </script>
 
 <section class="company-page" aria-labelledby="company-page-title">
@@ -49,8 +66,8 @@
     </div>
 
     <div class="company-actions" aria-label="Company actions">
-      <button type="button">Open in browser</button>
-      <button type="button">Invite</button>
+      <button type="button" onclick={openInBrowser}>Open in browser</button>
+      <button type="button" onclick={openInvite}>Invite</button>
     </div>
   </header>
 

@@ -62,8 +62,13 @@ describe('US-009: Board panel reads vault board.json via Tauri command', () => {
   it('keeps v1 toolbar behavior scoped to Board with Find filtering and disabled New', () => {
     const panel = normalize(boardPanel);
 
-    expect(panel).toContain("type BoardMode = 'board' | 'list' | 'timeline'");
-    expect(panel).toContain("if (mode === 'board') return; showToast('Coming soon');");
+    // US-001 removed the dead "Coming soon" List/Timeline stubs. Board is the
+    // only view tab now; the real List view is a later story.
+    expect(panel).not.toContain('Coming soon');
+    expect(panel).not.toContain('selectMode');
+    expect(panel).not.toContain("type BoardMode");
+    expect(panel).not.toContain('>List<');
+    expect(panel).not.toContain('>Timeline<');
     expect(panel).toContain('aria-selected="true" class="active"');
     expect(panel).toContain('aria-controls="board-search"');
     expect(panel).toContain('bind:value={searchTerm}');

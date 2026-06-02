@@ -63,22 +63,12 @@ export function getDesktopSidebarRows(
   );
 }
 
-export function getDesktopPage(route: DesktopRoute, companies: Workspace[]) {
-  if (route.kind === 'sync') {
-    return { title: 'Sync', placeholder: 'Sync page - wired in US-005' };
-  }
-
-  if (route.kind === 'meetings') {
-    return { title: 'Meetings', placeholder: 'Meetings page - wired in US-005' };
-  }
-
-  const activeCompany = companies.find((company) => company.slug === route.slug) ?? null;
-
-  return {
-    title: activeCompany?.displayName ?? 'Company',
-    placeholder: 'Company page - wired in US-005',
-    activeCompany,
-  };
+export function getDesktopActiveCompany(
+  route: DesktopRoute,
+  companies: Workspace[],
+): Workspace | null {
+  if (route.kind !== 'company') return null;
+  return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
 export function getDesktopHotkeyRoute(

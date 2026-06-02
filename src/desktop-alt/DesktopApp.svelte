@@ -12,9 +12,9 @@
   import { startCompanyStore } from './lib/company-store.svelte';
   import {
     DESKTOP_SHELL_LAYOUT,
+    getDesktopActiveCompany,
     getDesktopCompanies,
     getDesktopHotkeyRoute,
-    getDesktopPage,
     getDesktopRouteKey,
     initialDesktopRoute,
     type DesktopRoute,
@@ -79,7 +79,7 @@
 
   const companies = $derived(getDesktopCompanies(workspaces));
   const routeKey = $derived(getDesktopRouteKey(route));
-  const page = $derived(getDesktopPage(route, companies));
+  const activeCompany = $derived(getDesktopActiveCompany(route, companies));
   const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles);
   const indexedFiles = $derived(
     syncPlanTotalFiles > 0
@@ -550,17 +550,17 @@
             <div class="page">
               <MeetingsPage />
             </div>
-          {:else if page.activeCompany}
+          {:else if activeCompany}
             <div class="page">
-              <CompanyPage company={page.activeCompany} />
+              <CompanyPage company={activeCompany} />
             </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
               <div class="page-header">
-                <h1 id="desktop-page-title">{page.title}</h1>
+                <h1 id="desktop-page-title">Company</h1>
               </div>
               <div class="placeholder-panel">
-                <p>{page.placeholder}</p>
+                <p>This company isn’t synced yet. Run a sync to load its board.</p>
                 {#if workspaceError}
                   <span class="workspace-error">{workspaceError}</span>
                 {/if}
