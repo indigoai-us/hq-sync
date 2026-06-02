@@ -53,16 +53,18 @@
     status: string;
   };
   let memberships = $state<CompanyMembership[]>([]);
-  // Share notifications — dogfood gate: section only rendered for @getindigo.ai
-  // users. Same gate as meetings_feature_enabled (both call is_indigo_user()
-  // on the Rust side). Re-read on each poll cycle in share_notify.rs so the
-  // toggle takes effect immediately without app restart.
+  // Share notifications — shown to ALL signed-in users (the @getindigo.ai
+  // dogfood gate was removed; share_notify.rs polls universally). Re-read on
+  // each poll cycle in share_notify.rs so the toggle takes effect immediately
+  // without app restart.
   let shareNotifications = $state(true);
-  // DM notifications — same dogfood gate as share notifications. Re-read on
-  // each poll cycle in dm_notify.rs so the toggle takes effect without restart.
+  // DM notifications — shown to ALL signed-in users. dm_notify.rs polls
+  // universally and instant delivery (dm_mqtt.rs) is GA for everyone. Re-read
+  // on each poll cycle so the toggle takes effect without restart.
   let dmNotifications = $state(true);
-  // Shared @getindigo.ai gate, used by BOTH the share-notify section and
-  // the staging-channel toggle below. Populated at mount from
+  // Shared @getindigo.ai gate. No longer gates the notification toggles
+  // (those are now universal) — still used by the staging-channel toggle and
+  // the release-channel picker below. Populated at mount from
   // `meetings_feature_enabled` (cached process-lifetime on the Rust side).
   let isIndigoUser = $state(false);
   // Staging channel — @getindigo.ai-only toggle (visibility gated on
@@ -661,80 +663,50 @@
             </div>
           {/if}
 
-          <!-- Share + DM notifications — dogfood gate: only rendered for
-               @getindigo.ai users. Persisted in menubar.json; share_notify.rs
-               / dm_notify.rs re-read each poll cycle so toggles take effect
-               without restart. DM is receive-only. -->
-          {#if isIndigoUser}
-            <div class="setting-row">
-              <div class="setting-info">
-                <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
-                <span class="setting-desc">Show a notification when someone shares files with you</span>
-              </div>
-              <button
-                id="toggle-share-notifications"
-                class="toggle"
-                class:active={shareNotifications}
-                onclick={handleToggleShareNotifications}
-                role="switch"
-                aria-checked={shareNotifications}
-                aria-label="Share notifications"
-              >
-                <span class="toggle-knob"></span>
-              </button>
+          <!-- Share + DM notifications — available to ALL signed-in users.
+               Both poll universally on the backend (share_notify.rs /
+               dm_notify.rs; the former @getindigo.ai dogfood gate was removed
+               2026-05-26) and instant DM delivery (dm_mqtt.rs) is GA for
+               everyone. These toggles let any user turn the banners on/off;
+               persisted in menubar.json and re-read each poll cycle so a
+               change takes effect without an app restart. -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
+              <span class="setting-desc">Show a notification when someone shares files with you</span>
             </div>
+            <button
+              id="toggle-share-notifications"
+              class="toggle"
+              class:active={shareNotifications}
+              onclick={handleToggleShareNotifications}
+              role="switch"
+              aria-checked={shareNotifications}
+              aria-label="Share notifications"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
 
-            <div class="setting-row">
-              <div class="setting-info">
-                <label class="setting-label" for="toggle-dm-notifications">Direct messages</label>
-                <span class="setting-desc">Show a notification when a teammate sends you a message</span>
-              </div>
-              <button
-                id="toggle-dm-notifications"
-                class="toggle"
-                class:active={dmNotifications}
-                onclick={handleToggleDmNotifications}
-                role="switch"
-                aria-checked={dmNotifications}
-                aria-label="Direct message notifications"
-              >
-                <span class="toggle-knob"></span>
-              </button>
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-dm-notifications">Direct messages</label>
+              <span class="setting-desc">Show a notification when a teammate sends you a message</span>
             </div>
-          {/if}
+            <button
+              id="toggle-dm-notifications"
+              class="toggle"
+              class:active={dmNotifications}
+              onclick={handleToggleDmNotifications}
+              role="switch"
+              aria-checked={dmNotifications}
+              aria-label="Direct message notifications"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
         </div>
       </section>
-
-      <!-- ===== Group: Notifications ===================================
-           Share notifications — dogfood gate: only rendered for
-           @getindigo.ai users. Persists shareNotifications in
-           menubar.json; the poll in share_notify.rs re-reads on each
-           cycle so the toggle takes effect on the next sync:complete
-           without restart. -->
-      {#if isIndigoUser}
-        <section class="settings-group-wrap">
-          <h2 class="settings-group-title">Notifications</h2>
-          <div class="settings-group">
-            <div class="setting-row">
-              <div class="setting-info">
-                <label class="setting-label" for="toggle-share-notifications">Share notifications</label>
-                <span class="setting-desc">Show a notification when someone shares files with you</span>
-              </div>
-              <button
-                id="toggle-share-notifications"
-                class="toggle"
-                class:active={shareNotifications}
-                onclick={handleToggleShareNotifications}
-                role="switch"
-                aria-checked={shareNotifications}
-                aria-label="Share notifications"
-              >
-                <span class="toggle-knob"></span>
-              </button>
-            </div>
-          </div>
-        </section>
-      {/if}
 
       <!-- ===== Group: Meetings ========================================
            Detect upcoming meetings + per-recording attribution +

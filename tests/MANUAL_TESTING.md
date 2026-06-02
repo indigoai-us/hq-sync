@@ -561,11 +561,27 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 - [ ] 5. Stop the `nc` listener and remove the override; verify the next
    poll cycle (≤30s) restores the event list
 
+### NOTIF-GA: Notification toggles are visible to ALL users (v0.6.3)
+
+> As of v0.6.3 the **Share notifications** and **Direct messages** toggles in
+> Settings are no longer behind the `@getindigo.ai` dogfood gate — every
+> signed-in user can see and control them. (Backend delivery was already
+> universal; this exposes the on/off switch.) A duplicate "Notifications"
+> section that previously rendered for Indigo users was removed.
+
+- [ ] 1. Sign in with a **non-`@getindigo.ai`** account and open Settings
+- [ ] 2. Under **Notifications**, verify the **Share notifications** toggle is visible
+- [ ] 3. Verify the **Direct messages** toggle is visible
+- [ ] 4. Verify there is exactly **one** "Notifications" section header (no duplicate)
+- [ ] 5. Toggle **Direct messages** off → send the account a DM via `hq dm` → verify no banner fires; toggle back on → verify the next DM banners
+- [ ] 6. Sign in with an `@getindigo.ai` account and confirm the same single Notifications section renders identically (no regression)
+
 ### US-004 / US-005 / US-006 / US-007 (Share Notifications): End-to-End Walkthrough
 
-> **Prerequisite:** Logged-in user must have an `@getindigo.ai` email (dogfood gate). All steps
-> assume HQ Sync is built from the `feature/hq-sync-share-notify` branch. A second
-> Indigo account (the "sharer") is needed to trigger share events from hq-console.
+> **Prerequisite:** As of v0.6.3 share notifications are available to all
+> signed-in users (the former `@getindigo.ai` dogfood gate was removed). A
+> second account (the "sharer") is still needed to trigger share events from
+> hq-console.
 
 #### SN-001: Poll fires 5 seconds after app launch
 
