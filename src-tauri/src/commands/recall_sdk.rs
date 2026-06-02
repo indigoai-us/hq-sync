@@ -208,6 +208,44 @@ pub async fn meetings_list_active_detections() -> Result<Vec<MeetingDetectedEven
     Ok(active_detections_snapshot())
 }
 
+/// Look up the retained detection for `window_id` and return its meeting URL +
+/// source event id — the two inputs to the notify-ledger stable key.
+///
+/// `start_recording` only receives the SDK `window_id`, but the dedup ledger is
+/// keyed by meeting URL / source event id (see `util::meeting_ledger::stable_key`).
+/// The active-detection registry retains the full `MeetingDetectedEvent` for each
+/// open window (keyed by the same window id), so we can recover the URL/event-id
+/// here and derive the identical key the notify path used.
+fn detection_url_and_event(window_id: &str) -> Option<(String, Option<String>)> {
+    active_detections_cell()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(window_id).map(|e| (e.meeting_url.clone(), e.source_event_id.clone())))
+}
+
+/// Authoritatively mark the meeting behind `window_id` as `Recorded` in the
+/// notify ledger, so any later `meeting:detected` for the same meeting is
+/// suppressed (a `Recorded` entry is honoured for 6 h, like `Notified`).
+///
+/// Resolves the ledger stable key from the retained detection for this window
+/// (the same `meeting_url` / `source_event_id` the notify path used). Best-effort:
+/// if no detection is retained for this window (e.g. recorded via a path that
+/// bypassed detection) or the key can't be derived, this is a silent no-op — the
+/// `claim_notify` lock remains the primary dedup guarantee.
+fn mark_recorded_for_window(window_id: &str) {
+    use crate::util::meeting_ledger::{record_action, stable_key, LedgerAction};
+    let Some((meeting_url, source_event_id)) = detection_url_and_event(window_id) else {
+        return;
+    };
+    if let Some(key) = stable_key(Some(meeting_url.as_str()), source_event_id.as_deref()) {
+        record_action(&key, LedgerAction::Recorded, chrono::Utc::now());
+        log(
+            LOG_TAG,
+            &format!("notify-ledger: marked Recorded for windowId={window_id}"),
+        );
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Eligibility gate
 // ─────────────────────────────────────────────────────────────────────────────
@@ -925,6 +963,12 @@ pub async fn start_recording(
         "uploadToken": upload_token,
     });
     write_bridge_command(&cmd)?;
+
+    // The user explicitly recorded this meeting — authoritatively mark it
+    // `Recorded` in the notify ledger so a later `meeting:detected` for the same
+    // meeting (e.g. an SDK re-fire) doesn't re-notify. Best-effort; the
+    // `claim_notify` lock is the primary dedup guard.
+    mark_recorded_for_window(&window_id);
 
     Ok(recording_id)
 }

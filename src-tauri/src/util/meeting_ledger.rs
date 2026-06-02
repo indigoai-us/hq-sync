@@ -174,6 +174,75 @@ pub fn prune(ledger: &mut NotifyLedger, now: DateTime<Utc>) {
     });
 }
 
+// ── Atomic single-flight claim ───────────────────────────────────────────────
+
+/// Process-wide lock serialising the read→decide→mark→write critical section.
+///
+/// The ledger lives in a single JSON file, so the read-modify-write in
+/// [`claim_notify`] / [`record_action`] is only safe if exactly one caller is
+/// inside it at a time. Without this, two concurrent `meeting:detected`
+/// listeners (the popover window and the desktop-alt window — both subscribed
+/// to the global Tauri event) could each `read_ledger → should_suppress` before
+/// either writes, both observe "not suppressed", and both fire a banner for the
+/// SAME meeting. The lock makes the second caller observe the first's just-written
+/// `Notified` entry and suppress.
+///
+/// CRITICAL: the guard must never be held across a `.await`. The file I/O here
+/// is fully synchronous, and the only caller (`meetings_notify_detected`) takes
+/// the claim inside a sync scope so the guard drops before any async work.
+static LEDGER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn ledger_lock() -> &'static Mutex<()> {
+    LEDGER_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Atomically decide whether the caller should fire a "meeting detected"
+/// notification for `key`, and — if so — record that decision before returning.
+///
+/// Under [`LEDGER_LOCK`] this performs, as one indivisible step:
+///   1. `read_ledger`
+///   2. `should_suppress(key, now)` → if suppressed, return `false` (do NOT fire)
+///   3. otherwise `mark(key, Notified, now)` + `write_ledger`, return `true`
+///
+/// Returning `true` means "this caller won the race — fire the banner". A second
+/// concurrent caller for the same key will block on the lock, then read the
+/// just-written `Notified` entry and return `false`. This is the single-flight
+/// guarantee that fixes the double-notification bug.
+///
+/// A read or write error fails CLOSED (returns `false`, suppressing) so a
+/// transient I/O fault can never produce a duplicate banner; the worst case is a
+/// missed notification, which the next detection re-attempts.
+pub fn claim_notify(key: &str, now: DateTime<Utc>) -> bool {
+    let _guard = ledger_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let mut ledger = match read_ledger() {
+        Ok(l) => l,
+        Err(_) => return false,
+    };
+    if should_suppress(&ledger, key, now) {
+        return false;
+    }
+    mark(&mut ledger, key.to_string(), LedgerAction::Notified, now);
+    write_ledger(&ledger).is_ok()
+}
+
+/// Unconditionally record `action` for `key` under [`LEDGER_LOCK`].
+///
+/// Used by the record path to authoritatively mark a detection as
+/// [`LedgerAction::Recorded`] when the user actually starts recording it, so any
+/// later detection of the same meeting suppresses (a `Recorded` entry is honoured
+/// by [`should_suppress`] for 6 h, identically to `Notified`). Unlike
+/// [`claim_notify`] this never consults `should_suppress` — it overwrites so the
+/// stronger `Recorded` action wins even if an earlier `Notified` exists.
+///
+/// Best-effort: a read/write error is swallowed (the caller treats recording
+/// suppression as a nice-to-have, never a blocker).
+pub fn record_action(key: &str, action: LedgerAction, now: DateTime<Utc>) {
+    let _guard = ledger_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let mut ledger = read_ledger().unwrap_or_default();
+    mark(&mut ledger, key.to_string(), action, now);
+    let _ = write_ledger(&ledger);
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -363,6 +432,149 @@ mod tests {
 
         let ledger = read_ledger().unwrap();
         assert!(ledger.is_empty());
+
+        clear_override();
+    }
+
+    // ── claim_notify: atomic single-flight (the B1 regression test) ──────────
+
+    /// Two threads claim the SAME key concurrently. Exactly one must win
+    /// (return `true`) and the ledger must end with exactly one entry. This is
+    /// the direct lock-down for the double-notification race: before the
+    /// process-wide `LEDGER_LOCK`, both callers could read-then-write and both
+    /// observe "not suppressed", yielding two notifications.
+    #[test]
+    fn claim_notify_is_single_flight_under_concurrency() {
+        let _g = lock();
+        let _tmp = with_test_ledger();
+
+        let key = "https://zoom.us/j/concurrent";
+        let now = ts("2026-05-20T10:00:00Z");
+
+        // Spawn both threads, release them as close together as the scheduler
+        // allows, and collect their claim results. Run many rounds so a missing
+        // lock would flake into a double-true on at least one iteration.
+        for round in 0..50 {
+            // Fresh ledger each round so the suppression window doesn't carry
+            // over and trivially make the second claim lose.
+            write_ledger(&NotifyLedger::new()).unwrap();
+
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let mut wins = 0;
+            let handles: Vec<_> = (0..2)
+                .map(|_| {
+                    let b = barrier.clone();
+                    std::thread::spawn(move || {
+                        b.wait();
+                        claim_notify(key, now)
+                    })
+                })
+                .collect();
+            for h in handles {
+                if h.join().unwrap() {
+                    wins += 1;
+                }
+            }
+
+            assert_eq!(
+                wins, 1,
+                "round {round}: expected exactly one winning claim, got {wins}"
+            );
+            let ledger = read_ledger().unwrap();
+            assert_eq!(
+                ledger.len(),
+                1,
+                "round {round}: expected exactly one ledger entry, got {}",
+                ledger.len()
+            );
+            assert_eq!(ledger.get(key).unwrap().action, LedgerAction::Notified);
+        }
+
+        clear_override();
+    }
+
+    /// A second claim for the same key within the 6 h window is suppressed even
+    /// when issued sequentially — the first claim's `Notified` entry blocks it.
+    #[test]
+    fn claim_notify_second_sequential_call_suppressed() {
+        let _g = lock();
+        let _tmp = with_test_ledger();
+        write_ledger(&NotifyLedger::new()).unwrap();
+
+        let key = "https://meet.google.com/seq";
+        let t0 = ts("2026-05-20T10:00:00Z");
+        let t1 = ts("2026-05-20T10:30:00Z"); // +30 min, within 6 h
+
+        assert!(claim_notify(key, t0), "first claim should win");
+        assert!(!claim_notify(key, t1), "second claim within 6h should be suppressed");
+        assert_eq!(read_ledger().unwrap().len(), 1);
+
+        clear_override();
+    }
+
+    /// After the 6 h window elapses a fresh claim wins again (the detection is a
+    /// genuinely new meeting occurrence by then).
+    #[test]
+    fn claim_notify_after_window_wins_again() {
+        let _g = lock();
+        let _tmp = with_test_ledger();
+        write_ledger(&NotifyLedger::new()).unwrap();
+
+        let key = "https://zoom.us/j/reuse";
+        let t0 = ts("2026-05-20T10:00:00Z");
+        let t1 = ts("2026-05-20T16:00:01Z"); // just past +6 h
+
+        assert!(claim_notify(key, t0));
+        assert!(claim_notify(key, t1), "claim past the 6h window should win again");
+
+        clear_override();
+    }
+
+    // ── record_action: Recorded suppresses a later claim (optional fix) ──────
+
+    /// Recording a detected meeting writes a `Recorded` entry for its stable
+    /// key, so a subsequent `claim_notify` within 6 h is suppressed. This locks
+    /// down the optional "mark Recorded on start_recording" path.
+    #[test]
+    fn record_action_recorded_suppresses_subsequent_claim() {
+        let _g = lock();
+        let _tmp = with_test_ledger();
+        write_ledger(&NotifyLedger::new()).unwrap();
+
+        let key = "https://zoom.us/j/recorded";
+        let t0 = ts("2026-05-20T10:00:00Z");
+        let t1 = ts("2026-05-20T11:00:00Z"); // +1 h, within 6 h
+
+        record_action(key, LedgerAction::Recorded, t0);
+        let ledger = read_ledger().unwrap();
+        assert_eq!(ledger.get(key).unwrap().action, LedgerAction::Recorded);
+
+        assert!(
+            !claim_notify(key, t1),
+            "a detection after the user recorded should be suppressed"
+        );
+        // The claim must NOT have downgraded the Recorded entry to Notified.
+        assert_eq!(read_ledger().unwrap().get(key).unwrap().action, LedgerAction::Recorded);
+
+        clear_override();
+    }
+
+    /// `record_action` overwrites an existing `Notified` entry with the stronger
+    /// `Recorded` action (the user acting is more authoritative than a banner).
+    #[test]
+    fn record_action_overwrites_notified() {
+        let _g = lock();
+        let _tmp = with_test_ledger();
+        write_ledger(&NotifyLedger::new()).unwrap();
+
+        let key = "https://zoom.us/j/upgrade";
+        let t0 = ts("2026-05-20T10:00:00Z");
+
+        assert!(claim_notify(key, t0));
+        assert_eq!(read_ledger().unwrap().get(key).unwrap().action, LedgerAction::Notified);
+
+        record_action(key, LedgerAction::Recorded, t0);
+        assert_eq!(read_ledger().unwrap().get(key).unwrap().action, LedgerAction::Recorded);
 
         clear_override();
     }
