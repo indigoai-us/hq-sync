@@ -32,20 +32,24 @@ function getDesktopAltButton(source = popoverSource): string {
 }
 
 describe('US-004: Toggle icon button in the classic popover header', () => {
-  it('renders the Indigo desktop-alt toggle in the header next to the settings gear', () => {
+  it('renders the Indigo desktop-alt toggle in the header action cluster, with Settings decluttered to the footer', () => {
     const gate = getDesktopAltGate();
     const compactGate = normalize(gate);
+    const compactSource = normalize(popoverSource);
     const toggleIndex = gate.indexOf('data-testid="desktop-alt-toggle"');
-    const settingsIndex = gate.indexOf('aria-label="Settings"');
 
+    // The desktop-alt toggle lives in the identity-gated header action cluster.
     expect(toggleIndex).toBeGreaterThanOrEqual(0);
-    expect(settingsIndex).toBeGreaterThan(toggleIndex);
     expect(compactGate).toContain('class="header-icon-button desktop-alt-toggle"');
-    expect(compactGate).toContain('class="header-icon-button header-settings-toggle"');
     expect(compactGate).toContain('title="Open desktop view"');
     expect(compactGate).toContain('aria-label="Open desktop view (Indigo dogfood)"');
-    expect(compactGate).toMatch(/<rect\b[^>]+width="12"[^>]+height="11"/);
-    expect(compactGate).toContain('intentionally distinct from the Settings gear');
+    // "Open in window" glyph (replaced the old window-rect icon): the pop-out arrow.
+    expect(compactGate).toContain('d="M13.5 2.5L7.5 8.5"');
+    // Settings was decluttered OUT of the header (no header settings toggle) and
+    // now lives as a single footer entry instead.
+    expect(gate).not.toContain('aria-label="Settings"');
+    expect(compactSource).not.toContain('header-settings-toggle');
+    expect(compactSource).toContain('<button class="footer-action" onclick={onsettings}>');
   });
 
   it('wires the toggle click to invoke open_desktop_alt_window exactly once', () => {
@@ -84,14 +88,16 @@ describe('US-004: Toggle icon button in the classic popover header', () => {
     expect(compactSource).toContain('clearDesktopAltErrorTimer()');
   });
 
-  it('gates the two-row header layout to the desktop-alt header state', () => {
+  it('keeps the header on a single row, with the action cluster pushed to the edge instead of a two-row wrap', () => {
     const compactSource = normalize(popoverSource);
 
-    expect(compactSource).toContain(
-      '<header class="popover-header" class:has-desktop-alt-controls={desktopAltEnabled} data-tauri-drag-region>',
-    );
-    expect(compactSource).toContain('.popover-header.has-desktop-alt-controls { flex-wrap: wrap;');
-    expect(compactSource).toContain('.popover-header.has-desktop-alt-controls .header-text { order: 2; flex: 1 0 100%;');
-    expect(compactSource).toContain('.popover-header.has-desktop-alt-controls .header-sync { margin-left: auto;');
+    // Single-row header: the old `class:has-desktop-alt-controls` two-row wrap was
+    // removed when Settings moved to the footer (one settings entry).
+    expect(compactSource).toContain('<header class="popover-header" data-tauri-drag-region>');
+    expect(compactSource).not.toContain('has-desktop-alt-controls');
+    // `.header-text` pushes the right-aligned action cluster to the edge on one
+    // line; the identity-gated controls sit in `.header-actions`.
+    expect(compactSource).toContain('<div class="header-text">');
+    expect(compactSource).toContain('<div class="header-actions">');
   });
 });
