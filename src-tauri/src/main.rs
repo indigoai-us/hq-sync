@@ -210,6 +210,10 @@ fn main() {
             commands::status::get_sync_status,
             commands::sync::start_sync,
             commands::sync::cancel_sync,
+            commands::first_run::is_first_run,
+            commands::first_run::should_show_auto_sync_notice,
+            commands::first_run::mark_first_run_complete,
+            commands::first_run::mark_auto_sync_notice_shown,
             commands::workspaces::list_syncable_workspaces,
             commands::workspaces::connect_workspace_to_cloud,
             commands::sync_mode::get_sync_mode,
@@ -308,6 +312,14 @@ fn main() {
             commands::banner::preview_meeting_banner,
         ])
         .setup(|app| {
+            // Classify this launch (FirstRun / ExistingUpdate / Normal) and
+            // cache it in managed state. MUST run before anything that can
+            // write `machineId` to menubar.json (sync, telemetry, the
+            // share/dm pollers below) — `machineId` is the tiebreaker that
+            // distinguishes a brand-new install from a legacy user updating.
+            // See commands/first_run.rs for the full rationale.
+            commands::first_run::classify_launch(app.handle());
+
             // One-shot migration of any legacy `/deploy`-skill stub at
             // ~/.hq/config.json. Runs first so subsequent prewarm /
             // daemon / sync calls see a clean HqConfig (when a personal

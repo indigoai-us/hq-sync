@@ -12,6 +12,7 @@ pub mod dm_mqtt;
 pub mod dm_notify;
 pub mod drift_detail;
 pub mod first_push;
+pub mod first_run;
 pub mod folder_picker;
 pub mod git_mirror;
 pub mod hq_cli_update;

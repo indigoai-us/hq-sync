@@ -3,9 +3,11 @@ import type { Workspace } from '../../lib/workspaces';
 import {
   buildAttentionItems,
   buildSourceRows,
+  currentSyncLabel,
   emptyWorkspaceStats,
   type WorkspaceSyncStats,
 } from './sync-model';
+import { CORE_SETUP_LABEL } from '../../lib/progressLabel';
 
 const personalWorkspace: Workspace = {
   slug: 'personal',
@@ -43,6 +45,32 @@ function stats(overrides: Partial<WorkspaceSyncStats>): WorkspaceSyncStats {
     ...overrides,
   };
 }
+
+describe('currentSyncLabel core-noise collapsing', () => {
+  const workspaces = [personalWorkspace, companyWorkspace];
+
+  it('returns "Preparing sync" with no progress', () => {
+    expect(currentSyncLabel(null, workspaces, [])).toBe('Preparing sync');
+  });
+
+  it('collapses core/ paths into the calm setup label', () => {
+    const label = currentSyncLabel(
+      { company: 'personal', path: 'core/policies/x.md', bytes: 1 },
+      workspaces,
+      [],
+    );
+    expect(label).toBe(`Personal / ${CORE_SETUP_LABEL}`);
+  });
+
+  it('shows the real path for the user\'s own files', () => {
+    const label = currentSyncLabel(
+      { company: 'acme', path: 'knowledge/strategy.md', bytes: 1 },
+      workspaces,
+      [],
+    );
+    expect(label).toBe('Acme / knowledge/strategy.md');
+  });
+});
 
 describe('desktop-alt sync model attention states', () => {
   it('marks source rows with sync errors as needing attention', () => {

@@ -1,4 +1,5 @@
 import type { Workspace } from '../../lib/workspaces';
+import { CORE_SETUP_LABEL, isCorePath } from '../../lib/progressLabel';
 
 export type SyncState = 'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error';
 
@@ -175,6 +176,10 @@ export function currentSyncLabel(
 ): string {
   if (!progress) return 'Preparing sync';
   const company = workspaceDisplayName(progress.company, workspaces, companies);
+  // Collapse the release-shipped `core/` scaffold into one calm line so the
+  // first sync reads as setup, not a flood of unfamiliar files. See
+  // `../../lib/progressLabel.ts`.
+  if (isCorePath(progress.path)) return `${company} / ${CORE_SETUP_LABEL}`;
   return `${company} / ${progress.path}`;
 }
 
