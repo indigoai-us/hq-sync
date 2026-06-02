@@ -309,3 +309,207 @@ export function effectiveProjectStatus(
 export function projectDisplayName(project: Project): string {
   return project.name ?? project.title ?? project.id;
 }
+
+// ---------------------------------------------------------------------------
+// Board list-surface helpers (US-007 — ported from hq-desktop project-types)
+// ---------------------------------------------------------------------------
+
+/**
+ * The "effective" status a project resolves to for the Board list surface. This
+ * is the union of {@link effectiveProjectStatus}'s output, plus the synthetic
+ * `live` state used to give actively-running projects visual emphasis.
+ *
+ * - `live`        — board status is "active"/"live" AND there is in-flight work
+ *                   (some but not all stories complete). Gets the glow + pulse.
+ * - `in-progress` — story rollup says work is underway, but the board isn't live.
+ * - `complete`    — every story passes.
+ * - `pending`     — no stories pass yet (planned / not started).
+ * - `archived`    — board status is archived (terminal).
+ */
+export type ProjectListStatus =
+  | 'live'
+  | 'in-progress'
+  | 'complete'
+  | 'pending'
+  | 'archived';
+
+/** The status-filter pills shown above the Board project list. */
+export type StatusFilter = 'all' | 'active' | 'in-progress' | 'complete' | 'archived';
+
+/** How the Board project list groups its rows. */
+export type ProjectGroupMode = 'status' | 'company';
+
+/** The status-filter pill options, in display order. */
+export const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'in-progress', label: 'In Progress' },
+  { value: 'complete', label: 'Completed' },
+  { value: 'archived', label: 'Archived' },
+];
+
+/** Raw board statuses that indicate a project is live/running. */
+const LIVE_BOARD_STATUSES = new Set(['live', 'active', 'running']);
+
+/**
+ * Resolve a project's effective Board-list status by combining its raw board
+ * `status` with the prd.json story rollup. Mirrors hq-desktop's board scanner:
+ * an archived board status is terminal; a live board status with in-flight work
+ * surfaces as `live` (emphasised); otherwise the story rollup drives it.
+ */
+export function projectListStatus(
+  project: Pick<Project, 'status' | 'storiesComplete' | 'storiesTotal'>,
+): ProjectListStatus {
+  const rollup = effectiveProjectStatus(project);
+  if (rollup === 'archived') return 'archived';
+  if (rollup === 'complete') return 'complete';
+
+  const isLiveBoard = LIVE_BOARD_STATUSES.has((project.status ?? '').toLowerCase());
+  if (rollup === 'in-progress') {
+    return isLiveBoard ? 'live' : 'in-progress';
+  }
+  // pending rollup: a live board with no completed stories still reads as
+  // in-progress emphasis only when it's actually live; otherwise pending.
+  return isLiveBoard ? 'live' : 'pending';
+}
+
+/** Whether a project's effective list status passes the given filter pill. */
+export function matchesStatusFilter(
+  status: ProjectListStatus,
+  filter: StatusFilter,
+): boolean {
+  switch (filter) {
+    case 'all':
+      return true;
+    case 'active':
+      // "Active" hides the terminal states (completed + archived).
+      return status === 'live' || status === 'in-progress' || status === 'pending';
+    case 'in-progress':
+      return status === 'live' || status === 'in-progress';
+    case 'complete':
+      return status === 'complete';
+    case 'archived':
+      return status === 'archived';
+    default:
+      return true;
+  }
+}
+
+/** Display order for the status-grouped Board sections (lower sorts first). */
+export const PROJECT_LIST_STATUS_ORDER: Record<ProjectListStatus, number> = {
+  live: 0,
+  'in-progress': 1,
+  pending: 2,
+  complete: 3,
+  archived: 4,
+};
+
+/** Human label for each effective list status (section headers + badges). */
+export const PROJECT_LIST_STATUS_LABEL: Record<ProjectListStatus, string> = {
+  live: 'Running',
+  'in-progress': 'In Progress',
+  pending: 'Planned',
+  complete: 'Completed',
+  archived: 'Archived',
+};
+
+/** Does a project's effective status text match a free-text query token? */
+function projectStatusMatches(project: Project, query: string): boolean {
+  return PROJECT_LIST_STATUS_LABEL[projectListStatus(project)]
+    .toLowerCase()
+    .includes(query);
+}
+
+/**
+ * Filter a project list by a free-text query, matching the title, description,
+ * id, and company slug (case-insensitive). An empty/whitespace query is a no-op.
+ */
+export function filterProjectsByQuery(projects: Project[], rawQuery: string): Project[] {
+  const query = rawQuery.toLowerCase().trim();
+  if (!query) return projects;
+  return projects.filter((project) => {
+    const name = projectDisplayName(project).toLowerCase();
+    return (
+      name.includes(query) ||
+      (project.description ?? '').toLowerCase().includes(query) ||
+      project.id.toLowerCase().includes(query) ||
+      project.company.toLowerCase().includes(query) ||
+      projectStatusMatches(project, query)
+    );
+  });
+}
+
+/** A grouped section of projects for the Board list (status- or company-keyed). */
+export interface ProjectSection {
+  /** Stable section key (status id or company slug). */
+  key: string;
+  /** Display label for the section header. */
+  label: string;
+  /** Projects in this section, pre-sorted for display. */
+  projects: Project[];
+}
+
+/** Sort comparator: live first, then by status order, then by name. */
+function compareProjects(a: Project, b: Project): number {
+  const aStatus = PROJECT_LIST_STATUS_ORDER[projectListStatus(a)] ?? 99;
+  const bStatus = PROJECT_LIST_STATUS_ORDER[projectListStatus(b)] ?? 99;
+  return (
+    aStatus - bStatus ||
+    projectDisplayName(a).localeCompare(projectDisplayName(b))
+  );
+}
+
+/**
+ * Group + sort a project list into display sections.
+ *
+ * - `status`  — one section per effective list status, in status order, empty
+ *               sections omitted.
+ * - `company` — one section per company slug, alphabetical, projects within a
+ *               section sorted live-first then by name.
+ */
+export function groupProjects(
+  projects: Project[],
+  mode: ProjectGroupMode,
+): ProjectSection[] {
+  if (mode === 'status') {
+    const buckets = new Map<ProjectListStatus, Project[]>();
+    for (const project of projects) {
+      const status = projectListStatus(project);
+      const list = buckets.get(status) ?? [];
+      list.push(project);
+      buckets.set(status, list);
+    }
+    return (Object.keys(PROJECT_LIST_STATUS_ORDER) as ProjectListStatus[])
+      .sort(
+        (a, b) => PROJECT_LIST_STATUS_ORDER[a] - PROJECT_LIST_STATUS_ORDER[b],
+      )
+      .filter((status) => (buckets.get(status)?.length ?? 0) > 0)
+      .map((status) => ({
+        key: status,
+        label: PROJECT_LIST_STATUS_LABEL[status],
+        projects: (buckets.get(status) ?? []).slice().sort(compareProjects),
+      }));
+  }
+
+  const buckets = new Map<string, Project[]>();
+  for (const project of projects) {
+    const key = project.company || 'hq';
+    const list = buckets.get(key) ?? [];
+    list.push(project);
+    buckets.set(key, list);
+  }
+  return [...buckets.keys()]
+    .sort((a, b) => a.localeCompare(b))
+    .map((key) => ({
+      key,
+      label: key,
+      projects: (buckets.get(key) ?? []).slice().sort(compareProjects),
+    }));
+}
+
+/** Distinct company slugs present in a project list, alphabetical. */
+export function projectCompanies(projects: Project[]): string[] {
+  return [...new Set(projects.map((project) => project.company).filter(Boolean))].sort(
+    (a, b) => a.localeCompare(b),
+  );
+}

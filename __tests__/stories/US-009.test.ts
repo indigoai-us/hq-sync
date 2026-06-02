@@ -26,15 +26,20 @@ function normalize(source: string): string {
 }
 
 describe('US-009: Board panel reads vault board.json via Tauri command', () => {
-  it('wires the board tab to get_company_board with the selected company slug', () => {
+  it('wires the board panel to get_company_board with the selected company slug', () => {
     const page = normalize(companyPage);
+    const panel = normalize(boardPanel);
     const store = normalize(companyBoard);
 
-    expect(page).toContain("import BoardPanel from '../panels/BoardPanel.svelte'");
+    // US-007 (Board surface) moved Board out of the company page tabs — the
+    // company page no longer imports or renders BoardPanel, and its panel
+    // `{#key}` still rebuilds on slug/tab change for the remaining tabs.
+    expect(page).not.toContain("import BoardPanel from '../panels/BoardPanel.svelte'");
+    expect(page).not.toContain('<BoardPanel slug={company.slug} />');
     expect(page).toContain("{#key `${company.slug}:${activeTab}`}");
     expect(page).not.toContain('{#key activeTab}');
-    expect(page).toContain('<BoardPanel slug={company.slug} />');
-    expect(page).toContain("if (company.slug !== previousSlug) { previousSlug = company.slug; activeTab = 'board'; }");
+    // BoardPanel itself still takes a company slug and drives the board store.
+    expect(panel).toContain('slug: string');
     expect(store).toContain("void invoke<CompanyBoard>('get_company_board', { slug })");
     expect(store).toContain('return () => { cancelled = true; };');
     expect(tauriMain).toContain('commands::desktop_alt::get_company_board');

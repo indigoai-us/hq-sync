@@ -1,7 +1,9 @@
 <script lang="ts">
   import type { CompanySummary } from '../lib/company-summary.svelte';
 
-  export type CompanyTab = 'board' | 'activity' | 'deployments' | 'secrets';
+  // Board moved to the top-level Board surface (US-007), so the company page
+  // keeps only Activity / Deployments / Secrets.
+  export type CompanyTab = 'activity' | 'deployments' | 'secrets';
 
   interface Props {
     activeTab: CompanyTab;
@@ -13,7 +15,6 @@
   let { activeTab, summary, role, onselect }: Props = $props();
 
   const tabs = $derived([
-    { id: 'board' as const, label: 'Board', count: summary.board },
     { id: 'activity' as const, label: 'Activity', count: summary.activity.last7d },
     { id: 'deployments' as const, label: 'Deployments', count: summary.deployments },
     { id: 'secrets' as const, label: 'Secrets', count: summary.secrets },

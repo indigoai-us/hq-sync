@@ -2,7 +2,9 @@
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../../lib/workspaces';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
-  import BoardPanel from '../panels/BoardPanel.svelte';
+  // BoardPanel is intentionally no longer wired here — the Board moved to the
+  // top-level Board surface (US-007). The file is kept in place; the company
+  // page now opens on Activity.
   import CompanyTabs, { type CompanyTab } from '../components/CompanyTabs.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
@@ -14,14 +16,14 @@
 
   let { company }: Props = $props();
 
-  let activeTab = $state<CompanyTab>('board');
+  let activeTab = $state<CompanyTab>('activity');
   let previousSlug = $state<string | null>(null);
   const summaryState = useCompanySummary({ slug: () => company.slug });
 
   $effect(() => {
     if (company.slug !== previousSlug) {
       previousSlug = company.slug;
-      activeTab = 'board';
+      activeTab = 'activity';
     }
   });
 
@@ -80,9 +82,7 @@
 
   {#key `${company.slug}:${activeTab}`}
     <div class="company-panel">
-      {#if activeTab === 'board'}
-        <BoardPanel slug={company.slug} />
-      {:else if activeTab === 'activity'}
+      {#if activeTab === 'activity'}
         <ActivityPanel slug={company.slug} />
       {:else if activeTab === 'deployments'}
         <DeploymentsPanel slug={company.slug} />

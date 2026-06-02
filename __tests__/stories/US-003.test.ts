@@ -54,7 +54,7 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K hotkeys', () => {
-  it('shows the 216px desktop sidebar with Sync, Meetings, and company rows on mount', () => {
+  it('shows the 216px desktop sidebar with Board, Sync, Meetings, and company rows on mount', () => {
     const companies = getDesktopCompanies(workspaces);
     const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
 
@@ -63,17 +63,19 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
       statusBarHeightPx: 26,
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(rows.map((row) => row.label)).toEqual(['Sync', 'Meetings', 'Acme Corp']);
-    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3']);
-    expect(rows[0]).toMatchObject({ active: true, route: { kind: 'sync' } });
+    // US-007 added Board as the first top-level destination; Sync/Meetings
+    // renumbered after it, and company rows now start at ⌘4.
+    expect(rows.map((row) => row.label)).toEqual(['Board', 'Sync', 'Meetings', 'Acme Corp']);
+    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3', '⌘4']);
+    expect(rows[1]).toMatchObject({ active: true, route: { kind: 'sync' } });
     // Sync/Meetings are real pages now (US-005) — no active company resolves.
     expect(getDesktopActiveCompany(initialDesktopRoute, companies)).toBeNull();
   });
 
-  it('switches the main pane to Meetings when the user presses ⌘2', () => {
+  it('switches the main pane to Meetings when the user presses ⌘3', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
-      { key: '2', metaKey: true, ctrlKey: false },
+      { key: '3', metaKey: true, ctrlKey: false },
       companies,
     );
 
@@ -99,7 +101,7 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     expect(isDesktopRouteActive(nextRoute, { kind: 'company', slug: 'acme' })).toBe(true);
     expect(rowsAfterClick.find((row) => row.label === 'Acme Corp')).toMatchObject({
       active: true,
-      shortcut: '⌘3',
+      shortcut: '⌘4',
     });
     expect(rowsAfterClick.find((row) => row.label === 'Globex')).toBeUndefined();
   });

@@ -50,7 +50,9 @@ describe('desktop-alt routes', () => {
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    // Board ⌘1 / Sync ⌘2 / Meetings ⌘3 are the three top-level destinations
+    // (US-007), so company hotkeys now start at ⌘4.
+    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'company',
       slug: 'synced',
     });
