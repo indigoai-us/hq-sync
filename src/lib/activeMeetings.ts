@@ -8,6 +8,7 @@ import {
   shouldBackfill,
   type RecordingMembership,
 } from './recordingCompany';
+import { armStopWatchdog, clearStopWatchdog, resolveStopTimeout } from './stopWatchdog';
 
 export type ActiveMeetingState = 'detected' | 'starting' | 'recording' | 'stopping' | 'error';
 
@@ -118,10 +119,20 @@ export async function startRecording(windowId: string): Promise<void> {
 
 export async function stopRecording(windowId: string): Promise<void> {
   updateActiveMeeting(windowId, { state: 'stopping' });
+  // Backstop the SDK confirmation: if no recording:ended/recording:error
+  // arrives, force the row out of `stopping` so it can't hang forever.
+  armStopWatchdog(windowId, (id) => {
+    const row = get(activeMeetings).find((m) => m.windowId === id);
+    const patch = resolveStopTimeout(row?.state);
+    if (patch) updateActiveMeeting(id, patch);
+  });
   try {
     await invoke('stop_recording', { windowId });
   } catch (err) {
     console.error('stop_recording failed:', err);
+    // The bridge errored before the SDK got the stop — we're still recording,
+    // so cancel the watchdog and roll back rather than letting it fire `error`.
+    clearStopWatchdog(windowId);
     updateActiveMeeting(windowId, {
       state: 'recording',
       error: typeof err === 'string' ? err : String(err),
@@ -191,6 +202,7 @@ async function installActiveMeetingListeners(): Promise<() => void> {
     listen<{ windowId: string; platform: string; startedAt: string }>(
       'recording:started',
       (event) => {
+        clearStopWatchdog(event.payload.windowId);
         updateActiveMeeting(event.payload.windowId, {
           state: 'recording',
           error: undefined,
@@ -200,10 +212,12 @@ async function installActiveMeetingListeners(): Promise<() => void> {
     listen<{ windowId: string; platform: string; endedAt: string }>(
       'recording:ended',
       (event) => {
+        clearStopWatchdog(event.payload.windowId);
         removeActiveMeeting(event.payload.windowId);
       },
     ),
     listen<{ cmd: string; windowId: string; message: string }>('recording:error', (event) => {
+      clearStopWatchdog(event.payload.windowId);
       updateActiveMeeting(event.payload.windowId, {
         state: 'error',
         error: `${event.payload.cmd}: ${event.payload.message}`,
@@ -212,6 +226,7 @@ async function installActiveMeetingListeners(): Promise<() => void> {
     listen<{ windowId: string; platform: string; closedAt: string }>(
       'meeting:closed',
       (event) => {
+        clearStopWatchdog(event.payload.windowId);
         removeActiveMeeting(event.payload.windowId);
       },
     ),

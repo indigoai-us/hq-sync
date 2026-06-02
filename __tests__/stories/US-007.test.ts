@@ -138,6 +138,7 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     // company-summary was refactored from an effect-cleanup `cancelled` flag to
     // a monotonic request id that discards out-of-order completions.
     expect(summary).toContain('const myRequest = ++requestId;');
+    expect(summary).toContain('if (myRequest === requestId) {');
     expect(rustDesktopAlt).toContain('pub struct CompanySummary');
     expect(rustDesktopAlt).toContain('pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>');
     expect(rustMain).toContain('commands::desktop_alt::get_company_summary');

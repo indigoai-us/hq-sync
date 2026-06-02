@@ -50,7 +50,7 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(command).toContain('let slug = normalize_slug(&slug)?;');
     expect(command).toContain('const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";');
     expect(command).toContain('let url = deployments_url(HQ_DEPLOY_API_BASE);');
-    expect(command).toContain('format!("{}/api/apps/me", base.trim_end_matches(\'/\'))');
+    expect(command).toContain('format!("{}/api/apps", base.trim_end_matches(\'/\'))');
     expect(command).toContain('let token = cognito::get_valid_access_token() .await .map_err(|e| format!("auth: {e}"))?;');
     expect(command).toContain('.header("authorization", format!("Bearer {token}"))');
     expect(command).toContain('.header("x-org-slug", &slug)');
@@ -118,7 +118,7 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
 
     expect(panel).toContain("return deployments.filter((deployment) => deployment.state === state).length;");
     expect(panel).toContain("<span><strong>{deployingCount}</strong> deploying</span>");
-    expect(row).toContain(".status-dot.deploying { background: #2563eb; animation: pulse 1.4s ease-in-out infinite; }");
+    expect(row).toContain(".status-dot.deploying { background: var(--blue); animation: pulse 1.4s ease-in-out infinite; }");
     expect(row).toContain('@keyframes pulse');
     expect(row).toContain('@media (prefers-reduced-motion: reduce) { .status-dot.deploying { animation: none; } }');
   });
