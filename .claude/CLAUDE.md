@@ -4,9 +4,9 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 
 ## Architecture
 
-**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23) for the classic popover and `src/desktop-alt/styles/desktop-alt.css` for the Indigo desktop window. Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, Connect diagnostics drawer, and a footer HQ-version row whose action pills — drift count + Restore vX.Y.Z + update-done chip — wrap to a second line below the version label so they never overlap it, fixed v0.2.2), `Settings` (preferences + folder re-tether), and the desktop-alt shell under `src/desktop-alt/` (Sync, Meetings, Company tabs, status bar, command palette). Conflict resolution via `ConflictModal` + `ConflictRow` components. New-file notification via `NewFilesBadge` (in-popover count) + `NewFilesDetail` (secondary window with file list and attribution). Recent Changes via `ActivityLog` (secondary window listing the session's per-file syncs, each attributed as "{author} added/updated" — author email + verb — falling back to the company slug when no author). DM notifications open `DmDetail` (secondary window showing the full two-way **conversation thread** — received vs. sent bubbles, scrollable, with the live message at the bottom — plus a reply composer: textarea + **Send** / ⌘↵; sent replies append optimistically); share notifications open `ShareDetail`.
+**Frontend:** Svelte 5 with runes (`$state`, `$effect`). No component library — vanilla CSS in `src/styles/popover.css` (Liquid Glass styling adopted v0.1.23) for the classic popover and `src/desktop-alt/styles/desktop-alt.css` for the Indigo desktop window. Views: `SignInPrompt` (OAuth), `Popover` (main sync UI with per-workspace rows, real per-file progress bar, **Stop** button mid-sync, Connect diagnostics drawer, and a footer HQ-version row whose action pills — drift count + Restore vX.Y.Z + update-done chip — wrap to a second line below the version label so they never overlap it, fixed v0.2.2), `Settings` (preferences + folder re-tether), and the desktop-alt shell under `src/desktop-alt/` (Sync, Meetings, Company tabs, status bar, command palette). Conflict resolution via `ConflictModal` + `ConflictRow` components. First-launch onboarding via `FirstRunWelcome` (3-slide welcome carousel shown once on a brand-new install's first run) and `AutoSyncNotice` (one-time in-app card shown to updating users explaining auto-sync is on + how to switch to manual) — both orchestrated by `App.svelte` off the `first_run` backend classification. New-file notification via `NewFilesBadge` (in-popover count) + `NewFilesDetail` (secondary window with file list and attribution). Recent Changes via `ActivityLog` (secondary window listing the session's per-file syncs, each attributed as "{author} added/updated" — author email + verb — falling back to the company slug when no author). DM notifications open `DmDetail` (secondary window showing the full two-way **conversation thread** — received vs. sent bubbles, scrollable, with the live message at the bottom — plus a reply composer: textarea + **Send** / ⌘↵; sent replies append optimistically); share notifications open `ShareDetail`.
 
-**Backend:** Tauri 2 Rust commands in `src-tauri/src/commands/`. 63 registered commands in `main.rs`.
+**Backend:** Tauri 2 Rust commands in `src-tauri/src/commands/`. ~110 registered commands in `main.rs`.
 
 **State flow:** Svelte frontend calls Tauri commands via `invoke()`. Rust backend emits typed events (`sync:progress`, `sync:conflict`, `sync:error`, `sync:complete`, `sync:new-files`) that Svelte listens to via `listen()`.
 
@@ -15,6 +15,7 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | Module | Purpose |
 |--------|---------|
 | `commands/sync.rs` | Spawns `hq sync --json`, streams ndjson events, 10-min timeout. Includes a "Preparing sync…" pre-pass that walks the tree to compute real `filesTotal` before transfers start (so progress isn't fake) |
+| `commands/first_run.rs` | First-run / first-update onboarding classification + persisted flags. `classify_launch` runs at the very top of `main.rs` `.setup()` — BEFORE `config::ensure_machine_id` writes `machineId` — and caches a `LaunchKind` (`FirstRun` / `ExistingUpdate` / `Normal`) in managed state. Tiebreaker between a brand-new install and a legacy update is the *pre-write* `machineId` (existing users have it, fresh installs don't; `firstRunCompleted` alone can't tell them apart). Exposes `is_first_run`, `should_show_auto_sync_notice` (gated to `ExistingUpdate` + notice-not-shown + `realtimeSync` still on — never overrides an explicit opt-out), `mark_first_run_complete` (writes `firstRunCompleted` + `autoSyncNoticeShown` + `realtimeSync`/`personalSyncEnabled` true), `mark_auto_sync_notice_shown` (writes `autoSyncNoticeShown` + `firstRunCompleted`, never touches `realtimeSync`). All writes use the same untyped-merge + atomic-rename algorithm as `config::ensure_machine_id` so unknown/future top-level keys survive |
 | `commands/auth.rs` | Cognito token state + silent refresh |
 | `commands/cognito.rs` | Cognito client wrapper (refresh, sign-out, hosted-UI URL builder) |
 | `commands/oauth.rs` | PKCE OAuth flow on loopback port 53682 |
@@ -72,7 +73,7 @@ Important constraints:
 | File | Written By | Purpose |
 |------|-----------|---------|
 | `~/.hq/config.json` | hq-installer | Company UID, slug, person, bucket, vault URL, HQ folder path |
-| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon, realtimeSync, personalSyncEnabled, instantSync, driftStagingRepo, shareNotifications, releaseChannel |
+| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon, realtimeSync, personalSyncEnabled, instantSync, driftStagingRepo, shareNotifications, releaseChannel, machineId, firstRunCompleted, autoSyncNoticeShown |
 | `~/.hq/cognito-tokens.json` | hq-installer / this app | Cognito access + refresh + id tokens |
 
 ## HQ Folder Path Resolution
@@ -109,6 +110,20 @@ The popover renders a row per workspace. Workspaces are computed in `commands/wo
 Each row carries a `connectState` (`connected | needs_connect | provisioning | error`) and exposes a per-row **Connect** button when the company exists in the manifest but has no S3 vault yet. Replaced the older "No companies yet" empty-state dead-end (v0.1.21) — there is now always at least one row (`personal`) to act on.
 
 The `personal` row is special-cased: if it's missing from the manifest at sync time, `commands/personal.rs` auto-provisions the directory + bucket so first-time users always have a working sync target.
+
+## First-Run Onboarding
+
+Three launch kinds are classified once at `.setup()` (`commands/first_run.rs`) and drive `App.svelte`:
+
+- **FirstRun** (brand-new install) — the popover pops open, the first cloud sync auto-starts, and `FirstRunWelcome` shows a 3-slide carousel. Dismiss → `mark_first_run_complete` persists `firstRunCompleted` + `autoSyncNoticeShown` (carousel users skip the separate notice) and makes "sync is on" explicit (`realtimeSync` + `personalSyncEnabled` true). Never repeats.
+- **ExistingUpdate** (legacy user who updated to an onboarding-aware build) — `AutoSyncNotice` shows a one-time card explaining auto-sync is on and how to switch to manual. Notify-only: gated on `realtimeSync` still being on, so a user who explicitly opted out sees nothing. Dismiss → `mark_auto_sync_notice_shown` (does NOT touch `realtimeSync`).
+- **Normal** — first-run sequence already completed; no onboarding UI.
+
+Classification rationale (why it runs before `ensure_machine_id`) is documented at the top of `commands/first_run.rs`.
+
+### Calm First-Sync Labeling
+
+The first sync of a fresh HQ uploads the entire release-shipped `core/` scaffold (docs, hooks, knowledge, policies, scripts, skills, workers) — identical for every user, not the user's own content. `src/lib/progressLabel.ts` collapses any `core/…` path (`isCorePath` → `CORE_SETUP_LABEL` = "Setting up HQ core files…") so the live label reads as one-time setup rather than a flood of unfamiliar files. Wired into the classic popover live card (`Popover.svelte` `liveWorkspaceLine`) and the desktop-alt status line (`desktop-alt/lib/sync-model.ts` `currentSyncLabel`). Display-only — the honest file counter and what actually gets stored are unchanged.
 
 ## First-Push Protection
 
