@@ -25,6 +25,7 @@
   } from '../lib/projects-model';
   import ProjectListView from '../components/ProjectListView.svelte';
   import StoryKanban from '../components/StoryKanban.svelte';
+  import StoryDetailPanel from '../components/StoryDetailPanel.svelte';
 
   interface Props {
     /** Best-effort company pre-filter — scopes the list to one company slug. */
@@ -42,6 +43,32 @@
   let stories = $state<Story[]>([]);
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
+
+  // Story detail slide-over (US-008). `selectedStoryId` is the open story within
+  // the current project; we key off the id (not the object) so a dependency-chip
+  // click can reselect by id and so the panel survives a stories refresh.
+  let selectedStoryId = $state<string | null>(null);
+  const selectedStory = $derived(
+    selectedStoryId === null
+      ? null
+      : (stories.find((story) => story.id === selectedStoryId) ?? null),
+  );
+
+  function openStory(story: Story): void {
+    selectedStoryId = story.id;
+  }
+
+  function closeStory(): void {
+    selectedStoryId = null;
+  }
+
+  // Dependency-chip click: reselect that dependency story if it exists in this
+  // project; if the id isn't present, leave the current selection untouched.
+  function selectStoryById(storyId: string): void {
+    if (stories.some((story) => story.id === storyId)) {
+      selectedStoryId = storyId;
+    }
+  }
 
   // Apply the best-effort company pre-filter. If the slug matches no project we
   // fall back to showing everything rather than an empty board.
@@ -82,6 +109,7 @@
     selected = project;
     stories = [];
     storiesError = null;
+    selectedStoryId = null;
 
     if (!project.prdPath) {
       // A board project with no linked prd has no stories to drill into.
@@ -105,6 +133,7 @@
     selected = null;
     stories = [];
     storiesError = null;
+    selectedStoryId = null;
   }
 
   onMount(() => {
@@ -138,9 +167,15 @@
           <p>This project has no linked PRD yet, so there are no stories to show.</p>
         </div>
       {:else}
-        <StoryKanban {stories} loading={storiesLoading} />
+        <StoryKanban {stories} loading={storiesLoading} onselect={openStory} />
       {/if}
     </div>
+
+    <StoryDetailPanel
+      story={selectedStory}
+      onclose={closeStory}
+      onselectDependency={selectStoryById}
+    />
   {:else}
     <header class="page-header">
       <h1 id="board-page-title">Board</h1>
