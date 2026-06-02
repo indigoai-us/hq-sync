@@ -81,7 +81,9 @@ describe('US-005: Alt Sync page wires to real sync state and events', () => {
     expect(app).toContain("desktopAltEnabled = await invoke<boolean>('desktop_alt_enabled')");
     expect(app).toContain('function handleAuthSuccess(auth: { authenticated: boolean; expiresAt: string })');
     expect(app).toMatch(/function handleAuthSuccess[\s\S]*void refreshDesktopAltEnabled\(\);/);
-    expect(app).toMatch(/if \(authenticated\) \{ await refreshDesktopAltEnabled\(\); \}/);
+    expect(app).toMatch(
+      /if \(authenticated\) \{ await refreshDesktopAltEnabled\(\); void runOnboarding\(\); \}/,
+    );
 
     expect(cognito).toMatch(/pub async fn set_tokens[\s\S]*clear_cached_gate\(\);/);
     expect(gate).toContain('pub fn clear_cached_gate()');
