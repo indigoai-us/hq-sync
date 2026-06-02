@@ -258,7 +258,7 @@ pub async fn install_hq_core_update(
             hq_folder.display()
         ));
     }
-    let script = crate::commands::hq_core_staging::resolve_rescue_script(&app)?;
+    let script = crate::commands::hq_core_staging::resolve_rescue_script(&app).await?;
 
     let latest = fetch_latest()
         .await
