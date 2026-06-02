@@ -566,27 +566,41 @@ pub(crate) async fn resolve_rescue_script(app: &AppHandle) -> Result<std::path::
     }
     // Live-fetch fallback — the bundle was stale. Download the matching
     // version from GitHub into the per-user cache and return that.
+    //
+    // The fetcher classifies the response into the three variants
+    // `ensure_cached_rescue_script` requires (see rescue_script_cache::
+    // FetchOutcome): only a definitive 404 authorises a fallback from
+    // the tagged URL to `main`. Any other HTTP status (5xx, 403, etc.)
+    // or transport-layer failure (DNS, TLS, timeout) returns
+    // TransientError, which the caller surfaces verbatim instead of
+    // silently caching `main` content under the running version key.
     let app_version = app.package_info().version.to_string();
     let home = dirs::home_dir();
     let fetcher = |url: String| async move {
-        let client = reqwest::Client::builder()
+        use crate::commands::rescue_script_cache::FetchOutcome;
+        let client = match reqwest::Client::builder()
             .default_headers(crate::util::client_info::client_headers())
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .map_err(|e| format!("build http client: {e}"))?;
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("GET {url}: {e}"))?;
-        if !resp.status().is_success() {
-            return Err(format!("GET {url}: HTTP {}", resp.status()));
+        {
+            Ok(c) => c,
+            Err(e) => return FetchOutcome::TransientError(format!("build http client: {e}")),
+        };
+        let resp = match client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => return FetchOutcome::TransientError(format!("GET {url}: {e}")),
+        };
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return FetchOutcome::NotFound;
         }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("read body for {url}: {e}"))?;
-        Ok::<Vec<u8>, String>(bytes.to_vec())
+        if !status.is_success() {
+            return FetchOutcome::TransientError(format!("GET {url}: HTTP {status}"));
+        }
+        match resp.bytes().await {
+            Ok(b) => FetchOutcome::Body(b.to_vec()),
+            Err(e) => FetchOutcome::TransientError(format!("read body for {url}: {e}")),
+        }
     };
     match crate::commands::rescue_script_cache::ensure_cached_rescue_script(
         home.as_deref(),

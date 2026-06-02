@@ -37,9 +37,13 @@
 //! `indigoai-us/hq-sync` is a public repo, so no auth header is required
 //! and we lean on `raw.githubusercontent.com`'s CDN. The fetch tries the
 //! tag matching `app_version` first (`v{version}/scripts/replace-rescue.sh`)
-//! and falls back to `main` if the tag 404s — covers dev builds, alpha
-//! versions, and any window where a release is built but its tag hasn't
-//! pushed yet.
+//! and falls back to `main` **only when the tag definitively 404s** —
+//! covers dev builds, alpha versions, and any window where a release is
+//! built but its tag hasn't pushed yet. A transient 5xx / 403 /
+//! network failure on the tagged URL aborts the resolver with that
+//! error rather than silently caching `main`'s (potentially
+//! newer-than-binary) script under the current version key. See
+//! [`FetchOutcome`] for the classification the fetcher MUST honor.
 
 use std::path::{Path, PathBuf};
 
@@ -87,17 +91,49 @@ pub(crate) enum CacheSource {
     Downloaded { url: String },
 }
 
+/// Outcome of one fetch attempt. The fetcher MUST distinguish
+/// "tag doesn't exist" from any other error so the loop only falls back
+/// to `main` when we're certain the tagged ref isn't there.
+///
+/// Conflating the two would let a transient 5xx / 403 rate-limit /
+/// network glitch on the tagged URL cache `main` content under the
+/// running version key — and subsequent rescue runs would silently
+/// execute a script that's newer than (and potentially incompatible
+/// with) the installed binary's contract.
+#[derive(Debug)]
+pub(crate) enum FetchOutcome {
+    /// 2xx, non-empty body — use this content.
+    Body(Vec<u8>),
+    /// 404 (or equivalent definitive not-found). Caller may try the
+    /// next URL.
+    NotFound,
+    /// Anything else: 5xx, 403, network timeout, DNS failure, empty
+    /// body, parse error. Caller MUST NOT fall back — abort with this
+    /// error to surface the real problem instead of masking it with a
+    /// silent `main` write.
+    TransientError(String),
+}
+
 /// Ensure a rescue-script copy exists at the cache path.
 ///
-/// `fetcher` is injected so unit tests can simulate cache-miss, network
-/// failure, and tag-404-then-main-success without touching the network.
-/// Production callers pass a real reqwest-backed closure.
+/// `fetcher` is injected so unit tests can simulate cache-miss,
+/// definitive-404, transient errors, and tag-404-then-main-success
+/// without touching the network. Production callers pass a
+/// reqwest-backed closure that classifies HTTP status into the three
+/// `FetchOutcome` variants.
 ///
 /// On cache hit: returns the existing path; `fetcher` is not invoked.
 ///
-/// On cache miss: tries the tagged URL first, then `main`. On the first
-/// successful fetch, writes the body to disk, chmods +x, and returns the
-/// path. If both fail, returns the last error.
+/// On cache miss:
+///   1. Try the tagged URL (`v{app_version}/scripts/...`).
+///      * `Body(b)` → write + return.
+///      * `NotFound` → continue to main URL (the documented fallback case).
+///      * `TransientError(e)` → abort with `e`. **Do not** fall back —
+///        the tag may exist; we just couldn't reach it.
+///   2. If we fell through, try `main/scripts/...`.
+///      * Same three-way classification.
+///   3. If both legs ended in `NotFound`, return a combined error
+///      explaining neither ref resolved.
 pub(crate) async fn ensure_cached_rescue_script<F, Fut>(
     home: Option<&Path>,
     app_version: &str,
@@ -105,7 +141,7 @@ pub(crate) async fn ensure_cached_rescue_script<F, Fut>(
 ) -> Result<(PathBuf, CacheSource), String>
 where
     F: Fn(String) -> Fut,
-    Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
+    Fut: std::future::Future<Output = FetchOutcome>,
 {
     let cache_path = cached_rescue_script_path(home, app_version);
 
@@ -120,30 +156,38 @@ where
 
     let tag_url = rescue_script_url_for_tag(app_version);
     let main_url = rescue_script_url_main();
-    let attempted_urls = [tag_url.clone(), main_url.clone()];
 
-    let mut last_err: Option<String> = None;
-    for url in &attempted_urls {
+    for url in [&tag_url, &main_url] {
         match fetcher(url.clone()).await {
-            Ok(body) => {
+            FetchOutcome::Body(body) => {
                 if body.is_empty() {
-                    last_err = Some(format!("GET {url}: empty body"));
-                    continue;
+                    // Empty 2xx body is treated as transient — never
+                    // cache a zero-byte script — and never silently
+                    // fall back, since `main` may have the same
+                    // problem and we don't want to mask it.
+                    return Err(format!("GET {url}: empty body"));
                 }
                 std::fs::write(&cache_path, &body)
                     .map_err(|e| format!("write cache {cache_path:?}: {e}"))?;
                 set_executable(&cache_path)?;
                 return Ok((cache_path, CacheSource::Downloaded { url: url.clone() }));
             }
-            Err(e) => {
-                last_err = Some(e);
+            FetchOutcome::NotFound => {
+                // Try the next URL in the list. This is the ONLY
+                // path that authorises a fallback.
+                continue;
+            }
+            FetchOutcome::TransientError(e) => {
+                return Err(format!(
+                    "live-fetch rescue script aborted at {url} (transient): {e}. \
+                     Refusing to fall back to main — tag may exist."
+                ));
             }
         }
     }
 
     Err(format!(
-        "live-fetch rescue script failed (tried {attempted_urls:?}): {}",
-        last_err.unwrap_or_else(|| "no error captured".to_string())
+        "live-fetch rescue script: neither {tag_url} nor {main_url} resolved (both returned 404)"
     ))
 }
 
@@ -266,7 +310,7 @@ mod tests {
             let fc = fc.clone();
             async move {
                 fc.fetch_add(1, Ordering::SeqCst);
-                Ok::<_, String>(b"should not be called".to_vec())
+                FetchOutcome::Body(b"should not be called".to_vec())
             }
         };
 
@@ -287,7 +331,7 @@ mod tests {
         let tmp = fake_home();
         let body = b"#!/usr/bin/env bash\necho live-fetched\n";
 
-        let fetcher = move |_url: String| async move { Ok::<_, String>(body.to_vec()) };
+        let fetcher = move |_url: String| async move { FetchOutcome::Body(body.to_vec()) };
 
         let (path, source) = ensure_cached_rescue_script(Some(tmp.path()), "9.9.9", fetcher)
             .await
@@ -323,9 +367,9 @@ mod tests {
             async move {
                 c.lock().unwrap().push(url.clone());
                 if url.contains("/v0.0.0-nope/") {
-                    Err::<Vec<u8>, String>("404 Not Found".to_string())
+                    FetchOutcome::NotFound
                 } else {
-                    Ok(b"#!/usr/bin/env bash\necho main\n".to_vec())
+                    FetchOutcome::Body(b"#!/usr/bin/env bash\necho main\n".to_vec())
                 }
             }
         };
@@ -349,32 +393,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn both_urls_failing_returns_combined_error() {
+    async fn transient_error_on_tag_does_not_fall_back_to_main() {
+        // Codex P2 (PR #151 r3341002540): a 5xx / 403 / network glitch
+        // on the tagged URL must NOT silently cache `main` under the
+        // current version — that would execute a newer-than-binary
+        // script. Fallback is gated on a definitive 404.
         let tmp = fake_home();
-        let fetcher =
-            |_url: String| async move { Err::<Vec<u8>, String>("connection refused".to_string()) };
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let c = calls.clone();
+
+        let fetcher = move |url: String| {
+            let c = c.clone();
+            async move {
+                c.lock().unwrap().push(url.clone());
+                if url.contains("/v1.0.0/") {
+                    FetchOutcome::TransientError("HTTP 503 Service Unavailable".to_string())
+                } else {
+                    // main URL would succeed if we (wrongly) fell through.
+                    // The assertion below verifies we never get here.
+                    FetchOutcome::Body(b"#!/usr/bin/env bash\necho main\n".to_vec())
+                }
+            }
+        };
 
         let err = ensure_cached_rescue_script(Some(tmp.path()), "1.0.0", fetcher)
             .await
-            .expect_err("must fail when both URLs fail");
-        assert!(err.contains("live-fetch rescue script failed"), "got {err}");
-        assert!(err.contains("v1.0.0"), "must mention tag URL");
-        assert!(err.contains("/main/"), "must mention main URL");
+            .expect_err("transient error must abort, not fall back");
+        assert!(err.contains("Refusing to fall back"), "got {err}");
+        assert!(err.contains("HTTP 503"), "must surface underlying cause: {err}");
+        let seen = calls.lock().unwrap();
+        assert_eq!(seen.len(), 1, "must stop after the tag URL, not try main");
+        assert!(seen[0].contains("/v1.0.0/"));
+
+        let cache_path = cached_rescue_script_path(Some(tmp.path()), "1.0.0");
         assert!(
-            err.contains("connection refused"),
-            "must include underlying error"
+            !cache_path.exists(),
+            "must NOT write a cache file on transient error"
         );
     }
 
     #[tokio::test]
-    async fn empty_body_is_treated_as_failure() {
+    async fn both_urls_404_returns_combined_error() {
         let tmp = fake_home();
-        let fetcher = |_url: String| async move { Ok::<_, String>(Vec::new()) };
+        let fetcher = |_url: String| async move { FetchOutcome::NotFound };
+
+        let err = ensure_cached_rescue_script(Some(tmp.path()), "1.0.0", fetcher)
+            .await
+            .expect_err("must fail when both URLs 404");
+        assert!(err.contains("neither"), "got {err}");
+        assert!(err.contains("v1.0.0"), "must mention tag URL");
+        assert!(err.contains("/main/"), "must mention main URL");
+    }
+
+    #[tokio::test]
+    async fn empty_body_is_treated_as_transient_and_aborts() {
+        let tmp = fake_home();
+        let fetcher = |_url: String| async move { FetchOutcome::Body(Vec::new()) };
 
         let err = ensure_cached_rescue_script(Some(tmp.path()), "1.0.0", fetcher)
             .await
             .expect_err("empty body must fail");
         assert!(err.contains("empty body"), "got {err}");
+        // Belt + suspenders: an empty 2xx on the tag URL must not silently
+        // fall through to main either — same risk as a 5xx.
+        let cache_path = cached_rescue_script_path(Some(tmp.path()), "1.0.0");
+        assert!(
+            !cache_path.exists(),
+            "must NOT write a cache file on empty body"
+        );
     }
 
     #[tokio::test]
