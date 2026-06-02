@@ -259,6 +259,7 @@ fn main() {
             commands::projects_local::get_local_projects,
             commands::projects_local::get_local_project_prd,
             commands::projects_local::get_local_project_readme,
+            commands::projects_local::get_local_company_goals,
             commands::projects_local::set_local_project_status,
             commands::projects_local::set_local_story_passes,
             commands::meetings::meetings_list_upcoming,

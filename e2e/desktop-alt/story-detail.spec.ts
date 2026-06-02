@@ -8,15 +8,15 @@ import { readRepoFile } from './harness';
  * style (board-surface.spec.ts). Asserts that StoryDetailPanel wires the
  * slide-over affordances (backdrop, close button, Escape), the section content
  * (AC checklist + progress, dependency chips, labels, notes, files), and the
- * graceful agent-activity empty state — and that BoardPage opens/closes the
- * panel through US-007's existing selection state.
+ * graceful agent-activity empty state — and that CompanyBoardPanel opens/closes
+ * the panel through its selection state.
  */
 
 describe('desktop-alt story detail slide-over (US-008)', () => {
   const panel = readRepoFile(
     'src/desktop-alt/components/StoryDetailPanel.svelte',
   );
-  const page = readRepoFile('src/desktop-alt/pages/BoardPage.svelte');
+  const page = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
 
   it('declares the US-008 props contract', () => {
     // story (Story | null), onclose, onselectDependency(storyId).
@@ -91,13 +91,13 @@ describe('desktop-alt story detail slide-over (US-008)', () => {
     expect(styleBlock).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 
-  it('wires the panel into BoardPage through US-007 selection state', () => {
+  it('wires the panel into CompanyBoardPanel through its selection state', () => {
     expect(page).toContain(
       "import StoryDetailPanel from '../components/StoryDetailPanel.svelte'",
     );
-    // US-009 moved the Kanban inside ProjectDetailView: BoardPage threads
+    // The Kanban lives inside ProjectDetailView: CompanyBoardPanel threads
     // openStory into the detail view via onselectStory, which forwards it to the
-    // embedded StoryKanban's onselect. The panel itself still lives in BoardPage.
+    // embedded StoryKanban's onselect. The panel itself lives in CompanyBoardPanel.
     expect(page).toContain('onselectStory={openStory}');
     const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
     expect(detail).toContain('onselect={onselectStory}');

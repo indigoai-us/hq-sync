@@ -93,6 +93,99 @@ export async function loadLocalProjects(): Promise<Project[]> {
   return (wire ?? []).map(toProject);
 }
 
+// ---------------------------------------------------------------------------
+// Company goals (objectives + initiatives) — get_local_company_goals
+// ---------------------------------------------------------------------------
+
+/**
+ * One key result under an objective. The current board.json data carries
+ * `keyResults: []`, so every field is optional (mirrors the permissive Rust
+ * `KeyResult`). When populated, `target`/`current` are arbitrary JSON values, so
+ * they stay loosely typed here — the card coerces them to numbers for the bar.
+ */
+export interface KeyResult {
+  id?: string;
+  title?: string;
+  metric?: string;
+  target?: number | string | null;
+  current?: number | string | null;
+  unit?: string;
+  status?: string;
+}
+
+/** One objective from a company `board.json` `objectives[]` entry. */
+export interface Objective {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+  timeframe: string;
+  owner?: string | null;
+  keyResults: KeyResult[];
+  initiativeIds: string[];
+}
+
+/** One initiative from a company `board.json` `initiatives[]` entry. */
+export interface Initiative {
+  id: string;
+  title: string;
+  description: string;
+  status: string;
+}
+
+/** A company's GOALS surface, returned by `get_local_company_goals`. */
+export interface CompanyGoals {
+  objectives: Objective[];
+  initiatives: Initiative[];
+}
+
+/** Raw wire shape from `get_local_company_goals` (camelCase from serde). */
+interface CompanyGoalsWire {
+  objectives?: Partial<Objective>[];
+  initiatives?: Partial<Initiative>[];
+}
+
+/** Normalise one raw objective into the {@link Objective} shape. */
+function toObjective(wire: Partial<Objective>): Objective {
+  return {
+    id: typeof wire.id === 'string' ? wire.id : '',
+    title: typeof wire.title === 'string' ? wire.title : '',
+    description: typeof wire.description === 'string' ? wire.description : '',
+    status: typeof wire.status === 'string' ? wire.status : '',
+    timeframe: typeof wire.timeframe === 'string' ? wire.timeframe : '',
+    owner: typeof wire.owner === 'string' ? wire.owner : null,
+    keyResults: Array.isArray(wire.keyResults) ? wire.keyResults : [],
+    initiativeIds: Array.isArray(wire.initiativeIds) ? wire.initiativeIds : [],
+  };
+}
+
+/** Normalise one raw initiative into the {@link Initiative} shape. */
+function toInitiative(wire: Partial<Initiative>): Initiative {
+  return {
+    id: typeof wire.id === 'string' ? wire.id : '',
+    title: typeof wire.title === 'string' ? wire.title : '',
+    description: typeof wire.description === 'string' ? wire.description : '',
+    status: typeof wire.status === 'string' ? wire.status : '',
+  };
+}
+
+/**
+ * Load + normalise a single company's goals (objectives + initiatives) from its
+ * `board.json` via the US-011 Rust command. The command param is `company_slug`;
+ * Tauri v2 exposes it camelCased. A company with no board (or an empty goals
+ * block) resolves to empty arrays rather than throwing — the caller renders the
+ * "No goals yet" empty state.
+ */
+export async function loadCompanyGoals(slug: string): Promise<CompanyGoals> {
+  const wire = await invoke<CompanyGoalsWire>('get_local_company_goals', {
+    companySlug: slug,
+  });
+  return {
+    objectives: (wire?.objectives ?? []).map(toObjective),
+    initiatives: (wire?.initiatives ?? []).map(toInitiative),
+  };
+}
+
 /** Load + normalise the stories for a single project's prd.json. */
 export async function loadLocalProjectStories(prdPath: string): Promise<Story[]> {
   // The Rust command param is `prd_path`; Tauri v2 exposes it camelCased.

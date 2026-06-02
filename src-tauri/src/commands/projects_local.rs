@@ -107,6 +107,79 @@ pub struct LocalProjectPrd {
     pub metadata: serde_json::Value,
 }
 
+// ---- company goals (objectives + initiatives) ------------------------------
+
+/// A single key result under an objective. The current board.json data carries
+/// `key_results: []`, so every field is permissive (Option / serde default) —
+/// this models whatever a populated KR might contain without erroring on the
+/// empty case.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// One objective from a company `board.json` `objectives[]` entry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Objective {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub timeframe: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub key_results: Vec<KeyResult>,
+    #[serde(default)]
+    pub initiative_ids: Vec<String>,
+    /// The Linear initiative this objective links to, when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linear_initiative_id: Option<String>,
+}
+
+/// One initiative from a company `board.json` `initiatives[]` entry.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Initiative {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+/// A company's GOALS surface: the objectives + initiatives from its
+/// `board.json`. Returned by `get_local_company_goals`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompanyGoals {
+    pub objectives: Vec<Objective>,
+    pub initiatives: Vec<Initiative>,
+}
+
 // ---- on-disk parse models (snake_case, matching the real JSON) -------------
 
 /// `board.json` — only the fields we consume.
@@ -114,6 +187,120 @@ pub struct LocalProjectPrd {
 struct BoardFile {
     #[serde(default)]
     projects: Vec<BoardProject>,
+}
+
+/// `board.json` goals view — only the `objectives` + `initiatives` arrays. The
+/// `Objective`/`Initiative` return structs are themselves `Deserialize` with
+/// `#[serde(rename_all = "camelCase")]`; the on-disk JSON is snake_case, so we
+/// parse via dedicated snake_case raw models below and convert.
+#[derive(Debug, Deserialize, Default)]
+struct BoardGoalsFile {
+    #[serde(default)]
+    objectives: Vec<RawObjective>,
+    #[serde(default)]
+    initiatives: Vec<RawInitiative>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawObjective {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    timeframe: String,
+    #[serde(default)]
+    owner: Option<String>,
+    #[serde(default)]
+    key_results: Vec<RawKeyResult>,
+    #[serde(default)]
+    initiative_ids: Vec<String>,
+    #[serde(default)]
+    linear_initiative_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawKeyResult {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    metric: Option<String>,
+    #[serde(default)]
+    target: Option<serde_json::Value>,
+    #[serde(default)]
+    current: Option<serde_json::Value>,
+    #[serde(default)]
+    unit: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RawInitiative {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    status: String,
+}
+
+impl From<RawKeyResult> for KeyResult {
+    fn from(k: RawKeyResult) -> Self {
+        KeyResult {
+            id: k.id,
+            title: k.title,
+            metric: k.metric,
+            target: k.target,
+            current: k.current,
+            unit: k.unit,
+            status: k.status,
+        }
+    }
+}
+
+impl From<RawObjective> for Objective {
+    fn from(o: RawObjective) -> Self {
+        Objective {
+            id: o.id,
+            title: o.title,
+            description: o.description,
+            status: o.status,
+            timeframe: o.timeframe,
+            owner: o.owner,
+            key_results: o.key_results.into_iter().map(KeyResult::from).collect(),
+            initiative_ids: o.initiative_ids,
+            linear_initiative_id: o.linear_initiative_id,
+        }
+    }
+}
+
+impl From<RawInitiative> for Initiative {
+    fn from(i: RawInitiative) -> Self {
+        Initiative {
+            id: i.id,
+            title: i.title,
+            description: i.description,
+            status: i.status,
+        }
+    }
+}
+
+impl From<BoardGoalsFile> for CompanyGoals {
+    fn from(b: BoardGoalsFile) -> Self {
+        CompanyGoals {
+            objectives: b.objectives.into_iter().map(Objective::from).collect(),
+            initiatives: b.initiatives.into_iter().map(Initiative::from).collect(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default, Clone)]
@@ -431,6 +618,57 @@ fn read_project_readme(hq_root: &Path, prd_path: &str) -> Result<Option<String>,
         Ok(content) => Ok(Some(content)),
         Err(e) => Err(format!("could not read README.md: {e}")),
     }
+}
+
+/// Read a company's GOALS (objectives + initiatives) from its `board.json`
+/// under the resolved HQ folder.
+///
+/// Powers a per-company board UI that renders OKRs. Reads
+/// `companies/<company_slug>/board.json` and returns only its `objectives[]` +
+/// `initiatives[]` (the projects live behind `get_local_projects`). Indigo-gated
+/// like the other local readers.
+///
+/// A missing or unparseable `board.json` yields an **empty** `CompanyGoals`
+/// rather than an error — a company without a board simply has no goals yet, and
+/// the caller can fall back to the vault. The only hard errors are a
+/// `company_slug` that escapes the HQ folder (path-traversal guard) or the gate
+/// rejecting a non-Indigo caller.
+#[tauri::command]
+pub async fn get_local_company_goals(company_slug: String) -> Result<CompanyGoals, String> {
+    if !crate::util::feature_gate::is_indigo_user().await {
+        return Err("goals reader is Indigo-only".to_string());
+    }
+    let hq = resolve_hq_folder();
+    read_company_goals(&hq, &company_slug)
+}
+
+/// Pure body for `get_local_company_goals` — takes an explicit HQ root so it's
+/// unit-testable and the traversal guard is verifiable.
+///
+/// Validates the slug stays inside `companies/` under the HQ folder (no `..`
+/// traversal, no nested path, no absolute escape), then leniently parses the
+/// company's `board.json`. Missing/garbage board → empty `CompanyGoals`.
+fn read_company_goals(hq_root: &Path, company_slug: &str) -> Result<CompanyGoals, String> {
+    let slug = company_slug.trim();
+    if slug.is_empty() {
+        return Err("company_slug is required".to_string());
+    }
+    // A slug is a single directory name — reject anything with separators or
+    // traversal components before it ever touches the filesystem.
+    if slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
+        return Err(format!("invalid company_slug: {company_slug:?}"));
+    }
+    let board_path = hq_root.join("companies").join(slug).join("board.json");
+    // Defense-in-depth: the resolved path must stay inside the HQ folder.
+    if !is_within(hq_root, &board_path) {
+        return Err(format!(
+            "company_slug escapes the HQ folder: {company_slug:?}"
+        ));
+    }
+    // Missing/unparseable board.json → empty goals (not an error).
+    Ok(read_json_lenient::<BoardGoalsFile>(&board_path)
+        .map(CompanyGoals::from)
+        .unwrap_or_default())
 }
 
 // ---- writes (US-010) -------------------------------------------------------
@@ -976,6 +1214,129 @@ mod tests {
         assert!(!is_within(root, Path::new("/Users/x/HQ/../evil")));
         assert!(!is_within(root, Path::new("/etc/passwd")));
         assert!(is_within(root, &root.join("a/./b/../c")));
+    }
+
+    // ---- company goals -----------------------------------------------------
+
+    /// Build a fixture HQ tree whose indigo board.json carries 2 objectives
+    /// (one with a populated key_result, one with `[]`) + 1 initiative.
+    fn make_goals_fixture_tree() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-local-goals-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        let indigo = root.join("companies").join("indigo");
+        fs::create_dir_all(&indigo).unwrap();
+
+        let board = r#"{
+            "company": "indigo",
+            "objectives": [
+                {
+                    "id": "in-obj-001",
+                    "title": "Desktop Experience",
+                    "description": "Native desktop apps",
+                    "timeframe": "2026",
+                    "owner": "corey",
+                    "status": "on_track",
+                    "linear_initiative_id": null,
+                    "initiative_ids": ["in-init-001"],
+                    "key_results": [
+                        {"id":"kr-1","title":"Ship 1.0","metric":"releases","target":1,"current":0,"unit":"count","status":"in_progress"}
+                    ]
+                },
+                {
+                    "id": "in-obj-002",
+                    "title": "Platform Stability",
+                    "description": "Reliability",
+                    "timeframe": "2026",
+                    "owner": null,
+                    "status": "on_track",
+                    "initiative_ids": ["in-init-002"],
+                    "key_results": []
+                }
+            ],
+            "initiatives": [
+                {
+                    "id": "in-init-001",
+                    "title": "Desktop Experience",
+                    "description": "Native desktop apps",
+                    "status": "active"
+                }
+            ],
+            "projects": []
+        }"#;
+        fs::write(indigo.join("board.json"), board).unwrap();
+        root
+    }
+
+    #[test]
+    fn read_company_goals_parses_objectives_and_initiatives() {
+        let root = make_goals_fixture_tree();
+        let goals = read_company_goals(&root, "indigo").expect("goals parse");
+
+        assert_eq!(goals.objectives.len(), 2);
+        assert_eq!(goals.initiatives.len(), 1);
+
+        // Objective 1: populated key_result + owner + linked initiative.
+        let obj1 = &goals.objectives[0];
+        assert_eq!(obj1.id, "in-obj-001");
+        assert_eq!(obj1.title, "Desktop Experience");
+        assert_eq!(obj1.status, "on_track");
+        assert_eq!(obj1.timeframe, "2026");
+        assert_eq!(obj1.owner.as_deref(), Some("corey"));
+        assert_eq!(obj1.initiative_ids, vec!["in-init-001"]);
+        assert_eq!(obj1.key_results.len(), 1);
+        let kr = &obj1.key_results[0];
+        assert_eq!(kr.id.as_deref(), Some("kr-1"));
+        assert_eq!(kr.title.as_deref(), Some("Ship 1.0"));
+        assert_eq!(kr.metric.as_deref(), Some("releases"));
+        assert_eq!(kr.unit.as_deref(), Some("count"));
+        assert_eq!(kr.status.as_deref(), Some("in_progress"));
+
+        // Objective 2: empty key_results, null owner.
+        let obj2 = &goals.objectives[1];
+        assert_eq!(obj2.id, "in-obj-002");
+        assert!(obj2.owner.is_none());
+        assert!(obj2.key_results.is_empty());
+
+        // Initiative round-trips.
+        let init = &goals.initiatives[0];
+        assert_eq!(init.id, "in-init-001");
+        assert_eq!(init.title, "Desktop Experience");
+        assert_eq!(init.status, "active");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_company_goals_missing_board_is_empty_not_panic() {
+        let root = make_goals_fixture_tree();
+        // A company with no board.json at all → empty goals, no error/panic.
+        let goals = read_company_goals(&root, "acme").expect("missing board → empty goals");
+        assert!(goals.objectives.is_empty());
+        assert!(goals.initiatives.is_empty());
+        assert_eq!(goals, CompanyGoals::default());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_company_goals_rejects_traversal_and_empty_slug() {
+        let root = make_goals_fixture_tree();
+        for evil in ["../../../etc", "..", ".", "foo/bar", "indigo/../secrets"] {
+            assert!(
+                read_company_goals(&root, evil).is_err(),
+                "slug {evil:?} must be rejected"
+            );
+        }
+        assert!(read_company_goals(&root, "   ").is_err(), "empty slug rejected");
+        let _ = fs::remove_dir_all(&root);
     }
 
     // ---- writes (US-010) ---------------------------------------------------

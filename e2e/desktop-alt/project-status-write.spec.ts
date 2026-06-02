@@ -48,7 +48,9 @@ describe('desktop-alt project status write — store contract (US-010)', () => {
 
 describe('desktop-alt status dropdown wires onStatusChange → write (US-010)', () => {
   const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
-  const board = readRepoFile('src/desktop-alt/pages/BoardPage.svelte');
+  // The detail view's status writes are hosted by the per-company board panel
+  // (US-011) now that the top-level BoardPage is gone.
+  const board = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
 
   it('selecting a status calls the store write through an onclick handler', () => {
     // The dropdown options now call selectStatus (was a no-op menu-close in 009).

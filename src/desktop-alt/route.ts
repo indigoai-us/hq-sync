@@ -1,9 +1,8 @@
 import type { Workspace } from '../lib/workspaces';
 
 export type DesktopRoute = {
-  kind: 'board' | 'sync' | 'meetings' | 'company';
-  /** Company slug — set for `company` routes, and (optionally) for `board`
-   *  routes to pre-filter the project list to one company. */
+  kind: 'sync' | 'meetings' | 'company';
+  /** Company slug — set for `company` routes. */
   slug?: string;
 };
 
@@ -22,23 +21,22 @@ export const DESKTOP_SHELL_LAYOUT = {
 export const initialDesktopRoute: DesktopRoute = { kind: 'sync' };
 
 export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
+  // Personal is local-first (its state is 'personal', never 'synced'), so it
+  // gets a page whenever it's present; companies need a synced local vault.
   return workspaces.filter(
-    (workspace) => workspace.kind === 'company' && workspace.state === 'synced',
+    (workspace) =>
+      workspace.kind === 'personal' ||
+      (workspace.kind === 'company' && workspace.state === 'synced'),
   );
 }
 
 export function getDesktopRouteKey(route: DesktopRoute): string {
   if (route.kind === 'company') return `company:${route.slug ?? ''}`;
-  // The board surface keys on its pre-filter slug so the page remounts when the
-  // pre-filter changes (e.g. entering from a company context); a bare board nav
-  // keeps the stable `board` key so it doesn't remount on every visit.
-  if (route.kind === 'board') return route.slug ? `board:${route.slug}` : 'board';
   return route.kind;
 }
 
 export function isDesktopRouteActive(route: DesktopRoute, candidate: DesktopRoute): boolean {
   if (route.kind !== candidate.kind) return false;
-  // The Board sidebar row is slug-agnostic — any board route lights it up.
   return route.kind !== 'company' || route.slug === candidate.slug;
 }
 
@@ -48,21 +46,15 @@ export function getDesktopSidebarRows(
 ): DesktopSidebarRow[] {
   const primaryRows: DesktopSidebarRow[] = [
     {
-      route: { kind: 'board' },
-      label: 'Board',
-      shortcut: '⌘1',
-      active: isDesktopRouteActive(route, { kind: 'board' }),
-    },
-    {
       route: { kind: 'sync' },
       label: 'Sync',
-      shortcut: '⌘2',
+      shortcut: '⌘1',
       active: isDesktopRouteActive(route, { kind: 'sync' }),
     },
     {
       route: { kind: 'meetings' },
       label: 'Meetings',
-      shortcut: '⌘3',
+      shortcut: '⌘2',
       active: isDesktopRouteActive(route, { kind: 'meetings' }),
     },
   ];
@@ -73,7 +65,7 @@ export function getDesktopSidebarRows(
       return {
         route: companyRoute,
         label: company.displayName,
-        shortcut: index < 4 ? `⌘${index + 4}` : undefined,
+        shortcut: index < 4 ? `⌘${index + 3}` : undefined,
         active: isDesktopRouteActive(route, companyRoute),
       };
     }),
@@ -94,12 +86,11 @@ export function getDesktopHotkeyRoute(
 ): DesktopRoute | null {
   if (!(event.metaKey || event.ctrlKey)) return null;
 
-  if (event.key === '1') return { kind: 'board' };
-  if (event.key === '2') return { kind: 'sync' };
-  if (event.key === '3') return { kind: 'meetings' };
+  if (event.key === '1') return { kind: 'sync' };
+  if (event.key === '2') return { kind: 'meetings' };
 
-  if (['4', '5', '6', '7'].includes(event.key)) {
-    const company = companies[Number.parseInt(event.key, 10) - 4];
+  if (['3', '4', '5', '6'].includes(event.key)) {
+    const company = companies[Number.parseInt(event.key, 10) - 3];
     if (company) return { kind: 'company', slug: company.slug };
   }
 
