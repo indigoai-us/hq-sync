@@ -50,13 +50,41 @@ struct SharedWithMeResponse {
     next_cursor: Option<String>,
 }
 
-/// The two server-retained notification sources, returned to the history window.
-/// New-file (session-scoped) rows are merged client-side from `get_activity_log`.
+/// One new-file event from the server-retained file-history feed
+/// (GET /v1/notify/file-history) — populated by the sync runner's report.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHistoryItem {
+    pub event_id: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub added_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_slug: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FileHistoryResponse {
+    files: Vec<FileHistoryItem>,
+    #[allow(dead_code)]
+    next_cursor: Option<String>,
+}
+
+/// The server-retained notification sources, returned to the history window.
+/// `files` is the cross-session new-file history; the window also merges the
+/// current session's new files (from `get_activity_log`) and de-dupes.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationHistory {
     pub dms: Vec<DmEvent>,
     pub shares: Vec<ShareEvent>,
+    pub files: Vec<FileHistoryItem>,
 }
 
 async fn fetch_dms(client: &reqwest::Client, base_url: &str, token: &str, limit: u32) -> Result<Vec<DmEvent>, String> {
@@ -97,7 +125,26 @@ async fn fetch_shares(client: &reqwest::Client, base_url: &str, token: &str, lim
     Ok(parsed.events)
 }
 
-/// Fetch the full (newest-N) DM + share history for the history window.
+async fn fetch_files(client: &reqwest::Client, base_url: &str, token: &str, limit: u32) -> Result<Vec<FileHistoryItem>, String> {
+    let url = format!("{}/v1/notify/file-history?limit={}", base_url, limit);
+    let resp = client
+        .get(&url)
+        .header("authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| format!("network: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("status {}", status.as_u16()));
+    }
+    let parsed = resp
+        .json::<FileHistoryResponse>()
+        .await
+        .map_err(|e| format!("parse: {e}"))?;
+    Ok(parsed.files)
+}
+
+/// Fetch the full (newest-N) DM + share + new-file history for the history window.
 #[tauri::command]
 pub async fn fetch_notification_history(
     limit: Option<u32>,
@@ -119,6 +166,15 @@ pub async fn fetch_notification_history(
 
     let dms_res = fetch_dms(&client, &base_url, &access_token, lim).await;
     let shares_res = fetch_shares(&client, &base_url, &access_token, lim).await;
+    // File-history is the newest endpoint; treat its failure as non-fatal so an
+    // older backend (or a transient miss) still renders DMs + shares.
+    let files = match fetch_files(&client, &base_url, &access_token, lim).await {
+        Ok(v) => v,
+        Err(e) => {
+            log(LOG_TAG, &format!("NOTIF_HISTORY_FILES_FAIL {e}"));
+            Vec::new()
+        }
+    };
 
     // Capture each source's error (if any) while consuming the Result, so a
     // both-failed check below doesn't need to re-borrow the moved values.
@@ -149,9 +205,14 @@ pub async fn fetch_notification_history(
 
     log(
         LOG_TAG,
-        &format!("NOTIF_HISTORY_OK dms={} shares={}", dms.len(), shares.len()),
+        &format!(
+            "NOTIF_HISTORY_OK dms={} shares={} files={}",
+            dms.len(),
+            shares.len(),
+            files.len()
+        ),
     );
-    Ok(NotificationHistory { dms, shares })
+    Ok(NotificationHistory { dms, shares, files })
 }
 
 /// Open (or focus) the notification-history window. Mirrors the DM/share detail
