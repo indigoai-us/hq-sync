@@ -6,8 +6,10 @@ import {
   dayLabel,
   groupByDay,
   pickLiveMeeting,
+  rowButtonKind,
   totalSignalCounts,
   type MeetingEvent,
+  type ScheduledBot,
 } from './meetings-model';
 import {
   activeMeetings,
@@ -251,5 +253,73 @@ describe('meetings-model', () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0].events.map((e) => e.id)).toEqual(['real']);
+  });
+
+  // US-010 — "Done — transcript saved" must be gated on the REAL source-landed
+  // signal, not on bot.status === 'completed' alone. The two can diverge: the
+  // bot lifecycle status flips on the Recall webhook / retry path while the
+  // per-company source write is a separate S3 PUT that can hard-fail (the
+  // 2026-06-02 KMS-grant drift dead-lettered transcripts for ~13 days while
+  // bots still read "completed"). hq-pro exposes `sourceLanded`; the row gates
+  // the terminal "done" affordance on it.
+  describe('rowButtonKind — gates Done on the real source-landed signal', () => {
+    function bot(overrides: Partial<ScheduledBot>): ScheduledBot {
+      return {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'completed',
+        autoScheduled: true,
+        ...overrides,
+      };
+    }
+
+    it('no bot → invite', () => {
+      expect(rowButtonKind(undefined)).toBe('invite');
+    });
+
+    it('REGRESSION: completed bot whose ingest FAILED (sourceLanded:false) does NOT render done', () => {
+      // The exact #240 symptom from the user's POV — completed status, but the
+      // transcript never landed as a per-company source. Must show processing,
+      // never "Done — transcript saved".
+      expect(rowButtonKind(bot({ status: 'completed', sourceLanded: false }))).toBe(
+        'processing',
+      );
+    });
+
+    it('REGRESSION: completed bot with sourceLanded absent (pre-US-010 server) does NOT render done', () => {
+      // A backend that predates US-010 omits the field entirely. The client
+      // must fail safe to "processing" rather than show a premature "saved".
+      expect(rowButtonKind(bot({ status: 'completed' }))).toBe('processing');
+    });
+
+    it('completed bot whose source LANDED (sourceLanded:true) renders done', () => {
+      expect(rowButtonKind(bot({ status: 'completed', sourceLanded: true }))).toBe(
+        'done',
+      );
+    });
+
+    it('source-landed only flips done at the completed status — earlier statuses are unaffected', () => {
+      // sourceLanded true on a non-terminal status (shouldn't happen, but be
+      // defensive) does NOT short-circuit the lifecycle to done.
+      expect(rowButtonKind(bot({ status: 'scheduled', sourceLanded: true }))).toBe(
+        'invited',
+      );
+      expect(rowButtonKind(bot({ status: 'joining', sourceLanded: true }))).toBe(
+        'joining',
+      );
+      expect(rowButtonKind(bot({ status: 'recording', sourceLanded: true }))).toBe(
+        'in-call',
+      );
+      expect(rowButtonKind(bot({ status: 'processing', sourceLanded: true }))).toBe(
+        'processing',
+      );
+    });
+
+    it('a failed/unknown status falls back to invite regardless of sourceLanded', () => {
+      expect(rowButtonKind(bot({ status: 'failed', sourceLanded: false }))).toBe(
+        'invite',
+      );
+    });
   });
 });

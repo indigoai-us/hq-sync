@@ -91,6 +91,11 @@
     scheduledStartTime?: string | null;
     autoScheduled: boolean;
     errorMessage?: string | null;
+    // US-010 — real source-landed signal from hq-pro (HEAD on the meeting
+    // source object). "Done — transcript saved" is gated on this, never on
+    // status alone. Optional on the wire; a pre-US-010 server omits it (Rust
+    // defaults to false) so an older backend never shows a premature "saved".
+    sourceLanded?: boolean;
   }
 
   interface CompanyMembership {
@@ -1107,7 +1112,12 @@
       case 'processing':
         return 'processing';
       case 'completed':
-        return 'done';
+        // US-010 — gate the terminal "Done — transcript saved" on the real
+        // source-landed confirmation, not on bot status alone. A completed bot
+        // whose per-company source write hard-failed (the #240 KMS-drift
+        // symptom) arrives with sourceLanded:false and must keep showing
+        // "Processing" — the transcript is still being recovered, not saved.
+        return bot.sourceLanded === true ? 'done' : 'processing';
       default:
         // Defensive fallback — failed bots aren't in the active map, so
         // hitting here means an unknown status. Render as Invite so the
