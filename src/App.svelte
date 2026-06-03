@@ -1167,10 +1167,27 @@
       await listen<{ windowId: string; platform: string; closedAt: string }>(
         'meeting:closed',
         (event) => {
-          clearStopWatchdog(event.payload.windowId);
+          const { windowId } = event.payload;
+          // The call ended (host ended it / everyone left) — the SDK's only
+          // call-ended signal. Defense-in-depth: if the bridge's auto-stop was
+          // missed and this row is still recording (or mid start/stop),
+          // finalize it through the normal stop path instead of silently
+          // dropping the row and leaking a still-running recording.
+          // `handleStopRecording` owns the watchdog, so don't pre-clear here.
+          const row = activeMeetings.find((m) => m.windowId === windowId);
+          if (
+            row &&
+            (row.state === 'recording' ||
+              row.state === 'starting' ||
+              row.state === 'stopping')
+          ) {
+            void handleStopRecording(windowId);
+            return;
+          }
           // User closed the meeting app without recording — drop the row
           // so the popover doesn't show stale detections.
-          removeActiveMeeting(event.payload.windowId);
+          clearStopWatchdog(windowId);
+          removeActiveMeeting(windowId);
         },
       ),
     );

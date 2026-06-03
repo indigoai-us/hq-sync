@@ -226,8 +226,21 @@ async function installActiveMeetingListeners(): Promise<() => void> {
     listen<{ windowId: string; platform: string; closedAt: string }>(
       'meeting:closed',
       (event) => {
-        clearStopWatchdog(event.payload.windowId);
-        removeActiveMeeting(event.payload.windowId);
+        const { windowId } = event.payload;
+        // The call ended (host ended it / everyone left) — the SDK's only
+        // call-ended signal. Defense-in-depth: if the bridge's auto-stop was
+        // missed and this row is still recording (or mid start/stop), finalize
+        // it through the normal stop path rather than silently dropping the row
+        // and leaking a still-running recording. `stopRecording` owns the
+        // watchdog, so don't pre-clear it here. A row that isn't actively
+        // recording is just removed (the user closed it without recording).
+        const row = get(activeMeetings).find((m) => m.windowId === windowId);
+        if (row && (row.state === 'recording' || row.state === 'starting' || row.state === 'stopping')) {
+          void stopRecording(windowId);
+          return;
+        }
+        clearStopWatchdog(windowId);
+        removeActiveMeeting(windowId);
       },
     ),
     listen<{ action: string; windowId: string; platform: string }>(

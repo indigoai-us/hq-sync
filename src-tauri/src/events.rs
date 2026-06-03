@@ -507,9 +507,13 @@ pub struct RecordingStartedEvent {
     pub started_at: String,
 }
 
-/// Payload for `recording:ended` — emitted when the SDK ends the recording,
-/// whether triggered by an explicit `stopRecording` from Rust or by the
-/// meeting window closing (the SDK auto-stops in that case).
+/// Payload for `recording:ended` — emitted when the SDK ends the recording.
+/// Normally triggered by an explicit `stopRecording`: either a user Stop, or
+/// the bridge auto-stopping on `meeting-closed` when the call ends (host ends
+/// it / everyone leaves). The SDK does NOT reliably auto-stop on its own when
+/// the meeting window closes — its CHANGELOG documents per-platform auto-stop
+/// as unreliable — so the bridge issues the stop explicitly (see the
+/// `meeting-closed` handler in sidecar/recall-sdk-bridge/bridge.mjs).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingEndedEvent {
