@@ -1,0 +1,197 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { get } from 'svelte/store';
+
+// ── Tauri API mocks ───────────────────────────────────────────────────────────
+//
+// `activeMeetings.ts` imports `invoke` (commands) and `listen` (events). We mock
+// both: `invoke` is stubbed per-test; `listen` records every handler the module
+// registers so a test can fire a synthetic Tauri event (e.g. the Rust-side
+// `recording:error`) straight at the real consumer.
+
+const invokeMock = vi.fn();
+type Handler = (event: { payload: unknown }) => void;
+const handlers = new Map<string, Handler>();
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => invokeMock(...args),
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (name: string, handler: Handler) => {
+    handlers.set(name, handler);
+    // `listen` resolves to an unlisten fn.
+    return Promise.resolve(() => handlers.delete(name));
+  },
+}));
+
+import {
+  activeMeetings,
+  ensureActiveMeetingListeners,
+  stopActiveMeetingListeners,
+  stopRecording,
+  updateActiveMeeting,
+  upsertActiveMeeting,
+  type ActiveMeeting,
+} from './activeMeetings';
+import {
+  STOP_TIMEOUT_MESSAGE,
+  STOP_WATCHDOG_MS,
+  activeStopWatchdogCount,
+  clearStopWatchdog,
+} from './stopWatchdog';
+
+/** Emit a synthetic Tauri event to the handler `activeMeetings.ts` registered. */
+function emit(name: string, payload: unknown): void {
+  const handler = handlers.get(name);
+  if (!handler) throw new Error(`no handler registered for ${name}`);
+  handler({ payload });
+}
+
+function seedRow(windowId: string, state: ActiveMeeting['state']): void {
+  upsertActiveMeeting({
+    windowId,
+    platform: 'meet',
+    meetingUrl: `recall-window:${windowId}`,
+    detectedAt: '2026-06-03T10:00:00.000Z',
+    state,
+    companyUid: null,
+  });
+}
+
+function rowState(windowId: string): ActiveMeeting | undefined {
+  return get(activeMeetings).find((m) => m.windowId === windowId);
+}
+
+describe('activeMeetings — desktop-alt stop path arms the watchdog', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    invokeMock.mockReset();
+    activeMeetings.set([]);
+  });
+
+  afterEach(() => {
+    for (const id of ['win-1', 'win-2']) clearStopWatchdog(id);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('stopRecording arms a watchdog and the spinner resolves to error on timeout', async () => {
+    // This is the exact path MeetingsPage.svelte (desktop-alt) calls via
+    // `onstop={stopRecording}`. With no terminal event arriving, the row must
+    // not hang in `stopping` — the watchdog escalates it to `error`.
+    invokeMock.mockResolvedValue(undefined); // stop_recording bridge ack
+    seedRow('win-1', 'recording');
+
+    await stopRecording('win-1');
+
+    // Row flipped to `stopping` and a watchdog is armed.
+    expect(rowState('win-1')?.state).toBe('stopping');
+    expect(activeStopWatchdogCount()).toBe(1);
+    expect(invokeMock).toHaveBeenCalledWith('stop_recording', { windowId: 'win-1' });
+
+    // No SDK confirmation ever comes (bridge stalled). Watchdog fires.
+    vi.advanceTimersByTime(STOP_WATCHDOG_MS);
+
+    const row = rowState('win-1');
+    expect(row?.state).toBe('error');
+    expect(row?.error).toBe(STOP_TIMEOUT_MESSAGE);
+    expect(activeStopWatchdogCount()).toBe(0);
+  });
+
+  it('a bridge ack failure rolls the row back to recording and disarms the watchdog', async () => {
+    // If the bridge rejects the stop command outright, we're still recording —
+    // the watchdog must be cancelled so it can't later fire a bogus `error`.
+    invokeMock.mockRejectedValue('bridge not running');
+    seedRow('win-1', 'recording');
+
+    await stopRecording('win-1');
+
+    expect(rowState('win-1')?.state).toBe('recording');
+    expect(activeStopWatchdogCount()).toBe(0);
+    vi.advanceTimersByTime(STOP_WATCHDOG_MS * 2);
+    expect(rowState('win-1')?.state).toBe('recording');
+  });
+});
+
+describe('activeMeetings — Rust bridge-death terminal event resolves the row', () => {
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+    activeMeetings.set([]);
+    handlers.clear();
+    stopActiveMeetingListeners();
+    // Install the real listeners (registers the `recording:error` consumer).
+    await ensureActiveMeetingListeners();
+  });
+
+  afterEach(() => {
+    for (const id of ['win-1', 'win-2']) clearStopWatchdog(id);
+    stopActiveMeetingListeners();
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('registers a recording:error listener', () => {
+    expect(handlers.has('recording:error')).toBe(true);
+  });
+
+  it('transitions a hung `stopping` row to error and cancels the watchdog', async () => {
+    // The actual B3 fix: on an unexpected sidecar death, Rust synthesizes a
+    // terminal `recording:error` (cmd `bridge-exit`). The UI must leave
+    // `stopping` for `error` immediately — NOT wait out the 12s watchdog.
+    seedRow('win-1', 'recording');
+    await stopRecording('win-1');
+    expect(rowState('win-1')?.state).toBe('stopping');
+    expect(activeStopWatchdogCount()).toBe(1);
+
+    // Rust ProcessEvent::Exit → recording:error for the in-flight window.
+    emit('recording:error', {
+      cmd: 'bridge-exit',
+      windowId: 'win-1',
+      message: 'Recording engine exited unexpectedly — the recording may not have been saved.',
+    });
+
+    const row = rowState('win-1');
+    expect(row?.state).toBe('error');
+    expect(row?.error).toContain('exited unexpectedly');
+    // Watchdog cancelled by the terminal event — it must not also fire.
+    expect(activeStopWatchdogCount()).toBe(0);
+    vi.advanceTimersByTime(STOP_WATCHDOG_MS * 2);
+    expect(rowState('win-1')?.error).toContain('exited unexpectedly');
+  });
+
+  it('resolves a still-`recording` row (user never pressed Stop) on bridge death', () => {
+    // Bridge dies mid-recording with no Stop pressed → no watchdog was armed.
+    // The terminal event is the ONLY thing that can move the row, and it must.
+    seedRow('win-2', 'recording');
+    expect(activeStopWatchdogCount()).toBe(0);
+
+    emit('recording:error', {
+      cmd: 'bridge-exit',
+      windowId: 'win-2',
+      message: 'Recording engine exited unexpectedly (signal 9)',
+    });
+
+    const row = rowState('win-2');
+    expect(row?.state).toBe('error');
+    expect(row?.error).toContain('bridge-exit');
+  });
+
+  it('recording:ended for the same window still clears the watchdog (clean stop wins)', async () => {
+    // Sanity: the normal clean-stop terminal path remains intact — a
+    // `recording:ended` arriving before the watchdog removes the row.
+    seedRow('win-1', 'recording');
+    await stopRecording('win-1');
+    expect(activeStopWatchdogCount()).toBe(1);
+
+    emit('recording:ended', {
+      windowId: 'win-1',
+      platform: 'meet',
+      endedAt: '2026-06-03T10:30:00.000Z',
+    });
+
+    expect(rowState('win-1')).toBeUndefined();
+    expect(activeStopWatchdogCount()).toBe(0);
+  });
+});

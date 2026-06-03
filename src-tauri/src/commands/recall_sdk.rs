@@ -743,6 +743,36 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                     if let Ok(mut guard) = bridge_stdin_cell().lock() {
                         *guard = None;
                     }
+
+                    // ── Terminal event on unexpected sidecar death (B3) ──────
+                    // The bridge synthesizes its own terminal recording:error
+                    // when the *SDK* crashes (bridge.mjs::failActiveRecordings).
+                    // But if the bridge *process itself* dies — SIGSEGV, OOM,
+                    // panic, killed — it can't emit anything, so any row the user
+                    // had in `recording`/`stopping` would hang until (at best)
+                    // the 12s stop-watchdog, and only if they'd pressed Stop.
+                    // Mirror failActiveRecordings here: for every windowId the
+                    // durable ledger still has in flight, synthesize a terminal
+                    // recording:error so the UI resolves the row immediately.
+                    //
+                    // Skip a *deliberate* teardown (app quit → stop_recall_sdk →
+                    // cancel_process_impl marks the handle cancelled): emitting a
+                    // scary error while the app is closing is wrong, and a
+                    // genuinely in-flight recording is recovered by the launch
+                    // reconcile instead. `success` covers a clean exit(0); the
+                    // cancelled flag covers a SIGTERM'd one (non-zero/​signalled).
+                    let cancelled =
+                        crate::commands::process::is_cancelled(SDK_HANDLE);
+                    if success || cancelled {
+                        log(
+                            LOG_TAG,
+                            &format!(
+                                "SDK exit treated as orderly (success={success} cancelled={cancelled}) — no terminal recording:error synthesized; any in-flight recording is left for the launch reconcile",
+                            ),
+                        );
+                    } else {
+                        fail_active_recordings_on_exit(&app_bg, code, signal);
+                    }
                 }
             },
             |child| {
@@ -786,6 +816,105 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
 /// the SDK is not running — `cancel_process_impl` is a no-op in that case.
 pub fn stop_recall_sdk() {
     cancel_process_impl(SDK_HANDLE, SIGKILL_DELAY);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Terminal event on unexpected sidecar death (B3 residual)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Human-readable message stamped on a synthesized terminal `recording:error`
+/// when the SDK sidecar process dies unexpectedly. Deliberately distinct from
+/// the bridge's own "Recording engine crashed/stopped unexpectedly" text so a
+/// log/triage reader can tell a *process death* (this) from an *in-SDK* crash
+/// the still-running bridge reported.
+const BRIDGE_EXIT_ERROR_MESSAGE: &str =
+    "Recording engine exited unexpectedly — the recording may not have been saved.";
+
+/// The `cmd` field used on a synthesized bridge-death `recording:error`. The
+/// frontend renders `"{cmd}: {message}"`, and matches no real bridge command,
+/// so it's unambiguous in the row/error surface.
+const BRIDGE_EXIT_CMD: &str = "bridge-exit";
+
+/// Build one terminal [`RecordingErrorEvent`] per still-open windowId after an
+/// unexpected sidecar exit. Pure (no I/O, no Tauri) so it is unit-testable: the
+/// caller supplies the open windowIds (from the durable ledger) and the exit
+/// code/signal, this maps them to the events the renderer already consumes
+/// (`recording:error` → row state `error`, watchdog cleared). Returns an empty
+/// Vec when nothing was in flight (the common case — a death with no active
+/// recording needs no UI action).
+fn synthesize_bridge_exit_errors(
+    open_window_ids: &[String],
+    code: Option<i32>,
+    signal: Option<i32>,
+) -> Vec<RecordingErrorEvent> {
+    let detail = match (code, signal) {
+        (_, Some(sig)) => format!(" (signal {sig})"),
+        (Some(c), None) => format!(" (exit code {c})"),
+        (None, None) => String::new(),
+    };
+    open_window_ids
+        .iter()
+        .map(|window_id| RecordingErrorEvent {
+            cmd: BRIDGE_EXIT_CMD.to_string(),
+            window_id: window_id.clone(),
+            message: format!("{BRIDGE_EXIT_ERROR_MESSAGE}{detail}"),
+        })
+        .collect()
+}
+
+/// Mirror the bridge's `failActiveRecordings` from the Rust side when the
+/// sidecar *process* dies: read every in-flight windowId from the durable
+/// ledger, synthesize a terminal `recording:error` for each, emit it to the
+/// renderer, and clear the ledger so the launch reconcile doesn't double-report
+/// the same death.
+///
+/// Best-effort: a ledger read/clear failure is logged, not propagated (the SDK
+/// task is already unwinding). Emitting the terminal events is the user-facing
+/// priority; ledger hygiene is secondary.
+fn fail_active_recordings_on_exit(app: &AppHandle, code: Option<i32>, signal: Option<i32>) {
+    // Clear-and-take the open windowIds in one shot so the entries can't also
+    // re-surface through the launch reconcile (the terminal event below IS the
+    // resolution). On a read/clear failure fall back to a plain read so we can
+    // still emit — losing the clear is acceptable (reconcile would re-report,
+    // not lose data); losing the emit is the actual hang we're fixing.
+    let window_ids = match recordings_ledger::record_bridge_died() {
+        Ok(ids) => ids,
+        Err(e) => {
+            log(
+                LOG_TAG,
+                &format!("bridge-exit: failed to clear recordings ledger: {e}"),
+            );
+            recordings_ledger::open_window_ids().unwrap_or_default()
+        }
+    };
+
+    if window_ids.is_empty() {
+        log(
+            LOG_TAG,
+            "bridge-exit: no in-flight recordings to fail (nothing to surface)",
+        );
+        return;
+    }
+
+    let events = synthesize_bridge_exit_errors(&window_ids, code, signal);
+    log(
+        LOG_TAG,
+        &format!(
+            "bridge-exit: synthesizing terminal recording:error for {} in-flight recording(s)",
+            events.len()
+        ),
+    );
+    for ev in &events {
+        if let Err(e) = app.emit(EVENT_RECORDING_ERROR, ev) {
+            log(
+                LOG_TAG,
+                &format!(
+                    "bridge-exit: emit recording:error failed for windowId={}: {e}",
+                    ev.window_id
+                ),
+            );
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1399,5 +1528,87 @@ mod tests {
             }
             other => panic!("expected RecordingError, got {:?}", other),
         }
+    }
+
+    // ── Terminal event on unexpected sidecar death (B3 residual) ───────────────
+    //
+    // When the bridge *process* dies it cannot run its own
+    // failActiveRecordings, so `ProcessEvent::Exit` synthesizes the terminal
+    // recording:error for every in-flight windowId. These cover the pure
+    // mapping; the ledger read/clear + emit glue is exercised by the
+    // recordings_ledger tests (record_bridge_died / open_window_ids) and, in the
+    // real app, by the wired ProcessEvent::Exit handler.
+
+    #[test]
+    fn bridge_exit_errors_one_per_open_window_with_terminal_cmd() {
+        let ids = vec!["win-1".to_string(), "win-2".to_string()];
+        let events = synthesize_bridge_exit_errors(&ids, None, Some(11));
+        assert_eq!(events.len(), 2);
+        // Every synthesized event uses the dedicated bridge-exit cmd (so the UI
+        // and logs can tell it from a real start/stop-recording failure) and a
+        // message that tells the user the recording may not have been saved.
+        for ev in &events {
+            assert_eq!(ev.cmd, BRIDGE_EXIT_CMD);
+            assert!(
+                ev.message.contains("exited unexpectedly"),
+                "message should explain the engine died: {}",
+                ev.message
+            );
+            assert!(
+                ev.message.contains("may not have been saved"),
+                "message should warn about lost recording: {}",
+                ev.message
+            );
+        }
+        let windows: Vec<&str> = events.iter().map(|e| e.window_id.as_str()).collect();
+        assert!(windows.contains(&"win-1"));
+        assert!(windows.contains(&"win-2"));
+    }
+
+    #[test]
+    fn bridge_exit_errors_empty_when_nothing_in_flight() {
+        // The common case: the sidecar dies with no active recording — there is
+        // no row to resolve, so no terminal event is produced.
+        let events = synthesize_bridge_exit_errors(&[], Some(1), None);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn bridge_exit_error_message_includes_signal_detail() {
+        // A SIGKILL/SIGSEGV death stamps the signal so triage can see *how* the
+        // sidecar died straight from the row's error text.
+        let ids = vec!["win-1".to_string()];
+        let events = synthesize_bridge_exit_errors(&ids, None, Some(9));
+        assert!(
+            events[0].message.contains("signal 9"),
+            "expected signal detail in: {}",
+            events[0].message
+        );
+    }
+
+    #[test]
+    fn bridge_exit_error_message_includes_exit_code_detail() {
+        // A non-zero plain exit (no signal) stamps the code instead.
+        let ids = vec!["win-1".to_string()];
+        let events = synthesize_bridge_exit_errors(&ids, Some(2), None);
+        assert!(
+            events[0].message.contains("exit code 2"),
+            "expected exit-code detail in: {}",
+            events[0].message
+        );
+    }
+
+    #[test]
+    fn bridge_exit_error_parses_back_as_recording_error_event() {
+        // The synthesized event must round-trip through the same
+        // serde shape the renderer consumes on the `recording:error` channel
+        // (serde camelCase): cmd / windowId / message.
+        let ids = vec!["win-xyz".to_string()];
+        let event = &synthesize_bridge_exit_errors(&ids, None, Some(15))[0];
+        let json = serde_json::to_string(event).expect("serialize");
+        assert!(json.contains("\"windowId\":\"win-xyz\""));
+        assert!(json.contains("\"cmd\":\"bridge-exit\""));
+        let parsed: RecordingErrorEvent = serde_json::from_str(&json).expect("round-trip");
+        assert_eq!(parsed, *event);
     }
 }

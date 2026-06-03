@@ -198,6 +198,71 @@ fn record_ended_absent_window_is_noop() {
     clear_override();
 }
 
+// ── Bridge-death terminal-event support (US-012) ────────────────────────────────
+
+#[test]
+fn open_window_ids_lists_every_in_flight_window() {
+    let _g = lock();
+    let _tmp = with_test_ledger();
+
+    record_started("win-1".to_string(), "rec_1".to_string(), None, ts("2026-06-03T10:00:00Z")).unwrap();
+    record_started("win-2".to_string(), "rec_2".to_string(), Some("cmp_x".to_string()), ts("2026-06-03T10:05:00Z")).unwrap();
+
+    let mut ids = open_window_ids().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec!["win-1".to_string(), "win-2".to_string()]);
+
+    clear_override();
+}
+
+#[test]
+fn open_window_ids_empty_when_no_recordings() {
+    let _g = lock();
+    let _tmp = with_test_ledger();
+    assert!(open_window_ids().unwrap().is_empty());
+    clear_override();
+}
+
+#[test]
+fn record_bridge_died_clears_all_entries_and_returns_them() {
+    let _g = lock();
+    let _tmp = with_test_ledger();
+
+    record_started("win-1".to_string(), "rec_1".to_string(), None, ts("2026-06-03T10:00:00Z")).unwrap();
+    record_started("win-2".to_string(), "rec_2".to_string(), None, ts("2026-06-03T10:05:00Z")).unwrap();
+
+    let mut cleared = record_bridge_died().unwrap();
+    cleared.sort();
+    assert_eq!(
+        cleared,
+        vec!["win-1".to_string(), "win-2".to_string()],
+        "every in-flight windowId is returned so the caller can synthesize one terminal event each"
+    );
+
+    // After a bridge death the ledger is empty — the terminal recording:error
+    // is the resolution, so the launch reconcile must not re-report these.
+    assert!(
+        read_ledger().unwrap().is_empty(),
+        "bridge-death clears the ledger so the next launch has nothing to reconcile"
+    );
+
+    clear_override();
+}
+
+#[test]
+fn record_bridge_died_is_noop_when_empty() {
+    let _g = lock();
+    let _tmp = with_test_ledger();
+
+    // No active recordings: a sidecar death with nothing in flight returns an
+    // empty set and writes nothing (no row to surface).
+    let cleared = record_bridge_died().unwrap();
+    assert!(cleared.is_empty());
+    assert!(read_ledger().unwrap().is_empty());
+
+    clear_override();
+}
+
 #[test]
 fn read_missing_ledger_returns_empty() {
     let _g = lock();

@@ -296,6 +296,32 @@ pub fn record_ended(window_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Snapshot the `windowId`s currently in flight (one per still-open recording).
+/// Read-only; used by the bridge-death terminal-event path to learn which rows
+/// need a synthesized `recording:error`. Order is unspecified (HashMap). Returns
+/// an empty Vec on a missing ledger; a read error propagates so the caller can
+/// log it.
+pub fn open_window_ids() -> Result<Vec<String>, String> {
+    Ok(read_ledger()?.keys().cloned().collect())
+}
+
+/// Clear *every* in-flight entry and persist the now-empty ledger. Called when
+/// the SDK sidecar dies unexpectedly: each open recording is resolved on the
+/// spot via a synthesized terminal `recording:error`, so the entries must not
+/// also linger and re-surface through the launch reconcile (that would
+/// double-report the same death). Idempotent — no write when the ledger is
+/// already empty. Returns the windowIds that were cleared.
+pub fn record_bridge_died() -> Result<Vec<String>, String> {
+    let mut ledger = read_ledger()?;
+    if ledger.is_empty() {
+        return Ok(Vec::new());
+    }
+    let cleared: Vec<String> = ledger.keys().cloned().collect();
+    ledger.clear();
+    write_ledger(&ledger)?;
+    Ok(cleared)
+}
+
 // ── Reconcile ───────────────────────────────────────────────────────────────────
 
 /// Classify one still-open entry given the fetched server-side status.

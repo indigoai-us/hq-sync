@@ -216,6 +216,15 @@ async function installActiveMeetingListeners(): Promise<() => void> {
         removeActiveMeeting(event.payload.windowId);
       },
     ),
+    // Terminal failure for a recording. Two producers, one consumer:
+    //  1. the bridge's own failActiveRecordings (an in-SDK crash while the
+    //     bridge is still alive), and
+    //  2. the Rust ProcessEvent::Exit handler (recall_sdk.rs), which
+    //     synthesizes `cmd: "bridge-exit"` when the sidecar *process* dies
+    //     unexpectedly and so cannot report anything itself (B3 residual).
+    // Either way we leave `stopping`/`recording` for `error` immediately and
+    // cancel any stop-watchdog — the real terminal event resolves the row, so
+    // it no longer has to wait out the 12s timeout.
     listen<{ cmd: string; windowId: string; message: string }>('recording:error', (event) => {
       clearStopWatchdog(event.payload.windowId);
       updateActiveMeeting(event.payload.windowId, {

@@ -127,7 +127,16 @@ pub fn is_registered(handle: &str) -> bool {
     process_registry().lock().unwrap().contains_key(handle)
 }
 
-fn is_cancelled(handle: &str) -> bool {
+/// Whether the process under `handle` was deliberately cancelled (SIGTERM sent
+/// via [`cancel_process_impl`], e.g. on app quit) rather than exiting on its own.
+///
+/// Read inside an [`ProcessEvent::Exit`] handler to distinguish an orderly
+/// shutdown from an unexpected crash: the entry is still present at exit time
+/// (it is `deregister`'d only after the exit event fires), so the `cancelled`
+/// flag is observable. `recall_sdk` uses this so it only synthesizes terminal
+/// `recording:error` events on an *unexpected* sidecar death, not when the app
+/// is intentionally tearing the SDK down.
+pub fn is_cancelled(handle: &str) -> bool {
     process_registry()
         .lock()
         .unwrap()
