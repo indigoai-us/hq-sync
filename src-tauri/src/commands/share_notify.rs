@@ -740,12 +740,38 @@ pub(crate) fn notification_title(issuer_display_name: &str) -> String {
     format!("{} shared files with you", issuer_display_name)
 }
 
+/// Human-facing title for a single shared path.
+///
+/// Directory shares arrive as a wildcard path like `projects/foo/*` (or `/**`
+/// for a recursive share). Naively taking the last segment surfaces the literal
+/// `*`, which is meaningless. Strip the wildcard suffix and name the directory
+/// with a trailing slash (`foo/`) so a folder share reads as a folder; plain
+/// file shares keep their filename. Mirrors `shareTitle` in
+/// `src/lib/share-path.ts`.
+pub(crate) fn share_path_title(path: &str) -> String {
+    let is_wildcard_dir = path.ends_with("/*")
+        || path.ends_with("/**")
+        || path == "*"
+        || path == "**";
+    let cleaned = path
+        .trim_end_matches("/**")
+        .trim_end_matches("/*")
+        .trim_end_matches("**")
+        .trim_end_matches('*');
+    let last = cleaned.split('/').filter(|s| !s.is_empty()).next_back();
+    match last {
+        None => "All files".to_string(),
+        Some(name) if is_wildcard_dir => format!("{}/", name),
+        Some(name) => name.to_string(),
+    }
+}
+
 /// Build the macOS notification body for a share event.
 ///
 /// - If a non-empty note is present: return the note, truncated to 100
 ///   *Unicode scalar values* (characters, not bytes) with a "…" suffix when
 ///   truncated. Using character count avoids a panic on multi-byte sequences.
-/// - Otherwise: return the comma-joined basenames of the shared paths.
+/// - Otherwise: return the comma-joined titles of the shared paths.
 pub(crate) fn notification_body(note: Option<&str>, paths: &[String]) -> String {
     const CHAR_LIMIT: usize = 100;
     match note {
@@ -764,11 +790,8 @@ pub(crate) fn notification_body(note: Option<&str>, paths: &[String]) -> String 
             }
         }
         _ => {
-            let basenames: Vec<&str> = paths
-                .iter()
-                .map(|p| p.rsplit('/').next().unwrap_or(p.as_str()))
-                .collect();
-            basenames.join(", ")
+            let titles: Vec<String> = paths.iter().map(|p| share_path_title(p)).collect();
+            titles.join(", ")
         }
     }
 }
@@ -1124,6 +1147,27 @@ mod tests {
         let paths = vec!["standalone.md".to_string()];
         let body = notification_body(None, &paths);
         assert_eq!(body, "standalone.md");
+    }
+
+    #[test]
+    fn test_notification_body_names_directory_for_wildcard_share() {
+        // Regression: a wildcard directory share used to collapse to "*".
+        let paths = vec!["projects/client-stats-redesign/*".to_string()];
+        let body = notification_body(None, &paths);
+        assert_eq!(body, "client-stats-redesign/");
+    }
+
+    #[test]
+    fn test_share_path_title_variants() {
+        assert_eq!(
+            share_path_title("projects/client-stats-redesign/*"),
+            "client-stats-redesign/"
+        );
+        assert_eq!(share_path_title("projects/foo/**"), "foo/");
+        assert_eq!(share_path_title("docs/a.md"), "a.md");
+        assert_eq!(share_path_title("standalone.md"), "standalone.md");
+        assert_eq!(share_path_title("*"), "All files");
+        assert_eq!(share_path_title("**"), "All files");
     }
 
     #[test]

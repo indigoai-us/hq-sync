@@ -9,6 +9,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { buildClaudeCodeUrl } from '../lib/claude-code-link';
+  import { shareTitle } from '../lib/share-path';
 
   interface ShareEvent {
     eventId: string;
@@ -22,10 +23,6 @@
 
   let events = $state<ShareEvent[]>([]);
   let copyFeedback = $state<string | null>(null);
-
-  function basename(p: string): string {
-    return p.split('/').filter(Boolean).pop() ?? p;
-  }
 
   function formatDate(iso: string): string {
     try {
@@ -129,7 +126,7 @@
           <ul class="paths-list">
             {#each evt.paths as p}
               <li class="path-item" title={p}>
-                <span class="path-basename">{basename(p)}</span>
+                <span class="path-basename">{shareTitle(p)}</span>
                 <span class="path-full">{p}</span>
               </li>
             {/each}
