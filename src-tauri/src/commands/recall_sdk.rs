@@ -52,6 +52,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use chrono::Utc;
 use serde::Deserialize;
 use tauri::{AppHandle, Emitter};
 
@@ -74,6 +75,7 @@ use crate::events::{
 use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 use crate::util::paths;
+use crate::util::recordings_ledger::{self, RecordingStatus, ReconcileOutcome};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -654,6 +656,22 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
                                     payload.window_id, payload.platform
                                 ),
                             );
+                            // Clean terminal event: drop the in-flight ledger
+                            // entry so the next launch has nothing to reconcile
+                            // for this window. This is the canonical clear path
+                            // (covers both explicit Stop and the SDK
+                            // auto-stopping when the meeting window closes).
+                            if let Err(e) =
+                                recordings_ledger::record_ended(&payload.window_id)
+                            {
+                                log(
+                                    LOG_TAG,
+                                    &format!(
+                                        "recording:ended — failed to clear ledger entry for windowId={}: {e}",
+                                        payload.window_id
+                                    ),
+                                );
+                            }
                             if let Err(e) = app_bg.emit(EVENT_RECORDING_ENDED, &payload) {
                                 log(
                                     LOG_TAG,
@@ -919,6 +937,27 @@ pub async fn start_recording(
         ),
     );
 
+    // Persist the in-flight mapping to the durable ledger BEFORE we tell the
+    // bridge to start. If the app is force-quit (or crashes) mid-recording, the
+    // next launch reconciles this entry — without it the windowId→recordingId
+    // mapping lives only in the in-memory Svelte store and is lost on restart,
+    // silently orphaning a recording Recall still holds server-side. Best-effort:
+    // a ledger-write failure is logged but must not block the recording from
+    // starting (the recording itself is the user's primary intent).
+    if let Err(e) = recordings_ledger::record_started(
+        window_id.clone(),
+        recording_id.clone(),
+        company_uid.clone(),
+        Utc::now(),
+    ) {
+        log(
+            LOG_TAG,
+            &format!(
+                "start_recording: failed to persist recordings ledger entry for windowId={window_id} (recording continues): {e}"
+            ),
+        );
+    }
+
     let cmd = serde_json::json!({
         "cmd": "start-recording",
         "windowId": window_id,
@@ -953,6 +992,171 @@ pub async fn stop_recording(window_id: String) -> Result<(), String> {
         "windowId": window_id,
     });
     write_bridge_command(&cmd)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Launch reconcile (in-flight recordings ledger)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Tauri event channel for a reconciled in-flight recording. The renderer
+/// listens for this on launch and surfaces a "still processing" / "ingest
+/// failed" thread so a recording that was in flight across a restart is
+/// recovered instead of silently lost.
+pub const EVENT_RECORDING_RECONCILED: &str = "recording:reconciled";
+
+/// Subset of hq-pro `GET /v1/bot/{botId}/status` the reconcile needs. The SDK
+/// recording's durable `recordingId` is the `recallBotId` hq-pro keys the bot
+/// record under, so this status route is the recording's server-side state.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BotStatusResponse {
+    #[serde(default)]
+    status: String,
+    /// US-010 source-landed signal. The status route may omit it on a
+    /// pre-US-010 server; default false so a missing field never reads as
+    /// "saved" prematurely.
+    #[serde(default)]
+    source_landed: bool,
+}
+
+/// Fetch one recording's server-side status from hq-pro, mapped onto the
+/// ledger's normalised [`RecordingStatus`].
+///
+/// HTTP 404 → `not_found` (the recording never finalised server-side — a lost
+/// ingest, not "still processing"). Any other non-2xx or a network error is an
+/// `Err` so the reconcile classifies it as transient (`Unknown`) and retries on
+/// a later launch rather than dropping the recording.
+async fn fetch_recording_status(
+    recording_id: &str,
+    _company_uid: Option<&str>,
+) -> Result<RecordingStatus, String> {
+    let base = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| format!("vault url: {e}"))?;
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let url = format!("{base}/v1/bot/{recording_id}/status");
+    let res = build_client()
+        .get(url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("status fetch: {e}"))?;
+
+    let http = res.status();
+    if http.as_u16() == 404 {
+        return Ok(RecordingStatus {
+            status: "not-found".to_string(),
+            source_landed: false,
+            not_found: true,
+        });
+    }
+
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("status read: {e}"))?;
+    if !http.is_success() {
+        return Err(format!("status HTTP {http}: {text}"));
+    }
+
+    let parsed: BotStatusResponse =
+        serde_json::from_str(&text).map_err(|e| format!("status parse: {e} — body: {text}"))?;
+    Ok(RecordingStatus {
+        status: parsed.status,
+        source_landed: parsed.source_landed,
+        not_found: false,
+    })
+}
+
+/// Reconcile any in-flight recordings left over from a previous run.
+///
+/// Called once from `main.rs` setup (gated on the same meeting-detect
+/// eligibility as the SDK boot). Reads the durable ledger, asks hq-pro for each
+/// still-open recording's status, classifies it, persists the trimmed ledger,
+/// and emits one [`EVENT_RECORDING_RECONCILED`] per non-transient outcome so
+/// the UI surfaces the thread.
+///
+/// Best-effort: every failure is logged and swallowed. A corrupt / unreadable
+/// ledger is treated as empty so a bad file never blocks launch.
+pub async fn reconcile_recordings_on_launch(app: AppHandle) {
+    let mut ledger = match recordings_ledger::read_ledger() {
+        Ok(l) => l,
+        Err(e) => {
+            // Treat a corrupt ledger as empty (don't block launch). Logged so a
+            // recurring corruption is visible in the diagnostic log.
+            log(
+                LOG_TAG,
+                &format!("reconcile: ledger unreadable, treating as empty: {e}"),
+            );
+            return;
+        }
+    };
+
+    if ledger.is_empty() {
+        return;
+    }
+
+    log(
+        LOG_TAG,
+        &format!(
+            "reconcile: {} in-flight recording(s) left over from a previous run — reconciling",
+            ledger.len()
+        ),
+    );
+
+    // The ledger's `reconcile` takes a synchronous fetcher, but the real status
+    // call is async. Pre-fetch every recording's status into a map first, then
+    // hand `reconcile` a closure that just looks the result up. This keeps the
+    // (heavily unit-tested) classify/prune logic synchronous while the I/O
+    // stays async.
+    let mut statuses: HashMap<String, Result<RecordingStatus, String>> = HashMap::new();
+    for entry in ledger.values() {
+        if statuses.contains_key(&entry.recording_id) {
+            continue;
+        }
+        let result =
+            fetch_recording_status(&entry.recording_id, entry.company_uid.as_deref()).await;
+        statuses.insert(entry.recording_id.clone(), result);
+    }
+
+    let outcomes = recordings_ledger::reconcile(&mut ledger, Utc::now(), |recording_id, _co| {
+        statuses
+            .get(recording_id)
+            .cloned()
+            .unwrap_or_else(|| Err("status not pre-fetched".to_string()))
+    });
+
+    // Persist the trimmed ledger (terminal entries removed, in-flight retained).
+    if let Err(e) = recordings_ledger::write_ledger(&ledger) {
+        log(
+            LOG_TAG,
+            &format!("reconcile: failed to persist trimmed ledger: {e}"),
+        );
+    }
+
+    // Surface each outcome. Transient `Unknown` outcomes are retained in the
+    // ledger and not shown to the user (they retry on a later launch).
+    for outcome in &outcomes {
+        match outcome {
+            ReconcileOutcome::Unknown { recording_id, reason, .. } => {
+                log(
+                    LOG_TAG,
+                    &format!(
+                        "reconcile: recordingId={recording_id} status unknown (will retry next launch): {reason}"
+                    ),
+                );
+            }
+            other => {
+                log(LOG_TAG, &format!("reconcile: {other:?}"));
+                if let Err(e) = app.emit(EVENT_RECORDING_RECONCILED, other) {
+                    log(LOG_TAG, &format!("emit recording:reconciled failed: {e}"));
+                }
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

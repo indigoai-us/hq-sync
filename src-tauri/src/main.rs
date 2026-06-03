@@ -556,12 +556,22 @@ fn main() {
                         }
                     }
 
-                    if let Err(e) = commands::recall_sdk::start_recall_sdk(handle).await {
+                    if let Err(e) = commands::recall_sdk::start_recall_sdk(handle.clone()).await {
                         util::logfile::log(
                             "recall-sdk",
                             &format!("start_recall_sdk error (app continues): {e}"),
                         );
                     }
+
+                    // Recover any recording that was in flight when the app
+                    // last closed. The durable recordings ledger persists the
+                    // windowId→recordingId mapping on start and clears it on a
+                    // clean stop; a leftover entry means a crash/forced-quit
+                    // mid-recording. This queries hq-pro for each such
+                    // recording's status and surfaces a "still processing" /
+                    // "ingest failed" thread instead of silently losing it.
+                    // Best-effort: all failures are logged + swallowed inside.
+                    commands::recall_sdk::reconcile_recordings_on_launch(handle).await;
                 });
             }
 
