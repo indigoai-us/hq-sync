@@ -755,9 +755,7 @@ pub async fn meetings_notify_detected(
 ) -> Result<bool, String> {
     use crate::commands::settings::get_settings;
     use crate::tray::{get_prompt_pending, set_prompt_badge};
-    use crate::util::meeting_ledger::{
-        mark, read_ledger, should_suppress, stable_key, write_ledger, LedgerAction,
-    };
+    use crate::util::meeting_ledger::{claim_notify, stable_key};
     use chrono::Utc;
     use tauri::Emitter;
 
@@ -787,7 +785,20 @@ pub async fn meetings_notify_detected(
         }
     }
 
-    // 3. Dedup via ledger.
+    // 3. Dedup via ledger — atomic single-flight claim.
+    //
+    // The SDK emits `meeting:detected` once but Tauri fans it out to EVERY
+    // webview, so both the popover (App.svelte) and the desktop-alt window
+    // (activeMeetings.ts) can invoke this command for the same meeting
+    // concurrently. `claim_notify` takes a process-wide lock and performs
+    // read→should_suppress→mark(Notified)→write as one indivisible step, so the
+    // second caller observes the first's just-written entry and loses the race.
+    // This is the authoritative guard against double-notifying; the source-level
+    // dedup in activeMeetings.ts is defence-in-depth on top of it.
+    //
+    // The claim runs synchronously and BEFORE any `.await` below — the ledger
+    // lock guard must never be held across an await point (it is dropped here,
+    // before the async banner dispatch).
     let key = match stable_key(
         payload.meeting_url.as_deref(),
         payload.source_event_id.as_deref(),
@@ -795,9 +806,10 @@ pub async fn meetings_notify_detected(
         Some(k) => k,
         None => return Ok(false),
     };
-    let mut ledger = read_ledger().unwrap_or_default();
     let now = Utc::now();
-    if should_suppress(&ledger, &key, now) {
+    if !claim_notify(&key, now) {
+        // Either already notified/recorded within the suppression window, or a
+        // concurrent caller won the claim. Do not fire a second banner.
         return Ok(false);
     }
 
@@ -832,8 +844,8 @@ pub async fn meetings_notify_detected(
                 &format!("custom meeting banner failed: {e}"),
             );
         }
-        mark(&mut ledger, key, LedgerAction::Notified, now);
-        let _ = write_ledger(&ledger);
+        // Ledger already marked Notified by `claim_notify` above (the claim is
+        // what authorised this fire), so we only bump the tray badge here.
         set_prompt_badge(&app, get_prompt_pending() + 1);
         return Ok(true);
     }
@@ -1066,9 +1078,10 @@ pub async fn meetings_notify_detected(
         }
     });
 
-    // 6. Mark ledger + bump tray badge.
-    mark(&mut ledger, key, LedgerAction::Notified, now);
-    let _ = write_ledger(&ledger);
+    // 6. Bump tray badge. The ledger was already marked Notified atomically by
+    // `claim_notify` above (the claim is what authorised this fire), so there is
+    // no second read-modify-write here — that non-atomic re-write was the source
+    // of the double-notification race.
     set_prompt_badge(&app, get_prompt_pending() + 1);
 
     Ok(true)

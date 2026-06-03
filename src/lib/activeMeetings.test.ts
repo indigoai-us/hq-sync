@@ -6,7 +6,15 @@ import { get } from 'svelte/store';
 // `activeMeetings.ts` imports `invoke` (commands) and `listen` (events). We mock
 // both: `invoke` is stubbed per-test; `listen` records every handler the module
 // registers so a test can fire a synthetic Tauri event (e.g. the Rust-side
-// `recording:error`) straight at the real consumer.
+// `recording:error`, or the bridge's `meeting:closed`) straight at the real
+// consumer.
+//
+// NOTE: we deliberately do NOT mock `./stopWatchdog` here. The bridge-death /
+// stop-hang suite asserts the REAL watchdog behaviour (armed count, the 12s
+// timeout escalation, the timeout message), so the genuine module has to run.
+// The `meeting:closed` suite drives the real `stopRecording`, which arms a real
+// watchdog — its block uses fake timers + `clearStopWatchdog` cleanup so those
+// timers never leak.
 
 const invokeMock = vi.fn();
 type Handler = (event: { payload: unknown }) => void;
@@ -17,11 +25,11 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: (name: string, handler: Handler) => {
+  listen: vi.fn((name: string, handler: Handler) => {
     handlers.set(name, handler);
     // `listen` resolves to an unlisten fn.
     return Promise.resolve(() => handlers.delete(name));
-  },
+  }),
 }));
 
 import {
@@ -29,9 +37,9 @@ import {
   ensureActiveMeetingListeners,
   stopActiveMeetingListeners,
   stopRecording,
-  updateActiveMeeting,
   upsertActiveMeeting,
   type ActiveMeeting,
+  type ActiveMeetingState,
 } from './activeMeetings';
 import {
   STOP_TIMEOUT_MESSAGE,
@@ -47,15 +55,17 @@ function emit(name: string, payload: unknown): void {
   handler({ payload });
 }
 
-function seedRow(windowId: string, state: ActiveMeeting['state']): void {
-  upsertActiveMeeting({
+function seedRow(windowId: string, state: ActiveMeetingState): ActiveMeeting {
+  const row: ActiveMeeting = {
     windowId,
     platform: 'meet',
     meetingUrl: `recall-window:${windowId}`,
     detectedAt: '2026-06-03T10:00:00.000Z',
     state,
     companyUid: null,
-  });
+  };
+  upsertActiveMeeting(row);
+  return row;
 }
 
 function rowState(windowId: string): ActiveMeeting | undefined {
@@ -193,5 +203,86 @@ describe('activeMeetings — Rust bridge-death terminal event resolves the row',
 
     expect(rowState('win-1')).toBeUndefined();
     expect(activeStopWatchdogCount()).toBe(0);
+  });
+});
+
+// Regression for B2: when a meeting CALL ends, the bridge emits `meeting:closed`.
+// If the bridge's auto-stop was missed, the UI must NOT silently drop a row that
+// is still recording (which would leak a running recording) — it must finalize
+// the row through the normal stop path (`invoke('stop_recording', {windowId})`).
+// A row that isn't actively recording is still just removed. These tests pin the
+// `meeting:closed` listener behaviour against the real `stopRecording`/watchdog.
+describe('activeMeetings meeting:closed listener', () => {
+  /** Dispatch a synthetic `meeting:closed` and let the void stopRecording settle. */
+  async function emitMeetingClosed(windowId: string): Promise<void> {
+    const handler = handlers.get('meeting:closed');
+    if (!handler) throw new Error('meeting:closed listener not registered');
+    handler({ payload: { windowId, platform: 'zoom', closedAt: '2026-06-03T11:00:00.000Z' } });
+    // Let any microtasks (the void stopRecording promise) settle.
+    await Promise.resolve();
+  }
+
+  beforeEach(async () => {
+    // The close path routes recording/starting/stopping rows through the real
+    // `stopRecording`, which arms a real watchdog — fake timers + the afterEach
+    // cleanup keep those 12s timers from leaking across tests.
+    vi.useFakeTimers();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(undefined);
+    activeMeetings.set([]);
+    handlers.clear();
+    stopActiveMeetingListeners();
+    await ensureActiveMeetingListeners();
+  });
+
+  afterEach(() => {
+    for (const id of ['win-1', 'win-2']) clearStopWatchdog(id);
+    stopActiveMeetingListeners();
+    activeMeetings.set([]);
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it('finalizes a recording row via stop_recording instead of removing it', async () => {
+    seedRow('win-1', 'recording');
+
+    await emitMeetingClosed('win-1');
+
+    expect(invokeMock).toHaveBeenCalledWith('stop_recording', { windowId: 'win-1' });
+    // Row is NOT dropped — it transitions to stopping (handled by stopRecording),
+    // so the still-running recording is finalized rather than leaked.
+    const row = get(activeMeetings).find((m) => m.windowId === 'win-1');
+    expect(row).toBeDefined();
+    expect(row?.state).toBe('stopping');
+  });
+
+  it.each<ActiveMeetingState>(['starting', 'stopping'])(
+    'also routes a %s row through stop_recording (mid-transition close)',
+    async (state) => {
+      seedRow('win-1', state);
+
+      await emitMeetingClosed('win-1');
+
+      expect(invokeMock).toHaveBeenCalledWith('stop_recording', { windowId: 'win-1' });
+      expect(get(activeMeetings).find((m) => m.windowId === 'win-1')).toBeDefined();
+    },
+  );
+
+  it('removes a non-recording (detected) row without calling stop_recording', async () => {
+    seedRow('win-1', 'detected');
+
+    await emitMeetingClosed('win-1');
+
+    expect(invokeMock).not.toHaveBeenCalledWith('stop_recording', expect.anything());
+    expect(get(activeMeetings).find((m) => m.windowId === 'win-1')).toBeUndefined();
+  });
+
+  it('removes an errored row without calling stop_recording', async () => {
+    seedRow('win-1', 'error');
+
+    await emitMeetingClosed('win-1');
+
+    expect(invokeMock).not.toHaveBeenCalledWith('stop_recording', expect.anything());
+    expect(get(activeMeetings).find((m) => m.windowId === 'win-1')).toBeUndefined();
   });
 });
