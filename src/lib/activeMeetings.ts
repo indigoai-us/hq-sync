@@ -304,30 +304,19 @@ async function handleMeetingDetected(event: { payload: MeetingDetectedPayload })
     });
   }
 
-  try {
-    if (meetingUrl && !isSyntheticUrl) {
-      try {
-        const bot = await invoke<{ botId: string } | null>('meetings_check_bot_for_url', {
-          meetingUrl,
-          eventId: sourceEventId ?? null,
-        });
-        if (bot) return;
-      } catch (botErr) {
-        console.warn('meetings_check_bot_for_url failed, continuing to notify:', botErr);
-      }
-    }
-    await invoke('meetings_notify_detected', {
-      payload: {
-        meetingUrl: meetingUrl ?? null,
-        windowId: windowId || null,
-        platform: platform ?? null,
-        summary: summary ?? null,
-        sourceEventId: sourceEventId ?? null,
-      },
-    });
-  } catch (err) {
-    console.error('meeting:detected handler error:', err);
-  }
+  // NOTE: this listener intentionally does NOT call `meetings_notify_detected`.
+  //
+  // The SDK emits `meeting:detected` once, but Tauri fans it out to every
+  // webview — so this listener (installed in the on-demand desktop-alt window)
+  // AND the popover/main listener in `App.svelte` both wake for the same event.
+  // The popover/main window is the always-present owner of the OS notification
+  // (it runs `handleMeetingDetected` in `lib/meetingDetection.ts`, which does the
+  // bot check + `meetings_notify_detected` fire); this window only owns the
+  // in-app `$activeMeetings` store row above. Letting BOTH fire the notify was a
+  // source of the double-notification bug. The Rust `claim_notify` lock is the
+  // authoritative guard, but scoping the notify to one window here removes the
+  // race at its source (defence-in-depth). The bot check that used to gate this
+  // notify lives entirely in the popover path now.
 }
 
 /**
