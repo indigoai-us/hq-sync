@@ -6,6 +6,7 @@ pub mod journal;
 pub mod logfile;
 pub mod meeting_ledger;
 pub mod paths;
+pub mod recordings_ledger;
 pub mod release_channel;
 #[cfg(test)]
 pub(crate) mod test_support;

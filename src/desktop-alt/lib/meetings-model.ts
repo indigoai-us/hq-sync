@@ -33,6 +33,18 @@ export interface ScheduledBot {
   scheduledStartTime?: string | null;
   autoScheduled: boolean;
   errorMessage?: string | null;
+  /**
+   * US-010 — the real source-landed signal from hq-pro: true only when the
+   * transcript has actually been persisted to the vault as a queryable source
+   * (`GET /v1/bot/list` HEADs `sources/meetings/{botId}.md`). The "Done —
+   * transcript saved" row state is gated on this, NOT on `status ===
+   * 'completed'` alone — a completed bot whose per-company ingest hard-failed
+   * (the #240 KMS-drift symptom) arrives with `sourceLanded: false` and must
+   * keep showing the processing state, not a false "saved". Optional on the
+   * wire: a pre-US-010 server omits it (and the Rust client defaults it to
+   * `false`), so an older backend never produces a premature "saved".
+   */
+  sourceLanded?: boolean;
 }
 
 export interface GoogleAccount {
@@ -405,10 +417,26 @@ export function isPlausibleMeetingUrl(url: string): boolean {
  *   joining    → "joining"    (transient)
  *   recording  → "in-call"    (live indicator, click to stop)
  *   processing → "processing" (non-cancellable, transient)
- *   completed  → "done"
+ *   completed  → "done" ONLY once the transcript has really landed as a vault
+ *                source (`sourceLanded`); a completed-but-not-yet-landed bot
+ *                stays "processing" — see below.
  */
 export type RowButtonKind = 'invite' | 'invited' | 'joining' | 'in-call' | 'processing' | 'done';
 
+/**
+ * US-010 — "Done — transcript saved" must reflect a transcript that ACTUALLY
+ * landed in the vault as a source, not merely a bot whose lifecycle status is
+ * "completed". hq-pro's bot status flips on the Recall webhook / retry path,
+ * but the per-company source write is a separate S3 PUT that can hard-fail
+ * (the 2026-06-02 KMS-grant drift dead-lettered transcripts for ~13 days while
+ * bots still read "completed"). hq-pro now exposes `sourceLanded` (a HEAD on
+ * the real meeting source object); we render `done` ONLY when it's true.
+ *
+ * A `completed` bot WITHOUT a confirmed source is shown as `processing`, not a
+ * false `done`: from the user's POV the transcript is still being finalised /
+ * recovered (the hourly retry-pipeline + dead-letter drainer re-drive it), so
+ * the honest state is "Processing", never "Done — transcript saved".
+ */
 export function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
   if (!bot) return 'invite';
   switch (bot.status) {
@@ -421,7 +449,10 @@ export function rowButtonKind(bot: ScheduledBot | undefined): RowButtonKind {
     case 'processing':
       return 'processing';
     case 'completed':
-      return 'done';
+      // Gate the terminal "done" on the real source-landed confirmation. Until
+      // hq-pro confirms the transcript persisted as a vault source, keep
+      // showing "processing" rather than a premature "Done — transcript saved".
+      return bot.sourceLanded === true ? 'done' : 'processing';
     default:
       // Defensive fallback — failed bots aren't in the active map, so hitting
       // here means an unknown status. Render as Invite so the user can recover.

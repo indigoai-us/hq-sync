@@ -122,6 +122,17 @@ pub struct ScheduledBot {
     #[serde(default)]
     pub auto_scheduled: bool,
     pub error_message: Option<String>,
+    /// US-010 — the REAL "transcript saved" signal from hq-pro: true only when
+    /// the transcript has actually landed in the vault as a queryable source
+    /// (`GET /v1/bot/list` HEADs `sources/meetings/{botId}.md`). The UI gates
+    /// "Done — transcript saved" on THIS, never on `status == "completed"`
+    /// alone — a completed bot whose per-company ingest hard-failed (the #240
+    /// KMS-drift symptom) carries `source_landed: false`. Defaults to false so
+    /// a pre-US-010 server (which omits the field) never shows a premature
+    /// "saved"; `POST /v1/bot/invite`'s slimmer body also omits it (a fresh
+    /// invite has no transcript yet), which the default handles too.
+    #[serde(default)]
+    pub source_landed: bool,
 }
 
 /// Mirrors hq-pro's `OntologyParticipant` — resolved participant from the
