@@ -7,6 +7,7 @@
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import SyncPage from './pages/SyncPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
+  import LibraryPage from './pages/LibraryPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
@@ -139,11 +140,18 @@
       shortcut: '⌘2',
       action: () => navigate({ kind: 'meetings' }),
     },
+    {
+      id: 'command-go-library',
+      label: 'Go to Library',
+      detail: 'Browse skills and workers',
+      shortcut: '⌘3',
+      action: () => navigate({ kind: 'library' }),
+    },
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
       label: `Go to ${company.displayName}`,
       detail: 'Show company workspace',
-      shortcut: index < 4 ? `⌘${index + 3}` : undefined,
+      shortcut: index < 4 ? `⌘${index + 4}` : undefined,
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);
@@ -549,6 +557,10 @@
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
+            </div>
+          {:else if route.kind === 'library'}
+            <div class="page">
+              <LibraryPage />
             </div>
           {:else if activeCompany}
             <div class="page">

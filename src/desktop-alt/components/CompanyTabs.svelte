@@ -3,7 +3,7 @@
 
   // Board lives per-company again (US-011): the Board tab is first/default and
   // hosts the company-scoped CompanyBoardPanel (Goals + In flight + Projects).
-  export type CompanyTab = 'board' | 'activity' | 'deployments' | 'secrets';
+  export type CompanyTab = 'board' | 'activity' | 'deployments' | 'secrets' | 'library';
 
   interface Props {
     activeTab: CompanyTab;
@@ -19,6 +19,7 @@
     { id: 'activity' as const, label: 'Activity', count: summary.activity.last7d },
     { id: 'deployments' as const, label: 'Deployments', count: summary.deployments },
     { id: 'secrets' as const, label: 'Secrets', count: summary.secrets },
+    { id: 'library' as const, label: 'Library', count: undefined as number | undefined },
   ]);
 
   const roleLabel = $derived(role ? role : 'No role');
@@ -35,9 +36,11 @@
         onclick={() => onselect(tab.id)}
       >
         <span class="tab-label">{tab.label}</span>
-        <span class="tab-count" aria-label={`${tab.count} ${tab.label.toLowerCase()}`}>
-          {tab.count}
-        </span>
+        {#if tab.count !== undefined}
+          <span class="tab-count" aria-label={`${tab.count} ${tab.label.toLowerCase()}`}>
+            {tab.count}
+          </span>
+        {/if}
       </button>
     {/each}
   </div>

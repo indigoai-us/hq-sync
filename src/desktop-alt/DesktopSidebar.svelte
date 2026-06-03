@@ -11,10 +11,10 @@
   let { route, companies, onnavigate }: Props = $props();
 
   const rows = $derived(getDesktopSidebarRows(route, companies));
-  // Sync / Meetings are the two top-level destinations; everything after them
-  // is a company row.
-  const primaryRows = $derived(rows.slice(0, 2));
-  const companyRows = $derived(rows.slice(2));
+  // Sync / Meetings / Library are the three top-level destinations; everything
+  // after them is a company row.
+  const primaryRows = $derived(rows.slice(0, 3));
+  const companyRows = $derived(rows.slice(3));
 </script>
 
 <aside class="desktop-sidebar" aria-label="Desktop navigation">

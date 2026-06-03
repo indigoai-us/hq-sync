@@ -150,16 +150,18 @@ describe('desktop-alt Board surface (US-007)', () => {
     const route = readRepoFile('src/desktop-alt/route.ts');
     const sidebar = readRepoFile('src/desktop-alt/DesktopSidebar.svelte');
 
-    // Route kind union no longer carries 'board'.
-    expect(route).toContain("'sync' | 'meetings' | 'company'");
+    // Route kind union no longer carries 'board' (Library was added alongside
+    // the Sync/Meetings primaries — see the Library surface).
+    expect(route).toContain("'sync' | 'meetings' | 'library' | 'company'");
     expect(route).not.toContain("kind: 'board' | 'sync'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");
 
-    // No Board sidebar row; companies fall after the 2 primaries.
+    // No Board sidebar row; companies fall after the 3 primaries (Sync,
+    // Meetings, Library).
     expect(route).not.toContain("label: 'Board'");
-    expect(sidebar).toContain('rows.slice(0, 2)');
-    expect(sidebar).toContain('rows.slice(2)');
+    expect(sidebar).toContain('rows.slice(0, 3)');
+    expect(sidebar).toContain('rows.slice(3)');
   });
 
   it('wires the project list: search, pills, group-by, rows, progress, drill-in', () => {

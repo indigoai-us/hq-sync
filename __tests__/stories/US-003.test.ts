@@ -64,10 +64,17 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
     // The top-level Board surface was removed — the board lives on each
-    // company/personal page now. Top-level destinations are Sync (⌘1) and
-    // Meetings (⌘2); the personal page + synced companies follow from ⌘3.
-    expect(rows.map((row) => row.label)).toEqual(['Sync', 'Meetings', 'Personal', 'Acme Corp']);
-    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3', '⌘4']);
+    // company/personal page now. Top-level destinations are Sync (⌘1),
+    // Meetings (⌘2), and Library (⌘3); the personal page + synced companies
+    // follow from ⌘4.
+    expect(rows.map((row) => row.label)).toEqual([
+      'Sync',
+      'Meetings',
+      'Library',
+      'Personal',
+      'Acme Corp',
+    ]);
+    expect(rows.map((row) => row.shortcut)).toEqual(['⌘1', '⌘2', '⌘3', '⌘4', '⌘5']);
     expect(rows[0]).toMatchObject({ active: true, route: { kind: 'sync' } });
     // Sync/Meetings are real pages — no active company resolves.
     expect(getDesktopActiveCompany(initialDesktopRoute, companies)).toBeNull();
@@ -90,10 +97,11 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     const companies = getDesktopCompanies(workspaces);
     const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
 
-    // Personal is local-first and now gets its own desktop page (⌘3).
+    // Personal is local-first and now gets its own desktop page (⌘4, after the
+    // Sync/Meetings/Library top-level rows).
     expect(rows.find((row) => row.label === 'Personal')).toMatchObject({
       route: { kind: 'company', slug: 'personal' },
-      shortcut: '⌘3',
+      shortcut: '⌘4',
     });
 
     const acmeRow = rows.find((row) => row.label === 'Acme Corp');
@@ -107,7 +115,7 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     expect(isDesktopRouteActive(nextRoute, { kind: 'company', slug: 'acme' })).toBe(true);
     expect(rowsAfterClick.find((row) => row.label === 'Acme Corp')).toMatchObject({
       active: true,
-      shortcut: '⌘4',
+      shortcut: '⌘5',
     });
     // Globex is cloud-only (no synced local vault) → no desktop page.
     expect(rowsAfterClick.find((row) => row.label === 'Globex')).toBeUndefined();
