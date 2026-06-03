@@ -6,6 +6,7 @@
   import CompanyTabs, { type CompanyTab } from '../components/CompanyTabs.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
+  import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
   import { useCompanySummary } from '../lib/company-summary.svelte';
 
   interface Props {
@@ -86,6 +87,8 @@
         <ActivityPanel slug={company.slug} />
       {:else if activeTab === 'deployments'}
         <DeploymentsPanel slug={company.slug} />
+      {:else if activeTab === 'library'}
+        <CompanyLibraryPanel slug={company.slug} />
       {:else}
         <SecretsPanel slug={company.slug} />
       {/if}

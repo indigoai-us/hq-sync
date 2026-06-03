@@ -52,10 +52,13 @@ describe('desktop-alt routes', () => {
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    // Sync ⌘1 / Meetings ⌘2 are the two top-level destinations (the board lives
-    // per-company on the company page now, not as a top-level route), so company
-    // hotkeys start at ⌘3.
+    // Sync ⌘1 / Meetings ⌘2 / Library ⌘3 are the three top-level destinations
+    // (the board lives per-company on the company page), so company hotkeys start
+    // at ⌘4.
     expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'library',
+    });
+    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'company',
       slug: 'synced',
     });
