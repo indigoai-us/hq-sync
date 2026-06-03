@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  facetLabel,
   filterLibraryItems,
+  libraryFacets,
+  libraryItemFacet,
   libraryItemKey,
   toLibraryItems,
   type LibraryItems,
@@ -84,5 +87,39 @@ describe('filterLibraryItems', () => {
 
   it('returns nothing when no item matches', () => {
     expect(filterLibraryItems(flat, 'zzz-nope')).toHaveLength(0);
+  });
+});
+
+describe('facets', () => {
+  it('maps each item to its scope facet', () => {
+    expect(libraryItemFacet({ kind: 'worker', worker: worker() })).toBe('core');
+    expect(
+      libraryItemFacet({ kind: 'worker', worker: worker({ scope: 'company', company: 'indigo' }) }),
+    ).toBe('indigo');
+    expect(libraryItemFacet({ kind: 'skill', skill: skill() })).toBe('indigo');
+    expect(
+      libraryItemFacet({ kind: 'skill', skill: skill({ scope: 'personal', company: undefined }) }),
+    ).toBe('personal');
+    expect(
+      libraryItemFacet({ kind: 'skill', skill: skill({ scope: 'root', company: undefined }) }),
+    ).toBe('core');
+  });
+
+  it('orders facets Core → Personal → companies (alpha)', () => {
+    const flat = toLibraryItems({
+      workers: [
+        worker(),
+        worker({ scope: 'company', company: 'zeta', path: 'companies/zeta/workers/a/' }),
+        worker({ scope: 'company', company: 'acme', path: 'companies/acme/workers/a/' }),
+      ],
+      skills: [skill({ scope: 'personal', company: undefined })],
+    });
+    expect(libraryFacets(flat)).toEqual(['core', 'personal', 'acme', 'zeta']);
+  });
+
+  it('labels facets for display', () => {
+    expect(facetLabel('core')).toBe('Core');
+    expect(facetLabel('personal')).toBe('Personal');
+    expect(facetLabel('indigo')).toBe('Indigo');
   });
 });

@@ -80,6 +80,11 @@ pub struct LibrarySkill {
     pub path: String,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    /// The HQ pack a skill ships in, when its dir is a symlink into
+    /// `core/packages/hq-pack-<pack>/skills/` (e.g. `engineering`). `None` for
+    /// hand-authored skills that live directly under the scanned dir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<String>,
 }
 
 /// Combined library payload for one scope (root or a company).
@@ -135,35 +140,22 @@ pub struct SkillDetail {
 
 // ---- on-disk parse models --------------------------------------------------
 
-/// `registry.yaml` top level — only the `workers` array.
-#[derive(Debug, Deserialize, Default)]
-struct RegistryFile {
-    #[serde(default)]
-    workers: Vec<RawWorkerEntry>,
-}
-
-/// One registry entry. Lenient: every field is optional/defaulted and `company`
-/// absorbs both the string and `{product: ''}`-map cases via `serde_yaml::Value`
-/// (we ignore it and derive the slug from `path`).
-#[derive(Debug, Deserialize, Default)]
+/// One registry entry, built by hand from `serde_yaml::Value` (see
+/// `read_registry`) rather than `Deserialize`d directly. The registry is
+/// auto-generated and includes *template* entries whose `id`/`company` are YAML
+/// placeholders like `{product}-gtm` — which YAML parses as a **map**, not a
+/// string. A struct-level `Deserialize` aborts the WHOLE file on the first such
+/// entry (the bug behind "0 workers"); pulling fields leniently per entry keeps
+/// every well-formed worker and coerces a non-string id to the path's dir name.
+#[derive(Debug, Default, Clone)]
 struct RawWorkerEntry {
-    #[serde(default)]
     id: String,
-    #[serde(default)]
     path: String,
-    #[serde(default, rename = "type")]
     type_: String,
-    #[serde(default)]
     visibility: String,
-    #[serde(default)]
     status: String,
-    #[serde(default)]
     team: Option<String>,
-    #[serde(default)]
     description: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    company: Option<serde_yaml::Value>,
 }
 
 /// `worker.yaml` — the `worker:` block plus top-level `skills` / `instructions`.
@@ -268,31 +260,126 @@ pub async fn get_library_skill_detail(skill_path: String) -> Result<SkillDetail,
 
 // ---- pure scanners (explicit HQ root → unit-testable) ----------------------
 
-/// Parse the registry once, returning every entry. Missing/garbage → empty.
+/// Parse the registry into entries, tolerating per-entry malformations.
+///
+/// We deserialize to a generic `serde_yaml::Value` and pull each worker's fields
+/// by hand instead of `#[derive(Deserialize)]`-ing a typed struct. The registry
+/// ships template entries (`id: {product}-gtm`, `company: {product}`) whose
+/// values YAML reads as **maps**; a typed deserialize aborts the entire file on
+/// the first one — the root cause of "0 workers". Here a non-string `id` simply
+/// falls back to the worker dir's name (from `path`), so real company workers
+/// with templated ids still surface. Missing file / non-YAML → empty.
 fn read_registry(hq_root: &Path) -> Vec<RawWorkerEntry> {
     let path = hq_root.join("core/workers/registry.yaml");
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return Vec::new();
     };
-    match serde_yaml::from_str::<RegistryFile>(&raw) {
-        Ok(f) => f.workers,
+    let sanitized = sanitize_registry(&raw);
+    let doc: serde_yaml::Value = match serde_yaml::from_str(&sanitized) {
+        Ok(v) => v,
         Err(e) => {
-            eprintln!("[library-local] skipping unparseable registry.yaml: {e}");
-            Vec::new()
+            eprintln!("[library-local] registry.yaml is not valid YAML: {e}");
+            return Vec::new();
         }
+    };
+    let Some(workers) = doc.get("workers").and_then(|w| w.as_sequence()) else {
+        return Vec::new();
+    };
+
+    let str_field = |w: &serde_yaml::Value, key: &str| -> String {
+        w.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    let mut out = Vec::new();
+    for w in workers {
+        let path = str_field(w, "path");
+        // A plain id; else (empty, or a `{product}`-style placeholder left after
+        // sanitizing) derive the dir name from the path so the entry still gets a
+        // readable label instead of an ugly template token.
+        let raw_id = w.get("id").and_then(|v| v.as_str()).unwrap_or("").trim();
+        let id = if raw_id.is_empty() || raw_id.contains('{') {
+            last_path_segment(&path)
+        } else {
+            raw_id.to_string()
+        };
+        let team = w
+            .get("team")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.trim().is_empty());
+        out.push(RawWorkerEntry {
+            id,
+            path,
+            type_: str_field(w, "type"),
+            visibility: str_field(w, "visibility"),
+            status: str_field(w, "status"),
+            team,
+            description: str_field(w, "description"),
+        });
     }
+    out
 }
 
-/// Derive a company slug from a worker `path` of the form
-/// `companies/<slug>/workers/...`. `None` for non-company (e.g. core/) paths.
-fn company_slug_from_path(path: &str) -> Option<String> {
-    let rest = path.strip_prefix("companies/")?;
-    let slug = rest.split('/').next()?;
-    if slug.is_empty() {
-        None
-    } else {
-        Some(slug.to_string())
+/// Neutralize the registry's *template* placeholder values before YAML parsing.
+///
+/// The generator emits entries like `id: {product}-gtm` and `company: {product}`.
+/// `{...}` opens a YAML flow mapping, and the trailing `-gtm` makes the line
+/// syntactically invalid — which fails the ENTIRE document parse (the "0 workers"
+/// bug). We can't fix this per-entry because the failure happens before any entry
+/// is visible. So we pre-process line-by-line: any `id:`/`company:` whose value
+/// starts with `{` is wrapped in double quotes, turning the placeholder into a
+/// harmless string. Real entries (plain strings) are untouched. Downstream,
+/// `read_registry` derives a readable name from the path for any id still
+/// carrying a `{` placeholder.
+fn sanitize_registry(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 64);
+    for line in raw.split_inclusive('\n') {
+        out.push_str(&sanitize_registry_line(line));
     }
+    out
+}
+
+/// Quote a single `id:`/`company:` line whose value is a `{...}` placeholder.
+/// Returns the line unchanged when it doesn't match. Preserves indentation, an
+/// optional `- ` list prefix, and the trailing newline.
+fn sanitize_registry_line(line: &str) -> String {
+    let (content, nl) = match line.strip_suffix('\n') {
+        Some(c) => (c, "\n"),
+        None => (line, ""),
+    };
+    let indent_len = content.len() - content.trim_start().len();
+    let (indent, after_indent) = content.split_at(indent_len);
+    let (prefix, rest) = match after_indent.strip_prefix("- ") {
+        Some(r) => ("- ", r),
+        None => ("", after_indent),
+    };
+    for key in ["id:", "company:"] {
+        if let Some(after_key) = rest.strip_prefix(key) {
+            let val = after_key.trim_start();
+            // Already-quoted or non-placeholder values are left alone.
+            if val.starts_with('{') {
+                let lead_len = after_key.len() - val.len();
+                let lead = &after_key[..lead_len];
+                let escaped = val.replace('\\', "\\\\").replace('"', "\\\"");
+                return format!("{indent}{prefix}{key}{lead}\"{escaped}\"{nl}");
+            }
+            return format!("{content}{nl}");
+        }
+    }
+    format!("{content}{nl}")
+}
+
+/// Last non-empty path segment (worker dir name) from a trailing-slash path like
+/// `companies/liverecover/workers/gtm/` → `gtm`. Empty string when none.
+fn last_path_segment(path: &str) -> String {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn worker_row(entry: &RawWorkerEntry, scope: &str, company: Option<String>) -> LibraryWorker {
@@ -314,13 +401,19 @@ fn worker_row(entry: &RawWorkerEntry, scope: &str, company: Option<String>) -> L
     }
 }
 
+/// The ROOT library is an ALL-SCOPES view: core (public workers + `.claude/skills`),
+/// the personal overlay (`personal/skills`), AND every company's private workers +
+/// company-scoped skills. The desktop UI narrows it with a client-side facet
+/// filter (Core / Personal / per-company), so the backend just returns the union.
 fn scan_root_library(hq_root: &Path) -> LibraryItems {
-    let workers = read_registry(hq_root)
+    let registry = read_registry(hq_root);
+
+    // Core: public/shared workers + the root + personal skill dirs.
+    let mut workers: Vec<LibraryWorker> = registry
         .iter()
         .filter(|e| e.visibility == "public")
         .map(|e| worker_row(e, "root", None))
         .collect();
-
     let mut skills = scan_skills_dir(hq_root, &hq_root.join(".claude/skills"), "root", None);
     skills.extend(scan_skills_dir(
         hq_root,
@@ -329,7 +422,55 @@ fn scan_root_library(hq_root: &Path) -> LibraryItems {
         None,
     ));
 
+    // Every company's private workers (by registry path prefix) + its skills.
+    for slug in company_slugs(hq_root, &registry) {
+        let prefix = format!("companies/{slug}/workers/");
+        for e in registry.iter().filter(|e| e.path.starts_with(&prefix)) {
+            workers.push(worker_row(e, "company", Some(slug.clone())));
+        }
+        let skills_dir = hq_root.join("companies").join(&slug).join("skills");
+        skills.extend(scan_skills_dir(hq_root, &skills_dir, "company", Some(slug.clone())));
+    }
+
     LibraryItems { workers, skills }
+}
+
+/// The set of company slugs to fan the root library across: every real dir under
+/// `companies/` (skipping hidden/`_` entries and non-dirs like `manifest.yaml`),
+/// unioned with any slug that appears in a registry worker path (so a company
+/// with workers but no on-disk skills dir is still represented). Sorted.
+fn company_slugs(hq_root: &Path, registry: &[RawWorkerEntry]) -> Vec<String> {
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    if let Ok(entries) = std::fs::read_dir(hq_root.join("companies")) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                if !name.starts_with('.') && !name.starts_with('_') {
+                    set.insert(name.to_string());
+                }
+            }
+        }
+    }
+    for e in registry {
+        if let Some(slug) = slug_from_worker_path(&e.path) {
+            set.insert(slug);
+        }
+    }
+    set.into_iter().collect()
+}
+
+/// Company slug from a `companies/<slug>/workers/...` registry path. `None` for
+/// core/ paths.
+fn slug_from_worker_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("companies/")?;
+    let slug = rest.split('/').next()?;
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug.to_string())
+    }
 }
 
 fn scan_company_library(hq_root: &Path, company_slug: &str) -> Result<LibraryItems, String> {
@@ -369,6 +510,9 @@ fn scan_skills_dir(
         if dir_name.starts_with('_') || dir_name.starts_with('.') {
             continue;
         }
+        // A symlinked skill dir usually points into core/packages/hq-pack-<pack>/;
+        // surface the pack so the UI can badge it.
+        let pack = detect_pack(&entry.path());
         // `.join("SKILL.md")` + read_to_string follows a symlinked skill dir.
         let skill_md = entry.path().join("SKILL.md");
         let Ok(raw) = std::fs::read_to_string(&skill_md) else {
@@ -394,9 +538,26 @@ fn scan_skills_dir(
             company: company.clone(),
             path: rel,
             allowed_tools: normalize_tools(front.allowed_tools.as_ref()),
+            pack,
         });
     }
     out
+}
+
+/// If `skill_dir` is a symlink into `core/packages/hq-pack-<pack>/...`, return
+/// `<pack>` (e.g. `engineering`). Reads the link target lexically — no
+/// canonicalization, so it works on relative `../../core/packages/...` links and
+/// doesn't touch unrelated files. `None` when the dir isn't a pack symlink.
+fn detect_pack(skill_dir: &Path) -> Option<String> {
+    let target = std::fs::read_link(skill_dir).ok()?;
+    let s = target.to_string_lossy();
+    let after = s.split("hq-pack-").nth(1)?;
+    let pack = after.split('/').next().unwrap_or("");
+    if pack.is_empty() {
+        None
+    } else {
+        Some(pack.to_string())
+    }
 }
 
 fn read_worker_detail(hq_root: &Path, worker_path: &str) -> Result<WorkerDetail, String> {
@@ -649,11 +810,11 @@ workers:
     company: indigo
     status: active
     description: "Indigo CMO"
-  - id: "{product}-gtm"
+  - id: {product}-gtm
     path: companies/liverecover/workers/gtm/
     type: OpsWorker
     visibility: private
-    company: {product: ''}
+    company: {product}
     status: active
     description: "templated"
 "#;
@@ -702,6 +863,19 @@ skills:
         fs::create_dir_all(claude_skills.join("_shared")).unwrap();
         fs::write(claude_skills.join("_shared/SKILL.md"), "should be skipped").unwrap();
 
+        // A packaged skill: a real dir under core/packages/hq-pack-engineering/
+        // symlinked into .claude/skills (mirrors how packs surface). detect_pack
+        // should read the link and report pack="engineering".
+        let pack_skill = root.join("core/packages/hq-pack-engineering/skills/land");
+        fs::create_dir_all(&pack_skill).unwrap();
+        fs::write(
+            pack_skill.join("SKILL.md"),
+            "---\nname: land\ndescription: Land a PR\n---\n\n# Land\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&pack_skill, claude_skills.join("land")).unwrap();
+
         // Personal skills.
         let personal_skills = root.join("personal/skills");
         fs::create_dir_all(personal_skills.join("impeccable")).unwrap();
@@ -724,23 +898,34 @@ skills:
     }
 
     #[test]
-    fn root_library_filters_public_workers_and_reads_skills() {
+    fn root_library_aggregates_all_scopes() {
         let root = make_fixture_tree();
         let items = scan_root_library(&root);
 
-        // Only the public worker (architect) is in the root scope.
-        assert_eq!(items.workers.len(), 1);
-        assert_eq!(items.workers[0].id, "architect");
-        assert_eq!(items.workers[0].scope, "root");
-        assert_eq!(items.workers[0].type_, "CodeWorker");
-        assert_eq!(items.workers[0].team.as_deref(), Some("dev-team"));
+        // Core worker is present and scoped "root".
+        let architect = items.workers.iter().find(|w| w.id == "architect").unwrap();
+        assert_eq!(architect.scope, "root");
+        assert_eq!(architect.type_, "CodeWorker");
+        assert_eq!(architect.team.as_deref(), Some("dev-team"));
 
-        // Root + personal skills, `_shared` skipped.
+        // Company workers now surface on root too, scoped to their company.
+        let cmo = items.workers.iter().find(|w| w.id == "cmo-indigo").unwrap();
+        assert_eq!(cmo.scope, "company");
+        assert_eq!(cmo.company.as_deref(), Some("indigo"));
+        let gtm = items.workers.iter().find(|w| w.id == "gtm").unwrap();
+        assert_eq!(gtm.company.as_deref(), Some("liverecover"));
+
+        // Core + personal + company skills, `_shared` skipped.
         let names: Vec<_> = items.skills.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"run"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"impeccable"));
+        assert!(names.contains(&"signals")); // company (indigo) skill on root
         assert!(!names.contains(&"_shared"));
+        // The indigo skill carries its company scope.
+        let signals = items.skills.iter().find(|s| s.name == "signals").unwrap();
+        assert_eq!(signals.scope, "company");
+        assert_eq!(signals.company.as_deref(), Some("indigo"));
 
         let run = items.skills.iter().find(|s| s.name == "run").unwrap();
         assert_eq!(run.scope, "root");
@@ -749,6 +934,44 @@ skills:
         let imp = items.skills.iter().find(|s| s.name == "impeccable").unwrap();
         assert_eq!(imp.scope, "personal");
         assert_eq!(imp.allowed_tools, vec!["Read", "Edit"]);
+
+        // A symlinked packaged skill is read and its pack detected.
+        #[cfg(unix)]
+        {
+            let land = items.skills.iter().find(|s| s.name == "land").unwrap();
+            assert_eq!(land.pack.as_deref(), Some("engineering"));
+            // A hand-authored skill carries no pack.
+            assert!(run.pack.is_none());
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Regression for the "0 workers" bug: an UNQUOTED template entry
+    /// (`id: {product}-gtm`) is YAML-parsed as a map, which previously aborted
+    /// the whole registry deserialize and blanked every worker. The reader must
+    /// now tolerate it (deriving the name from the path) and keep all the
+    /// well-formed entries.
+    #[test]
+    fn templated_registry_entry_does_not_blank_the_list() {
+        let root = make_fixture_tree();
+
+        // Root still sees the public worker despite the malformed template entry,
+        // and the templated company worker surfaces (path-derived name "gtm").
+        let root_items = scan_root_library(&root);
+        assert!(root_items.workers.iter().any(|w| w.id == "architect"));
+        assert!(root_items
+            .workers
+            .iter()
+            .any(|w| w.id == "gtm" && w.company.as_deref() == Some("liverecover")));
+
+        // The templated liverecover worker survives under its company, with a
+        // path-derived name instead of the raw `{product}` placeholder.
+        let lr = scan_company_library(&root, "liverecover").expect("liverecover");
+        assert_eq!(lr.workers.len(), 1);
+        assert_eq!(lr.workers[0].id, "gtm");
+        assert_eq!(lr.workers[0].name, "gtm");
+        assert_eq!(lr.workers[0].company.as_deref(), Some("liverecover"));
 
         let _ = fs::remove_dir_all(&root);
     }

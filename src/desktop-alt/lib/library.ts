@@ -33,6 +33,8 @@ export interface LibrarySkill {
   company?: string;
   path: string;
   allowedTools: string[];
+  /** Pack the skill ships in (e.g. `engineering`), when it's a pack symlink. */
+  pack?: string;
 }
 
 /** Combined library payload for one scope. */
@@ -123,6 +125,7 @@ export function libraryItemHaystack(item: LibraryItem): string {
     item.skill.description,
     item.skill.scope,
     item.skill.company ?? '',
+    item.skill.pack ?? '',
   ]
     .join(' ')
     .toLowerCase();
@@ -133,6 +136,40 @@ export function filterLibraryItems(items: LibraryItem[], query: string): Library
   const q = query.trim().toLowerCase();
   if (q === '') return items;
   return items.filter((item) => libraryItemHaystack(item).includes(q));
+}
+
+/**
+ * The scope "facet" an item belongs to — `core`, `personal`, or a company slug.
+ * Used by the multi-select scope filter so the root (all-scopes) Library can be
+ * narrowed to any mix of core / personal / specific companies.
+ */
+export function libraryItemFacet(item: LibraryItem): string {
+  if (item.kind === 'worker') {
+    return item.worker.scope === 'company' ? (item.worker.company ?? 'company') : 'core';
+  }
+  if (item.skill.scope === 'company') return item.skill.company ?? 'company';
+  if (item.skill.scope === 'personal') return 'personal';
+  return 'core';
+}
+
+/** Human label for a facet value (`core` → Core, slug → Capitalized). */
+export function facetLabel(facet: string): string {
+  if (facet === 'core') return 'Core';
+  if (facet === 'personal') return 'Personal';
+  return facet.charAt(0).toUpperCase() + facet.slice(1);
+}
+
+/**
+ * Distinct facets present in a set of items, ordered Core → Personal → companies
+ * (alphabetical). Drives the scope filter's option list.
+ */
+export function libraryFacets(items: LibraryItem[]): string[] {
+  const present = new Set(items.map(libraryItemFacet));
+  const ordered: string[] = [];
+  if (present.has('core')) ordered.push('core');
+  if (present.has('personal')) ordered.push('personal');
+  const companies = [...present].filter((f) => f !== 'core' && f !== 'personal').sort();
+  return ordered.concat(companies);
 }
 
 // ---- loaders ---------------------------------------------------------------
