@@ -146,13 +146,17 @@ describe('labelColor determinism', () => {
     }
   });
 
-  it('emits CSS-var-friendly monochrome hsla tokens (single low-sat hue)', () => {
+  it('emits CSS-var-friendly hsla tokens across a multi-hue palette', () => {
+    const hues = new Set<string>();
     for (const entry of LABEL_PALETTE) {
-      // monochrome identity: one cool-slate hue (210) at low saturation (12-14%)
-      expect(entry.background).toMatch(/^hsla\(210, 12%/);
-      expect(entry.border).toMatch(/^hsla\(210, 12%/);
-      expect(entry.foreground).toMatch(/^hsla\(210, 14%/);
+      // Each token is a well-formed hsla() string.
+      expect(entry.background).toMatch(/^hsla\(\d+, \d+%, \d+%, [\d.]+\)$/);
+      expect(entry.border).toMatch(/^hsla\(\d+, \d+%, \d+%, [\d.]+\)$/);
+      expect(entry.foreground).toMatch(/^hsla\(\d+, \d+%, \d+%, [\d.]+\)$/);
+      hues.add(entry.background.split(',')[0]);
     }
+    // The palette spans multiple distinct hues (not a single monochrome shade).
+    expect(hues.size).toBeGreaterThan(1);
   });
 
   it('distributes a realistic label set across multiple shades', () => {

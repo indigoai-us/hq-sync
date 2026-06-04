@@ -234,6 +234,23 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Color-coded priority (hq-desktop parity): P1 red · P2 amber · P3 blue. */
+  .priority-badge[data-priority='P1'] {
+    border-color: transparent;
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--red);
+  }
+  .priority-badge[data-priority='P2'] {
+    border-color: transparent;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--amber);
+  }
+  .priority-badge[data-priority='P3'] {
+    border-color: transparent;
+    background: rgba(96, 165, 250, 0.15);
+    color: var(--blue);
+  }
+
   .ac-count {
     flex: 0 0 auto;
     color: var(--muted-3);
