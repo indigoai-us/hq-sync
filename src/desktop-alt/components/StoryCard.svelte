@@ -179,6 +179,23 @@
     text-transform: none;
   }
 
+  /* Color-coded priority (hq-desktop parity): P1 red · P2 amber · P3 blue. */
+  .priority-badge[data-priority='P1'] {
+    border-color: transparent;
+    background: rgba(248, 113, 113, 0.15);
+    color: var(--red);
+  }
+  .priority-badge[data-priority='P2'] {
+    border-color: transparent;
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--amber);
+  }
+  .priority-badge[data-priority='P3'] {
+    border-color: transparent;
+    background: rgba(96, 165, 250, 0.15);
+    color: var(--blue);
+  }
+
   .story-title {
     display: -webkit-box;
     min-width: 0;
@@ -233,7 +250,7 @@
     width: 100%;
     height: 100%;
     border-radius: inherit;
-    background: var(--blue);
+    background: var(--emerald);
     transform: scaleX(var(--progress-scale, 0));
     transform-origin: left center;
     transition: transform 180ms cubic-bezier(0.2, 0.7, 0.2, 1);

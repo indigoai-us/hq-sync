@@ -176,28 +176,25 @@ export interface LabelColor {
   foreground: string;
 }
 
-/** Number of distinct monochrome shades a label can resolve to. */
+/** Number of distinct hues a label can resolve to. */
 export const LABEL_PALETTE_SIZE = 8;
 
 /**
- * The monochrome-glass label palette. Each entry is a hsla() built around a
- * single near-neutral hue (210, a cool slate) with a deliberately low, fixed
- * saturation so the chips read as monochrome glass rather than a rainbow. Only
- * lightness/alpha vary across the palette, which is what makes adjacent labels
- * distinguishable without breaking the monochrome identity.
+ * The label palette — a low-saturation 8-hue set mirroring hq-desktop's
+ * blue/purple/teal/pink/orange/cyan/lime/rose chips, tuned for the dark desktop
+ * surface (translucent fill + matching border + a brighter readable foreground).
+ * Hues are spaced around the wheel so adjacent labels stay distinguishable. The
+ * deterministic hash (below) maps each label string to a stable entry.
  */
-export const LABEL_PALETTE: LabelColor[] = Array.from(
-  { length: LABEL_PALETTE_SIZE },
-  (_, i): LabelColor => {
-    // Lightness sweeps 58%..86% across the palette; saturation stays low (12%).
-    const lightness = 58 + i * 4;
-    return {
-      index: i,
-      background: `hsla(210, 12%, ${lightness}%, 0.12)`,
-      border: `hsla(210, 12%, ${lightness}%, 0.24)`,
-      foreground: `hsla(210, 14%, ${lightness}%, 0.82)`,
-    };
-  },
+const LABEL_HUES = [217, 270, 173, 330, 25, 190, 84, 350];
+
+export const LABEL_PALETTE: LabelColor[] = LABEL_HUES.map(
+  (hue, i): LabelColor => ({
+    index: i,
+    background: `hsla(${hue}, 65%, 58%, 0.15)`,
+    border: `hsla(${hue}, 65%, 60%, 0.30)`,
+    foreground: `hsla(${hue}, 70%, 74%, 0.92)`,
+  }),
 );
 
 /**

@@ -190,8 +190,8 @@
     flex: 0 0 auto;
     padding: 1px 6px;
     border-radius: var(--radius-sm);
-    background: var(--row-hover);
-    color: var(--muted);
+    background: color-mix(in srgb, var(--blue) 12%, transparent);
+    color: color-mix(in srgb, var(--blue) 70%, var(--muted-2));
     font-size: var(--text-xs);
     font-weight: 600;
     line-height: 15px;
