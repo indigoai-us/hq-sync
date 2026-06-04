@@ -123,7 +123,8 @@
 <style>
   .library-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+    align-items: start;
     gap: var(--space-2);
     min-width: 0;
   }
@@ -193,7 +194,7 @@
     gap: 6px;
     color: var(--muted-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
@@ -242,7 +243,7 @@
     background: var(--row-hover);
     color: var(--muted-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.05em;
     line-height: 15px;

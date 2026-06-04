@@ -421,7 +421,7 @@
   .section-title {
     margin: 0 0 var(--space-2);
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;

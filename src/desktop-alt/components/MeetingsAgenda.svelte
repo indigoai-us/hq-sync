@@ -253,7 +253,7 @@
   .day-heading {
     margin: 14px 0 6px;
     color: var(--muted);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 650;
     letter-spacing: 0.08em;
     line-height: 16px;

@@ -168,7 +168,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-2);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 650;
     line-height: 14px;
     text-transform: uppercase;

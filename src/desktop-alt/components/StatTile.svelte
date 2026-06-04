@@ -26,14 +26,12 @@
   .stat-tile {
     display: grid;
     align-content: start;
-    gap: 7px;
+    gap: var(--space-1);
     min-width: 0;
-    min-height: 92px;
-    padding: 13px;
+    padding: var(--space-3) var(--space-3) calc(var(--space-3) - 1px);
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: var(--bg);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    background: var(--row-active);
   }
 
   .stat-label,
@@ -41,10 +39,13 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted);
-    font-size: var(--text-base);
-    font-weight: 650;
-    line-height: 16px;
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 14px;
     text-overflow: ellipsis;
+    text-transform: uppercase;
     white-space: nowrap;
   }
 
@@ -53,8 +54,8 @@
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 720;
-    line-height: 30px;
+    font-weight: 700;
+    line-height: 20px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

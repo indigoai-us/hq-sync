@@ -144,19 +144,19 @@
 <style>
   .sync-page {
     display: grid;
-    gap: 22px;
+    gap: 16px;
   }
 
   .sync-grid {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(270px, 320px);
     align-items: start;
-    gap: 22px;
+    gap: 16px;
   }
 
   .side-column {
     display: grid;
-    gap: 18px;
+    gap: 12px;
     min-width: 0;
   }
 
@@ -185,7 +185,7 @@
   .activity-list {
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: var(--bg);
+    background: var(--row-active);
   }
 
   .activity-empty {

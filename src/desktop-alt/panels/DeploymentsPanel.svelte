@@ -325,7 +325,7 @@
     padding: 8px 13px;
     border-bottom: 1px solid var(--border);
     color: var(--muted);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 700;
     line-height: 15px;
     text-transform: uppercase;

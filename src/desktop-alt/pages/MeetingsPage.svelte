@@ -366,7 +366,7 @@
   .sp-stats { display: flex; gap: 24px; }
   .sp-stat { display: flex; flex-direction: column; gap: 2px; }
   .sp-num { color: var(--fg); font-family: var(--font-mono); font-size: var(--text-base); font-weight: 600; line-height: 26px; }
-  .sp-lbl { color: var(--muted); font-size: var(--text-base); font-weight: 650; line-height: 14px; text-transform: uppercase; }
+  .sp-lbl { color: var(--muted); font-size: var(--text-micro); font-weight: 650; line-height: 14px; text-transform: uppercase; }
   .sp-sub { margin-top: 12px; color: var(--muted-3); font-size: var(--text-base); line-height: 18px; }
 
   .section { min-width: 0; }

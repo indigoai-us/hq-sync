@@ -183,7 +183,7 @@
     border: 0;
     background: transparent;
     color: var(--muted);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 650;
     line-height: 16px;
     text-transform: uppercase;

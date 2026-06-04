@@ -330,7 +330,7 @@
   .scope-label {
     color: var(--muted);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;

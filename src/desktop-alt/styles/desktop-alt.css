@@ -92,6 +92,10 @@ html[data-window='desktop-alt'] {
   --text-sm: 13px;
   --text-base: 13px;
   --text-lg: 13px;
+  /* The one permitted second size: monospace ALL-CAPS micro-labels and pills
+     (status tags, section eyebrows, table headers, scope pills, kbd). Smaller
+     so the uppercase tracking reads as a quiet label, not a shout. */
+  --text-micro: 11px;
 
   /* Mono prefers the bundled Geist Mono; falls back to the system stack. */
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
@@ -292,8 +296,8 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 .desktop-sidebar kbd {
   flex: 0 0 auto;
   color: currentColor;
-  font-family: inherit;
-  font-size: var(--text-base);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
   opacity: 0.42;
 }
 
@@ -308,7 +312,7 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 .section-label {
   padding: 0 8px 6px;
   color: var(--muted);
-  font-size: var(--text-base);
+  font-size: var(--text-micro);
   font-weight: 600;
   line-height: 16px;
   letter-spacing: 0.06em;
