@@ -62,6 +62,10 @@
   // universally and instant delivery (dm_mqtt.rs) is GA for everyone. Re-read
   // on each poll cycle so the toggle takes effect without restart.
   let dmNotifications = $state(true);
+  // CLI auto-update — shown to ALL signed-in users. hq_cli_update.rs re-reads
+  // this from menubar.json on each background check, so the toggle takes
+  // effect without restart. Default ON: the app keeps the HQ CLI current.
+  let cliAutoUpdate = $state(true);
   // Shared @getindigo.ai gate. No longer gates the notification toggles
   // (those are now universal) — still used by the staging-channel toggle and
   // the release-channel picker below. Populated at mount from
@@ -144,6 +148,7 @@
           instantSync: boolean | null;
           shareNotifications: boolean | null;
           dmNotifications: boolean | null;
+          cliAutoUpdate: boolean | null;
           stagingChannel: boolean | null;
           releaseChannel: string | null;
           meetingDetectNotify?: {
@@ -177,6 +182,7 @@
       instantSync = settings.instantSync ?? true;
       shareNotifications = settings.shareNotifications ?? true;
       dmNotifications = settings.dmNotifications ?? true;
+      cliAutoUpdate = settings.cliAutoUpdate ?? true;
       stagingChannel = settings.stagingChannel ?? true;
       isIndigoUser = indigoUser;
       availableChannels = (channels.filter(
@@ -228,6 +234,7 @@
           instantSync,
           shareNotifications,
           dmNotifications,
+          cliAutoUpdate,
           stagingChannel,
           // Round-trip the RAW stored value (null when never explicitly
           // chosen). The Rust side serializes `null` -> absent via
@@ -299,6 +306,11 @@
 
   async function handleToggleDmNotifications() {
     dmNotifications = !dmNotifications;
+    await saveAll();
+  }
+
+  async function handleToggleCliAutoUpdate() {
+    cliAutoUpdate = !cliAutoUpdate;
     await saveAll();
   }
 
@@ -701,6 +713,24 @@
               role="switch"
               aria-checked={dmNotifications}
               aria-label="Direct message notifications"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-cli-auto-update">Auto-update HQ CLI</label>
+              <span class="setting-desc">Keep the <code>hq</code> command-line tool up to date automatically</span>
+            </div>
+            <button
+              id="toggle-cli-auto-update"
+              class="toggle"
+              class:active={cliAutoUpdate}
+              onclick={handleToggleCliAutoUpdate}
+              role="switch"
+              aria-checked={cliAutoUpdate}
+              aria-label="Automatically update HQ CLI"
             >
               <span class="toggle-knob"></span>
             </button>

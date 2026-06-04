@@ -11,11 +11,19 @@
 //!   1. Resolve `hq` via `util::paths::resolve_bin`. If we get the bare
 //!      name "hq" back, the user doesn't have it installed — `local` is
 //!      None and we emit nothing (no nag for "you don't have it").
-//!   2. Run `hq --version` to read the installed version string.
+//!   2. Read the installed version by *anchoring to the resolved `hq`
+//!      binary* — canonicalize it and walk up to the enclosing
+//!      `@indigoai-us/hq-cli/package.json`. This is independent of which
+//!      npm prefix the app resolved, which is the fix for the prefix-
+//!      mismatch bug where a CLI installed under a different prefix than
+//!      the app's `npm root -g` read back as "not installed" and silently
+//!      suppressed the banner. Falls back to `npm root -g` then
+//!      `hq --version` so an installed CLI never yields silent None.
 //!   3. GET https://registry.npmjs.org/@indigoai-us/hq-cli/latest and
 //!      pull the `version` field.
 //!   4. Compare numerically. If latest > local, emit
-//!      `hq-cli-update:available` with both versions.
+//!      `hq-cli-update:available` with both versions. When `cliAutoUpdate`
+//!      is on (default), the background checker also installs it directly.
 //!
 //! A background task fires the check 15s after launch (offset from the
 //! app updater's 10s so they don't both spike CPU at the same moment),
@@ -30,6 +38,7 @@
 //! copy-the-command flow (typical failure: EACCES against a system-prefix
 //! npm that needs sudo).
 
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -87,43 +96,48 @@ pub(crate) fn cmp_semver(a: &str, b: &str) -> std::cmp::Ordering {
     parse(a).cmp(&parse(b))
 }
 
-/// Resolve the installed `@indigoai-us/hq-cli` version. Returns `None`
-/// when the CLI doesn't appear to be installed.
+/// Read `package.json` at `pkg` and return its `version` **iff** the
+/// package name is `@indigoai-us/hq-cli`. The name guard lets us walk a
+/// binary's ancestor chain and stop only at the *right* package — never a
+/// parent workspace's `package.json` that happens to sit above the install.
+fn version_if_hq_cli(pkg: &Path) -> Option<String> {
+    let bytes = std::fs::read(pkg).ok()?;
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if parsed.get("name").and_then(|n| n.as_str()) != Some("@indigoai-us/hq-cli") {
+        return None;
+    }
+    parsed
+        .get("version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Resolve the installed version by anchoring to the *actual `hq` binary the
+/// user runs*. An npm global install lays down `<prefix>/bin/hq` as a symlink
+/// into `<prefix>/lib/node_modules/@indigoai-us/hq-cli/<bin script>`, so once
+/// we `canonicalize` the resolved path we land *inside* the package tree and
+/// can walk `ancestors()` to its `package.json`.
 ///
-/// We deliberately do NOT trust `hq --version`. The CLI's `index.ts`
-/// carries a hardcoded `.version("…")` string that has not been kept in
-/// sync with the published npm version (same gotcha documented in
-/// `util::hq_resolver`). Asking the binary would lie to us and either
-/// over- or under-trigger the update banner.
-///
-/// Resolution order:
-///   1. Locate npm via `paths::resolve_bin("npm")`. If we have an npm,
-///      ask `npm root -g` for the global modules directory and read the
-///      `version` field from the installed `package.json` directly.
-///   2. Fall back to `hq --version` only if npm is unreachable (no node
-///      toolchain at all). Worse than nothing, but still better than
-///      returning None and silently disabling the nag for users who
-///      have `hq` somehow but not `npm`.
-pub fn get_local_version() -> Option<String> {
-    let npm = paths::resolve_bin("npm");
-    if npm != "npm" {
-        if let Some(v) = read_installed_version(&npm, &paths::child_path()) {
+/// This is the fix for the prefix-mismatch bug: it does NOT depend on which
+/// `npm` the app resolved or what `npm root -g` reports — it reads the
+/// version of the binary that's literally on the user's PATH.
+fn version_from_hq_binary(hq_bin: &Path) -> Option<String> {
+    let real = std::fs::canonicalize(hq_bin).ok()?;
+    for ancestor in real.ancestors() {
+        if let Some(v) = version_if_hq_cli(&ancestor.join("package.json")) {
             return Some(v);
         }
-        // npm resolved but the package isn't installed anywhere it can see.
-        // Don't fall through to `hq --version` — we'd just get the same
-        // stale hardcoded string from a binary npm doesn't manage.
-        return None;
     }
+    None
+}
 
-    // Last-ditch: no npm on PATH but the user might still have `hq` from
-    // an unmanaged install. Accept its lying version rather than emit
-    // nothing at all.
-    let bin = paths::resolve_bin("hq");
-    if bin == "hq" {
-        return None;
-    }
-    let out = Command::new(&bin).arg("--version").output().ok()?;
+/// Parse `hq --version` output into a bare version string. Last-resort only:
+/// the CLI's `index.ts` carries a hardcoded `.version("…")` string that can
+/// lag the published npm version (same gotcha documented in
+/// `util::hq_resolver`), so this may be stale. We still prefer a possibly-
+/// stale number over returning None and silently disabling the nag.
+fn hq_version_string(bin: &Path) -> Option<String> {
+    let out = Command::new(bin).arg("--version").output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -135,6 +149,110 @@ pub fn get_local_version() -> Option<String> {
     } else {
         Some(cleaned.to_string())
     }
+}
+
+/// Resolve the installed `@indigoai-us/hq-cli` version. Returns `None`
+/// only when the CLI genuinely isn't installed (or, rarely, is installed
+/// but unreadable by every probe — `check_once` Sentry-captures that case).
+///
+/// Resolution order (first hit wins):
+///   1. Binary-anchored — `version_from_hq_binary(resolve_bin("hq"))`.
+///      Authoritative and prefix-independent.
+///   2. `npm root -g` package.json — retained for non-symlink layouts.
+///   3. `hq --version` — last resort (may lag; see `hq_version_string`).
+pub fn get_local_version() -> Option<String> {
+    // 1. Binary-anchored read — the primary path; fixes the prefix-mismatch
+    //    silent-None bug by reading the version of the binary actually on PATH.
+    let hq = paths::resolve_bin("hq");
+    let hq_installed = hq != "hq";
+    if hq_installed {
+        if let Some(v) = version_from_hq_binary(Path::new(&hq)) {
+            return Some(v);
+        }
+    }
+
+    // 2. npm global package.json — same canonical source, located via
+    //    `npm root -g`. Covers layouts where `hq` isn't a symlink into the
+    //    package tree (e.g. a wrapper script).
+    let npm = paths::resolve_bin("npm");
+    if npm != "npm" {
+        if let Some(v) = read_installed_version(&npm, &paths::child_path()) {
+            return Some(v);
+        }
+    }
+
+    // 3. `hq --version` — last resort, but better than silent None for a
+    //    user who clearly has the CLI on PATH.
+    if hq_installed {
+        if let Some(v) = hq_version_string(Path::new(&hq)) {
+            return Some(v);
+        }
+    }
+
+    None
+}
+
+/// Read `cliAutoUpdate` directly from menubar.json (untyped) so the background
+/// checker never blocks on a typed round-trip and picks up a Settings toggle
+/// without a restart. Mirrors `dm_notify::dm_notifications_enabled`. Defaults
+/// to true — the app keeps the CLI current unless the user opts out.
+fn cli_auto_update_enabled() -> bool {
+    let Ok(dir) = paths::hq_config_dir() else {
+        return true;
+    };
+    let Ok(contents) = std::fs::read_to_string(dir.join("menubar.json")) else {
+        return true;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) else {
+        return true;
+    };
+    json.get("cliAutoUpdate")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+/// Capture a Sentry event when `hq` is installed but every version probe
+/// failed. Scrubbed by `sentry_scrub.rs` before send. This is the
+/// "detection silently degraded" signal the team triages immediately —
+/// the exact class that hid a stale CLI behind a missing banner.
+fn report_unreadable_version(latest: &str) {
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "version-unreadable");
+            scope.set_tag("latest", latest);
+        },
+        || {
+            sentry::capture_message(
+                "[hq-cli-update] hq is installed but its version could not be read \
+                 (binary-anchor, npm root, and hq --version all failed)",
+                sentry::Level::Warning,
+            );
+        },
+    );
+}
+
+/// Capture an auto/manual CLI-install failure to Sentry. The npm stderr tail
+/// (scrubbed of tokens/home paths by `sentry_scrub`) is the useful signal —
+/// most commonly an `EACCES` against a system npm prefix that needs sudo.
+fn report_install_failure(exit_code: Option<i32>, detail: &str) {
+    let exit_str = exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal/none".to_string());
+    let eacces = detail.contains("EACCES") || detail.contains("permission denied");
+    sentry::with_scope(
+        |scope| {
+            scope.set_tag("hq_cli_update_kind", "install-failed");
+            scope.set_tag("exit_code", exit_str.as_str());
+            scope.set_tag("eacces", if eacces { "true" } else { "false" });
+            scope.set_extra("npm_stderr", detail.to_string().into());
+        },
+        || {
+            sentry::capture_message(
+                &format!("[hq-cli-update] install failed (exit {exit_str})"),
+                sentry::Level::Error,
+            );
+        },
+    );
 }
 
 async fn fetch_latest() -> Result<String, String> {
@@ -178,6 +296,13 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, Stri
             local, latest, update_available
         ),
     );
+    // Triage signal: the CLI is on PATH but no probe could read its version.
+    // This is the silent-failure class that hid a stale CLI behind a missing
+    // banner — surface it so we can see how often detection degrades in the
+    // field (vs. the benign "user simply has no CLI" case, which stays quiet).
+    if local.is_none() && paths::resolve_bin("hq") != "hq" {
+        report_unreadable_version(&latest);
+    }
     if !update_available {
         return Ok(None);
     }
@@ -276,6 +401,7 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
             "hq-cli-update",
             &format!("install failed (exit {:?}): {detail}", output.status.code()),
         );
+        report_install_failure(output.status.code(), &detail);
         return Err(if detail.is_empty() {
             format!("npm install exited with status {:?}", output.status.code())
         } else {
@@ -321,13 +447,34 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
 /// Background loop: first check 15s after launch, then every 6h.
 /// Mirrors `updater::setup_update_checker`. Logs but does not propagate
 /// errors — a flaky network shouldn't kill the loop.
+///
+/// When a check reports an update **and** `cliAutoUpdate` is on (default),
+/// the loop installs it directly. The install never prompts for sudo — it
+/// just fails `EACCES` on a system prefix — so "auto-install when safe" is
+/// simply attempt + classify: success self-clears the banner via
+/// `hq-cli-update:cleared`; any failure leaves the clickable banner that
+/// `check_once` already emitted and Sentry-captures for triage. No fragile
+/// prefix-guessing heuristic.
 pub fn setup_hq_cli_update_checker(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(INITIAL_DELAY).await;
         loop {
-            if let Err(e) = check_once(&handle).await {
-                log("hq-cli-update", &format!("background check failed: {e}"));
+            match check_once(&handle).await {
+                Ok(Some(_)) => {
+                    if cli_auto_update_enabled() {
+                        log("hq-cli-update", "auto-update enabled — installing");
+                        match install_hq_cli_update(handle.clone()).await {
+                            Ok(_) => log("hq-cli-update", "auto-update succeeded"),
+                            Err(e) => log(
+                                "hq-cli-update",
+                                &format!("auto-update failed, banner remains: {e}"),
+                            ),
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => log("hq-cli-update", &format!("background check failed: {e}")),
             }
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
@@ -389,5 +536,66 @@ mod tests {
         assert_eq!(cmp_semver("5", "5.0.0"), Ordering::Equal);
         assert_eq!(cmp_semver("", "5.12.0"), Ordering::Less);
         assert_eq!(cmp_semver("not-a-version", "0.0.0"), Ordering::Equal);
+    }
+
+    #[test]
+    fn version_if_hq_cli_requires_matching_name() {
+        use std::io::Write;
+        let tmp = tempfile::TempDir::new().unwrap();
+        // Wrong name → None, even with a version present.
+        let wrong = tmp.path().join("wrong.json");
+        std::fs::File::create(&wrong)
+            .unwrap()
+            .write_all(br#"{"name":"left-pad","version":"9.9.9"}"#)
+            .unwrap();
+        assert_eq!(version_if_hq_cli(&wrong), None);
+        // Right name → version.
+        let right = tmp.path().join("package.json");
+        std::fs::File::create(&right)
+            .unwrap()
+            .write_all(br#"{"name":"@indigoai-us/hq-cli","version":"5.12.3"}"#)
+            .unwrap();
+        assert_eq!(version_if_hq_cli(&right), Some("5.12.3".to_string()));
+    }
+
+    /// Direct regression test for the prefix-mismatch bug: an `hq` symlink in
+    /// one prefix pointing into the package tree in another must still resolve
+    /// the installed version, with no dependence on `npm root -g`.
+    #[test]
+    #[cfg(unix)]
+    fn version_from_hq_binary_follows_symlink() {
+        use std::io::Write;
+        let tmp = tempfile::TempDir::new().unwrap();
+        // npm-global-style tree:
+        //   <tmp>/lib/node_modules/@indigoai-us/hq-cli/{package.json, bin/hq.js}
+        //   <tmp>/bin/hq -> .../hq-cli/bin/hq.js
+        let pkg_dir = tmp.path().join("lib/node_modules/@indigoai-us/hq-cli");
+        std::fs::create_dir_all(pkg_dir.join("bin")).unwrap();
+        std::fs::File::create(pkg_dir.join("package.json"))
+            .unwrap()
+            .write_all(br#"{"name":"@indigoai-us/hq-cli","version":"5.40.1"}"#)
+            .unwrap();
+        let real_bin = pkg_dir.join("bin/hq.js");
+        std::fs::File::create(&real_bin)
+            .unwrap()
+            .write_all(b"#!/usr/bin/env node\n")
+            .unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let link = bin_dir.join("hq");
+        std::os::unix::fs::symlink(&real_bin, &link).unwrap();
+
+        assert_eq!(version_from_hq_binary(&link), Some("5.40.1".to_string()));
+    }
+
+    /// A bare `hq` (binary not found, resolver returned the literal name) must
+    /// not be canonicalized into a bogus version.
+    #[test]
+    fn version_from_hq_binary_missing_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert_eq!(
+            version_from_hq_binary(&tmp.path().join("does-not-exist/hq")),
+            None
+        );
     }
 }

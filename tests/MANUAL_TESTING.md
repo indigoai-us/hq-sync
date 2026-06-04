@@ -216,6 +216,41 @@ pkill -f "HQ Sync" || true
 
 ---
 
+### UJ-005b: HQ CLI Update — Reliable Detection + Auto-Install
+
+**Goal:** The menubar reliably detects a stale `@indigoai-us/hq-cli` regardless of which npm prefix owns it, surfaces the banner without waiting on a fire-and-forget event, and (default) installs the update automatically. This is the regression coverage for the "CLI needs update but no prompt in app bar" report.
+
+**Backend modules:** `src-tauri/src/commands/hq_cli_update.rs`, `settings.rs`, `config.rs`. **Frontend:** `App.svelte` (`refreshHqCliUpdate`), `Settings.svelte` (Auto-update HQ CLI toggle).
+
+**Prerequisites:**
+- A globally-installed `hq` that is behind the npm `latest` tag.
+- `~/.hq/logs/hq-sync.log` tail open: `tail -f ~/.hq/logs/hq-sync.log | grep hq-cli-update`.
+
+**Detection across mismatched npm prefixes (root cause A):**
+
+- [ ] 1. Install `hq` under one prefix (e.g. homebrew npm) while the app's resolver would pick a *different* npm first (e.g. `~/.npm-global/bin/npm` exists but doesn't own `hq-cli`). Confirm `which hq` and `npm root -g` point at different prefixes.
+- [ ] 2. Launch the app and open the popover. Within 15s the log shows `check: local=Some("X.Y.Z") latest=… update_available=true` — `local` is **read**, not `None` (the binary-anchored read followed the `hq` symlink to its package.json).
+- [ ] 3. Verify the "hq CLI update available" banner appears.
+
+**Reliable surfacing on popover open (root cause B):**
+
+- [ ] 4. With a stale CLI, leave the app running well past the 15s/6h emit window, then open the popover. The banner is present on open (the on-focus `check_hq_cli_update` re-pull recovered it without waiting for the next 6h cycle).
+
+**Auto-install (default ON):**
+
+- [ ] 5. With a no-sudo prefix (managed toolchain or `~/.npm-global`) and `cliAutoUpdate` unset/true, a detected update installs automatically: log shows `auto-update enabled — installing` then `auto-update succeeded`; the banner clears itself (`hq-cli-update:cleared`); `hq --version`/package.json now match `latest`.
+- [ ] 6. In Settings, toggle **Auto-update HQ CLI** off. Re-detect a stale CLI → the banner appears but does **not** auto-install; clicking **Update** installs it. Confirm `~/.hq/menubar.json` now has `"cliAutoUpdate": false` and the toggle state persists across relaunch.
+
+**EACCES fallback + triage (root cause: install failure):**
+
+- [ ] 7. Force a system-prefix install (point the resolver at a `/usr/local`-style npm the user can't write). With auto-update on, the auto-install fails `EACCES`; log shows `auto-update failed, banner remains: …`; the clickable banner stays up.
+- [ ] 8. Confirm a scrubbed Sentry event was captured (`hq_cli_update_kind=install-failed`, `eacces=true`) — no tokens or home paths in the payload.
+- [ ] 9. Uninstall `hq` entirely → no banner and no Sentry nag (the "user simply has no CLI" case stays quiet). Re-install a stale build but make every version probe fail → log shows the check ran and a Sentry `version-unreadable` event is captured for triage.
+
+**Expected outcome:** The banner appears whenever an update exists, independent of npm prefix and event timing; the CLI auto-updates by default with a working off-switch; failures fall back to a clickable banner and are captured in Sentry for immediate triage.
+
+---
+
 ### UJ-006: Auto-Provisioning + Personal HQ
 
 **Goal:** Verify that unprovisioned companies are auto-created server-side and that personal (non-company) content is mirrored to the user's personal S3 bucket.
