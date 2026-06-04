@@ -383,10 +383,13 @@
   }
 
   /* Card grid — matches the Library page card grid (LibraryList .library-grid):
-     auto-fill tiles with a comfortable min width so projects read as cards. */
+     auto-fill tiles sized so three fit across a full-width window. Cards size
+     to their content (align-items: start), so a short card never inherits a
+     taller row-mate's height and leaves dead space. */
   .section-rows {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+    align-items: start;
     gap: var(--space-2);
     margin-top: var(--space-2);
   }

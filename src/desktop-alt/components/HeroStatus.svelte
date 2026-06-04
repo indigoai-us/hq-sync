@@ -104,8 +104,8 @@
   .hero-status {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 16px 24px;
-    padding-bottom: 22px;
+    gap: 14px 24px;
+    padding-bottom: 16px;
     border-bottom: 1px solid var(--border);
   }
 
@@ -123,12 +123,12 @@
   }
 
   .hero-status h1 {
-    margin: 2px 0 4px;
+    margin: 1px 0 3px;
     color: var(--fg);
     font-size: var(--text-base);
     font-weight: 680;
-    letter-spacing: 0;
-    line-height: 34px;
+    letter-spacing: 0.01em;
+    line-height: 20px;
   }
 
   .hero-current {
@@ -199,25 +199,30 @@
 
   .metric {
     min-width: 0;
-    padding: 12px;
+    display: grid;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: var(--bg);
-    transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
+    background: var(--row-active);
+    transition:
+      border-color 140ms cubic-bezier(.2, .7, .2, 1),
+      transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
   .metric:hover {
     border-color: var(--border-strong);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
     transform: translateY(-1px);
   }
 
   .metric-label {
     display: block;
     color: var(--muted);
-    font-size: var(--text-base);
-    font-weight: 650;
-    line-height: 16px;
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    line-height: 14px;
     text-transform: uppercase;
   }
 
@@ -227,8 +232,8 @@
     overflow-wrap: anywhere;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
-    line-height: 24px;
+    font-weight: 700;
+    line-height: 18px;
   }
 
   /* ---- loading skeletons ------------------------------------------------ */

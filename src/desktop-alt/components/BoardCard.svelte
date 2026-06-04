@@ -73,7 +73,7 @@
     border-radius: 999px;
     background: var(--row-active);
     color: var(--fg);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 750;
     line-height: 28px;
     text-align: center;

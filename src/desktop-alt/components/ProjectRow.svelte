@@ -156,7 +156,7 @@
     overflow: hidden;
     color: var(--muted-2);
     font-family: var(--font-mono);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.09em;
     line-height: 15px;
@@ -199,7 +199,7 @@
     background: var(--row-hover);
     color: var(--blue);
     font-family: var(--font-mono);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.05em;
     line-height: 15px;
@@ -237,7 +237,6 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-    margin-top: auto;
     padding-top: var(--space-1);
   }
 
