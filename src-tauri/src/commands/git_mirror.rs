@@ -13,6 +13,7 @@
 use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use chrono::SecondsFormat;
 
@@ -26,6 +27,26 @@ const LOG_TAG: &str = "git-mirror";
 /// race a still-running `git push`, and the guard auto-releases on scope
 /// exit so a panic mid-run never strands the lock.
 static MIRROR_LOCK: Mutex<()> = Mutex::new(());
+
+/// Minimum spacing between mirror runs. The watch-driven daemon can emit
+/// AllComplete every few seconds under heavy local churn (an active HQ session
+/// plus autocommit hooks rewriting the tree). Without a floor, git-mirror runs
+/// `git add -A` + commit every few seconds — burning CPU/disk and contending on
+/// `.git/index.lock` with any other writer. One snapshot per minute is ample for
+/// a versioned mirror; the next sync within the window catches up the tail.
+const MIN_MIRROR_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Timestamp of the last mirror attempt, for the throttle above.
+static LAST_MIRROR_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Pure throttle decision: skip when the previous mirror was under
+/// `MIN_MIRROR_INTERVAL` ago. Extracted so it's unit-testable without the global.
+fn should_skip_for_throttle(last: Option<Instant>, now: Instant) -> bool {
+    match last {
+        Some(t) => now.duration_since(t) < MIN_MIRROR_INTERVAL,
+        None => false,
+    }
+}
 
 /// Spawn the mirror on a background thread so the AllComplete handler
 /// returns immediately and the sync stdout reader keeps draining.
@@ -53,6 +74,22 @@ pub fn mirror_after_sync(hq_folder: &str) {
             return;
         }
     };
+
+    // Throttle: at most one mirror per MIN_MIRROR_INTERVAL, so a watch-driven
+    // burst of AllComplete events doesn't commit (and lock the index) every few
+    // seconds. We stamp the attempt time before running so concurrent callers
+    // that got past the lock still see the floor.
+    {
+        let mut last = LAST_MIRROR_AT.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        if should_skip_for_throttle(*last, now) {
+            let ago = last.map(|t| now.duration_since(t).as_secs()).unwrap_or(0);
+            log(LOG_TAG, &format!("{hq_folder}: throttled (last mirror {ago}s ago)"));
+            return;
+        }
+        *last = Some(now);
+    }
+
     if let Err(e) = run_mirror(hq_folder) {
         log(LOG_TAG, &format!("{hq_folder}: {e}"));
     }
@@ -132,6 +169,25 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn throttle_skips_within_interval_and_allows_after() {
+        let now = Instant::now();
+        // No prior mirror → never throttled.
+        assert!(!should_skip_for_throttle(None, now));
+        // A mirror that just happened → throttled.
+        assert!(should_skip_for_throttle(Some(now), now));
+        // Just under the interval → still throttled.
+        let recent = now.checked_sub(MIN_MIRROR_INTERVAL - Duration::from_secs(1));
+        if let Some(recent) = recent {
+            assert!(should_skip_for_throttle(Some(recent), now));
+        }
+        // Past the interval → allowed.
+        let old = now.checked_sub(MIN_MIRROR_INTERVAL + Duration::from_secs(1));
+        if let Some(old) = old {
+            assert!(!should_skip_for_throttle(Some(old), now));
+        }
+    }
 
     fn git(dir: &Path, args: &[&str]) -> Output {
         Command::new("git")

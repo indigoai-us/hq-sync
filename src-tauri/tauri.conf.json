@@ -80,6 +80,7 @@
     "resources": {
       "../scripts/replace-rescue.sh": "scripts/replace-rescue.sh",
       "../sidecar/recall-sdk-bridge/bridge.mjs": "recall-sdk-bridge/bridge.mjs",
+      "../sidecar/recall-sdk-bridge/recording-tracker.mjs": "recall-sdk-bridge/recording-tracker.mjs",
       "../sidecar/recall-sdk-bridge/package.json": "recall-sdk-bridge/package.json",
       "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules"
     },
