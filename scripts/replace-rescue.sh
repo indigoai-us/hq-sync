@@ -1397,4 +1397,18 @@ echo ""
 echo "==> Done. Source: $SOURCE_REPO@$REF ($SRC_SHA)"
 echo "    User-edited files were rescued under personal/ (see scan output above)."
 echo "    User-only files (created by you, unknown to upstream) were left untouched."
-[ "$DO_BACKUP" = "1" ] && [ -n "$BACKUP_DIR" ] && echo "    A full pre-update snapshot is at $BACKUP_DIR (RECOVERY.md explains restore)."
+# Snapshot path footer: emit only when a backup was actually taken AND its
+# resolved dir is non-empty. Wrapped in `if/then/fi` (not a `[...] && [...]
+# && echo` chain) so the script's final exit status is independent of the
+# branch taken — a `[ DO_BACKUP = 1 ]` test returning false in a `&&` chain
+# became this script's exit code under `set -e`, which kills any parent
+# wrapper script (e.g. `apps/hq-cloud/scripts/vault-rescue.sh`) that runs
+# us under `set -euo pipefail`.
+if [ "$DO_BACKUP" = "1" ] && [ -n "$BACKUP_DIR" ]; then
+  echo "    A full pre-update snapshot is at $BACKUP_DIR (RECOVERY.md explains restore)."
+fi
+
+# Always succeed if we reached the end. Without this, a future maintainer
+# could add another conditional trailing line and silently regress the
+# wrapper-script-kill bug. Explicit > implicit for the script's contract.
+exit 0
