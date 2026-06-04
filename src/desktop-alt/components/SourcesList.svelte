@@ -144,7 +144,7 @@
   .panel-header h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 15px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
   }
@@ -154,7 +154,7 @@
   .source-name span,
   .source-status span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
@@ -183,7 +183,7 @@
     border: 0;
     background: transparent;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
     text-transform: uppercase;
@@ -230,7 +230,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 18px;
     text-overflow: ellipsis;
@@ -298,7 +298,7 @@
     border-radius: 999px;
     background: var(--row-active);
     color: var(--muted-2);
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     white-space: nowrap;
   }
@@ -347,7 +347,7 @@
     border-radius: 999px;
     background: rgba(99, 102, 241, 0.14);
     color: #a5a8ff;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 1;
     letter-spacing: 0.02em;
@@ -448,7 +448,7 @@
 
   .empty-state span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   @keyframes pulse {

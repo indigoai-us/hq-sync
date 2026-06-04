@@ -34,7 +34,7 @@
     border-radius: var(--radius-sm);
     background: var(--chip-bg);
     color: var(--chip-fg);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
     text-overflow: ellipsis;

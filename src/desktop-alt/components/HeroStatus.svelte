@@ -118,14 +118,14 @@
   .hero-feedback {
     margin: 0;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
   .hero-status h1 {
     margin: 2px 0 4px;
     color: var(--fg);
-    font-size: 28px;
+    font-size: var(--text-base);
     font-weight: 680;
     letter-spacing: 0;
     line-height: 34px;
@@ -215,7 +215,7 @@
   .metric-label {
     display: block;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
     text-transform: uppercase;
@@ -226,7 +226,7 @@
     min-width: 0;
     overflow-wrap: anywhere;
     color: var(--fg);
-    font-size: 17px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 24px;
   }

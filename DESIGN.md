@@ -37,6 +37,10 @@ Layered translucent surfaces over the glass background, plus text tiers, kept ne
 
 ## Typography
 
+Two surfaces, two type treatments — the popover and the big window deliberately differ, mirroring the two-budget color split. The shared `--text-*` token names persist; the big window scope (`html[data-window='desktop-alt']`) redefines them so a single declaration site governs each surface.
+
+### Popover (4-step ramp, system font)
+
 System font only: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`. One family carries everything. Monospace (`--font-mono`: `ui-monospace, SFMono-Regular, Menlo`) only for version strings and file paths.
 
 Fixed rem scale (not fluid), tuned for a 320px popover. Ratio ~1.15 between steps:
@@ -49,6 +53,18 @@ Fixed rem scale (not fluid), tuned for a 320px popover. Ratio ~1.15 between step
 | `--text-lg` | 15px (0.9375rem) | screen titles, the popover's primary status line |
 
 Weight contrast does the hierarchy work: 600 for headings and labels-that-matter, 500 for standard labels, 400 for descriptions. Section headers are `--text-xs`, 600, uppercase, with positive letter-spacing and muted color.
+
+### Big-window type & chrome (one size, Geist — mirrors hq-console)
+
+The big window (`src/desktop-alt/`) is a wide, dwell-time "Company OS" surface. It follows the [hq-console](../../private/hq-console) language rather than the popover ramp:
+
+- **One type size.** 13px everywhere. All four `--text-*` tokens are redefined to 13px inside the desktop-alt scope, so no component can reintroduce a size jump. Hierarchy is carried entirely by **weight** (400 body / 600 headings + labels-that-matter) and the **grey (`--muted`) / white (`--fg`) split** — never by size. A page title is 13px/650 white, not a bigger font.
+- **Geist.** Bundled offline via `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (imported from `desktop-alt/main.ts`). `'Geist Variable'` carries body + headings; `--font-mono` (`'Geist Mono Variable'`) is reserved for IDs, paths, and version strings. A faint negative optical tracking (`-0.006em`) matches hq-console's finish.
+- **Chrome.** Hairline borders over low-fill surfaces, square-ish corners, grey uppercase section headers + white body, generous horizontal padding. A restrained **Indigo accent** (`--accent: #6366f1`, `--accent-soft`) is used for <10% of the surface: the active-nav "you are here" dot and the focus ring only.
+- **Card grids (the "Foundry tile").** Browsable collections — the Library (`LibraryList.svelte`) and the Board's Projects grid (`ProjectRow.svelte` in `ProjectListView`'s `auto-fill, minmax(296px, 1fr)` grid) — render as cards, not rows. The house card is a near-square (`4px`) hairline tile with a thin (3px) status/kind-colored left **accent bar** (a positioned indicator, not a `border-left` hack), a monospace ALL-CAPS micro-label, a scope pill, and a 2-line-clamped description. This thin in-card accent bar is the one sanctioned left-edge color cue; it is distinct from the banned decorative side-stripe on alerts/callouts/plain list items.
+- **Why it diverges.** The popover is read in motion and must disappear into the menu bar; the big window is a dwell surface where a calm single-size, hairline system reads as a finished product, not a CLI. Semantic state color (priority, project/story state, AC progress, 8-hue labels) still applies on the board — it marks state, not brand, and never fills.
+
+The single restrained green (`--popover-success`) positive-confirmation rule and the absolute design bans (no side-stripe borders, no gradient text, no decorative glassmorphism) hold on both surfaces.
 
 ## Spacing
 

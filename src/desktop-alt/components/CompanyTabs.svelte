@@ -85,7 +85,7 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 38px;
     white-space: nowrap;
@@ -145,7 +145,7 @@
     border-radius: 999px;
     background: var(--row-active);
     color: var(--muted-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 18px;
     text-align: center;
@@ -169,7 +169,7 @@
     padding: 3px 9px;
     background: transparent;
     color: var(--muted-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
     text-transform: capitalize;

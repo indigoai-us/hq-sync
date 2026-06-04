@@ -139,7 +139,7 @@
     background: var(--row-active);
     color: var(--muted-2);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     white-space: nowrap;
     cursor: pointer;

@@ -219,7 +219,7 @@
 
   .subdomain {
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 18px;
   }
@@ -227,7 +227,7 @@
   .url {
     grid-column: 1 / -1;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 15px;
   }
 
@@ -255,14 +255,14 @@
   .size,
   .version {
     color: var(--muted-3);
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
   }
 
   .size,
   .version {
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+    font-family: var(--font-mono);
   }
 
   .row-actions {
@@ -283,7 +283,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 700;
     white-space: nowrap;
     cursor: pointer;
@@ -392,7 +392,7 @@
 
   .detail-field dt {
     color: var(--muted);
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 14px;
     text-transform: uppercase;
@@ -407,13 +407,13 @@
     margin: 0;
     overflow-wrap: anywhere;
     color: var(--fg);
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
   }
 
   .detail-field dd.mono {
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+    font-family: var(--font-mono);
   }
 
   .detail-field .status-dot {
@@ -427,7 +427,7 @@
     background: transparent;
     color: var(--blue);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 600;
     text-align: left;
     overflow-wrap: anywhere;
@@ -441,7 +441,7 @@
   .detail-note {
     margin: 0;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -450,8 +450,8 @@
     border-radius: 4px;
     background: var(--row-hover);
     color: var(--muted-2);
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
-    font-size: 10px;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
   }
 
   @keyframes pulse {

@@ -50,7 +50,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 18px;
     -webkit-box-orient: vertical;
@@ -73,7 +73,7 @@
     border-radius: 999px;
     background: var(--row-active);
     color: var(--fg);
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 750;
     line-height: 28px;
     text-align: center;
@@ -86,7 +86,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
     text-overflow: ellipsis;

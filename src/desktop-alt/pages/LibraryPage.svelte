@@ -62,7 +62,7 @@
   .page-header h1 {
     margin: 0;
     color: var(--fg);
-    font-size: 22px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 29px;
   }
@@ -70,7 +70,7 @@
   .page-header p {
     margin: 5px 0 0;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 </style>

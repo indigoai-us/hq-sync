@@ -238,14 +238,14 @@
   .panel-header h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 20px;
   }
 
   .panel-header span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   /* Day separator above each per-day card. Ported from the classic
@@ -253,7 +253,7 @@
   .day-heading {
     margin: 14px 0 6px;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 650;
     letter-spacing: 0.08em;
     line-height: 16px;
@@ -299,8 +299,8 @@
 
   .mtime {
     color: var(--muted);
-    font-family: 'Geist Mono', ui-monospace, 'SF Mono', monospace;
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
     white-space: nowrap;
   }
 
@@ -315,7 +315,7 @@
   .mname {
     overflow: hidden;
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -334,7 +334,7 @@
   .mcompany {
     overflow: hidden;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -342,7 +342,7 @@
 
   .msig {
     color: var(--muted-3);
-    font-size: 12px;
+    font-size: var(--text-base);
     white-space: nowrap;
   }
 
@@ -354,7 +354,7 @@
     border: 1px solid var(--border);
     border-radius: 999px;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 16px;
     white-space: nowrap;
   }
@@ -380,7 +380,7 @@
   }
 
   .pill .check {
-    font-size: 10px;
+    font-size: var(--text-base);
   }
 
   /* ── Action cluster (parity 5th column) ───────────────────────────────
@@ -431,7 +431,7 @@
     background: transparent;
     border-color: transparent;
     cursor: default;
-    font-size: 12px;
+    font-size: var(--text-base);
   }
   /* Open-in-browser — discreet so the eye lands on the state button first. */
   .row-icon-join {
@@ -541,7 +541,7 @@
   .empty-row {
     display: block;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 

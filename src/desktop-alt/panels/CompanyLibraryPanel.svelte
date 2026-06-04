@@ -75,7 +75,7 @@
     border: 1px dashed var(--border);
     border-radius: var(--radius-md);
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     text-align: center;
   }
 </style>

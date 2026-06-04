@@ -14,12 +14,14 @@
  * preserves a documented desktop-specific value) instead of being an
  * independent definition. See DESIGN.md → "Unified desktop token set".
  *
- * Monochrome-glass constraint: no brand accent hue. Hierarchy comes from
- * surface layering, weight, and spacing. The only permitted color is the
- * single restrained green (`--popover-success`) for the notification-
- * permission-granted confirmation. Status hues retained for the meetings
- * surfaces (`--amber`/`--blue`/`--red`/`--emerald`) are legacy semantic
- * markers, not brand color.
+ * Big-window design language (mirrors hq-console; see DESIGN.md →
+ * "Big-window type & chrome"). This surface intentionally diverges from the
+ * popover: ONE type size (13px, hierarchy via weight + the grey/white split),
+ * the bundled Geist family, hairline borders over low-fill surfaces, and a
+ * restrained Indigo accent (`--accent`, <10% of surface) for the active-nav
+ * cue and focus ring only. Semantic state hues
+ * (`--emerald`/`--blue`/`--amber`/`--red` + the 8-hue label palette) mark
+ * project/story state and stay; they are not brand color and never fill.
  */
 @import '../../styles/popover.css';
 
@@ -62,23 +64,54 @@ html[data-window='desktop-alt'] {
   --scrollbar-thumb: rgba(255, 255, 255, 0.08);
   --scrollbar-thumb-hover: rgba(255, 255, 255, 0.18);
 
-  /* Status markers (meetings surfaces). Not brand accent — retained legacy
-     semantics. The lone permitted positive-confirmation green is the
-     canonical --popover-success; --emerald mirrors it for desktop usage. */
+  /* Status markers (board surfaces). Semantic state color, not brand accent:
+     priority, project/story state, AC progress, and label hues. The lone
+     permitted positive-confirmation green is the canonical --popover-success;
+     --emerald mirrors it for desktop usage. */
   --emerald: var(--popover-success);
   --amber: #f59e0b;
   --red: #f87171;
   --blue: #60a5fa;
 
+  /* Brand accent (Indigo), mirrored from hq-console. Used sparingly (<10% of
+     surface): the active-nav "you are here" cue and the focus ring only —
+     never as a fill or a decorative flourish. */
+  --accent: #6366f1;
+  --accent-soft: rgba(99, 102, 241, 0.16);
+
+  /* ---- ONE TYPE SIZE ----------------------------------------------------
+   * The big window is a single-size surface (mirroring hq-console): 13px
+   * everywhere, hierarchy carried by weight (400 body / 600 headings) and the
+   * grey(--muted)/white(--fg) split, never by size. The popover keeps its
+   * 4-step ramp; here we collapse all four --text-* steps onto one value so
+   * any component still reading a token can't reintroduce a size jump. New
+   * code should use var(--text-base). See DESIGN.md → "Big-window type".
+   * Declared in px (not rem) so the single size is exact and immune to the
+   * root-element rem-resolution quirk. */
+  --text-xs: 13px;
+  --text-sm: 13px;
+  --text-base: 13px;
+  --text-lg: 13px;
+
+  /* Mono prefers the bundled Geist Mono; falls back to the system stack. */
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
+    Monaco, monospace;
+
   color-scheme: light dark;
   background: var(--bg);
   color: var(--fg);
+  /* Bundled Geist (variable axis) — registered family name is
+     'Geist Variable'. Falls back to the native stack if the font asset is
+     unavailable. */
   font-family:
-    'Geist', ui-sans-serif, -apple-system, system-ui, 'SF Pro Text', sans-serif;
-  font-size: 14px;
+    'Geist Variable', ui-sans-serif, -apple-system, system-ui, 'SF Pro Text',
+    sans-serif;
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums lining-nums;
+  /* Subtle optical tracking, matching hq-console's high-end finish. */
+  letter-spacing: -0.006em;
 }
 
 html[data-window='desktop-alt'] body {
@@ -193,9 +226,10 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   height: 24px;
   padding: 0 8px;
   color: var(--fg);
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 650;
   line-height: 24px;
+  letter-spacing: 0.01em;
 }
 
 .sidebar-nav {
@@ -205,6 +239,7 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .sidebar-nav button {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -234,6 +269,19 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   color: var(--fg);
 }
 
+/* "You are here" cue: a small accent dot in the gutter, not a side stripe. */
+.sidebar-nav button.active::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+
 .sidebar-nav span {
   min-width: 0;
   overflow: hidden;
@@ -245,8 +293,8 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   flex: 0 0 auto;
   color: currentColor;
   font-family: inherit;
-  font-size: 11px;
-  opacity: 0.56;
+  font-size: var(--text-base);
+  opacity: 0.42;
 }
 
 .company-section {
@@ -260,9 +308,10 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 .section-label {
   padding: 0 8px 6px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
+  font-size: var(--text-base);
+  font-weight: 600;
   line-height: 16px;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
@@ -276,7 +325,7 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   height: 28px;
   padding: 0 8px;
   color: var(--muted-2);
-  font-size: 12px;
+  font-size: var(--text-base);
   line-height: 28px;
 }
 
@@ -338,9 +387,10 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 .page-header h1 {
   margin: 0;
   color: var(--fg);
-  font-size: 18px;
+  font-size: var(--text-base);
   font-weight: 650;
-  line-height: 24px;
+  line-height: 18px;
+  letter-spacing: 0.01em;
 }
 
 .placeholder-panel {
@@ -358,7 +408,7 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .placeholder-panel span {
-  font-size: 12px;
+  font-size: var(--text-base);
 }
 
 .workspace-error {
@@ -374,6 +424,6 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   border-top: 1px solid var(--border);
   background: var(--bg-subtle);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-base);
   line-height: var(--desktop-status-bar-height, 26px);
 }

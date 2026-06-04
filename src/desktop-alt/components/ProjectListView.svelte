@@ -217,7 +217,7 @@
     background: var(--row-active);
     color: var(--fg);
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     transition:
       background 140ms ease,
       border-color 140ms ease;
@@ -246,7 +246,7 @@
     background: var(--row-hover);
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -288,7 +288,7 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     cursor: pointer;
     transition:
@@ -316,7 +316,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--amber);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .list-body {
@@ -366,7 +366,7 @@
 
   .section-label {
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     text-transform: capitalize;
   }
@@ -376,18 +376,19 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     line-height: 16px;
   }
 
+  /* Card grid — matches the Library page card grid (LibraryList .library-grid):
+     auto-fill tiles with a comfortable min width so projects read as cards. */
   .section-rows {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
     gap: var(--space-2);
     margin-top: var(--space-2);
-    padding-left: var(--space-2);
   }
 
   .list-loading {
@@ -415,13 +416,13 @@
   .empty-title {
     margin: 0;
     color: var(--muted-2);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .empty-detail {
     margin: 0;
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
   }
 
   .link-button {
@@ -429,7 +430,7 @@
     background: transparent;
     color: var(--blue);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     cursor: pointer;
   }
 

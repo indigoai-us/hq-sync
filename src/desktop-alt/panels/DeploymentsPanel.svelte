@@ -186,7 +186,7 @@
   .deployments-title h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 16px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
   }
@@ -196,7 +196,7 @@
   .empty-state,
   .counts {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -236,7 +236,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     white-space: nowrap;
     cursor: default;
@@ -273,12 +273,12 @@
   }
 
   .deployments-error strong {
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
   .deployments-error span {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -305,7 +305,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--muted-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 18px;
     text-overflow: ellipsis;
@@ -325,7 +325,7 @@
     padding: 8px 13px;
     border-bottom: 1px solid var(--border);
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 15px;
     text-transform: uppercase;

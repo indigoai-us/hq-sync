@@ -177,7 +177,7 @@
   .secrets-title h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 16px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
   }
@@ -187,7 +187,7 @@
   .empty-state,
   .doc-note {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -216,7 +216,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     white-space: nowrap;
     cursor: default;
@@ -253,12 +253,12 @@
   }
 
   .secrets-error strong {
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
   .secrets-error span {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -285,7 +285,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--muted-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 18px;
     text-overflow: ellipsis;

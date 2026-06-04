@@ -1,11 +1,11 @@
 <script lang="ts">
   /**
-   * ProjectRow — a single clickable project in the Board list (US-007).
-   *
-   * Ported from hq-desktop's ProjectRow: status dot (pulsing when live), title,
-   * status badge, company badge, one-line description, and a complete/total
-   * progress bar driven by US-004's `projectProgress`. Live projects get a
-   * left-edge accent + faint glow for visual emphasis. Token-driven only.
+   * ProjectRow — a single project rendered as a Foundry/"ops console" card in
+   * the Board grid (US-007), matching the Library page card language
+   * (LibraryList.svelte): dark surface tile, near-square corners, hairline
+   * border, a status-colored left accent bar, a monospace ALL-CAPS status
+   * micro-label, a scope pill, a 2-line description, and an acceptance progress
+   * footer. Token-driven only — no hardcoded hex.
    */
   import {
     projectDisplayName,
@@ -17,7 +17,7 @@
 
   interface Props {
     project: Project;
-    /** Whether to show the company badge (hidden when grouped by company). */
+    /** Whether to show the company pill (hidden when grouped by company). */
     showCompany?: boolean;
     onselect?: (project: Project) => void;
   }
@@ -32,42 +32,37 @@
   function activate() {
     onselect?.(project);
   }
-
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      activate();
-    }
-  }
 </script>
 
-<div
-  class="project-row"
+<button
+  type="button"
+  class="project-card"
   class:is-live={isLive}
-  role="button"
-  tabindex="0"
   data-status={status}
   data-testid="project-row"
+  aria-label={`Project ${projectDisplayName(project)}`}
   onclick={activate}
-  onkeydown={onKeydown}
 >
-  <div class="row-main">
-    <div class="row-heading">
+  <span class="accent" data-status={status} aria-hidden="true"></span>
+
+  <div class="card-head">
+    <span class="status-tag" data-status={status}>
       <span class="status-dot" class:is-live={isLive} data-status={status} aria-hidden="true"></span>
-      <h3 class="project-name">{projectDisplayName(project)}</h3>
-      <span class="status-badge" data-status={status}>{PROJECT_LIST_STATUS_LABEL[status]}</span>
-      {#if showCompany && project.company}
-        <span class="company-badge">{project.company}</span>
-      {/if}
-    </div>
-    {#if project.description}
-      <p class="project-description">{project.description}</p>
+      {PROJECT_LIST_STATUS_LABEL[status]}
+    </span>
+    {#if showCompany && project.company}
+      <span class="pill company" title={project.company}>{project.company}</span>
     {/if}
   </div>
 
-  <div class="row-trailing">
-    {#if hasProgress}
-      <span class="progress-count">{progress.complete}/{progress.total}</span>
+  <h3 class="card-name" title={projectDisplayName(project)}>{projectDisplayName(project)}</h3>
+
+  {#if project.description}
+    <p class="card-desc">{project.description}</p>
+  {/if}
+
+  {#if hasProgress}
+    <div class="card-progress">
       <div class="progress-track" aria-hidden="true">
         <div
           class="progress-fill"
@@ -75,23 +70,26 @@
           style={`width: ${progress.percent}%;`}
         ></div>
       </div>
+      <span class="progress-count">{progress.complete}/{progress.total}</span>
       <span class="progress-percent">{progress.percent}%</span>
-    {/if}
-    <span class="chevron" aria-hidden="true">›</span>
-  </div>
-</div>
+    </div>
+  {/if}
+</button>
 
 <style>
-  .project-row {
+  .project-card {
+    position: relative;
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-4);
+    flex-direction: column;
+    gap: var(--space-2);
     min-width: 0;
-    padding: var(--space-3) var(--space-4);
+    /* Extra left pad clears the accent bar (matches .lib-card). */
+    padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 4px);
+    overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    border-radius: 4px;
     background: var(--row-active);
+    text-align: left;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -99,66 +97,118 @@
       transform 140ms ease;
   }
 
-  .project-row:hover {
+  .project-card:hover {
     border-color: var(--border-strong);
     background: var(--row-hover);
     transform: translateY(-1px);
   }
 
-  .project-row:active {
+  .project-card:active {
     transform: translateY(0);
   }
 
-  .project-row:focus-visible {
+  .project-card:focus-visible {
     outline: 2px solid var(--blue);
     outline-offset: 2px;
   }
 
-  /* Live projects get a left accent rail + a faint glow. */
-  .project-row.is-live {
-    border-left: 2px solid var(--emerald);
-    box-shadow: inset 3px 0 0 -1px var(--emerald);
+  /* Status-colored left accent bar — brightens on hover. Live pulses. */
+  .accent {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: 3px;
+    background: var(--muted-3);
+    opacity: 0.55;
+    transition: opacity 140ms ease;
+  }
+  .accent[data-status='live'] {
+    background: var(--emerald);
+  }
+  .accent[data-status='in-progress'] {
+    background: var(--blue);
+  }
+  .accent[data-status='complete'] {
+    background: var(--muted-2);
+  }
+  .project-card:hover .accent {
+    opacity: 1;
+  }
+  .project-card.is-live .accent {
+    opacity: 1;
+    animation: accent-pulse 1.8s ease-in-out infinite;
   }
 
-  .row-main {
-    min-width: 0;
-    flex: 1 1 auto;
-  }
-
-  .row-heading {
+  .card-head {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: var(--space-2);
     min-width: 0;
   }
 
+  /* Monospace ALL-CAPS status micro-label — the signature ops-console tag. */
+  .status-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    line-height: 15px;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .status-tag[data-status='live'] {
+    color: var(--emerald);
+  }
+
   .status-dot {
     flex: 0 0 auto;
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 999px;
     background: var(--muted-3);
   }
-
   .status-dot[data-status='in-progress'] {
     background: var(--blue);
   }
-
   .status-dot[data-status='complete'] {
     background: var(--muted-2);
   }
-
-  .status-dot[data-status='archived'] {
-    background: var(--muted-3);
-  }
-
   .status-dot.is-live {
     background: var(--emerald);
     animation: dot-pulse 1.8s ease-in-out infinite;
   }
 
-  .project-name {
-    min-width: 0;
+  /* Scope pill (company) — mono, uppercase, hairline (matches .lib-card .pill). */
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    max-width: 50%;
+    overflow: hidden;
+    padding: 1px 7px;
+    border: 1px solid color-mix(in srgb, var(--blue) 38%, transparent);
+    border-radius: 3px;
+    background: var(--row-hover);
+    color: var(--blue);
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    line-height: 15px;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .card-name {
     margin: 0;
     overflow: hidden;
     color: var(--fg);
@@ -169,63 +219,31 @@
     white-space: nowrap;
   }
 
-  .status-badge {
-    flex: 0 0 auto;
-    padding: 1px 6px;
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-2);
-    font-size: var(--text-xs);
-    font-weight: 650;
-    line-height: 15px;
-    white-space: nowrap;
-  }
-
-  .status-badge[data-status='live'] {
-    background: color-mix(in srgb, var(--emerald) 18%, transparent);
-    color: var(--emerald);
-  }
-
-  .company-badge {
-    flex: 0 0 auto;
-    padding: 1px 6px;
-    border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--blue) 12%, transparent);
-    color: color-mix(in srgb, var(--blue) 70%, var(--muted-2));
-    font-size: var(--text-xs);
-    font-weight: 600;
-    line-height: 15px;
-    white-space: nowrap;
-  }
-
-  .project-description {
-    margin: var(--space-1) 0 0;
+  .card-desc {
+    margin: 2px 0 0;
+    min-width: 0;
     overflow: hidden;
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    /* Clamp to two lines so tiles stay uniform. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
-  .row-trailing {
+  .card-progress {
     display: flex;
-    flex: 0 0 auto;
     align-items: center;
-    gap: var(--space-3);
-    padding-top: 1px;
-  }
-
-  .progress-count {
-    color: var(--muted-2);
-    font-size: var(--text-xs);
-    font-variant-numeric: tabular-nums;
-    line-height: 16px;
+    gap: var(--space-2);
+    margin-top: auto;
+    padding-top: var(--space-1);
   }
 
   .progress-track {
-    width: 84px;
-    height: 6px;
+    flex: 1 1 auto;
+    height: 4px;
     overflow: hidden;
     border-radius: 999px;
     background: var(--row-hover);
@@ -237,32 +255,29 @@
     background: var(--muted-2);
     transition: width 300ms ease;
   }
-
   .progress-fill[data-status='live'] {
     background: var(--emerald);
   }
-
   .progress-fill[data-status='in-progress'] {
     background: var(--blue);
   }
 
-  .progress-fill[data-status='complete'] {
-    background: var(--muted-2);
+  .progress-count {
+    flex: 0 0 auto;
+    color: var(--muted-2);
+    font-size: var(--text-base);
+    font-variant-numeric: tabular-nums;
+    line-height: 16px;
   }
 
   .progress-percent {
-    width: 34px;
+    flex: 0 0 auto;
+    min-width: 30px;
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     line-height: 16px;
     text-align: right;
-  }
-
-  .chevron {
-    color: var(--muted-3);
-    font-size: var(--text-lg);
-    line-height: 1;
   }
 
   @keyframes dot-pulse {
@@ -275,18 +290,30 @@
     }
   }
 
+  @keyframes accent-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .project-row,
-    .progress-fill {
+    .project-card,
+    .progress-fill,
+    .accent {
       transition: none;
     }
 
-    .project-row:hover,
-    .project-row:active {
+    .project-card:hover,
+    .project-card:active {
       transform: none;
     }
 
-    .status-dot.is-live {
+    .status-dot.is-live,
+    .project-card.is-live .accent {
       animation: none;
     }
   }

@@ -193,7 +193,7 @@
     gap: 6px;
     color: var(--muted-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
@@ -242,7 +242,7 @@
     background: var(--row-hover);
     color: var(--muted-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.05em;
     line-height: 15px;
@@ -286,7 +286,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
     /* Clamp to two lines so tiles stay uniform. */
     display: -webkit-box;
@@ -311,7 +311,7 @@
 
   .empty-state span {
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
   }
 
   @media (prefers-reduced-motion: reduce) {
