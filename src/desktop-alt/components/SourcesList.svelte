@@ -15,9 +15,12 @@
     progress: SyncProgress | null;
     statsBySlug: Record<string, WorkspaceSyncStats>;
     cloudReachable: boolean;
+    /** True during the first real-state fetch → skeleton rows, not empty state. */
+    loading?: boolean;
   }
 
-  let { workspaces, syncState, progress, statsBySlug, cloudReachable }: Props = $props();
+  let { workspaces, syncState, progress, statsBySlug, cloudReachable, loading = false }: Props =
+    $props();
 
   const rows = $derived(
     buildSourceRows({
@@ -47,10 +50,28 @@
 <section class="sources-panel" aria-labelledby="sources-title">
   <div class="panel-header">
     <h2 id="sources-title">Sources</h2>
-    <span>{workspaces.length} source{workspaces.length === 1 ? '' : 's'}</span>
+    <span>{loading && rows.length === 0 ? '' : `${workspaces.length} source${workspaces.length === 1 ? '' : 's'}`}</span>
   </div>
 
-  {#if rows.length === 0}
+  {#if loading && rows.length === 0}
+    <div class="source-table" aria-busy="true" aria-label="Loading sources">
+      {#each [0, 1, 2, 3] as row (row)}
+        <div class="source-row source-skeleton-row">
+          <div class="source-name">
+            <span class="skeleton-dot"></span>
+            <div style="flex: 1; min-width: 0;">
+              <span class="skeleton-line" style="width: 46%"></span>
+              <span class="skeleton-line" style="width: 64%"></span>
+            </div>
+          </div>
+          <span class="skeleton-line" style="width: 60%"></span>
+          <span class="skeleton-line" style="width: 70%"></span>
+          <span class="skeleton-line" style="width: 50%"></span>
+          <span class="skeleton-pill"></span>
+        </div>
+      {/each}
+    </div>
+  {:else if rows.length === 0}
     <div class="empty-state">
       <p>No syncable workspaces found.</p>
       <span>Connect a workspace from Settings, then sync will show it here.</span>
@@ -367,6 +388,50 @@
     pointer-events: auto;
   }
 
+  /* ---- loading skeletons ------------------------------------------------ */
+  .source-skeleton-row:hover {
+    border-color: var(--border);
+    box-shadow: none;
+    transform: none;
+  }
+
+  .source-skeleton-row .skeleton-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    background: var(--row-active);
+    flex: 0 0 auto;
+    animation: sources-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+
+  .source-skeleton-row .skeleton-line {
+    display: block;
+    height: 10px;
+    margin: 3px 0;
+    border-radius: 999px;
+    background: var(--row-active);
+    animation: sources-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+
+  .source-skeleton-row .skeleton-pill {
+    display: block;
+    width: 74px;
+    height: 24px;
+    border-radius: 999px;
+    background: var(--row-active);
+    animation: sources-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes sources-skeleton-pulse {
+    0%,
+    100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
   .empty-state {
     padding: 28px;
     border: 1px dashed var(--border-strong);
@@ -407,6 +472,12 @@
     }
 
     .state-dot.syncing {
+      animation: none;
+    }
+
+    .source-skeleton-row .skeleton-dot,
+    .source-skeleton-row .skeleton-line,
+    .source-skeleton-row .skeleton-pill {
       animation: none;
     }
   }

@@ -19,6 +19,8 @@
     daemon: DaemonStatus | null;
     indexedFiles: number;
     observedVaultBytes: number;
+    /** During the first real-state fetch, skeleton the metric values. */
+    loading?: boolean;
     onsync: () => void;
     onsettings: () => void;
     onaddsource: () => void;
@@ -35,6 +37,7 @@
     daemon,
     indexedFiles,
     observedVaultBytes,
+    loading = false,
     onsync,
     onsettings,
     onaddsource,
@@ -50,7 +53,11 @@
 
 <section class="hero-status" aria-labelledby="sync-hero-title">
   <div class="hero-main">
-    <p class="hero-kicker">Last full sync · {lastFullSyncLabel}</p>
+    {#if loading}
+      <span class="hero-kicker-skeleton" aria-hidden="true"></span>
+    {:else}
+      <p class="hero-kicker">Last full sync · {lastFullSyncLabel}</p>
+    {/if}
     <h1 id="sync-hero-title">Sync</h1>
     {#if syncState === 'syncing'}
       <p class="hero-current">Syncing now {syncNowLabel}</p>
@@ -79,23 +86,17 @@
     <p class="hero-feedback" role="status">{actionMessage}</p>
   {/if}
 
-  <div class="hero-metrics" aria-label="Sync metrics">
-    <div class="metric">
-      <span class="metric-label">Sources</span>
-      <strong>{workspaces.length.toLocaleString()}</strong>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Indexed files</span>
-      <strong>{indexedFiles.toLocaleString()}</strong>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Vault size</span>
-      <strong>{vaultSizeLabel}</strong>
-    </div>
-    <div class="metric">
-      <span class="metric-label">Uptime</span>
-      <strong>{uptimeLabel}</strong>
-    </div>
+  <div class="hero-metrics" aria-label="Sync metrics" aria-busy={loading}>
+    {#each [{ label: 'Sources', value: workspaces.length.toLocaleString() }, { label: 'Indexed files', value: indexedFiles.toLocaleString() }, { label: 'Vault size', value: vaultSizeLabel }, { label: 'Uptime', value: uptimeLabel }] as m (m.label)}
+      <div class="metric">
+        <span class="metric-label">{m.label}</span>
+        {#if loading}
+          <span class="metric-skeleton" aria-hidden="true"></span>
+        {:else}
+          <strong>{m.value}</strong>
+        {/if}
+      </div>
+    {/each}
   </div>
 </section>
 
@@ -230,6 +231,36 @@
     line-height: 24px;
   }
 
+  /* ---- loading skeletons ------------------------------------------------ */
+  .metric-skeleton {
+    display: block;
+    width: 60%;
+    height: 18px;
+    margin-top: 3px;
+    border-radius: 999px;
+    background: var(--row-active);
+    animation: hero-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+
+  .hero-kicker-skeleton {
+    display: block;
+    width: 140px;
+    height: 12px;
+    border-radius: 999px;
+    background: var(--row-active);
+    animation: hero-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes hero-skeleton-pulse {
+    0%,
+    100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
   @keyframes feedbackIn {
     from {
       opacity: 0;
@@ -252,7 +283,9 @@
       transform: none;
     }
 
-    .hero-feedback {
+    .hero-feedback,
+    .metric-skeleton,
+    .hero-kicker-skeleton {
       animation: none;
     }
   }

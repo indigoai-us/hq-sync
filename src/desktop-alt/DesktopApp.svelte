@@ -71,6 +71,10 @@
   let activity = $state<ActivityEntry[]>([]);
   let status = $state<SyncStatus | null>(null);
   let daemon = $state<DaemonStatus | null>(null);
+  // Flips true once the first real-state load (workspaces + status + activity)
+  // resolves, so the Sync surface shows skeletons instead of a 0/empty flash
+  // during the initial fetch window.
+  let ready = $state(false);
   let actionMessage = $state('');
   let actionError = $state('');
   let commandPaletteOpen = $state(false);
@@ -291,7 +295,9 @@
       hydrateMeetingStatus();
     }, 30_000);
 
-    refreshRealState();
+    void refreshRealState().finally(() => {
+      if (mounted) ready = true;
+    });
     hydrateMeetingStatus();
     // Warm the Meetings singleton at app launch so its data is ready before the
     // user ever navigates to Meetings — the page then reads the warm store on
@@ -535,6 +541,7 @@
               <SyncPage
                 {workspaces}
                 {syncState}
+                {ready}
                 progress={syncProgress}
                 companies={syncCompanies}
                 {status}
