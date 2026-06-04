@@ -711,6 +711,32 @@
     }
   }
 
+  // Pull the current CLI-update state on demand instead of waiting for the
+  // backend's fire-and-forget `hq-cli-update:available` event (launch+15s,
+  // then every 6h). Without this the banner is blind whenever the event
+  // fired before the listener attached or the popover is opened mid-cycle —
+  // the exact gap that hid Jacob's stale CLI. Called once on mount and on
+  // every popover focus; mirrors the on-focus `check_core_state` re-pull.
+  // Fire-and-forget: an in-flight install owns the state, so don't clobber it.
+  async function refreshHqCliUpdate() {
+    if (hqCliUpdateInstalling) return;
+    try {
+      const info = await invoke<{ local: string | null; latest: string } | null>(
+        'check_hq_cli_update'
+      );
+      // Some → an update is available (show banner); None → up to date or no
+      // CLI (leave any existing banner to be cleared by the :cleared event).
+      if (info) {
+        hqCliUpdateError = null;
+        hqCliUpdateAvailable = info;
+      } else {
+        hqCliUpdateAvailable = null;
+      }
+    } catch (err) {
+      console.error('check_hq_cli_update failed:', err);
+    }
+  }
+
   async function handleInstallUpdate() {
     if (updateInstalling) return;
     updateInstalling = true;
@@ -752,6 +778,10 @@
       await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
         if (focused) {
           loadWorkspaces();
+          // Re-pull CLI-update state on every popover open so a missed
+          // `hq-cli-update:available` event surfaces within one open instead
+          // of up to 6h. Fire-and-forget.
+          refreshHqCliUpdate();
         }
       })
     );
@@ -1045,6 +1075,9 @@
         }
       )
     );
+    // Hydrate immediately rather than waiting for the launch+15s background
+    // emit — the listeners above are now attached, so pull current state.
+    refreshHqCliUpdate();
 
     // --- unified hq-core state listener ---
     // Protocol (see src-tauri/src/commands/hq_core_state.rs):
