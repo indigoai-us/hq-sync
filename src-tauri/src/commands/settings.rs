@@ -33,7 +33,6 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
-            cli_auto_update: Some(true),
             staging_channel: Some(true),
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
@@ -75,10 +74,6 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // each poll cycle in dm_notify.rs so the toggle takes effect without
         // restart. Mirrors `share_notifications`.
         dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
-        // CLI auto-update defaults ON — re-read untyped from menubar.json by
-        // hq_cli_update.rs on each background check so the toggle takes effect
-        // without restart. Mirrors `dm_notifications`.
-        cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
         // Staging channel (@getindigo.ai-only): defaults ON so existing
         // builders' "Update to Staging" pill keeps rendering across the
         // upgrade. An explicit `false` flips them to the prod release
@@ -154,7 +149,6 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
-            cli_auto_update: None,
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
@@ -180,7 +174,6 @@ mod tests {
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
-            cli_auto_update: Some(prefs.cli_auto_update.unwrap_or(true)),
             staging_channel: Some(prefs.staging_channel.unwrap_or(true)),
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
@@ -203,9 +196,6 @@ mod tests {
         // staging_channel defaults ON (@indigo users keep "Update to Staging"
         // across the upgrade until they explicitly toggle off).
         assert_eq!(result.staging_channel, Some(true));
-        // CLI auto-update defaults ON — the app keeps the CLI current unless
-        // the user opts out.
-        assert_eq!(result.cli_auto_update, Some(true));
         // release_channel stays None at the apply_defaults boundary; the
         // identity-aware resolution happens inside get_settings itself
         // and is exercised by util::release_channel::tests.
@@ -242,7 +232,6 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(false),
             dm_notifications: Some(false),
-            cli_auto_update: Some(false),
             staging_channel: Some(false),
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
@@ -259,7 +248,6 @@ mod tests {
         // explicit false must survive the unwrap_or(true)
         assert_eq!(result.share_notifications, Some(false));
         assert_eq!(result.dm_notifications, Some(false));
-        assert_eq!(result.cli_auto_update, Some(false));
         assert_eq!(result.staging_channel, Some(false));
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
@@ -281,7 +269,6 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: Some(true),
             dm_notifications: Some(true),
-            cli_auto_update: Some(true),
             staging_channel: Some(true),
             release_channel: Some("beta".to_string()),
             meeting_detect_notify: None,

@@ -117,19 +117,6 @@ pub struct MenubarPrefs {
     /// menubar.json files → treated as true (see `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dm_notifications: Option<bool>,
-    /// Auto-update the globally-installed `hq` CLI: when true (default), the
-    /// background update checker, on detecting a newer `@indigoai-us/hq-cli`
-    /// on the npm registry, runs `npm install -g …@latest` directly instead of
-    /// only nagging. The install never prompts for sudo (it fails `EACCES` on a
-    /// system prefix), so a failed auto-install just falls back to the clickable
-    /// banner. Read directly from menubar.json in
-    /// `commands/hq_cli_update.rs::cli_auto_update_enabled` (untyped) so the
-    /// checker picks up the toggle without a restart; this typed field exists so
-    /// the Settings toggle round-trips cleanly through get/save_settings and
-    /// isn't wiped on the next save. Absent in pre-auto-update menubar.json
-    /// files → treated as true (see `get_settings`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cli_auto_update: Option<bool>,
     /// Rescue-source channel for @getindigo.ai builders. When `true`
     /// (default), the Settings toggle is ON → the popover's `CoreState`
     /// runs against `indigoai-us/hq-core-staging` (drift vs staging main,

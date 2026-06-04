@@ -181,7 +181,6 @@ mod tests {
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
-            cli_auto_update: None,
             staging_channel: None,
             release_channel: None,
             meeting_detect_notify: None,
