@@ -17,6 +17,8 @@
   interface Props {
     workspaces: Workspace[];
     syncState: SyncState;
+    /** False during the first real-state fetch → show skeletons, not 0/empty. */
+    ready?: boolean;
     progress: SyncProgress | null;
     companies: SyncCompanyRef[];
     status: SyncStatus | null;
@@ -39,6 +41,7 @@
   let {
     workspaces,
     syncState,
+    ready = true,
     progress,
     companies,
     status,
@@ -76,6 +79,7 @@
     {daemon}
     {indexedFiles}
     {observedVaultBytes}
+    loading={!ready}
     {onsync}
     {onsettings}
     {onaddsource}
@@ -90,16 +94,29 @@
       {progress}
       {statsBySlug}
       {cloudReachable}
+      loading={!ready}
     />
 
     <aside class="side-column">
       <section class="activity-panel" aria-labelledby="activity-title">
         <div class="panel-header">
           <h2 id="activity-title">Recent activity</h2>
-          <span>{recentActivity.length}</span>
+          <span>{ready ? recentActivity.length : ''}</span>
         </div>
 
-        {#if recentActivity.length === 0}
+        {#if !ready && recentActivity.length === 0}
+          <ol class="activity-list" aria-busy="true">
+            {#each [0, 1, 2, 3] as row (row)}
+              <li class="activity-skeleton-row">
+                <span class="skeleton-dot"></span>
+                <div class="activity-copy">
+                  <span class="skeleton-line" style="width: 78%"></span>
+                  <span class="skeleton-line" style="width: 52%"></span>
+                </div>
+              </li>
+            {/each}
+          </ol>
+        {:else if recentActivity.length === 0}
           <div class="activity-empty">
             <strong>No sync events yet</strong>
             <span>Activity appears after files upload, download, or delete.</span>
@@ -256,6 +273,44 @@
     line-height: 16px;
   }
 
+  /* ---- loading skeletons ------------------------------------------------ */
+  .activity-skeleton-row {
+    grid-template-columns: 12px minmax(0, 1fr);
+  }
+
+  .activity-skeleton-row:hover {
+    background: transparent;
+    transform: none;
+  }
+
+  .skeleton-dot {
+    width: 8px;
+    height: 8px;
+    margin-top: 5px;
+    border-radius: 999px;
+    background: var(--row-active);
+    animation: sync-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+
+  .skeleton-line {
+    display: block;
+    height: 10px;
+    margin-bottom: 5px;
+    border-radius: 999px;
+    background: var(--row-active);
+    animation: sync-skeleton-pulse 1.2s ease-in-out infinite;
+  }
+
+  @keyframes sync-skeleton-pulse {
+    0%,
+    100% {
+      opacity: 0.5;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .activity-list li {
       transition: none;
@@ -263,6 +318,11 @@
 
     .activity-list li:hover {
       transform: none;
+    }
+
+    .skeleton-dot,
+    .skeleton-line {
+      animation: none;
     }
   }
 
