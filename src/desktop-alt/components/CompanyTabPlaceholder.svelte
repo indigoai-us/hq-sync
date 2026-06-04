@@ -27,7 +27,7 @@
     max-width: 100%;
     overflow: hidden;
     padding: 0 16px;
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
     text-align: center;
     text-overflow: ellipsis;

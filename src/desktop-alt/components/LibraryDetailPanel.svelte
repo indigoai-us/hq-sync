@@ -260,7 +260,7 @@
 
   .kind-tag {
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -269,7 +269,7 @@
   .detail-title {
     margin: var(--space-1) 0 0;
     color: var(--fg);
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
     overflow-wrap: anywhere;
@@ -290,7 +290,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
     text-transform: lowercase;
@@ -307,7 +307,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--muted);
-    font-size: 20px;
+    font-size: var(--text-base);
     line-height: 1;
     cursor: pointer;
     transition:
@@ -341,7 +341,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--amber);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .detail-section {
@@ -351,7 +351,7 @@
   .section-title {
     margin: 0 0 var(--space-2);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -368,7 +368,7 @@
   .muted-note {
     margin: 0;
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .skill-list {
@@ -393,13 +393,13 @@
 
   .skill-name {
     color: var(--fg);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: 650;
   }
 
   .skill-desc {
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -419,7 +419,7 @@
     color: var(--muted-2);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
   }
 
@@ -443,12 +443,12 @@
   }
 
   .markdown-body :global(h1) {
-    font-size: 22px;
+    font-size: var(--text-base);
   }
   .markdown-body :global(h2) {
     padding-bottom: var(--space-1);
     border-bottom: 1px solid var(--border);
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
   }
   .markdown-body :global(h3) {
     font-size: var(--text-base);

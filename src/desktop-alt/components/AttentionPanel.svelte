@@ -53,14 +53,14 @@
   .panel-header h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 15px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
   }
 
   .panel-header span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .attention-empty,
@@ -81,7 +81,7 @@
   .attention-empty strong,
   .attention-item strong {
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 18px;
   }
@@ -90,7 +90,7 @@
   .attention-item p {
     margin: 0;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 17px;
   }
 
@@ -131,7 +131,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     white-space: nowrap;
     transition: transform 140ms cubic-bezier(.2, .7, .2, 1);

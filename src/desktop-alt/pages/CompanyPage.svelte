@@ -122,7 +122,7 @@
     margin-bottom: 7px;
     overflow: hidden;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
     white-space: nowrap;
   }
@@ -140,7 +140,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--fg);
-    font-size: 22px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 29px;
     text-overflow: ellipsis;
@@ -152,7 +152,7 @@
     max-width: 100%;
     overflow-wrap: anywhere;
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
@@ -160,7 +160,7 @@
     display: block;
     margin-top: 5px;
     color: var(--amber);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -180,7 +180,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     text-overflow: ellipsis;
     white-space: nowrap;

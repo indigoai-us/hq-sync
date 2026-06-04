@@ -41,7 +41,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
     text-overflow: ellipsis;
@@ -52,7 +52,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--fg);
-    font-size: 24px;
+    font-size: var(--text-base);
     font-weight: 720;
     line-height: 30px;
     text-overflow: ellipsis;

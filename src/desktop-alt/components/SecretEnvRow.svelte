@@ -130,7 +130,7 @@
 
   .env-name {
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 18px;
   }
@@ -139,7 +139,7 @@
     min-width: 50px;
     padding: 2px 8px;
     border-radius: 999px;
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 750;
     line-height: 15px;
     text-align: center;
@@ -159,7 +159,7 @@
 
   .env-count {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
     white-space: nowrap;
@@ -183,7 +183,7 @@
 
   .tree-head {
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 15px;
     text-transform: uppercase;
@@ -195,8 +195,8 @@
 
   .secret-key {
     color: var(--fg);
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
   }
@@ -204,7 +204,7 @@
   .secret-item time,
   .env-empty {
     color: var(--muted-3);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 

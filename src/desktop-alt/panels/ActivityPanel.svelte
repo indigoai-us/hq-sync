@@ -337,7 +337,7 @@
   .activity-title h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 16px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
   }
@@ -347,7 +347,7 @@
   .chart-scale,
   .empty-state {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -382,12 +382,12 @@
   }
 
   .activity-error strong {
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
   .activity-error span {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -399,7 +399,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     white-space: nowrap;
     cursor: default;
@@ -442,7 +442,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--muted-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 18px;
     text-overflow: ellipsis;
@@ -503,7 +503,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -511,8 +511,8 @@
 
   .contributor-row strong {
     color: var(--muted-3);
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
-    font-size: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
   }
@@ -560,7 +560,7 @@
     border-radius: 999px;
     background: var(--row-active);
     color: var(--fg);
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 750;
     line-height: 28px;
     text-align: center;
@@ -584,7 +584,7 @@
 
   .recent-copy strong {
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 18px;
   }
@@ -592,12 +592,12 @@
   .recent-copy span,
   .recent-row time {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
   .recent-row time {
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+    font-family: var(--font-mono);
     white-space: nowrap;
   }
 

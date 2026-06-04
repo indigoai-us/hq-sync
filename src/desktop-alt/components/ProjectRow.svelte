@@ -114,10 +114,11 @@
     outline-offset: 2px;
   }
 
-  /* Live projects get a left accent rail + a faint glow. */
+  /* Live projects read as live via the pulsing status dot + "Running" badge.
+     Emphasis is a full hairline tint, never a side stripe (a left-edge color
+     bar is an outright design ban — see DESIGN.md). */
   .project-row.is-live {
-    border-left: 2px solid var(--emerald);
-    box-shadow: inset 3px 0 0 -1px var(--emerald);
+    border-color: color-mix(in srgb, var(--emerald) 32%, var(--border));
   }
 
   .row-main {
@@ -175,7 +176,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 15px;
     white-space: nowrap;
@@ -192,7 +193,7 @@
     border-radius: var(--radius-sm);
     background: color-mix(in srgb, var(--blue) 12%, transparent);
     color: color-mix(in srgb, var(--blue) 70%, var(--muted-2));
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 15px;
     white-space: nowrap;
@@ -202,7 +203,7 @@
     margin: var(--space-1) 0 0;
     overflow: hidden;
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -218,7 +219,7 @@
 
   .progress-count {
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     line-height: 16px;
   }
@@ -253,7 +254,7 @@
   .progress-percent {
     width: 34px;
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     line-height: 16px;
     text-align: right;
@@ -261,7 +262,7 @@
 
   .chevron {
     color: var(--muted-3);
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
     line-height: 1;
   }
 

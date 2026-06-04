@@ -146,7 +146,7 @@
     color: var(--muted);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -168,7 +168,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 14px;
     text-transform: uppercase;
@@ -225,7 +225,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
   }
@@ -259,7 +259,7 @@
   .ac-count {
     flex-shrink: 0;
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
   }

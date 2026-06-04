@@ -253,7 +253,7 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -282,7 +282,7 @@
     background: var(--row-hover);
     color: var(--muted-3);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 650;
     font-variant-numeric: tabular-nums;
     line-height: 16px;
@@ -306,7 +306,7 @@
     background: var(--row-active);
     color: var(--fg);
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -330,7 +330,7 @@
   .scope-label {
     color: var(--muted);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -338,13 +338,13 @@
 
   .scope-value {
     color: var(--fg);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
   }
 
   .scope-caret {
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: 1;
   }
 
@@ -371,7 +371,7 @@
     border-bottom: 1px solid var(--border);
     margin-bottom: var(--space-1);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
   }
 
   .scope-menu-actions button {
@@ -379,7 +379,7 @@
     background: transparent;
     color: var(--blue);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
   }
@@ -399,7 +399,7 @@
     background: transparent;
     color: var(--muted-2);
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     text-align: left;
     cursor: pointer;
   }
@@ -420,7 +420,7 @@
     border-radius: 3px;
     background: var(--row-active);
     color: var(--bg);
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 800;
     line-height: 1;
   }
@@ -455,7 +455,7 @@
     background: var(--bg);
     color: var(--fg);
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .search::placeholder {
@@ -473,7 +473,7 @@
     border-radius: 4px;
     background: var(--row-active);
     color: var(--amber);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .browser-loading {

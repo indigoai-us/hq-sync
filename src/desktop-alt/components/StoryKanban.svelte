@@ -170,7 +170,7 @@
     border-radius: calc(var(--radius-sm) - 2px);
     background: transparent;
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     cursor: pointer;
     transition:
@@ -258,7 +258,7 @@
 
   .column-label {
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
   }
 
@@ -269,7 +269,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     line-height: 16px;
@@ -309,7 +309,7 @@
 
   .column-empty span {
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
   }
 
   .list-scroll {

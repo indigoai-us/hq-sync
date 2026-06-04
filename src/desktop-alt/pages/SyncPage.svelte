@@ -171,14 +171,14 @@
   .panel-header h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 15px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
   }
 
   .panel-header span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .activity-empty,
@@ -198,13 +198,13 @@
 
   .activity-empty strong {
     color: var(--fg);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 650;
   }
 
   .activity-empty span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 17px;
   }
 
@@ -262,14 +262,14 @@
 
   .activity-copy strong {
     color: var(--fg);
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 17px;
   }
 
   .activity-copy span {
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 16px;
   }
 

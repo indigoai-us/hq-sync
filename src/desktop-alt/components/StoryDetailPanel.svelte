@@ -317,14 +317,14 @@
     color: var(--muted);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
   }
 
   .story-title {
     margin: var(--space-1) 0 0;
     color: var(--fg);
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 20px;
   }
@@ -345,7 +345,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
   }
@@ -386,7 +386,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--muted);
-    font-size: 20px;
+    font-size: var(--text-base);
     line-height: 1;
     cursor: pointer;
     transition:
@@ -421,7 +421,7 @@
   .section-title {
     margin: 0 0 var(--space-2);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -448,7 +448,7 @@
 
   .activity-text {
     color: var(--muted);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: 600;
   }
 
@@ -498,7 +498,7 @@
   .ac-count {
     flex-shrink: 0;
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
   }
@@ -521,7 +521,7 @@
   .ac-mark {
     flex-shrink: 0;
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
@@ -531,7 +531,7 @@
 
   .ac-text {
     color: var(--muted-2);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
@@ -555,7 +555,7 @@
     color: var(--muted-2);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -604,7 +604,7 @@
     color: var(--muted);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
     word-break: break-all;
   }

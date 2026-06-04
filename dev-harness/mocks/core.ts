@@ -112,6 +112,16 @@ type Handler = (args?: Record<string, unknown>) => unknown;
 
 const handlers: Record<string, Handler> = {
   // Company-board path (?view=company)
+  list_syncable_workspaces: () => ({
+    workspaces: [
+      { slug: 'personal', displayName: 'Corey Epstein', kind: 'personal', state: 'personal', hasLocalFolder: true },
+      { slug: 'indigo', displayName: 'Indigo', kind: 'company', state: 'synced', hasLocalFolder: true },
+      { slug: 'liverecover', displayName: 'Liverecover', kind: 'company', state: 'synced', hasLocalFolder: true },
+    ],
+    cloudReachable: true,
+    error: null,
+    hqFolderPath: '/Users/corey/Documents/HQ',
+  }),
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
   get_local_company_goals: () => COMPANY_GOALS,

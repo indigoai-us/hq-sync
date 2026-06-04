@@ -152,7 +152,7 @@
   .status-icon {
     flex: 0 0 auto;
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     transition: color 160ms ease;
   }
@@ -173,7 +173,7 @@
   }
 
   .version {
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
+    font-family: var(--font-mono);
   }
 
   @media (prefers-reduced-motion: no-preference) {

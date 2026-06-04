@@ -371,7 +371,7 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -390,7 +390,7 @@
   }
 
   .back-chevron {
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
     line-height: 1;
   }
 
@@ -411,7 +411,7 @@
     border-radius: var(--radius-md);
     background: var(--row-active);
     color: var(--blue);
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
   }
 
   .header-body {
@@ -422,7 +422,7 @@
   .header-body h1 {
     margin: 0;
     color: var(--fg);
-    font-size: 22px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 29px;
   }
@@ -452,7 +452,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
   }
 
@@ -479,7 +479,7 @@
 
   .status-caret {
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: 1;
   }
 
@@ -538,7 +538,7 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     text-align: left;
     cursor: pointer;
   }
@@ -555,7 +555,7 @@
   .status-current {
     margin-left: auto;
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
   }
 
   .status-badge:disabled {
@@ -571,7 +571,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--amber);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
   }
 
@@ -580,7 +580,7 @@
     align-items: center;
     gap: var(--space-1);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
   }
 
   .progress {
@@ -606,7 +606,7 @@
 
   .progress-label {
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
   }
 
@@ -627,7 +627,7 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     transition:
@@ -661,7 +661,7 @@
 
   .muted-note {
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .no-readme {
@@ -680,7 +680,7 @@
   .info-card h2 {
     margin: 0 0 var(--space-2);
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -689,7 +689,7 @@
   .info-card p {
     margin: 0;
     color: var(--muted);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     line-height: 1.5;
   }
 
@@ -703,7 +703,7 @@
   .info-list div {
     display: flex;
     gap: var(--space-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .info-list dt {
@@ -728,7 +728,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--amber);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .drill-empty {
@@ -739,7 +739,7 @@
     border: 1px dashed var(--border);
     border-radius: var(--radius-md);
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .drill-empty p {
@@ -766,12 +766,12 @@
   }
 
   .markdown-body :global(h1) {
-    font-size: 22px;
+    font-size: var(--text-base);
   }
   .markdown-body :global(h2) {
     padding-bottom: var(--space-1);
     border-bottom: 1px solid var(--border);
-    font-size: var(--text-lg);
+    font-size: var(--text-base);
   }
   .markdown-body :global(h3) {
     font-size: var(--text-base);

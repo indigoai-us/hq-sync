@@ -423,7 +423,7 @@
     border-radius: var(--radius-sm);
     background: var(--row-active);
     color: var(--amber);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
   }
 
   .board-section {
@@ -449,7 +449,7 @@
   .section-header h2 {
     margin: 0;
     color: var(--fg);
-    font-size: 16px;
+    font-size: var(--text-base);
     font-weight: 680;
     line-height: 22px;
   }
@@ -457,7 +457,7 @@
   .section-header span {
     flex: 0 0 auto;
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -466,7 +466,7 @@
     border: 1px dashed var(--border);
     border-radius: var(--radius-md);
     color: var(--muted-3);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     text-align: center;
   }
 
@@ -514,7 +514,7 @@
     border-radius: 999px;
     background: var(--row-hover);
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 16px;
   }
@@ -532,7 +532,7 @@
     margin: 0;
     overflow-wrap: anywhere;
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
   }
 
@@ -557,7 +557,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -581,7 +581,7 @@
 
   .kr-percent {
     color: var(--muted-3);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-variant-numeric: tabular-nums;
     line-height: 16px;
   }
@@ -658,7 +658,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--muted);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -670,7 +670,7 @@
     border-radius: 999px;
     background: var(--row-hover);
     color: var(--muted-2);
-    font-size: var(--text-xs);
+    font-size: var(--text-base);
     font-weight: 650;
     line-height: 16px;
   }

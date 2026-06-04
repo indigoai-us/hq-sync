@@ -198,8 +198,8 @@
     border-radius: 5px;
     background: var(--row-active);
     color: var(--muted-3);
-    font-family: 'Geist Mono', ui-monospace, SFMono-Regular, monospace;
-    font-size: 11px;
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
     line-height: 18px;
   }
 
@@ -216,7 +216,7 @@
     background: transparent;
     color: var(--fg);
     font: inherit;
-    font-size: 14px;
+    font-size: var(--text-base);
   }
 
   .command-palette input::placeholder {
@@ -283,13 +283,13 @@
 
   .command-copy strong {
     color: currentColor;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 650;
   }
 
   .command-copy span {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .command-palette kbd {
