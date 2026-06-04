@@ -382,12 +382,13 @@
     line-height: 16px;
   }
 
+  /* Card grid — matches the Library page card grid (LibraryList .library-grid):
+     auto-fill tiles with a comfortable min width so projects read as cards. */
   .section-rows {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(296px, 1fr));
     gap: var(--space-2);
     margin-top: var(--space-2);
-    padding-left: var(--space-2);
   }
 
   .list-loading {
