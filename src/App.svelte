@@ -138,6 +138,16 @@
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
 
+  // Live counts for the popover Messages icon badge (US-009). Fed by the
+  // `dm:unread-summary` event (emitted by the SINGLE DM poll path on every
+  // change — no separate poller) and seeded once on mount via
+  // `get_unread_summary`. Reset to 0 unread by Rust when the Messages window
+  // opens.
+  let unreadSummary = $state<{ unreadDms: number; pendingRequests: number }>({
+    unreadDms: 0,
+    pendingRequests: 0,
+  });
+
   // Memberships drive the company picker in the active-meetings row.
   // Loaded once on mount (same source as MeetingsWindow's URL-invite
   // dropdown). Errors degrade to an empty list — the row still renders
@@ -495,6 +505,23 @@
       coreState = s;
     } catch (err) {
       console.error('check_core_state failed:', err);
+    }
+  }
+
+  // Seed the popover Messages badge once on mount. After this the count stays
+  // live off the `dm:unread-summary` event (no separate poller). Errors
+  // degrade to the zeroed default — the badge just stays hidden.
+  async function loadUnreadSummary() {
+    try {
+      const s = await invoke<{ unreadDms: number; pendingRequests: number }>(
+        'get_unread_summary',
+      );
+      unreadSummary = {
+        unreadDms: s.unreadDms ?? 0,
+        pendingRequests: s.pendingRequests ?? 0,
+      };
+    } catch (err) {
+      console.error('get_unread_summary failed:', err);
     }
   }
 
@@ -1455,6 +1482,27 @@
       })
     );
 
+    // --- Messages unread-summary listener (US-009) ---
+    // The single DM poll path emits `dm:unread-summary` whenever the unread
+    // count changes (a new DM landed, or the badge was reset). It carries the
+    // DM count immediately; the pending-request count is reconciled on the next
+    // explicit `get_unread_summary` read. Keep both fields current so the
+    // popover Messages badge stays live without its own poller.
+    unlisteners.push(
+      await listen<{ unreadDms: number; pendingRequests: number }>(
+        'dm:unread-summary',
+        (e) => {
+          unreadSummary = {
+            unreadDms: e.payload.unreadDms ?? 0,
+            // Preserve the last-known request count when the event omits it
+            // (the poll path emits 0 for requests by design).
+            pendingRequests:
+              e.payload.pendingRequests || unreadSummary.pendingRequests,
+          };
+        }
+      )
+    );
+
     // --- Unified custom-banner action listener ---
     // The custom in-app banner (commands/banner.rs) fires ONE event for every
     // source; we route by `kind`. This is the action path for the custom
@@ -1521,6 +1569,7 @@
     // tick. Calling here gives the popover a populated state on first
     // open instead of waiting 30s for the bg checker.
     loadCoreState();
+    loadUnreadSummary();
     setupTrayListeners();
     // Resolve the Phase-0 meeting-detect eligibility flag once on mount.
     // Settings.svelte hides the meeting-detect toggle when this is false.
@@ -1766,6 +1815,14 @@
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}
       {desktopAltEnabled}
+      {unreadSummary}
+      onmessagesclick={() => {
+        // Open (or focus) the dedicated Messages window. Fire-and-forget — the
+        // Rust handler focuses an existing window or creates a fresh one, and
+        // resets the unread badge via the ready-handshake. The badge will also
+        // refresh locally on the next `dm:unread-summary`.
+        invoke('open_messages_window').catch(() => {});
+      }}
       onmeetingsclick={() => {
         // Spawn the detached Upcoming Meetings window (label: meetings-window).
         // Fire-and-forget — the Rust handler focuses an existing window if

@@ -236,6 +236,13 @@
     ) => void;
     /** Indigo-only dogfood gate for the desktop alternate window toggle. */
     desktopAltEnabled?: boolean;
+    /** Opens the dedicated Messages window (US-009). Owner is App.svelte,
+     *  which invokes `open_messages_window`. Always available. */
+    onmessagesclick?: () => void;
+    /** Live counts for the Messages header icon badge — unread DMs plus a
+     *  distinct pending-request accent. Kept current by App.svelte off the
+     *  `dm:unread-summary` event (no separate poller). */
+    unreadSummary?: { unreadDms: number; pendingRequests: number };
   }
 
   /** Mirror of `App.svelte`'s `ActiveMeeting` interface — duplicated here
@@ -305,6 +312,8 @@
     recordingCompanies = [],
     onchangerecordingcompany,
     desktopAltEnabled = false,
+    onmessagesclick,
+    unreadSummary = { unreadDms: 0, pendingRequests: 0 },
   }: Props = $props();
 
   let desktopAltError = $state('');
@@ -574,6 +583,38 @@
           <path d="M6.75 12.25a1.25 1.25 0 0 0 2.5 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
       </button>
+
+      {#if onmessagesclick}
+        <!-- Messages → opens the dedicated Messages window (US-009). Always
+             available. Carries two badges: an unread-DM count (neutral) and a
+             distinct pending-request accent (warm) so requests read apart from
+             ordinary unread messages. Either badge dot appears only when its
+             count is > 0; the numeric pill shows when there are unread DMs. -->
+        <button
+          class="header-icon-button messages-toggle"
+          type="button"
+          onclick={onmessagesclick}
+          title="Messages"
+          aria-label={
+            unreadSummary.unreadDms > 0 || unreadSummary.pendingRequests > 0
+              ? `Messages (${unreadSummary.unreadDms} unread, ${unreadSummary.pendingRequests} requests)`
+              : 'Messages'
+          }
+          data-testid="messages-toggle"
+        >
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <path d="M2.5 4.25A1.75 1.75 0 0 1 4.25 2.5h7.5a1.75 1.75 0 0 1 1.75 1.75v5A1.75 1.75 0 0 1 11.75 11H6.5l-3 2.25V11h-.25A1.75 1.75 0 0 1 2.5 9.25v-5Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          {#if unreadSummary.unreadDms > 0}
+            <span class="messages-badge" aria-hidden="true">
+              {unreadSummary.unreadDms > 9 ? '9+' : unreadSummary.unreadDms}
+            </span>
+          {/if}
+          {#if unreadSummary.pendingRequests > 0}
+            <span class="messages-request-dot" aria-hidden="true"></span>
+          {/if}
+        </button>
+      {/if}
 
       {#if meetingsEnabled && onmeetingsclick}
         <!-- Discreet meeting hook → opens MeetingsWindow. State (detected /
@@ -1236,6 +1277,47 @@
     outline-offset: 2px;
     color: var(--popover-text-heading, #ffffff);
     border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  /* Messages icon — anchors its badges. The unread pill is neutral; the
+     request dot is a distinct warm accent so requests read apart from
+     ordinary unread DMs (matches the rail's request badge in MessagesShell). */
+  .messages-toggle {
+    position: relative;
+    overflow: visible;
+  }
+
+  .messages-badge {
+    position: absolute;
+    top: -3px;
+    right: -3px;
+    min-width: 0.875rem;
+    height: 0.875rem;
+    padding: 0 0.1875rem;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: 0.5625rem;
+    font-weight: 700;
+    line-height: 1;
+    color: #ffffff;
+    background: var(--popover-accent, rgba(120, 170, 255, 0.95));
+    box-shadow: 0 0 0 1.5px var(--popover-bg, #14141a);
+    pointer-events: none;
+  }
+
+  .messages-request-dot {
+    position: absolute;
+    bottom: -2px;
+    right: -2px;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: #ffb066;
+    box-shadow: 0 0 0 1.5px var(--popover-bg, #14141a);
+    pointer-events: none;
   }
 
   .header-inline-error {

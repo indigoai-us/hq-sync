@@ -22,6 +22,7 @@ pub mod hq_core_state;
 pub mod hq_core_update;
 pub mod library_local;
 pub mod meetings;
+pub mod messages;
 pub mod new_files;
 pub mod notification_history;
 pub mod notifications;

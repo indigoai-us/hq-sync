@@ -1,0 +1,567 @@
+<script lang="ts">
+  // Dedicated Messages window (US-009). A resizable master/detail shell:
+  //
+  //   ┌──────────────┬─────────────────────────────┐
+  //   │ segmented    │                             │
+  //   │ rail         │   conversation pane         │
+  //   │ (DMs /       │   (<Conversation/>)         │
+  //   │  Requests /  │                             │
+  //   │  Channels)   │                             │
+  //   └──────────────┴─────────────────────────────┘
+  //
+  // This story scaffolds all three segments. Direct Messages is functional:
+  // it lists the caller's contacts (derived from list_contacts — connections +
+  // company teammates) and, on click, loads that peer's thread into the shared
+  // <Conversation> component. Requests and Channels are present but scaffolded
+  // (empty/placeholder) — compose, request handling, and channels are later
+  // stories. Visuals reuse the popover.css Liquid Glass tokens; this is a
+  // larger window so it can breathe while keeping the same language.
+  import '../../styles/popover.css';
+  import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
+  import Conversation, { type ConversationMessage } from './Conversation.svelte';
+
+  type Segment = 'dms' | 'requests' | 'channels';
+
+  // A person the caller can DM (connection or company teammate). Mirrors the
+  // Rust `Contact` wire shape (camelCase).
+  interface Contact {
+    personUid: string;
+    email: string;
+    displayName: string;
+    companyUid?: string | null;
+    source?: string | null;
+  }
+
+  interface ContactsResponse {
+    contacts: Contact[];
+  }
+
+  interface ThreadMessage extends ConversationMessage {
+    fromEmail: string;
+  }
+
+  interface ThreadResponse {
+    messages: ThreadMessage[];
+    nextCursor?: string | null;
+  }
+
+  interface UnreadSummary {
+    unreadDms: number;
+    pendingRequests: number;
+  }
+
+  let segment = $state<Segment>('dms');
+
+  let contacts = $state<Contact[]>([]);
+  let loadingContacts = $state(false);
+  let contactsError = $state<string | null>(null);
+
+  let pendingRequests = $state(0);
+
+  // Selected peer + its loaded thread.
+  let selected = $state<Contact | null>(null);
+  let messages = $state<ThreadMessage[]>([]);
+  let loadingThread = $state(false);
+  let threadError = $state<string | null>(null);
+
+  let sending = $state(false);
+  let sendError = $state<string | null>(null);
+
+  function displayLabel(c: Contact): string {
+    return c.displayName?.trim() || c.email?.trim() || c.personUid;
+  }
+
+  function initials(c: Contact): string {
+    const name = displayLabel(c);
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+    return name.slice(0, 2).toUpperCase();
+  }
+
+  async function loadContacts(): Promise<void> {
+    loadingContacts = true;
+    contactsError = null;
+    try {
+      const resp = await invoke<ContactsResponse>('list_contacts');
+      contacts = resp.contacts ?? [];
+    } catch (err) {
+      contactsError = typeof err === 'string' ? err : 'Could not load conversations';
+      contacts = [];
+      console.error('messages: list_contacts failed', err);
+    } finally {
+      loadingContacts = false;
+    }
+  }
+
+  async function loadUnreadSummary(): Promise<void> {
+    try {
+      const s = await invoke<UnreadSummary>('get_unread_summary');
+      pendingRequests = s.pendingRequests ?? 0;
+    } catch (err) {
+      // Non-fatal — the rail still renders; the request count just stays 0.
+      console.error('messages: get_unread_summary failed', err);
+    }
+  }
+
+  async function selectContact(c: Contact): Promise<void> {
+    selected = c;
+    messages = [];
+    threadError = null;
+    sendError = null;
+    loadingThread = true;
+    try {
+      const resp = await invoke<ThreadResponse>('fetch_dm_thread', {
+        withPersonUid: c.personUid,
+      });
+      // Server returns newest-first; render chronologically (oldest → newest).
+      messages = [...(resp.messages ?? [])].reverse();
+    } catch (err) {
+      threadError = typeof err === 'string' ? err : 'Could not load this conversation';
+      messages = [];
+      console.error('messages: fetch_dm_thread failed', err);
+    } finally {
+      loadingThread = false;
+    }
+  }
+
+  async function sendReply(text: string): Promise<void> {
+    if (!text || sending || !selected) return;
+    sending = true;
+    sendError = null;
+    try {
+      await invoke('send_dm', { toPersonUid: selected.personUid, body: text });
+      // Optimistic append — the durable copy lands in the mirror and shows on
+      // the next thread load.
+      messages = [
+        ...messages,
+        {
+          eventId: `local-${messages.length}-${text.length}`,
+          fromPersonUid: 'me',
+          fromEmail: '',
+          fromDisplayName: 'You',
+          body: text,
+          details: null,
+          prompt: null,
+          createdAt: new Date().toISOString(),
+          direction: 'out',
+        },
+      ];
+    } catch (err) {
+      sendError = typeof err === 'string' ? err : 'Failed to send message';
+      console.error('messages: send_dm failed', err);
+    } finally {
+      sending = false;
+    }
+  }
+
+  $effect(() => {
+    let unlisten: (() => void) | undefined;
+
+    // A new DM may arrive while this window is open — refresh the contact list
+    // (so a brand-new conversation appears) and the request count. The badge
+    // reset is handled in Rust on messages_window_ready.
+    listen('dm:new-events', () => {
+      void loadContacts();
+      void loadUnreadSummary();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    // Ready-handshake: tell Rust the listeners are mounted so it shows + focuses
+    // the window and resets the unread badge (mirrors DmDetail).
+    void loadContacts();
+    void loadUnreadSummary();
+    invoke('messages_window_ready');
+
+    return () => {
+      unlisten?.();
+    };
+  });
+</script>
+
+<div class="messages-window">
+  <aside class="rail">
+    <header class="rail-header" data-tauri-drag-region>
+      <h1>Messages</h1>
+    </header>
+
+    <nav class="segments" aria-label="Message segments">
+      <button
+        class="segment"
+        class:active={segment === 'dms'}
+        type="button"
+        onclick={() => (segment = 'dms')}
+      >
+        Direct Messages
+      </button>
+      <button
+        class="segment"
+        class:active={segment === 'requests'}
+        type="button"
+        onclick={() => (segment = 'requests')}
+      >
+        Requests
+        {#if pendingRequests > 0}
+          <span class="segment-badge">{pendingRequests}</span>
+        {/if}
+      </button>
+      <button
+        class="segment"
+        class:active={segment === 'channels'}
+        type="button"
+        onclick={() => (segment = 'channels')}
+      >
+        Channels
+      </button>
+    </nav>
+
+    <div class="rail-body">
+      {#if segment === 'dms'}
+        {#if loadingContacts}
+          <p class="rail-status">Loading conversations…</p>
+        {:else if contactsError}
+          <p class="rail-status rail-error" role="alert">{contactsError}</p>
+        {:else if contacts.length === 0}
+          <p class="rail-status">No conversations yet.</p>
+        {:else}
+          <ul class="contact-list">
+            {#each contacts as c (c.personUid)}
+              <li>
+                <button
+                  class="contact-row"
+                  class:active={selected?.personUid === c.personUid}
+                  type="button"
+                  onclick={() => selectContact(c)}
+                >
+                  <span class="contact-avatar" aria-hidden="true">{initials(c)}</span>
+                  <span class="contact-meta">
+                    <span class="contact-name">{displayLabel(c)}</span>
+                    {#if c.email}
+                      <span class="contact-sub">{c.email}</span>
+                    {/if}
+                  </span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {:else if segment === 'requests'}
+        <!-- Scaffold: request handling is a later story. Render an empty list. -->
+        <div class="segment-empty">
+          <p class="segment-empty-title">No pending requests</p>
+          <p class="segment-empty-sub">
+            Connection requests will appear here once someone outside your team
+            asks to message you.
+          </p>
+        </div>
+      {:else}
+        <!-- Scaffold: channels are a later story. -->
+        <div class="segment-empty">
+          <p class="segment-empty-title">Channels</p>
+          <p class="segment-empty-sub">Coming soon.</p>
+        </div>
+      {/if}
+    </div>
+  </aside>
+
+  <section class="pane">
+    {#if segment !== 'dms'}
+      <div class="pane-empty">
+        <p>
+          {segment === 'requests'
+            ? 'Select a request to review it.'
+            : 'Channels are coming soon.'}
+        </p>
+      </div>
+    {:else if !selected}
+      <div class="pane-empty">
+        <p>Select a conversation to start messaging.</p>
+      </div>
+    {:else}
+      <header class="pane-header" data-tauri-drag-region>
+        <h2>{displayLabel(selected)}</h2>
+        {#if selected.email}
+          <span class="pane-sub">{selected.email}</span>
+        {/if}
+      </header>
+      <Conversation
+        {messages}
+        showAuthors={false}
+        loading={loadingThread}
+        error={threadError}
+        {sending}
+        {sendError}
+        placeholder={`Message ${displayLabel(selected)}…`}
+        onsend={sendReply}
+      />
+    {/if}
+  </section>
+</div>
+
+<style>
+  :global([data-window='messages'] html),
+  :global([data-window='messages'] body) {
+    margin: 0;
+    padding: 0;
+    background: #0d0d10;
+    color-scheme: dark;
+  }
+
+  .messages-window {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+    box-sizing: border-box;
+    background: var(--popover-bg, #14141a);
+    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    overflow: hidden;
+  }
+
+  /* ── Left rail ──────────────────────────────────────────────────────── */
+
+  .rail {
+    width: 248px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    min-height: 0;
+  }
+
+  .rail-header {
+    padding: 1rem 1.25rem 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .rail-header h1 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--popover-text-heading, #ffffff);
+  }
+
+  .segments {
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+    padding: 0.25rem 0.625rem 0.5rem;
+    flex-shrink: 0;
+  }
+
+  .segment {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.4375rem 0.625rem;
+    border: none;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--popover-text-muted, #a0a0b0);
+    font-family: inherit;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .segment:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--popover-text, #e8e8ee);
+  }
+
+  .segment.active {
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--popover-text-heading, #ffffff);
+  }
+
+  .segment-badge {
+    margin-left: auto;
+    min-width: 1.125rem;
+    height: 1.125rem;
+    padding: 0 0.3125rem;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    font-size: 0.625rem;
+    font-weight: 600;
+    line-height: 1;
+    background: rgba(255, 176, 102, 0.28);
+    color: #ffd9b0;
+  }
+
+  .rail-body {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+    padding: 0.25rem 0.5rem 0.75rem;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+  }
+
+  .rail-body::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  .rail-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 3px;
+  }
+
+  .rail-status {
+    margin: 0.5rem 0.625rem;
+    font-size: 0.75rem;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .rail-error {
+    color: #ff9b9b;
+  }
+
+  .contact-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .contact-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5625rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.4375rem 0.5rem;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+  }
+
+  .contact-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .contact-row.active {
+    background: rgba(120, 170, 255, 0.16);
+  }
+
+  .contact-avatar {
+    flex-shrink: 0;
+    width: 1.75rem;
+    height: 1.75rem;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--popover-text, #e8e8ee);
+    font-size: 0.625rem;
+    font-weight: 600;
+  }
+
+  .contact-meta {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .contact-name {
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--popover-text, #e8e8ee);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .contact-sub {
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #8a8a98);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .segment-empty {
+    padding: 1.25rem 0.875rem;
+    text-align: center;
+  }
+
+  .segment-empty-title {
+    margin: 0 0 0.375rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--popover-text, #e8e8ee);
+  }
+
+  .segment-empty-sub {
+    margin: 0;
+    font-size: 0.75rem;
+    line-height: 1.45;
+    color: var(--popover-text-muted, #8a8a98);
+  }
+
+  /* ── Right conversation pane ────────────────────────────────────────── */
+
+  .pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .pane-empty {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+  }
+
+  .pane-empty p {
+    margin: 0;
+    font-size: 0.8125rem;
+    color: var(--popover-text-muted, #8a8a98);
+    text-align: center;
+  }
+
+  .pane-header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 1rem 1.25rem 0.75rem;
+    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    flex-shrink: 0;
+  }
+
+  .pane-header h2 {
+    margin: 0;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    color: var(--popover-text-heading, #ffffff);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .pane-sub {
+    margin-left: auto;
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+    white-space: nowrap;
+  }
+</style>

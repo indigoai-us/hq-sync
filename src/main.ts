@@ -7,6 +7,7 @@ import ActivityLog from './components/ActivityLog.svelte';
 import ShareDetail from './components/ShareDetail.svelte';
 import MeetingPermissionsWindow from './components/MeetingPermissionsWindow.svelte';
 import DmDetail from './components/DmDetail.svelte';
+import MessagesShell from './components/messaging/MessagesShell.svelte';
 import NotificationHistory from './components/NotificationHistory.svelte';
 import BannerNotification from './components/BannerNotification.svelte';
 import { mount } from 'svelte';
@@ -44,6 +45,8 @@ if (windowLabel === 'new-files-detail') {
   Component = MeetingPermissionsWindow as unknown as typeof App;
 } else if (windowLabel === 'dm-detail') {
   Component = DmDetail as unknown as typeof App;
+} else if (windowLabel === 'messages') {
+  Component = MessagesShell as unknown as typeof App;
 } else if (windowLabel === 'notification-history') {
   Component = NotificationHistory as unknown as typeof App;
 } else if (windowLabel === 'dm-banner') {
