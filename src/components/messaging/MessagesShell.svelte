@@ -20,6 +20,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
+  import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
 
   type Segment = 'dms' | 'requests' | 'channels';
 
@@ -67,6 +68,80 @@
 
   let sending = $state(false);
   let sendError = $state<string | null>(null);
+
+  // New Message compose overlay (US-010).
+  let composing = $state(false);
+
+  function openCompose(): void {
+    composing = true;
+  }
+
+  // Handle a successful compose send. On a connection-requested (202) result the
+  // message is rendered optimistically as a Pending bubble and the right pane
+  // switches to that pending conversation; on a delivered (200) result we open
+  // the normal thread for the recipient. The `dm:request-update` event that
+  // flips Pending→active is consumed in US-011 — here we only render the Pending
+  // state from the send response.
+  function handleComposeSent(result: ComposeSendResult): void {
+    composing = false;
+    const r = result.recipient;
+    const peer: Contact = {
+      personUid: r.personUid ?? `email:${r.email}`,
+      email: r.email,
+      displayName: r.displayName ?? r.email,
+      companyUid: null,
+      source: null,
+    };
+    segment = 'dms';
+    selected = peer;
+    threadError = null;
+    sendError = null;
+
+    if (result.pending) {
+      // 202 — held behind a connection request. Render the just-sent message as
+      // a Pending bubble; do NOT load a thread (there isn't one yet).
+      loadingThread = false;
+      messages = [
+        {
+          eventId: `pending-${Date.now()}`,
+          fromPersonUid: 'me',
+          fromEmail: '',
+          fromDisplayName: 'You',
+          body: result.body,
+          details: null,
+          prompt: null,
+          createdAt: new Date().toISOString(),
+          direction: 'out',
+          pending: true,
+          pendingLabel: `Pending — waiting for ${displayLabel(peer)} to accept`,
+        },
+      ];
+    } else {
+      // 200 — delivered to an active connection. Open the normal thread (if the
+      // recipient resolved to a real personUid); otherwise show the optimistic
+      // message until the next poll.
+      if (r.personUid) {
+        void selectContact(peer);
+      } else {
+        loadingThread = false;
+        messages = [
+          {
+            eventId: `local-${Date.now()}`,
+            fromPersonUid: 'me',
+            fromEmail: '',
+            fromDisplayName: 'You',
+            body: result.body,
+            details: null,
+            prompt: null,
+            createdAt: new Date().toISOString(),
+            direction: 'out',
+          },
+        ];
+      }
+    }
+    // A brand-new conversation may now exist server-side; refresh the rail.
+    void loadContacts();
+  }
 
   function displayLabel(c: Contact): string {
     return c.displayName?.trim() || c.email?.trim() || c.personUid;
@@ -184,6 +259,15 @@
   <aside class="rail">
     <header class="rail-header" data-tauri-drag-region>
       <h1>Messages</h1>
+      <button
+        class="new-message-btn"
+        type="button"
+        onclick={openCompose}
+        title="New message"
+        aria-label="New message"
+      >
+        + New message
+      </button>
     </header>
 
     <nav class="segments" aria-label="Message segments">
@@ -297,6 +381,10 @@
       />
     {/if}
   </section>
+
+  {#if composing}
+    <ComposeMessage onclose={() => (composing = false)} onsent={handleComposeSent} />
+  {/if}
 </div>
 
 <style>
@@ -333,6 +421,10 @@
   }
 
   .rail-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
     padding: 1rem 1.25rem 0.5rem;
     flex-shrink: 0;
   }
@@ -342,6 +434,24 @@
     font-size: 0.9375rem;
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
+  }
+
+  .new-message-btn {
+    flex-shrink: 0;
+    border: 1px solid rgba(120, 170, 255, 0.32);
+    background: rgba(120, 170, 255, 0.16);
+    color: #dce8ff;
+    font-family: inherit;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    padding: 0.25rem 0.5rem;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+  }
+
+  .new-message-btn:hover {
+    background: rgba(120, 170, 255, 0.28);
   }
 
   .segments {

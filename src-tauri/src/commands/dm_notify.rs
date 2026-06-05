@@ -324,6 +324,154 @@ pub async fn send_dm(to_person_uid: String, body: String) -> Result<(), String> 
     Err(server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16())))
 }
 
+// ── Compose: send a DM to an email or personUid (US-010) ─────────────────────────
+//
+// The New Message compose flow (RecipientPicker + ComposeMessage) lets the user
+// start a conversation with anyone — a known contact, a company teammate, or any
+// valid email. Unlike `send_dm` (which always replies to a known sender by
+// `toPersonUid`), this addresses the recipient by EITHER `toPersonUid` (when the
+// picker resolved one) OR `toEmail` (free-text email). The backend
+// `POST /v1/notify/dm` answers with one of two shapes:
+//
+//   200 { "delivered": true }                         — recipient is an active
+//                                                        connection; the message
+//                                                        was delivered.
+//   202 { "state": "connection_requested" }           — recipient is not yet
+//                                                        connected; the message
+//                                                        is held and a connect
+//                                                        request was sent.
+//
+// `send_dm_to_email` returns that discriminant to the frontend so the compose UI
+// can render an optimistic Pending bubble (202) or open the normal thread (200).
+
+/// The outcome of a compose send, surfaced to the frontend.
+///
+/// `delivered` → the message reached an active connection (HTTP 200).
+/// `connection_requested` → the recipient isn't connected; the message is held
+/// and a connect request was sent (HTTP 202). The compose UI renders a Pending
+/// bubble for this case until `dm:request-update` confirms (US-011).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum SendDmOutcome {
+    /// HTTP 200 — delivered to an active connection.
+    Delivered,
+    /// HTTP 202 — held; a connection request was sent alongside the message.
+    ConnectionRequested,
+}
+
+/// Build the `POST /v1/notify/dm` body for a compose send. Exactly one recipient
+/// key is emitted: `toPersonUid` when present (preferred — the picker resolved a
+/// canonical id), otherwise `toEmail`. The server rejects a request with both
+/// keys, so this never emits both. Pure + side-effect-free so the wire shape is
+/// unit-testable.
+fn build_compose_payload(
+    to_person_uid: Option<&str>,
+    to_email: Option<&str>,
+    body: &str,
+) -> serde_json::Value {
+    match to_person_uid.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(uid) => serde_json::json!({ "toPersonUid": uid, "body": body }),
+        None => {
+            let email = to_email.map(str::trim).unwrap_or_default();
+            serde_json::json!({ "toEmail": email, "body": body })
+        }
+    }
+}
+
+/// Map a successful `POST /v1/notify/dm` response to a `SendDmOutcome`.
+/// A 202 (or an explicit `{"state":"connection_requested"}` body) means the
+/// recipient isn't connected yet; anything else 2xx means delivered. Pure so the
+/// status→discriminant mapping is unit-testable.
+fn classify_send_response(status: u16, body: &serde_json::Value) -> SendDmOutcome {
+    let body_says_requested = body
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(|s| s.eq_ignore_ascii_case("connection_requested"))
+        .unwrap_or(false);
+    if status == 202 || body_says_requested {
+        SendDmOutcome::ConnectionRequested
+    } else {
+        SendDmOutcome::Delivered
+    }
+}
+
+/// Tauri command: send a DM from the New Message compose flow (US-010).
+///
+/// Addresses the recipient by `toPersonUid` (preferred, when the picker resolved
+/// one) or `toEmail` (free-text email). Returns a `SendDmOutcome` discriminant so
+/// the compose UI can render a Pending bubble (connection requested) or open the
+/// normal thread (delivered). Surfaces failures to the caller for delivery
+/// feedback. Takes the same guarded blocking-send path as `send_dm`.
+#[tauri::command]
+pub async fn send_dm_to_email(
+    to_email: Option<String>,
+    to_person_uid: Option<String>,
+    body: String,
+) -> Result<SendDmOutcome, String> {
+    let body_text = body.trim();
+    if body_text.is_empty() {
+        return Err("Message body must not be empty".to_string());
+    }
+
+    let person_uid = to_person_uid.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let email = to_email.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if person_uid.is_none() && email.is_none() {
+        return Err("A recipient (email or personUid) is required".to_string());
+    }
+
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_COMPOSE_FAIL auth: {e}"));
+        format!("Not signed in: {e}")
+    })?;
+
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_COMPOSE_FAIL vault url: {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let url = format!("{}/v1/notify/dm", base_url);
+    let payload = build_compose_payload(person_uid, email, body_text);
+
+    let resp = build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_COMPOSE_FAIL network: {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_COMPOSE_FAIL status={status} msg={server_msg:?}"),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16())),
+        );
+    }
+
+    let status_code = status.as_u16();
+    // The body is optional (a bare 200 with no JSON is treated as delivered).
+    let parsed = resp.json::<serde_json::Value>().await.unwrap_or(serde_json::Value::Null);
+    let outcome = classify_send_response(status_code, &parsed);
+    log(
+        LOG_TAG,
+        &format!("DM_NOTIFY_COMPOSE_OK status={status_code} outcome={outcome:?}"),
+    );
+    Ok(outcome)
+}
+
 // ── Conversation thread (history) ───────────────────────────────────────────────
 //
 // The DM detail window renders a two-way thread, not just the single DM that
@@ -804,6 +952,68 @@ mod tests {
         let obj = payload.as_object().expect("payload is a JSON object");
         assert_eq!(obj.len(), 2);
         assert!(!obj.contains_key("toEmail"));
+    }
+
+    #[test]
+    fn compose_payload_prefers_person_uid_single_key() {
+        // When a personUid is resolved, address by it — never emit toEmail too
+        // (the server rejects both present).
+        let payload = build_compose_payload(Some("prs_x"), Some("a@b.com"), "hi");
+        let obj = payload.as_object().expect("object");
+        assert_eq!(obj.len(), 2);
+        assert_eq!(payload["toPersonUid"], "prs_x");
+        assert_eq!(payload["body"], "hi");
+        assert!(!obj.contains_key("toEmail"));
+    }
+
+    #[test]
+    fn compose_payload_falls_back_to_email_single_key() {
+        // Free-text email with no resolved personUid → address by toEmail only.
+        let payload = build_compose_payload(None, Some("new@person.com"), "hello");
+        let obj = payload.as_object().expect("object");
+        assert_eq!(obj.len(), 2);
+        assert_eq!(payload["toEmail"], "new@person.com");
+        assert!(!obj.contains_key("toPersonUid"));
+        // A blank personUid is treated as absent.
+        let blank = build_compose_payload(Some("   "), Some("x@y.com"), "h");
+        assert_eq!(blank["toEmail"], "x@y.com");
+        assert!(!blank.as_object().unwrap().contains_key("toPersonUid"));
+    }
+
+    #[test]
+    fn classify_send_response_maps_status_and_body() {
+        let null = serde_json::Value::Null;
+        // 200 → delivered.
+        assert_eq!(
+            classify_send_response(200, &null),
+            SendDmOutcome::Delivered
+        );
+        // 202 → connection requested even with an empty body.
+        assert_eq!(
+            classify_send_response(202, &null),
+            SendDmOutcome::ConnectionRequested
+        );
+        // An explicit body state wins even on a 200 (defensive).
+        let body = serde_json::json!({ "state": "connection_requested" });
+        assert_eq!(
+            classify_send_response(200, &body),
+            SendDmOutcome::ConnectionRequested
+        );
+        // A delivered body on 200 stays delivered.
+        let delivered = serde_json::json!({ "delivered": true });
+        assert_eq!(
+            classify_send_response(200, &delivered),
+            SendDmOutcome::Delivered
+        );
+    }
+
+    #[test]
+    fn send_dm_outcome_serializes_to_state_tag() {
+        // The frontend discriminates on `state` — lock the wire shape.
+        let requested = serde_json::to_value(SendDmOutcome::ConnectionRequested).unwrap();
+        assert_eq!(requested["state"], "connectionRequested");
+        let delivered = serde_json::to_value(SendDmOutcome::Delivered).unwrap();
+        assert_eq!(delivered["state"], "delivered");
     }
 
     #[test]

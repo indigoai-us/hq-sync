@@ -69,6 +69,11 @@ pub struct Contact {
     /// "connection" | "company" — how the caller is allowed to DM this person.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Connection state relative to the caller: "active" | "pending" | "none" |
+    /// "blocked" (US-010). Drives the compose "not-connected" affordance. Absent
+    /// on older server payloads → the frontend treats absence as "none".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

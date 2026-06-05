@@ -319,6 +319,7 @@ fn main() {
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
+            commands::dm_notify::send_dm_to_email,
             commands::dm_notify::fetch_dm_thread,
             commands::messages::open_messages_window,
             commands::messages::messages_window_ready,

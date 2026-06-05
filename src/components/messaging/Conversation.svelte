@@ -21,6 +21,12 @@
     prompt?: string | null;
     createdAt: string;
     direction: 'in' | 'out';
+    // Optimistic-send states (US-010). `pending` marks an outbound message that
+    // was held behind a connection request — rendered with a "Pending" chip
+    // until `dm:request-update` flips it (US-011). `pendingLabel` is the chip
+    // text (e.g. "Pending — waiting for Ada to accept").
+    pending?: boolean;
+    pendingLabel?: string | null;
   }
 
   interface Props {
@@ -148,7 +154,11 @@
           </button>
         {/if}
       </div>
-      <span class="dm-msg-time">{formatTime(msg.createdAt)}</span>
+      {#if msg.pending}
+        <span class="dm-msg-pending">{msg.pendingLabel || 'Pending'}</span>
+      {:else}
+        <span class="dm-msg-time">{formatTime(msg.createdAt)}</span>
+      {/if}
     </div>
   {/each}
 </div>
@@ -274,6 +284,16 @@
     font-size: 0.625rem;
     color: var(--popover-text-muted, #8a8a98);
     margin: 0.125rem 0.25rem 0;
+  }
+
+  .dm-msg-pending {
+    font-size: 0.625rem;
+    font-weight: 600;
+    color: #ffd9b0;
+    background: rgba(255, 176, 102, 0.18);
+    padding: 0.0625rem 0.4375rem;
+    border-radius: 999px;
+    margin: 0.1875rem 0.25rem 0;
   }
 
   .btn {
