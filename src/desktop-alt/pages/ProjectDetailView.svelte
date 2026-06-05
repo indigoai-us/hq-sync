@@ -24,6 +24,7 @@
   import { setProjectStatus } from '../lib/projects-store.svelte';
   import { renderMarkdown } from '../lib/markdown';
   import {
+    classifyStories,
     projectDisplayName,
     projectProgress,
     toEditableStatus,
@@ -103,6 +104,29 @@
     projectProgress(project.storiesComplete, project.storiesTotal),
   );
 
+  // ---- KPI strip (Paper editorial) -----------------------------------------
+  // Computed from the loaded `stories` via classifyStories: the headline STORIES
+  // tile shows complete/total + a progress bar; the others are live state counts.
+  const classified = $derived(classifyStories(stories));
+  const kpi = $derived.by(() => {
+    let inProgress = 0;
+    let blocked = 0;
+    let complete = 0;
+    for (const item of classified) {
+      if (item.state === 'in-progress') inProgress += 1;
+      else if (item.state === 'blocked') blocked += 1;
+      else if (item.state === 'complete') complete += 1;
+    }
+    const total = stories.length;
+    return {
+      inProgress,
+      blocked,
+      complete,
+      total,
+      progress: projectProgress(complete, total),
+    };
+  });
+
   // ---- status control (WRITABLE — US-010 optimistic persist) ---------------
   // The rendered status is a local override so it can update optimistically on
   // select and roll back on a failed write. It re-syncs whenever the open
@@ -149,8 +173,10 @@
   }
 
   // ---- Overview / Board tab ------------------------------------------------
+  // Default to the Board (stories) view so opening a project shows its stories
+  // immediately; Overview still renders the README on demand.
   type Tab = 'overview' | 'board';
-  let tab = $state<Tab>('overview');
+  let tab = $state<Tab>('board');
 
   // Closing the status dropdown on outside click.
   function onDocClick(event: MouseEvent) {
@@ -172,99 +198,124 @@
   data-testid="project-detail-view"
 >
   <header class="detail-header">
-    <button
-      type="button"
-      class="back-button"
-      data-testid="detail-back"
-      onclick={onback}
-    >
-      <span class="back-chevron" aria-hidden="true">‹</span>
-      <span>All Projects</span>
-    </button>
+    <!-- Breadcrumb: "‹ Board" is the back affordance; project name follows. -->
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <button
+        type="button"
+        class="back-button"
+        data-testid="detail-back"
+        onclick={onback}
+      >
+        <span class="back-chevron" aria-hidden="true">‹</span>
+        <span>Board</span>
+      </button>
+      <span class="crumb-sep" aria-hidden="true">/</span>
+      <span class="crumb-current">{projectDisplayName(project)}</span>
+    </nav>
 
-    <div class="header-main">
-      <div class="header-icon" aria-hidden="true">⬗</div>
-      <div class="header-body">
-        <h1 id="project-detail-title">{projectDisplayName(project)}</h1>
-        {#if project.description}
-          <p class="detail-description">{project.description}</p>
+    <h1 id="project-detail-title">{projectDisplayName(project)}</h1>
+    {#if project.description}
+      <p class="detail-description">{project.description}</p>
+    {/if}
+
+    <!-- Status row: writable status pill, then company badge + indicators. -->
+    <div class="status-row">
+      <!-- Status control (writable; US-010 persists with optimistic UI). -->
+      <div class="status-control" data-status-control data-testid="status-control">
+        <button
+          type="button"
+          class="status-badge status-{currentStatus}"
+          data-testid="status-trigger"
+          aria-haspopup="listbox"
+          aria-expanded={statusOpen}
+          disabled={statusSaving}
+          onclick={() => (statusOpen = !statusOpen)}
+        >
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>{EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}</span>
+          <span class="status-caret" aria-hidden="true">⌄</span>
+        </button>
+        {#if statusOpen}
+          <ul class="status-menu" role="listbox" data-testid="status-menu">
+            {#each EDITABLE_PROJECT_STATUSES as status (status)}
+              <li>
+                <button
+                  type="button"
+                  class="status-option"
+                  role="option"
+                  aria-selected={status === currentStatus}
+                  data-testid="status-option-{status}"
+                  onclick={() => selectStatus(status)}
+                >
+                  <span class="status-dot status-{status}" aria-hidden="true"></span>
+                  <span>{EDITABLE_PROJECT_STATUS_LABEL[status]}</span>
+                  {#if status === currentStatus}
+                    <span class="status-current">current</span>
+                  {/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
         {/if}
+      </div>
 
-        <div class="badges">
-          <!-- Status control (writable; US-010 persists with optimistic UI). -->
-          <div class="status-control" data-status-control data-testid="status-control">
-            <button
-              type="button"
-              class="status-badge status-{currentStatus}"
-              data-testid="status-trigger"
-              aria-haspopup="listbox"
-              aria-expanded={statusOpen}
-              disabled={statusSaving}
-              onclick={() => (statusOpen = !statusOpen)}
-            >
-              <span class="status-dot" aria-hidden="true"></span>
-              <span>{EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}</span>
-              <span class="status-caret" aria-hidden="true">⌄</span>
-            </button>
-            {#if statusOpen}
-              <ul class="status-menu" role="listbox" data-testid="status-menu">
-                {#each EDITABLE_PROJECT_STATUSES as status (status)}
-                  <li>
-                    <button
-                      type="button"
-                      class="status-option"
-                      role="option"
-                      aria-selected={status === currentStatus}
-                      data-testid="status-option-{status}"
-                      onclick={() => selectStatus(status)}
-                    >
-                      <span class="status-dot status-{status}" aria-hidden="true"></span>
-                      <span>{EDITABLE_PROJECT_STATUS_LABEL[status]}</span>
-                      {#if status === currentStatus}
-                        <span class="status-current">current</span>
-                      {/if}
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
-          </div>
+      {#if statusError}
+        <span class="status-error" role="alert" data-testid="status-error">
+          {statusError}
+        </span>
+      {/if}
 
-          {#if statusError}
-            <span class="status-error" role="alert" data-testid="status-error">
-              {statusError}
-            </span>
-          {/if}
+      {#if project.company}
+        <span class="badge company-badge" data-testid="company-badge">
+          <span class="status-dot" aria-hidden="true"></span>
+          {project.company}
+        </span>
+      {/if}
 
-          {#if project.company}
-            <span class="badge company-badge" data-testid="company-badge">
-              <span class="status-dot" aria-hidden="true"></span>
-              {project.company}
-            </span>
-          {/if}
+      {#if hasPrd}
+        <span class="indicator" data-testid="indicator-prd">
+          <span aria-hidden="true">▤</span> PRD
+        </span>
+      {/if}
+      {#if hasReadme}
+        <span class="indicator" data-testid="indicator-readme">
+          <span aria-hidden="true">▦</span> README
+        </span>
+      {/if}
+    </div>
 
-          {#if hasPrd}
-            <span class="indicator" data-testid="indicator-prd">
-              <span aria-hidden="true">▤</span> PRD
-            </span>
-          {/if}
-          {#if hasReadme}
-            <span class="indicator" data-testid="indicator-readme">
-              <span aria-hidden="true">▦</span> README
-            </span>
-          {/if}
-
-          {#if hasPrd && progress.total > 0}
-            <span class="progress" data-testid="detail-progress">
-              <span class="progress-track">
-                <span class="progress-fill" style="width: {progress.percent}%"></span>
-              </span>
-              <span class="progress-label">{progress.complete}/{progress.total}</span>
-            </span>
-          {/if}
+    <!-- KPI strip — editorial stat tiles computed from the loaded stories. -->
+    {#if hasPrd && kpi.total > 0}
+      <div class="kpi-strip" aria-label="Project metrics">
+        <div class="kpi-tile kpi-stories">
+          <span class="kpi-label">Stories</span>
+          <span class="kpi-value">{kpi.complete}<span class="kpi-slash"> / </span>{kpi.total}</span>
+          <span class="kpi-bar" data-testid="detail-progress">
+            <span class="kpi-bar-fill" style="width: {kpi.progress.percent}%"></span>
+          </span>
+        </div>
+        <div class="kpi-tile">
+          <span class="kpi-label">In Progress</span>
+          <span class="kpi-value" class:is-zero={kpi.inProgress === 0}>{kpi.inProgress}</span>
+        </div>
+        <div class="kpi-tile">
+          <span class="kpi-label">Blocked</span>
+          <span
+            class="kpi-value"
+            class:is-zero={kpi.blocked === 0}
+            class:is-blocked={kpi.blocked > 0}>{kpi.blocked}</span
+          >
+        </div>
+        <div class="kpi-tile">
+          <span class="kpi-label">Done</span>
+          <span
+            class="kpi-value"
+            class:is-zero={kpi.complete === 0}
+            class:is-done={kpi.complete > 0}>{kpi.complete}</span
+          >
         </div>
       </div>
-    </div>
+    {/if}
 
     <nav class="tabs" aria-label="Project sections">
       <button
@@ -359,20 +410,29 @@
     min-width: 0;
   }
 
+  /* ---- Breadcrumb ------------------------------------------------------- */
+  .breadcrumb {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    margin-bottom: var(--space-3);
+    margin-left: calc(-1 * var(--space-2));
+    min-width: 0;
+    font-size: var(--text-sm);
+  }
+
   .back-button {
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
-    margin-bottom: var(--space-2);
-    margin-left: calc(-1 * var(--space-2));
     padding: var(--space-1) var(--space-2);
     border: 0;
     border-radius: var(--radius-sm);
     background: transparent;
-    color: var(--muted);
+    color: var(--muted-2);
     font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: var(--text-sm);
+    font-weight: 500;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -394,52 +454,43 @@
     line-height: 1;
   }
 
-  .header-main {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--space-3);
-    min-width: 0;
+  .crumb-sep {
+    color: var(--muted-3);
   }
 
-  .header-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    width: 40px;
-    height: 40px;
-    border-radius: var(--radius-md);
-    background: var(--row-active);
-    color: var(--blue);
-    font-size: var(--text-base);
+  .crumb-current {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .header-body {
-    min-width: 0;
-    flex: 1 1 auto;
-  }
-
-  .header-body h1 {
+  /* ---- Editorial title -------------------------------------------------- */
+  #project-detail-title {
     margin: 0;
     color: var(--fg);
-    font-size: var(--text-base);
+    font-family: var(--font-display);
+    font-size: 24px;
     font-weight: 600;
-    line-height: 29px;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
   }
 
   .detail-description {
-    margin: var(--space-1) 0 0;
+    margin: var(--space-2) 0 0;
     color: var(--muted);
     font-size: var(--text-base);
-    line-height: 18px;
+    line-height: 1.5;
   }
 
-  .badges {
+  /* ---- Status row ------------------------------------------------------- */
+  .status-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
-    margin-top: var(--space-2);
+    margin-top: var(--space-3);
   }
 
   .badge,
@@ -447,13 +498,13 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
-    padding: var(--space-1) var(--space-2);
+    padding: 3px 10px;
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted);
-    font-size: var(--text-base);
-    font-weight: 600;
+    border-radius: 999px;
+    background: var(--surface-raise);
+    color: var(--muted-2);
+    font-size: var(--text-sm);
+    font-weight: 500;
   }
 
   .status-control {
@@ -479,7 +530,7 @@
 
   .status-caret {
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: var(--text-sm);
     line-height: 1;
   }
 
@@ -566,13 +617,13 @@
   .status-error {
     display: inline-flex;
     align-items: center;
-    padding: var(--space-1) var(--space-2);
+    padding: 3px 10px;
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
+    border-radius: 999px;
+    background: var(--surface-raise);
     color: var(--amber);
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: var(--text-sm);
+    font-weight: 500;
   }
 
   .indicator {
@@ -580,40 +631,92 @@
     align-items: center;
     gap: var(--space-1);
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-size: var(--text-sm);
   }
 
-  .progress {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
+  /* ---- KPI strip -------------------------------------------------------- */
+  .kpi-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+    max-width: 760px;
   }
 
-  .progress-track {
-    width: 64px;
-    height: 6px;
+  .kpi-tile {
+    display: flex;
+    flex: 1 1 130px;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    padding: 11px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface-raise);
+  }
+
+  .kpi-label {
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .kpi-value {
+    color: var(--fg);
+    font-family: var(--font-display);
+    font-size: var(--text-kpi);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+
+  .kpi-value.is-zero {
+    color: var(--muted-3);
+  }
+
+  .kpi-value.is-blocked {
+    color: var(--amber);
+  }
+
+  .kpi-value.is-done {
+    color: var(--emerald);
+  }
+
+  .kpi-slash {
+    color: var(--muted-3);
+    font-weight: 600;
+  }
+
+  .kpi-bar {
+    display: block;
+    width: 100%;
+    height: 4px;
+    margin-top: var(--space-1);
     overflow: hidden;
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     background: var(--row-active);
   }
 
-  .progress-fill {
+  .kpi-bar-fill {
     display: block;
     height: 100%;
-    border-radius: var(--radius-sm);
+    border-radius: inherit;
     background: var(--emerald);
+    transition: width 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
-  .progress-label {
-    color: var(--muted-3);
-    font-size: var(--text-base);
-    font-variant-numeric: tabular-nums;
+  @media (prefers-reduced-motion: reduce) {
+    .kpi-bar-fill {
+      transition: none;
+    }
   }
 
   .tabs {
     display: inline-flex;
     gap: var(--space-1);
-    margin-top: var(--space-3);
+    margin-top: var(--space-4);
     padding: var(--space-1);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
@@ -627,8 +730,8 @@
     background: transparent;
     color: var(--muted);
     font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: var(--text-sm);
+    font-weight: 500;
     cursor: pointer;
     transition:
       background 140ms ease,
