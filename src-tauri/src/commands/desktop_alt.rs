@@ -1,22 +1,24 @@
-//! Feature gate for the alt desktop UX surface.
+//! Feature gate for the expanded desktop window surface.
 //!
-//! Indigo-only gate for the alternate popover/desktop UX in development.
-//! Delegates entirely to `feature_gate::is_indigo_user()` — there is no
-//! parallel cache (PRD US-001 hard rule: reuse the existing OnceLock cache).
+//! GA gate for the expanded popover/desktop window. This surface graduated
+//! from the Indigo-only dogfood: it now delegates to
+//! `feature_gate::desktop_features_enabled()`, which admits **any** signed-in
+//! user (non-empty email claim). There is no parallel cache here — the GA
+//! gate owns its own process-lifetime OnceLock cache.
 //!
-//! On cold start (cache uninitialised) the underlying `is_indigo_user()`
-//! call awaits `compute_gate()` and returns the canonical email-derived
-//! answer instead of falling back to false. This matters because the
-//! popover mounts and invokes the gate before any cloud round-trip has
-//! had a chance to seed an unrelated cache — we owe the caller the real
-//! answer, not a default.
+//! On cold start (cache uninitialised) the underlying
+//! `desktop_features_enabled()` call awaits `compute_ga_gate()` and returns
+//! the canonical email-derived answer instead of falling back to false. This
+//! matters because the popover mounts and invokes the gate before any cloud
+//! round-trip has had a chance to seed an unrelated cache — we owe the caller
+//! the real answer, not a default.
 //!
 //! See `src-tauri/src/commands/meetings.rs::meetings_feature_enabled` for
 //! the reference pattern this command mirrors.
 //!
 //! Result type is `Result<bool, String>` to match the established gate
-//! command shape, but `is_indigo_user()` itself never errors — the Ok arm
-//! is always taken.
+//! command shape, but `desktop_features_enabled()` itself never errors — the
+//! Ok arm is always taken.
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -237,7 +239,7 @@ pub struct CompanySummary {
 
 #[tauri::command]
 pub async fn desktop_alt_enabled() -> Result<bool, String> {
-    Ok(crate::util::feature_gate::is_indigo_user().await)
+    Ok(crate::util::feature_gate::desktop_features_enabled().await)
 }
 
 #[tauri::command]
@@ -442,7 +444,7 @@ pub fn desktop_alt_consume_pending_route() -> Option<String> {
         .and_then(|mut cell| cell.take())
 }
 
-/// Open or focus the Indigo-only alternate desktop UX window.
+/// Open or focus the expanded desktop window (GA — any signed-in user).
 ///
 /// The window is declared in `tauri.conf.json` as hidden, so normal app
 /// startup does not surface it. This command is still defensive and can
@@ -458,8 +460,8 @@ pub async fn open_desktop_alt_window(app: AppHandle, route: Option<String>) -> R
 
 /// Window open/focus body, callable from non-command contexts (e.g. the
 /// `UNUserNotificationCenter` delegate handling a cold notification click,
-/// where no `#[tauri::command]` invocation is in flight). Keeps the Indigo
-/// gate so the delegate path is defense-in-depth too.
+/// where no `#[tauri::command]` invocation is in flight). Keeps the GA
+/// gate (signed-in check) so the delegate path is defense-in-depth too.
 ///
 /// `route` routes the window to a screen: an already-open window gets a live
 /// `desktop:navigate` event; a fresh build queues the route for the frontend
@@ -469,7 +471,7 @@ pub async fn open_desktop_alt_window_inner(
     route: Option<&str>,
 ) -> Result<(), String> {
     if !desktop_alt_enabled().await? {
-        return Err("desktop-alt is Indigo-only".to_string());
+        return Err("desktop-alt requires a signed-in user".to_string());
     }
 
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
@@ -1450,37 +1452,32 @@ mod tests {
     use chrono::TimeZone;
 
     use crate::commands::workspaces::{Workspace, WorkspaceKind, WorkspaceState};
-    use crate::util::feature_gate::is_allowed_email;
+    use crate::util::feature_gate::email_present;
 
     // Note: `desktop_alt_enabled` itself depends on the on-disk Cognito
     // token cache so it isn't a pure unit-test target — the canonical
     // gate logic it delegates to is covered by the unit tests in
-    // `util/feature_gate.rs` (test_positive_cases / test_negative_cases),
-    // plus the command-specific assertions below that re-exercise the
-    // allowlist contract this command is bound to.
+    // `util/feature_gate.rs` (ga_gate_admits_any_present_email /
+    // ga_gate_rejects_signed_out), plus the command-specific assertions
+    // below that re-exercise the GA presence contract this command is bound
+    // to. The window graduated from the Indigo dogfood to GA.
 
-    /// US-001 AC #4: command-path positive case for `@getindigo.ai`.
+    /// GA: the expanded desktop window is enabled for ANY signed-in user.
     #[test]
-    fn desktop_alt_gate_admits_indigo_email() {
-        assert!(is_allowed_email(Some("stefan@getindigo.ai")));
-        assert!(is_allowed_email(Some("STEFAN@GetIndigo.AI")));
+    fn desktop_alt_gate_admits_any_signed_in_user() {
+        assert!(email_present(Some("stefan@getindigo.ai")));
+        assert!(email_present(Some("qa@example.com")));
+        assert!(email_present(Some("anyone@gmail.com")));
+        // Former dogfood look-alike — now admitted, GA only checks presence.
+        assert!(email_present(Some("attacker@forgetindigo.ai")));
     }
 
-    /// US-001 AC #4: command-path negative case for non-allowed emails.
+    /// GA: only signed-out (no email / empty) is rejected.
     #[test]
-    fn desktop_alt_gate_rejects_non_indigo_email() {
-        assert!(!is_allowed_email(Some("someone@gmail.com")));
-        assert!(!is_allowed_email(Some("admin@notindigo.ai")));
-        // Look-alike — leading `@` in ALLOWED_DOMAIN blocks suffix match
-        // on `forgetindigo.ai`.
-        assert!(!is_allowed_email(Some("attacker@forgetindigo.ai")));
-    }
-
-    /// US-001 AC #4: missing/empty emails return false (never default-true).
-    #[test]
-    fn desktop_alt_gate_rejects_missing_email() {
-        assert!(!is_allowed_email(None));
-        assert!(!is_allowed_email(Some("")));
+    fn desktop_alt_gate_rejects_signed_out() {
+        assert!(!email_present(None));
+        assert!(!email_present(Some("")));
+        assert!(!email_present(Some("   ")));
     }
 
     #[test]

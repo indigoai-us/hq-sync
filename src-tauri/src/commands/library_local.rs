@@ -21,7 +21,8 @@
 //!     and a company's skills in `companies/<slug>/skills/*`.
 //!
 //! Like the other desktop-alt readers (`commands/projects_local.rs`), every
-//! command is gated by `feature_gate::is_indigo_user()`, resolves the HQ folder
+//! command is gated by `feature_gate::desktop_features_enabled()` (GA — any
+//! signed-in user), resolves the HQ folder
 //! with the standard 4-tier resolver, and guards detail reads with the lexical
 //! `is_within` path-traversal check. Parsing is lenient: a missing registry or an
 //! unreadable/garbage individual file is skipped (empty result), never a panic —
@@ -247,8 +248,8 @@ fn resolve_hq_folder() -> PathBuf {
 /// `personal`). Empty (not an error) when nothing resolves.
 #[tauri::command]
 pub async fn get_library_root() -> Result<LibraryItems, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("library reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("library reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     Ok(scan_root_library(&hq))
@@ -258,8 +259,8 @@ pub async fn get_library_root() -> Result<LibraryItems, String> {
 /// `path` is under `companies/<slug>/workers/`) plus `companies/<slug>/skills/*`.
 #[tauri::command]
 pub async fn get_library_company(company_slug: String) -> Result<LibraryItems, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("library reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("library reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     scan_company_library(&hq, &company_slug)
@@ -268,8 +269,8 @@ pub async fn get_library_company(company_slug: String) -> Result<LibraryItems, S
 /// Read one worker's `worker.yaml` by its HQ-relative directory path.
 #[tauri::command]
 pub async fn get_library_worker_detail(worker_path: String) -> Result<WorkerDetail, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("library reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("library reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     read_worker_detail(&hq, &worker_path)
@@ -278,8 +279,8 @@ pub async fn get_library_worker_detail(worker_path: String) -> Result<WorkerDeta
 /// Read one skill's `SKILL.md` (frontmatter + body) by its HQ-relative path.
 #[tauri::command]
 pub async fn get_library_skill_detail(skill_path: String) -> Result<SkillDetail, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("library reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("library reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     read_skill_detail(&hq, &skill_path)

@@ -132,8 +132,8 @@
   let onboardingHandled = false;
 
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
-  // decodes the cached Cognito id_token and checks @getindigo.ai). The icon
-  // doesn't render at all when this is false. Click opens the standalone
+  // decodes the cached Cognito id_token; GA — true for any signed-in user).
+  // The icon doesn't render at all when this is false. Click opens the standalone
   // `meetings-window` (mirrors the `new-files-detail` window pattern) — the
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
@@ -351,12 +351,12 @@
     }
   }
 
-  // Desktop-alt UX feature flag (US-001) — driven by `desktop_alt_enabled`
-  // (Rust side delegates to the same `@getindigo.ai` gate as
-  // `meetings_feature_enabled`; the OnceLock cache is shared). Defaults
-  // false so non-Indigo users never see the alt UX surface even if the
-  // gate command hasn't resolved yet. Subsequent stories (US-003/US-004)
-  // gate the toggle button + alt popover render path on this flag.
+  // Desktop window feature flag — driven by `desktop_alt_enabled` (Rust side
+  // delegates to the GA gate `desktop_features_enabled`, the same gate as
+  // `meetings_feature_enabled`; true for any signed-in user). Defaults false
+  // so a signed-out user never sees the desktop window surface even if the
+  // gate command hasn't resolved yet. The toggle button + desktop window
+  // render path are gated on this flag.
   let desktopAltEnabled = $state(false);
 
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
@@ -1549,9 +1549,9 @@
         meetingsEnabled = false;
       });
 
-    // Desktop-alt UX gate (US-001). Same @getindigo.ai check as
+    // Desktop window gate (GA). Same signed-in check as
     // `meetings_feature_enabled`; errors fall back to false so a misfiring
-    // gate command can never accidentally expose the alt UX.
+    // gate command can never expose the desktop window to a signed-out user.
     refreshDesktopAltEnabled();
 
     return () => {
