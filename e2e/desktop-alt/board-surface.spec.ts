@@ -151,17 +151,19 @@ describe('desktop-alt Board surface (US-007)', () => {
     const sidebar = readRepoFile('src/desktop-alt/DesktopSidebar.svelte');
 
     // Route kind union no longer carries 'board' (Library was added alongside
-    // the Sync/Meetings primaries — see the Library surface).
-    expect(route).toContain("'sync' | 'meetings' | 'library' | 'company'");
+    // the Sync/Meetings primaries — see the Library surface — and the admin-only
+    // Moderation route was added after it, default-deny — see the Moderation nav).
+    expect(route).toContain("'sync' | 'meetings' | 'library' | 'moderation' | 'company'");
     expect(route).not.toContain("kind: 'board' | 'sync'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");
 
-    // No Board sidebar row; companies fall after the 3 primaries (Sync,
-    // Meetings, Library).
+    // No Board sidebar row; companies are split off by route kind (not a fixed
+    // index) so the optional Moderation primary row can't shift the slice and
+    // leak a company into the primary nav.
     expect(route).not.toContain("label: 'Board'");
-    expect(sidebar).toContain('rows.slice(0, 3)');
-    expect(sidebar).toContain('rows.slice(3)');
+    expect(sidebar).toContain("rows.filter((row) => row.route.kind !== 'company')");
+    expect(sidebar).toContain("rows.filter((row) => row.route.kind === 'company')");
   });
 
   it('wires the project list: search, pills, group-by, rows, progress, drill-in', () => {
