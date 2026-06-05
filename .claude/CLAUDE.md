@@ -50,15 +50,15 @@ macOS menu bar app wrapping `hq sync` for non-technical users. Tauri 2 + Svelte 
 | `util/journal.rs` | Append-only sync journal at `~/.hq/sync-journal.log` (used by Connect diagnostics) |
 | `util/logfile.rs` | Persistent diagnostic log for the sync pipeline at `~/.hq/sync-debug.log` (rotated at 10MB) |
 
-## Desktop Alt UX (Indigo Dogfood)
+## Desktop Alt UX (GA — public since 0.7.0)
 
-The desktop-alt UX is a second Tauri window labeled `desktop-alt`, declared hidden in `src-tauri/tauri.conf.json` with `create: false` and opened only by `open_desktop_alt_window`. The classic menubar popover remains the default UI; Indigo users get a header icon button with title `Open desktop view`.
+The desktop-alt UX is a second Tauri window labeled `desktop-alt`, declared hidden in `src-tauri/tauri.conf.json` with `create: false` and opened only by `open_desktop_alt_window`. The classic menubar popover remains the default UI; all signed-in users get a header icon button with title `Open desktop view` (graduated from the Indigo dogfood to GA in 0.7.0).
 
 Access is defense-in-depth:
 
 1. `App.svelte` invokes `desktop_alt_enabled`.
 2. `Popover.svelte` only renders `data-testid="desktop-alt-toggle"` when that result is true.
-3. `open_desktop_alt_window` calls the same backend gate again and rejects non-Indigo users.
+3. `open_desktop_alt_window` calls the same backend gate again and rejects signed-out callers — the window graduated to GA via `feature_gate::desktop_features_enabled`; pre-release update channels stay Indigo-only via `is_indigo_user`.
 
 Frontend files live under `src/desktop-alt/`. `DesktopApp.svelte` owns the route, command-K palette, status bar, sync event listeners, workspace loading, and meetings cache hydration. `route.ts` maps the sidebar rows and command-number hotkeys. Company panels call `get_company_board`, `get_company_activity`, `get_company_deployments`, and `get_company_secrets`.
 

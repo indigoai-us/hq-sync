@@ -32,15 +32,16 @@ use crate::util::client_info::build_client;
 
 // ── Feature flag ─────────────────────────────────────────────────────────────
 
-/// Returns true iff the signed-in user's email ends in `@getindigo.ai`.
+/// Returns true for any signed-in user (GA — the Meetings feature graduated
+/// from the Indigo dogfood).
 ///
-/// Delegates to `feature_gate::is_indigo_user()`, which caches the result for
-/// the process lifetime (the Cognito email claim is stable across token
-/// rotations). Quiet on missing/malformed tokens (returns false) so the
+/// Delegates to `feature_gate::desktop_features_enabled()`, which caches the
+/// result for the process lifetime (the Cognito email claim is stable across
+/// token rotations). Quiet on missing/malformed tokens (returns false) so the
 /// popover never breaks because the user is signed out.
 #[tauri::command]
 pub async fn meetings_feature_enabled() -> Result<bool, String> {
-    Ok(crate::util::feature_gate::is_indigo_user().await)
+    Ok(crate::util::feature_gate::desktop_features_enabled().await)
 }
 
 // ── Data types (mirror hq-pro response shapes) ────────────────────────────────
@@ -1175,28 +1176,26 @@ fn is_url_safe_id(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    // The Meetings feature graduated from the Indigo dogfood to GA: the gate
+    // now admits any signed-in user (`feature_gate::email_present`), not just
+    // `@getindigo.ai`. These pin the GA presence contract the command path is
+    // bound to.
     #[test]
-    fn allowlist_matches_indigo_ai() {
-        use crate::util::feature_gate::is_allowed_email;
-        assert!(is_allowed_email(Some("stefan@getindigo.ai")));
-        assert!(is_allowed_email(Some("STEFAN@GetIndigo.AI")));
+    fn meetings_gate_admits_any_signed_in_user() {
+        use crate::util::feature_gate::email_present;
+        assert!(email_present(Some("stefan@getindigo.ai")));
+        assert!(email_present(Some("someone@gmail.com")));
+        assert!(email_present(Some("qa@example.com")));
+        // Former dogfood look-alike — now admitted, GA only checks presence.
+        assert!(email_present(Some("attacker@forgetindigo.ai")));
     }
 
     #[test]
-    fn allowlist_rejects_other_domains() {
-        use crate::util::feature_gate::is_allowed_email;
-        assert!(!is_allowed_email(Some("someone@gmail.com")));
-        assert!(!is_allowed_email(Some("admin@notindigo.ai")));
-        // Look-alike domain — the leading `@` in ALLOWED_DOMAIN prevents
-        // suffix matches like `forgetindigo.ai`.
-        assert!(!is_allowed_email(Some("attacker@forgetindigo.ai")));
-    }
-
-    #[test]
-    fn allowlist_rejects_missing_email() {
-        use crate::util::feature_gate::is_allowed_email;
-        assert!(!is_allowed_email(None));
-        assert!(!is_allowed_email(Some("")));
+    fn meetings_gate_rejects_signed_out() {
+        use crate::util::feature_gate::email_present;
+        assert!(!email_present(None));
+        assert!(!email_present(Some("")));
+        assert!(!email_present(Some("   ")));
     }
 
     /// Serde shape lock-in — what the frontend gets is what the modal needs.

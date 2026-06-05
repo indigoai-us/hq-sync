@@ -152,7 +152,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     this.assertWindowLifecycleSourceContracts();
 
     if (!this.isDesktopAltEnabled()) {
-      throw new Error('desktop-alt is Indigo-only');
+      throw new Error('desktop-alt requires a signed-in user');
     }
 
     if (this.desktopAltWindow) {
@@ -220,7 +220,11 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
   }
 
   private isDesktopAltEnabled(): boolean {
-    return /@getindigo\.ai$/i.test(this.email.trim());
+    // GA mirror of the Rust gate (`feature_gate::email_present`): the
+    // expanded desktop window graduated from the Indigo dogfood, so it's
+    // visible for ANY signed-in user (non-empty email) and hidden only when
+    // signed out.
+    return this.email.trim().length > 0;
   }
 
   private assertGateSourceContracts(): void {
@@ -230,7 +234,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     const main = readRepoFile('src-tauri/src/main.rs');
 
     expect(rust).toContain('pub async fn desktop_alt_enabled()');
-    expect(rust).toContain('crate::util::feature_gate::is_indigo_user().await');
+    expect(rust).toContain('crate::util::feature_gate::desktop_features_enabled().await');
     expect(main).toContain('commands::desktop_alt::desktop_alt_enabled');
     expect(app).toContain("invoke<boolean>('desktop_alt_enabled')");
     expect(app).toContain('{desktopAltEnabled}');

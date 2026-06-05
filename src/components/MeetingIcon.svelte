@@ -4,8 +4,8 @@
    *
    * Calendar/dot glyph; click opens the standalone `meetings-window` (via
    * `invoke('open_meetings_window')`). Parent gates rendering on the
-   * `meetings_feature_enabled` check so this component is only mounted for
-   * users on the @getindigo.ai allowlist.
+   * `meetings_feature_enabled` check (GA) so this component is mounted for
+   * any signed-in user.
    *
    * Three visual states drive the glyph colour:
    *   - `recording` (red): at least one ActiveMeeting in the `recording`
