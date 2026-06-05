@@ -32,12 +32,22 @@
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
+  import ChannelList from './ChannelList.svelte';
+  import ChannelView from './ChannelView.svelte';
+  import CreateChannel from './CreateChannel.svelte';
   import {
     type DmRequest,
     type RequestAction,
     addRequest,
     removeRequest,
   } from '../../lib/dmRequests';
+  import {
+    type Channel,
+    type CompanyLabel,
+    upsertChannel,
+    bumpChannelUnread,
+    clearChannelUnread,
+  } from '../../lib/channels';
 
   type Segment = 'dms' | 'requests' | 'channels';
 
@@ -88,6 +98,36 @@
   let requestsError = $state<string | null>(null);
   // Derived count — the segment badge stays in lockstep with the rendered list.
   let pendingRequests = $derived(requests.length);
+
+  // Channels (US-018). `list_channels` is the source of truth for the rail;
+  // `channel:new-message` / `channel:updated` keep it live. `selectedChannel`
+  // drives the right pane (<ChannelView/>). `companyLabels` feeds the per-company
+  // group headers (derived from the caller's memberships).
+  let channels = $state<Channel[]>([]);
+  let loadingChannels = $state(false);
+  let channelsError = $state<string | null>(null);
+  let selectedChannel = $state<Channel | null>(null);
+  let companyLabels = $state<CompanyLabel[]>([]);
+  // Create-channel overlay (null = closed). Holds the preset company scope the
+  // "+ New channel" affordance was clicked under (undefined slot = personal).
+  let creatingChannel = $state(false);
+  let createPresetCompany = $state<string | null>(null);
+  // The signed-in caller's personUid — resolved lazily for the roster's
+  // owner/self checks. `whoami`-style resolution lives in Rust; we read it from
+  // the unread summary path's identity if available, else leave null (the
+  // roster degrades to server-enforced owner gating).
+  let selfPersonUid = $state<string | null>(null);
+
+  interface MembershipRow {
+    companyUid: string;
+    companyName: string | null;
+    role: string | null;
+    status: string;
+  }
+
+  interface ChannelsResponse {
+    channels: Channel[];
+  }
 
   // Selected peer + its loaded thread.
   let selected = $state<Contact | null>(null);
@@ -226,6 +266,75 @@
     }
   }
 
+  async function loadChannels(): Promise<void> {
+    loadingChannels = true;
+    channelsError = null;
+    try {
+      const resp = await invoke<ChannelsResponse>('list_channels');
+      channels = resp.channels ?? [];
+    } catch (err) {
+      channelsError = typeof err === 'string' ? err : 'Could not load channels';
+      channels = [];
+      console.error('messages: list_channels failed', err);
+    } finally {
+      loadingChannels = false;
+    }
+  }
+
+  async function loadCompanyLabels(): Promise<void> {
+    try {
+      const list = await invoke<MembershipRow[]>('meetings_list_memberships');
+      companyLabels = (list ?? [])
+        .filter((m) => m.status === 'active')
+        .map((m) => ({ companyUid: m.companyUid, companyName: m.companyName }));
+    } catch (err) {
+      // Non-fatal — group headers fall back to companyUid / the channel's own
+      // companyName.
+      console.error('messages: meetings_list_memberships failed', err);
+    }
+  }
+
+  async function loadSelfPersonUid(): Promise<void> {
+    try {
+      const cfg = await invoke<{ personUid?: string | null }>('get_config');
+      selfPersonUid = cfg?.personUid ?? null;
+    } catch (err) {
+      // Non-fatal — the roster degrades to server-enforced owner gating.
+      console.error('messages: get_config failed', err);
+    }
+  }
+
+  function selectChannel(c: Channel): void {
+    selectedChannel = c;
+    // Opening a channel optimistically clears its rail unread; ChannelView also
+    // calls mark_channel_read server-side.
+    channels = clearChannelUnread(channels, c.channelId);
+  }
+
+  function openCreateChannel(companyUid: string | null): void {
+    createPresetCompany = companyUid;
+    creatingChannel = true;
+  }
+
+  function handleChannelCreated(channel: Channel): void {
+    creatingChannel = false;
+    channels = upsertChannel(channels, channel);
+    selectChannel(channel);
+  }
+
+  // ChannelView patched the channel's metadata (joined, member count) — reflect
+  // it in the rail + keep the selected reference fresh.
+  function handleChannelChange(channel: Channel): void {
+    channels = upsertChannel(channels, channel);
+    if (selectedChannel?.channelId === channel.channelId) {
+      selectedChannel = channel;
+    }
+  }
+
+  function handleChannelRead(channelId: string): void {
+    channels = clearChannelUnread(channels, channelId);
+  }
+
   // A request card resolved (Accept / Decline / Block succeeded). Prune it from
   // the list (the count badge follows via the derived `pendingRequests`). On
   // Accept, the held first message becomes a live thread — swap to the DMs
@@ -323,11 +432,39 @@
       requests = removeRequest(requests, e.payload.pairKey);
     }).then((fn) => unlisteners.push(fn));
 
+    // A channel the caller is in has new activity (US-018). If it's the open
+    // channel, ChannelView handles its own refresh; otherwise bump the rail
+    // unread badge for that channel.
+    listen<{ channelId: string; unread?: number }>('channel:new-message', (e) => {
+      const { channelId } = e.payload;
+      if (selectedChannel?.channelId === channelId) return; // ChannelView owns it
+      // Prefer the authoritative unread the poll computed; fall back to +1.
+      if (typeof e.payload.unread === 'number') {
+        channels = channels.map((c) =>
+          c.channelId === channelId ? { ...c, unread: e.payload.unread } : c,
+        );
+      } else {
+        channels = bumpChannelUnread(channels, channelId, 1);
+      }
+    }).then((fn) => unlisteners.push(fn));
+
+    // A brand-new channel/invite appeared, or a channel's metadata changed.
+    // Upsert it into the rail so it shows live without a manual refresh.
+    listen<Channel>('channel:updated', (e) => {
+      channels = upsertChannel(channels, e.payload);
+      if (selectedChannel?.channelId === e.payload.channelId) {
+        selectedChannel = e.payload;
+      }
+    }).then((fn) => unlisteners.push(fn));
+
     // Ready-handshake: tell Rust the listeners are mounted so it shows + focuses
     // the window and resets the unread badge (mirrors DmDetail).
     void loadContacts();
     void loadRequests();
     void loadUnreadSummary();
+    void loadChannels();
+    void loadCompanyLabels();
+    void loadSelfPersonUid();
     invoke('messages_window_ready');
 
     return () => {
@@ -434,24 +571,40 @@
           </ul>
         {/if}
       {:else}
-        <!-- Scaffold: channels are a later story. -->
-        <div class="segment-empty">
-          <p class="segment-empty-title">Channels</p>
-          <p class="segment-empty-sub">Coming soon.</p>
-        </div>
+        <ChannelList
+          {channels}
+          companies={companyLabels}
+          loading={loadingChannels}
+          error={channelsError}
+          selectedId={selectedChannel?.channelId ?? null}
+          onselect={selectChannel}
+          oncreate={openCreateChannel}
+        />
       {/if}
     </div>
   </aside>
 
   <section class="pane">
-    {#if segment !== 'dms'}
+    {#if segment === 'requests'}
       <div class="pane-empty">
         <p>
-          {segment === 'requests'
-            ? 'Review connection requests on the left — accept, decline, or block each one.'
-            : 'Channels are coming soon.'}
+          Review connection requests on the left — accept, decline, or block each
+          one.
         </p>
       </div>
+    {:else if segment === 'channels'}
+      {#if selectedChannel}
+        <ChannelView
+          channel={selectedChannel}
+          {selfPersonUid}
+          onchannelchange={handleChannelChange}
+          onread={handleChannelRead}
+        />
+      {:else}
+        <div class="pane-empty">
+          <p>Select a channel, or create one to start a group conversation.</p>
+        </div>
+      {/if}
     {:else if !selected}
       <div class="pane-empty">
         <p>Select a conversation to start messaging.</p>
@@ -478,6 +631,14 @@
 
   {#if composing}
     <ComposeMessage onclose={() => (composing = false)} onsent={handleComposeSent} />
+  {/if}
+
+  {#if creatingChannel}
+    <CreateChannel
+      onclose={() => (creatingChannel = false)}
+      oncreated={handleChannelCreated}
+      presetCompanyUid={createPresetCompany}
+    />
   {/if}
 </div>
 

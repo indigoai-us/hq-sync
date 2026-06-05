@@ -146,9 +146,14 @@
   // change — no separate poller) and seeded once on mount via
   // `get_unread_summary`. Reset to 0 unread by Rust when the Messages window
   // opens.
-  let unreadSummary = $state<{ unreadDms: number; pendingRequests: number }>({
+  let unreadSummary = $state<{
+    unreadDms: number;
+    pendingRequests: number;
+    channelUnread: number;
+  }>({
     unreadDms: 0,
     pendingRequests: 0,
+    channelUnread: 0,
   });
 
   // Memberships drive the company picker in the active-meetings row.
@@ -522,9 +527,21 @@
       unreadSummary = {
         unreadDms: s.unreadDms ?? 0,
         pendingRequests: s.pendingRequests ?? 0,
+        channelUnread: unreadSummary.channelUnread,
       };
     } catch (err) {
       console.error('get_unread_summary failed:', err);
+    }
+    // Channel unread isn't part of get_unread_summary (it has no managed-state
+    // tally); seed it from list_channels so the badge reflects channels too.
+    // After this it stays live off `channel:new-message`. Errors degrade to the
+    // last-known value.
+    try {
+      const resp = await invoke<{ channels?: Array<{ unread?: number }> }>('list_channels');
+      const total = (resp.channels ?? []).reduce((sum, c) => sum + (c.unread ?? 0), 0);
+      unreadSummary = { ...unreadSummary, channelUnread: total };
+    } catch (err) {
+      console.error('list_channels (badge seed) failed:', err);
     }
   }
 
@@ -1482,9 +1499,38 @@
             // (the poll path emits 0 for requests by design).
             pendingRequests:
               e.payload.pendingRequests || unreadSummary.pendingRequests,
+            channelUnread: unreadSummary.channelUnread,
           };
         }
       )
+    );
+
+    // --- Channel activity listeners (US-018) ---
+    // The SINGLE DM poll path (and a "channel" MQTT wake on the person topic)
+    // emits `channel:new-message` { channelId, unread } when a channel the
+    // caller is in gains activity, and `channel:updated` for a new channel/
+    // invite. Here we keep the popover Messages badge's channel accent live (the
+    // MessagesShell owns the per-channel rail badges). We re-seed the total from
+    // list_channels on each event so the accent reflects the authoritative
+    // server unread rather than drifting on a running delta.
+    const reseedChannelUnread = async () => {
+      try {
+        const resp = await invoke<{ channels?: Array<{ unread?: number }> }>('list_channels');
+        const total = (resp.channels ?? []).reduce((sum, c) => sum + (c.unread ?? 0), 0);
+        unreadSummary = { ...unreadSummary, channelUnread: total };
+      } catch (err) {
+        console.error('list_channels (badge refresh) failed:', err);
+      }
+    };
+    unlisteners.push(
+      await listen<{ channelId: string; unread?: number }>('channel:new-message', () => {
+        void reseedChannelUnread();
+      })
+    );
+    unlisteners.push(
+      await listen('channel:updated', () => {
+        void reseedChannelUnread();
+      })
     );
 
     // --- Incoming connection-request listeners (US-011) ---
@@ -1504,6 +1550,7 @@
         unreadSummary = {
           unreadDms: unreadSummary.unreadDms,
           pendingRequests: unreadSummary.pendingRequests + 1,
+          channelUnread: unreadSummary.channelUnread,
         };
 
         // Distinct native banner — "{name} wants to connect" — so a connection
@@ -1534,6 +1581,7 @@
           unreadSummary = {
             unreadDms: unreadSummary.unreadDms,
             pendingRequests: Math.max(0, unreadSummary.pendingRequests - 1),
+            channelUnread: unreadSummary.channelUnread,
           };
           void e;
         }
@@ -1838,8 +1886,12 @@
       onmessagesclick={() => {
         // Open (or focus) the dedicated Messages window. Fire-and-forget — the
         // Rust handler focuses an existing window or creates a fresh one, and
-        // resets the unread badge via the ready-handshake. The badge will also
-        // refresh locally on the next `dm:unread-summary`.
+        // resets the unread-DM badge via the ready-handshake. The DM badge also
+        // refreshes locally on the next `dm:unread-summary`. Channel unread has
+        // no managed-state tally to reset in Rust, so clear its accent
+        // optimistically here (the user is now looking at Messages); it
+        // re-seeds accurately from list_channels on the next channel event.
+        unreadSummary = { ...unreadSummary, channelUnread: 0 };
         invoke('open_messages_window').catch(() => {});
       }}
       onmeetingsclick={() => {
