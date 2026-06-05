@@ -199,6 +199,43 @@ impl SeenRequestState {
     }
 }
 
+/// Tauri event emitted by the SINGLE poll path when a channel the caller is in
+/// has new activity (US-018). Payload is `{ channelId, unread }`. ChannelView
+/// (if open on that channel) refreshes its messages; ChannelList bumps the
+/// per-channel unread badge; App.svelte folds it into the popover badge accent.
+/// The "channel" MQTT wake on the person topic routes here via the same poll
+/// path (the wake is ids-only; the client re-derives state by diffing the
+/// channels list it re-fetches).
+pub const EVENT_CHANNEL_NEW_MESSAGE: &str = "channel:new-message";
+
+/// Tauri event emitted by the SINGLE poll path when a channel's metadata
+/// changed (US-018) — a brand-new channel appeared (created/invited), or its
+/// name/membership/member-count changed. Payload is the full `Channel` (camel).
+/// ChannelList upserts it so a new invite/channel appears live without a manual
+/// refresh.
+pub const EVENT_CHANNEL_UPDATED: &str = "channel:updated";
+
+/// Managed state for the SINGLE poll path's channel diff (US-018). Tracks, per
+/// channel the caller can see, the last-observed unread count so the next poll
+/// can detect new activity (unread increased) and emit `channel:new-message`.
+/// Also tracks the set of known channelIds so a brand-new channel/invite fires
+/// `channel:updated`. `initialized` guards the first poll: we seed the maps
+/// without firing events for the backlog the user already had before launch.
+#[derive(Default)]
+pub struct SeenChannelsInner {
+    pub initialized: bool,
+    /// channelId → last-observed unread count.
+    pub unread_by_id: HashMap<String, u32>,
+}
+
+pub struct SeenChannelState(pub Mutex<SeenChannelsInner>);
+
+impl SeenChannelState {
+    pub fn new() -> Self {
+        SeenChannelState(Mutex::new(SeenChannelsInner::default()))
+    }
+}
+
 /// Add `delta` to the running unread-DM count and emit `dm:unread-summary` so
 /// the popover badge updates immediately. Called from `do_poll` (the one
 /// poller). Best-effort: if the request count can't be fetched here we emit the
@@ -936,6 +973,133 @@ async fn poll_requests(app: &AppHandle, base_url: &str, access_token: &str) {
     }
 }
 
+// ── Channels: fold channel activity into the SINGLE poll path (US-018) ───────────
+//
+// A "channel" wake arrives on the caller's person topic and routes through the
+// same `poll_dm_once` → `do_poll` path as DMs (the MQTT wake is ids-only). Here
+// we list the caller's channels and diff each channel's unread against the
+// last-observed value to detect new activity, emitting:
+//   * `channel:new-message` { channelId, unread } when a channel's unread grew
+//     (or a new channel arrived already carrying unread).
+//   * `channel:updated` (full Channel) for a brand-new channel/invite, so the
+//     left rail picks it up live.
+// There is NO parallel channel poller — this is best-effort and never disturbs
+// the DM-inbox poll that follows.
+
+/// The events produced by one channel diff. Pure result type so the diff is
+/// unit-testable without an AppHandle.
+#[derive(Debug, Default, PartialEq)]
+struct ChannelDiff {
+    /// (channelId, unread) for channels whose unread increased since last poll.
+    new_messages: Vec<(String, u32)>,
+    /// channelIds that are brand-new to the caller this poll (fire updated).
+    new_channels: Vec<String>,
+}
+
+/// Diff the freshly-listed channels against the last-observed unread map.
+/// Returns the events to emit. A channel is "new" when its id wasn't seen
+/// before; it raises a `new_messages` entry when its unread strictly increased
+/// (or it's new AND already carries unread > 0). Pure (operates on the provided
+/// map + slice) so the diff is unit-testable.
+fn diff_channels(
+    seen_unread: &HashMap<String, u32>,
+    current: &[crate::commands::messages::Channel],
+) -> ChannelDiff {
+    let mut diff = ChannelDiff::default();
+    for ch in current {
+        let unread = ch.unread.unwrap_or(0);
+        match seen_unread.get(&ch.channel_id) {
+            None => {
+                // Brand-new channel/invite this poll.
+                diff.new_channels.push(ch.channel_id.clone());
+                if unread > 0 {
+                    diff.new_messages.push((ch.channel_id.clone(), unread));
+                }
+            }
+            Some(&prev) if unread > prev => {
+                diff.new_messages.push((ch.channel_id.clone(), unread));
+            }
+            _ => {}
+        }
+    }
+    diff
+}
+
+/// Poll the channels list and emit channel events off the diff. Folded into the
+/// SINGLE `do_poll` path (NOT a parallel poller). Best-effort: any failure logs
+/// and returns without disturbing the DM-inbox poll. The first poll seeds the
+/// unread map silently (no events for the pre-launch backlog).
+async fn poll_channels(app: &AppHandle, base_url: &str, access_token: &str) {
+    let url = format!("{}/v1/notify/channels", base_url);
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .send()
+        .await;
+
+    let list = match resp {
+        Err(e) => {
+            log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_NETWORK_FAIL {e}"));
+            return;
+        }
+        Ok(r) => {
+            let status = r.status();
+            if !status.is_success() {
+                log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_ERROR status={status}"));
+                return;
+            }
+            match r.json::<crate::commands::messages::ChannelsResponse>().await {
+                Ok(b) => b,
+                Err(e) => {
+                    log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_ERROR parse: {e}"));
+                    return;
+                }
+            }
+        }
+    };
+
+    let Some(state) = app.try_state::<SeenChannelState>() else {
+        return;
+    };
+
+    let (diff, channels, first_run) = {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        let first_run = !guard.initialized;
+        let diff = diff_channels(&guard.unread_by_id, &list.channels);
+        // Reconcile the unread map to exactly the current channels.
+        guard.unread_by_id = list
+            .channels
+            .iter()
+            .map(|c| (c.channel_id.clone(), c.unread.unwrap_or(0)))
+            .collect();
+        guard.initialized = true;
+        (diff, list.channels, first_run)
+    };
+
+    if first_run {
+        log(LOG_TAG, &format!("DM_NOTIFY_CHAN_POLL_SEED count={}", channels.len()));
+        return;
+    }
+
+    // Emit `channel:updated` for brand-new channels/invites (full payload so the
+    // rail can render the row without a separate fetch).
+    for channel_id in &diff.new_channels {
+        if let Some(ch) = channels.iter().find(|c| &c.channel_id == channel_id) {
+            log(LOG_TAG, &format!("DM_NOTIFY_CHAN_UPDATED id={channel_id}"));
+            let _ = app.emit(EVENT_CHANNEL_UPDATED, ch);
+        }
+    }
+    // Emit `channel:new-message` for channels whose unread grew.
+    for (channel_id, unread) in &diff.new_messages {
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_CHAN_NEW_MESSAGE id={channel_id} unread={unread}"),
+        );
+        let payload = serde_json::json!({ "channelId": channel_id, "unread": unread });
+        let _ = app.emit(EVENT_CHANNEL_NEW_MESSAGE, &payload);
+    }
+}
+
 // ── Core poll logic (mirrors share_notify::do_poll) ─────────────────────────────
 
 async fn do_poll(app: &AppHandle) {
@@ -974,6 +1138,11 @@ async fn do_poll(app: &AppHandle) {
     // empty body). Best-effort: any failure logs and returns without disturbing
     // the DM-inbox poll below.
     poll_requests(app, &base_url, &access_token).await;
+
+    // Fold channel-activity polling into the SAME single path (US-018) — a
+    // "channel" wake on the person topic routes here. Best-effort; emits
+    // `channel:new-message` / `channel:updated`. NOT a parallel poller.
+    poll_channels(app, &base_url, &access_token).await;
 
     let since = read_cursor(&machine_id);
     let url = match since.as_deref() {
@@ -1493,6 +1662,58 @@ mod tests {
             serde_json::from_str("{}").expect("empty requests parses");
         assert!(empty.requests.is_empty());
         assert!(empty.next_cursor.is_none());
+    }
+
+    fn mk_channel(id: &str, unread: u32) -> crate::commands::messages::Channel {
+        crate::commands::messages::Channel {
+            channel_id: id.to_string(),
+            name: format!("#{id}"),
+            scope: "company".to_string(),
+            company_uid: Some("ent_co".to_string()),
+            company_name: Some("Acme".to_string()),
+            post_policy: None,
+            visibility: None,
+            membership: Some("joined".to_string()),
+            unread: Some(unread),
+            member_count: None,
+        }
+    }
+
+    #[test]
+    fn diff_channels_first_seed_marks_all_new() {
+        // Empty seen map → every channel is "new"; channels with unread>0 also
+        // raise a new-message entry. (The seed guard in poll_channels suppresses
+        // emission on the very first poll; the diff itself is pure.)
+        let seen: HashMap<String, u32> = HashMap::new();
+        let current = vec![mk_channel("a", 0), mk_channel("b", 4)];
+        let diff = diff_channels(&seen, &current);
+        assert_eq!(diff.new_channels, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(diff.new_messages, vec![("b".to_string(), 4)]);
+    }
+
+    #[test]
+    fn diff_channels_detects_unread_increase_only() {
+        // a stayed flat, b grew, c shrank (read elsewhere) → only b fires.
+        let mut seen: HashMap<String, u32> = HashMap::new();
+        seen.insert("a".to_string(), 2);
+        seen.insert("b".to_string(), 1);
+        seen.insert("c".to_string(), 5);
+        let current = vec![mk_channel("a", 2), mk_channel("b", 3), mk_channel("c", 0)];
+        let diff = diff_channels(&seen, &current);
+        assert!(diff.new_channels.is_empty());
+        assert_eq!(diff.new_messages, vec![("b".to_string(), 3)]);
+    }
+
+    #[test]
+    fn diff_channels_new_invite_fires_updated() {
+        // A brand-new channel with zero unread (a fresh invite) fires updated but
+        // no new-message.
+        let mut seen: HashMap<String, u32> = HashMap::new();
+        seen.insert("a".to_string(), 0);
+        let current = vec![mk_channel("a", 0), mk_channel("new", 0)];
+        let diff = diff_channels(&seen, &current);
+        assert_eq!(diff.new_channels, vec!["new".to_string()]);
+        assert!(diff.new_messages.is_empty());
     }
 
     #[test]
