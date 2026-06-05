@@ -1,7 +1,7 @@
 import type { Workspace } from '../lib/workspaces';
 
 export type DesktopRoute = {
-  kind: 'sync' | 'meetings' | 'library' | 'company';
+  kind: 'sync' | 'meetings' | 'library' | 'messages' | 'company';
   /** Company slug — set for `company` routes. */
   slug?: string;
 };
@@ -63,6 +63,12 @@ export function getDesktopSidebarRows(
       shortcut: '⌘3',
       active: isDesktopRouteActive(route, { kind: 'library' }),
     },
+    {
+      route: { kind: 'messages' },
+      label: 'Messages',
+      shortcut: '⌘4',
+      active: isDesktopRouteActive(route, { kind: 'messages' }),
+    },
   ];
 
   return primaryRows.concat(
@@ -71,7 +77,7 @@ export function getDesktopSidebarRows(
       return {
         route: companyRoute,
         label: company.displayName,
-        shortcut: index < 4 ? `⌘${index + 4}` : undefined,
+        shortcut: index < 4 ? `⌘${index + 5}` : undefined,
         active: isDesktopRouteActive(route, companyRoute),
       };
     }),
@@ -95,9 +101,10 @@ export function getDesktopHotkeyRoute(
   if (event.key === '1') return { kind: 'sync' };
   if (event.key === '2') return { kind: 'meetings' };
   if (event.key === '3') return { kind: 'library' };
+  if (event.key === '4') return { kind: 'messages' };
 
-  if (['4', '5', '6', '7'].includes(event.key)) {
-    const company = companies[Number.parseInt(event.key, 10) - 4];
+  if (['5', '6', '7', '8'].includes(event.key)) {
+    const company = companies[Number.parseInt(event.key, 10) - 5];
     if (company) return { kind: 'company', slug: company.slug };
   }
 

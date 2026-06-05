@@ -8,6 +8,7 @@
   import SyncPage from './pages/SyncPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
+  import MessagesPage from './pages/MessagesPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
@@ -151,11 +152,18 @@
       shortcut: '⌘3',
       action: () => navigate({ kind: 'library' }),
     },
+    {
+      id: 'command-go-messages',
+      label: 'Go to Messages',
+      detail: 'Direct messages and channels',
+      shortcut: '⌘4',
+      action: () => navigate({ kind: 'messages' }),
+    },
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
       label: `Go to ${company.displayName}`,
       detail: 'Show company workspace',
-      shortcut: index < 4 ? `⌘${index + 4}` : undefined,
+      shortcut: index < 4 ? `⌘${index + 5}` : undefined,
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);
@@ -569,6 +577,10 @@
             <div class="page">
               <LibraryPage />
             </div>
+          {:else if route.kind === 'messages'}
+            <div class="messages-host">
+              <MessagesPage />
+            </div>
           {:else if activeCompany}
             <div class="page">
               <CompanyPage company={activeCompany} />
@@ -604,3 +616,15 @@
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
   {/if}
 </div>
+
+<style>
+  /* The Messages route hosts the full-bleed MessagesShell rather than the
+     padded, scrolling .page layout — it fills the content area and anchors the
+     shell's absolutely-positioned host. */
+  .messages-host {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+</style>
