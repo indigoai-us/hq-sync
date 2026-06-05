@@ -3,6 +3,7 @@
   import Popover from '../src/components/Popover.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
+  import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
@@ -17,7 +18,7 @@
   // window size) — the popover root fills 100vw/100vh. For settings, any
   // viewport works; it renders centered on a desktop-ish backdrop.
   const params = new URLSearchParams(window.location.search);
-  const view = params.get('view') ?? 'settings';
+  const view = params.get('view') ?? 'desktop';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
 
@@ -26,7 +27,11 @@
   // once the component's listener has mounted (next tick).
   document.documentElement.setAttribute(
     'data-window',
-    view === 'banner' ? 'dm-banner' : view === 'company' ? 'desktop-alt' : 'main'
+    view === 'banner'
+      ? 'dm-banner'
+      : view === 'company' || view === 'desktop'
+        ? 'desktop-alt'
+        : 'main'
   );
   document.documentElement.dataset.forceTheme = theme;
 
@@ -36,7 +41,11 @@
   }
 </script>
 
-{#if view === 'banner'}
+{#if view === 'desktop'}
+  <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
+       live strip). Resize the preview viewport to ~1180x720. -->
+  <DesktopApp />
+{:else if view === 'banner'}
   <!-- The banner fills 100vw/100vh (tight native window). Resize the preview
        viewport to ~366x104 to see it at real proportions. -->
   <BannerNotification />
