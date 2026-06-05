@@ -276,6 +276,7 @@ fn main() {
             commands::marketplace::yank_marketplace_listing,
             commands::marketplace::list_moderation_queue,
             commands::marketplace::decide_moderation_listing,
+            commands::marketplace::record_marketplace_install,
             commands::marketplace::publish_marketplace_pack,
             commands::marketplace::request_creator_access,
             commands::marketplace::pick_pack_directory,

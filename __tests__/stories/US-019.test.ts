@@ -69,3 +69,36 @@ describe('US-019: attribution byline links to the creator profile', () => {
     expect(src).toContain('<p class="section-body" data-testid="marketplace-detail-author">{authorLabel(selected)}</p>');
   });
 });
+
+/**
+ * US-019 — desktop install records install metrics (best-effort).
+ *
+ * After a SUCCESSFUL install, `MarketplacePanel.runInstall` must record an
+ * install event via the authed `recordMarketplaceInstall` lib call (→ Rust
+ * `record_marketplace_install`), passing the scope the user installed with — and
+ * it must be FIRE-AND-FORGET so a metrics failure never fails or blocks the
+ * install. Source-contract test (no DOM harness in this repo).
+ */
+describe('US-019: desktop install records install metrics (best-effort)', () => {
+  it('imports the recordMarketplaceInstall lib helper', () => {
+    expect(normalize(panel)).toContain('recordMarketplaceInstall');
+  });
+
+  it('records the install AFTER the install resolves, with the chosen scope, fire-and-forget', () => {
+    const src = normalize(panel);
+    // The recording call is sequenced inside runInstall's try block AFTER
+    // `installMarketplacePack(...)` (success path), using the listing id + the
+    // scope the user installed with (`target.scope`).
+    const installIdx = src.indexOf('await installMarketplacePack(');
+    const recordIdx = src.indexOf('recordMarketplaceInstall(selected.id, target.scope)');
+    expect(installIdx).toBeGreaterThan(-1);
+    expect(recordIdx).toBeGreaterThan(installIdx);
+  });
+
+  it('never awaits the metrics call and swallows its failure so it cannot block the install', () => {
+    const src = normalize(panel);
+    // `void` (not awaited) + `.catch(() => {})` = best-effort: a metrics write
+    // failure can never reject runInstall or surface as an install error.
+    expect(src).toContain('void recordMarketplaceInstall(selected.id, target.scope).catch(() => {});');
+  });
+});

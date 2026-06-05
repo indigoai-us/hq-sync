@@ -25,6 +25,7 @@ import {
   pickAvatarFile,
   pickPackDirectory,
   publishMarketplacePack,
+  recordMarketplaceInstall,
   requestCreatorAccess,
   toClaimError,
   toPublishError,
@@ -543,6 +544,40 @@ describe('US-016 — desktop Profile tab', () => {
     expect(await pickAvatarFile()).toBe('/Users/me/face.png');
     vi.mocked(invoke).mockResolvedValueOnce(null);
     expect(await pickAvatarFile()).toBeNull();
+  });
+
+  // ---- US-019 install metrics (best-effort) ------------------------------
+
+  it('recordMarketplaceInstall forwards the listing id + personal scope to the authed command', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await recordMarketplaceInstall('lst_1', { kind: 'personal' });
+    expect(invoke).toHaveBeenCalledWith('record_marketplace_install', {
+      listingId: 'lst_1',
+      scope: { kind: 'personal' },
+    });
+  });
+
+  it('recordMarketplaceInstall forwards a company scope (slug rides along)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    await recordMarketplaceInstall('lst_2', { kind: 'company', slug: 'indigo' });
+    expect(invoke).toHaveBeenCalledWith('record_marketplace_install', {
+      listingId: 'lst_2',
+      scope: { kind: 'company', slug: 'indigo' },
+    });
+  });
+
+  it('recordMarketplaceInstall rejects on a metrics failure, so a caller can choose to swallow it', async () => {
+    // The lib call itself surfaces the failure (the panel wraps it in
+    // `.catch(() => {})` so it never blocks the install). Prove the rejection is
+    // observable AND that swallowing it never throws.
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('metrics down'));
+    await expect(recordMarketplaceInstall('lst_3', { kind: 'personal' })).rejects.toThrow(
+      'metrics down',
+    );
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('metrics down'));
+    await expect(
+      recordMarketplaceInstall('lst_3', { kind: 'personal' }).catch(() => 'swallowed'),
+    ).resolves.toBe('swallowed');
   });
 
   it('getCreatorProfile trims the handle and returns the public preview (AC2)', async () => {

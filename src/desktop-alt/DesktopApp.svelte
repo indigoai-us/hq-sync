@@ -9,6 +9,7 @@
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
+  import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
   import {
@@ -47,6 +48,12 @@
   import './styles/desktop-alt.css';
 
   let route = $state<DesktopRoute>(initialDesktopRoute);
+  // Admin gate for the Moderation nav entry (UX only; the server is the sole
+  // authorization boundary). DEFAULT-DENY: starts false and only flips true on an
+  // explicit `desktop_alt_enabled === true`, so the row never flashes for a
+  // non-admin and stays hidden on any check error. Reuses the same signal
+  // ModerationPanel itself gates on (@getindigo.ai).
+  let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>([]);
   let workspacesCloudReachable = $state(true);
   let workspaceError = $state<string | null>(null);
@@ -298,6 +305,15 @@
     void refreshRealState().finally(() => {
       if (mounted) ready = true;
     });
+    // Resolve the admin gate for the Moderation nav entry (default-deny: only an
+    // explicit `true` unlocks it; any error leaves it hidden).
+    void invoke<boolean>('desktop_alt_enabled')
+      .then((enabled) => {
+        if (mounted) isAdmin = enabled === true;
+      })
+      .catch(() => {
+        if (mounted) isAdmin = false;
+      });
     hydrateMeetingStatus();
     // Warm the Meetings singleton at app launch so its data is ready before the
     // user ever navigates to Meetings — the page then reads the warm store on
@@ -530,7 +546,7 @@
   class="desktop-shell"
   style={`--desktop-sidebar-width: ${DESKTOP_SHELL_LAYOUT.sidebarWidthPx}px; --desktop-status-bar-height: ${DESKTOP_SHELL_LAYOUT.statusBarHeightPx}px;`}
 >
-  <DesktopSidebar {route} {companies} onnavigate={navigate} />
+  <DesktopSidebar {route} {companies} {isAdmin} onnavigate={navigate} />
 
   <div class="desktop-content">
     <main class="desktop-main" aria-label="Desktop content">
@@ -569,6 +585,25 @@
             <div class="page">
               <LibraryPage />
             </div>
+          {:else if route.kind === 'moderation'}
+            <!-- Admin-only. Rendered only when the admin gate is satisfied
+                 (default-deny); ModerationPanel ALSO re-checks + locks itself, and
+                 the server is the real authorization boundary. A non-admin who
+                 somehow reaches this route falls through to the placeholder. -->
+            {#if isAdmin}
+              <div class="page">
+                <ModerationPanel />
+              </div>
+            {:else}
+              <section class="page" aria-labelledby="desktop-page-title">
+                <div class="page-header">
+                  <h1 id="desktop-page-title">Moderation</h1>
+                </div>
+                <div class="placeholder-panel">
+                  <p>Moderation is restricted to reviewers.</p>
+                </div>
+              </section>
+            {/if}
           {:else if activeCompany}
             <div class="page">
               <CompanyPage company={activeCompany} />

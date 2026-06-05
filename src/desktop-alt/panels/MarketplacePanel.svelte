@@ -23,6 +23,7 @@
     filterListings,
     installMarketplacePack,
     loadMarketplaceListings,
+    recordMarketplaceInstall,
     type InstallScope,
     type InstallTarget,
     type MarketplaceListing,
@@ -114,25 +115,19 @@
       // command resolves before the event lands.
       if (!installResult) installResult = { ok: true, message: 'Installed.' };
 
-      // ── US-019 install-metrics SEAM (best-effort, fire-and-forget) ──────────
+      // ── US-019 install-metrics (best-effort, fire-and-forget) ───────────────
       //
-      // After a successful install, the installer should record an install event
-      // so the marketplace metrics can count installer-vs-author installs
-      // (`POST /v1/listings/{id}/installs`, JWT — installer uid = the caller's
-      // Cognito sub; body = { scope, companySlug? }). We have everything needed
-      // here: `selected.id` (the listing id), the chosen scope, and the company
-      // slug for a company install.
+      // After a SUCCESSFUL install, record an install event so the marketplace
+      // metrics can count installer-vs-author installs (`POST /v1/listings/{id}/
+      // installs`, JWT — installer uid = the caller's Cognito sub; body = { scope,
+      // companySlug? }). The authed Rust `record_marketplace_install` command
+      // forwards the bearer token (mirroring yank / decide).
       //
-      // This is intentionally a SEAM, not yet wired, because the recording call
-      // must carry the caller's bearer token — that belongs in an authed Rust
-      // command (mirroring `yank_marketplace_listing` / `decide_moderation_
-      // listing`, which forward the token), NOT a frontend fetch. The hq-pro
-      // backend (endpoint + metrics + admin readout) is built + tested under
-      // US-019; this is the remaining client tap. When the Rust
-      // `record_marketplace_install(id, scope)` command lands, call it here
-      // best-effort (never block or fail the install on a metrics write):
-      //
-      //   void recordMarketplaceInstall(selected.id, target.scope).catch(() => {});
+      // This is STRICTLY best-effort: it runs only after the install already
+      // succeeded, with the scope the user installed with, and a metrics failure
+      // must NEVER fail or block the install — so it's fire-and-forget and we
+      // swallow any error (`.catch(() => {})`). We do NOT await it.
+      void recordMarketplaceInstall(selected.id, target.scope).catch(() => {});
     } catch (err) {
       installResult = { ok: false, message: err instanceof Error ? err.message : String(err) };
     } finally {

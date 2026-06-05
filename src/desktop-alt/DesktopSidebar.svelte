@@ -6,15 +6,19 @@
     route: DesktopRoute;
     companies: Workspace[];
     onnavigate: (route: DesktopRoute) => void;
+    /** Admin-only Moderation row gate (default-deny). */
+    isAdmin?: boolean;
   }
 
-  let { route, companies, onnavigate }: Props = $props();
+  let { route, companies, onnavigate, isAdmin = false }: Props = $props();
 
-  const rows = $derived(getDesktopSidebarRows(route, companies));
-  // Sync / Meetings / Library are the three top-level destinations; everything
-  // after them is a company row.
-  const primaryRows = $derived(rows.slice(0, 3));
-  const companyRows = $derived(rows.slice(3));
+  const rows = $derived(getDesktopSidebarRows(route, companies, { isAdmin }));
+  // Top-level destinations (Sync / Meetings / Library / admin-only Moderation)
+  // vs. per-company rows. Split on route kind so an optional primary row (e.g.
+  // Moderation) can't shift a fixed-index slice and leak a company into the
+  // primary nav.
+  const primaryRows = $derived(rows.filter((row) => row.route.kind !== 'company'));
+  const companyRows = $derived(rows.filter((row) => row.route.kind === 'company'));
 </script>
 
 <aside class="desktop-sidebar" aria-label="Desktop navigation">
@@ -29,7 +33,9 @@
         onclick={() => onnavigate(row.route)}
       >
         <span>{row.label}</span>
-        <kbd>{row.shortcut}</kbd>
+        {#if row.shortcut}
+          <kbd>{row.shortcut}</kbd>
+        {/if}
       </button>
     {/each}
   </nav>

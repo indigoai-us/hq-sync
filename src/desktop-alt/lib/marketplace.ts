@@ -389,6 +389,24 @@ export async function installMarketplacePack(
   });
 }
 
+/**
+ * Record an install event for the marketplace metrics (US-019). Forwards to the
+ * authed Rust `record_marketplace_install` command, which attaches the caller's
+ * bearer token and POSTs `/v1/listings/{id}/installs` (the installer uid is
+ * derived server-side from the token; the body carries the install scope).
+ *
+ * BEST-EFFORT / fire-and-forget: callers invoke this AFTER a successful install
+ * and must NOT let a metrics failure fail or block the install — wrap the call in
+ * `.catch(() => {})`. The promise still rejects on failure so a test can observe
+ * it; production code simply ignores the outcome.
+ */
+export async function recordMarketplaceInstall(
+  listingId: string,
+  scope: InstallScope,
+): Promise<void> {
+  return invoke<void>('record_marketplace_install', { listingId, scope });
+}
+
 // ---------------------------------------------------------------------------
 // US-013 — desktop Submit tab (publish a local pack via `hq publish`).
 // ---------------------------------------------------------------------------

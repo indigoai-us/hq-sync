@@ -983,6 +983,94 @@ async fn stream_install(
 }
 
 // =============================================================================
+// US-019 — record an install event (best-effort install metrics)
+// =============================================================================
+//
+// After a successful install, the desktop client records an install event so the
+// marketplace metrics can count installer-vs-author installs:
+//
+//   `POST /v1/listings/{id}/installs` (JWT) — the installer uid is taken from the
+//   bearer token's Cognito `sub` (NOT the body), so this command MUST forward the
+//   caller's token, exactly like `yank_marketplace_listing` /
+//   `decide_moderation_listing`. The body carries the install scope:
+//     { "scope": "personal" | "company", "companySlug"?: "<slug>" }.
+//
+// This is BEST-EFFORT telemetry on the client side: the caller invokes it
+// fire-and-forget AFTER the install already succeeded, and never lets a metrics
+// failure surface as an install error (the frontend `.catch(() => {})`s it). The
+// command still returns a typed `Result` so a caller that DOES care (e.g. a test)
+// can observe success vs. failure — but the install flow itself ignores it.
+
+/// Map the typed install `scope` to the wire body the metrics endpoint expects:
+/// `{ scope: "personal" | "company", companySlug?: "<slug>" }`. The company slug
+/// is validated (single clean path segment) so a crafted slug can't ride along.
+fn install_event_body(scope: &InstallScope) -> Result<serde_json::Value, String> {
+    match scope {
+        InstallScope::Personal => Ok(serde_json::json!({ "scope": "personal" })),
+        InstallScope::Company { slug } => {
+            if !is_safe_company_slug(slug) {
+                return Err(format!("invalid company slug: {slug:?}"));
+            }
+            Ok(serde_json::json!({ "scope": "company", "companySlug": slug }))
+        }
+    }
+}
+
+/// Pure parser for the install-event endpoint: any 2xx is success; everything
+/// else maps to an error string. Kept tiny + pure so the (status, body) → outcome
+/// mapping is unit-tested without spawning an HTTP request. The caller treats the
+/// whole thing as best-effort, but a precise error helps tests + diagnostics.
+fn parse_install_event_response(status: StatusCode, text: &str) -> Result<(), String> {
+    if status.is_success() {
+        return Ok(());
+    }
+    Err(format!("install metrics HTTP {status}: {text}"))
+}
+
+/// Record a marketplace install event (best-effort install metrics, US-019).
+/// Forwards the caller's bearer token to `POST /v1/listings/{id}/installs`; the
+/// installer uid is derived server-side from the token, and the body carries the
+/// install scope (personal | company + companySlug). Mirrors
+/// `yank_marketplace_listing` / `decide_moderation_listing` (authed bearer
+/// forwarding).
+///
+/// The desktop install flow calls this fire-and-forget AFTER a successful install
+/// and IGNORES the outcome — a metrics write must never fail or block an install.
+/// The typed `Result` exists so a caller (or test) that cares can observe it.
+#[tauri::command]
+pub async fn record_marketplace_install(
+    listing_id: String,
+    scope: InstallScope,
+) -> Result<(), String> {
+    let id = listing_id.trim();
+    if !is_safe_id(id) {
+        return Err(format!("invalid listing id: {id:?}"));
+    }
+    let body = install_event_body(&scope)?;
+
+    let base = api_base()?;
+    let url = format!("{base}/v1/listings/{id}/installs");
+    // Authed: the installer uid is read from the bearer token's Cognito sub, so we
+    // MUST attach the caller's token (same pattern as yank / decide).
+    let jwt = resolve_jwt().await?;
+
+    let res = build_client()
+        .post(&url)
+        .bearer_auth(&jwt)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("install metrics request: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("install metrics read: {e}"))?;
+
+    parse_install_event_response(status, &text)
+}
+
+// =============================================================================
 // US-013 — desktop Submit tab (publish a local pack via the `hq publish` flow)
 // =============================================================================
 //
@@ -1989,6 +2077,59 @@ mod tests {
         let err = parse_yank_response("lst_1", StatusCode::INTERNAL_SERVER_ERROR, "boom")
             .unwrap_err();
         assert!(err.contains("500"));
+    }
+
+    // ---- US-019: install-event (best-effort metrics) tests -----------------
+
+    #[test]
+    fn install_event_body_maps_personal_scope() {
+        let body = install_event_body(&InstallScope::Personal).expect("personal body");
+        assert_eq!(body, serde_json::json!({ "scope": "personal" }));
+        // No companySlug for a personal install.
+        assert!(body.get("companySlug").is_none());
+    }
+
+    #[test]
+    fn install_event_body_maps_company_scope_with_slug() {
+        let body = install_event_body(&InstallScope::Company {
+            slug: "indigo".to_string(),
+        })
+        .expect("company body");
+        assert_eq!(
+            body,
+            serde_json::json!({ "scope": "company", "companySlug": "indigo" })
+        );
+    }
+
+    #[test]
+    fn install_event_body_rejects_unsafe_company_slug() {
+        // A crafted slug that tries to escape the companies/ prefix must not ride
+        // along into the metrics body.
+        let err = install_event_body(&InstallScope::Company {
+            slug: "../other-co".to_string(),
+        })
+        .unwrap_err();
+        assert!(err.contains("invalid company slug"), "got: {err}");
+    }
+
+    #[test]
+    fn install_event_response_treats_any_2xx_as_success() {
+        assert!(parse_install_event_response(StatusCode::OK, "{}").is_ok());
+        assert!(parse_install_event_response(StatusCode::CREATED, "").is_ok());
+        assert!(parse_install_event_response(StatusCode::NO_CONTENT, "").is_ok());
+    }
+
+    #[test]
+    fn install_event_response_surfaces_http_errors() {
+        // A non-2xx maps to an error string. The CALLER treats this best-effort
+        // (fire-and-forget), so this error never blocks an install — but the typed
+        // outcome lets a test/diagnostic observe that the metrics write failed.
+        let err = parse_install_event_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
+            .unwrap_err();
+        assert!(err.contains("500"), "got: {err}");
+        let unauthorized =
+            parse_install_event_response(StatusCode::UNAUTHORIZED, "nope").unwrap_err();
+        assert!(unauthorized.contains("401"), "got: {unauthorized}");
     }
 
     // ---- US-012: moderation queue + approve/reject parser tests ------------

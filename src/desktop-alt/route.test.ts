@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../lib/workspaces';
-import { getDesktopCompanies, getDesktopHotkeyRoute } from './route';
+import {
+  getDesktopCompanies,
+  getDesktopHotkeyRoute,
+  getDesktopSidebarRows,
+  type DesktopRoute,
+} from './route';
 
 const baseCompany: Workspace = {
   slug: 'indigo',
@@ -62,5 +67,43 @@ describe('desktop-alt routes', () => {
       kind: 'company',
       slug: 'synced',
     });
+  });
+});
+
+describe('desktop-alt sidebar rows — admin-only Moderation entry', () => {
+  const route: DesktopRoute = { kind: 'sync' };
+  const synced = [company({ slug: 'synced', displayName: 'Synced', state: 'synced' })];
+
+  it('hides the Moderation row for a non-admin (default-deny)', () => {
+    const labelsDefault = getDesktopSidebarRows(route, synced).map((row) => row.label);
+    const labelsFalse = getDesktopSidebarRows(route, synced, { isAdmin: false }).map(
+      (row) => row.label,
+    );
+    // Default (no options) and explicit false both omit Moderation — the row
+    // only appears on an explicit true.
+    expect(labelsDefault).not.toContain('Moderation');
+    expect(labelsFalse).not.toContain('Moderation');
+  });
+
+  it('shows the Moderation row for an admin, after the standing primary rows', () => {
+    const rows = getDesktopSidebarRows(route, synced, { isAdmin: true });
+    const labels = rows.map((row) => row.label);
+    expect(labels).toContain('Moderation');
+    // Sits after Library and before any company row.
+    const moderationIndex = labels.indexOf('Moderation');
+    expect(moderationIndex).toBe(labels.indexOf('Library') + 1);
+    expect(moderationIndex).toBeLessThan(labels.indexOf('Synced'));
+    // The Moderation row routes to the moderation kind and carries no hotkey
+    // (so company ⌘-hotkeys are unaffected by the admin gate).
+    const moderationRow = rows[moderationIndex];
+    expect(moderationRow.route).toEqual({ kind: 'moderation' });
+    expect(moderationRow.shortcut).toBeUndefined();
+  });
+
+  it('keeps company hotkeys at ⌘4 whether or not the admin row is present', () => {
+    const withAdmin = getDesktopSidebarRows(route, synced, { isAdmin: true });
+    const companyRow = withAdmin.find((row) => row.route.kind === 'company');
+    // The admin Moderation row does not consume ⌘4 — the company keeps it.
+    expect(companyRow?.shortcut).toBe('⌘4');
   });
 });
