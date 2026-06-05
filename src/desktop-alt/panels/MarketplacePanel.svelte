@@ -113,6 +113,26 @@
       // The success event also sets installResult; set here too in case the
       // command resolves before the event lands.
       if (!installResult) installResult = { ok: true, message: 'Installed.' };
+
+      // ── US-019 install-metrics SEAM (best-effort, fire-and-forget) ──────────
+      //
+      // After a successful install, the installer should record an install event
+      // so the marketplace metrics can count installer-vs-author installs
+      // (`POST /v1/listings/{id}/installs`, JWT — installer uid = the caller's
+      // Cognito sub; body = { scope, companySlug? }). We have everything needed
+      // here: `selected.id` (the listing id), the chosen scope, and the company
+      // slug for a company install.
+      //
+      // This is intentionally a SEAM, not yet wired, because the recording call
+      // must carry the caller's bearer token — that belongs in an authed Rust
+      // command (mirroring `yank_marketplace_listing` / `decide_moderation_
+      // listing`, which forward the token), NOT a frontend fetch. The hq-pro
+      // backend (endpoint + metrics + admin readout) is built + tested under
+      // US-019; this is the remaining client tap. When the Rust
+      // `record_marketplace_install(id, scope)` command lands, call it here
+      // best-effort (never block or fail the install on a metrics write):
+      //
+      //   void recordMarketplaceInstall(selected.id, target.scope).catch(() => {});
     } catch (err) {
       installResult = { ok: false, message: err instanceof Error ? err.message : String(err) };
     } finally {
@@ -166,6 +186,23 @@
 
   function authorLabel(listing: MarketplaceListing): string {
     return listing.author ? `@${listing.author}` : 'unknown';
+  }
+
+  // ── US-019: attribution byline links to the creator profile ────────────────
+  //
+  // The @handle byline on each card + in the detail slide-over LINKS to the
+  // creator's PUBLIC profile (the US-018 marketing directory page at
+  // `https://hq.getindigo.ai/creators/<handle>`). An external link to the
+  // marketing profile is the simplest fit — it opens in the system browser via
+  // a plain anchor (mirrors ProfilePanel's preview links). A listing with no
+  // author handle has no profile to link to, so it renders as plain text.
+  const CREATOR_PROFILE_BASE = 'https://hq.getindigo.ai/creators';
+
+  /** The creator-profile URL for a handle, or null when there's no handle. */
+  function creatorProfileHref(listing: MarketplaceListing): string | null {
+    const handle = listing.author?.trim();
+    if (!handle) return null;
+    return `${CREATOR_PROFILE_BASE}/${encodeURIComponent(handle)}`;
   }
 
   function resetInstallState(): void {
@@ -247,8 +284,16 @@
   {:else}
     <div class="grid" aria-label="Marketplace listings">
       {#each visible as listing (listing.id)}
-        <button
-          type="button"
+        <!--
+          The card is keyboard-focusable + clickable (role="button") to open the
+          detail slide-over, but it is a <div> rather than a <button> so the
+          author byline can be a real nested <a> link to the creator profile
+          (US-019) — a <button> can't legally contain an <a>. The card keeps full
+          button semantics (role, tabindex, Enter/Space handler).
+        -->
+        <div
+          role="button"
+          tabindex="0"
           class="card"
           data-testid="marketplace-card"
           aria-label={`${listing.type} ${listing.name} by ${authorLabel(listing)}`}
@@ -264,11 +309,25 @@
             <span class="pill version" data-testid="marketplace-version">v{listing.version}</span>
           </div>
           <h3 class="card-name" title={listing.name}>{listing.name}</h3>
-          <span class="author" data-testid="marketplace-author">{authorLabel(listing)}</span>
+          {#if creatorProfileHref(listing)}
+            <!-- Byline → creator profile (US-019). stopPropagation so clicking
+                 the link opens the profile instead of selecting the card. -->
+            <a
+              class="author author-link"
+              href={creatorProfileHref(listing)}
+              target="_blank"
+              rel="noreferrer noopener"
+              data-testid="marketplace-author"
+              title={`View ${authorLabel(listing)} on the creator directory`}
+              onclick={(event) => event.stopPropagation()}
+            >{authorLabel(listing)}</a>
+          {:else}
+            <span class="author" data-testid="marketplace-author">{authorLabel(listing)}</span>
+          {/if}
           {#if listing.summary}
             <p class="card-desc">{listing.summary}</p>
           {/if}
-        </button>
+        </div>
       {/each}
     </div>
   {/if}
@@ -312,7 +371,22 @@
     <div class="detail-body">
       <section class="detail-section">
         <h3 class="section-title">Author</h3>
-        <p class="section-body" data-testid="marketplace-detail-author">{authorLabel(selected)}</p>
+        {#if creatorProfileHref(selected)}
+          <!-- Byline → creator profile (US-019). Opens the public directory
+               profile (US-018) in the system browser. -->
+          <p class="section-body">
+            <a
+              class="author-link"
+              href={creatorProfileHref(selected)}
+              target="_blank"
+              rel="noreferrer noopener"
+              data-testid="marketplace-detail-author"
+              title={`View ${authorLabel(selected)} on the creator directory`}
+            >{authorLabel(selected)}</a>
+          </p>
+        {:else}
+          <p class="section-body" data-testid="marketplace-detail-author">{authorLabel(selected)}</p>
+        {/if}
       </section>
 
       {#if selected.summary}
@@ -542,6 +616,27 @@
     color: var(--blue);
     font-size: var(--text-base);
     font-weight: 600;
+  }
+
+  /* US-019 — the byline link to the creator profile. Inherits the @handle
+     blue; underlines on hover/focus so it reads as a clickable link. align-self
+     keeps the card byline link hugging its text (not stretching the grid cell). */
+  .author-link {
+    align-self: flex-start;
+    color: var(--blue);
+    text-decoration: none;
+    cursor: pointer;
+  }
+
+  .author-link:hover,
+  .author-link:focus-visible {
+    text-decoration: underline;
+  }
+
+  .author-link:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 
   .pill {
