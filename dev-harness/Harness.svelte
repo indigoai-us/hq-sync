@@ -18,7 +18,7 @@
   // window size) — the popover root fills 100vw/100vh. For settings, any
   // viewport works; it renders centered on a desktop-ish backdrop.
   const params = new URLSearchParams(window.location.search);
-  const view = params.get('view') ?? 'desktop';
+  const view = params.get('view') ?? 'settings';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
 
