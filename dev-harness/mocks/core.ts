@@ -167,6 +167,18 @@ const handlers: Record<string, Handler> = {
   open_meetings_window: () => null,
   open_drift_detail: () => null,
   quit_app: () => null,
+  // Meeting-permissions wizard (?view=permissions) — a representative
+  // not-yet-granted snapshot so the friendly "why we ask" notice is exercised.
+  meeting_detect_feature_enabled: () => true,
+  meetings_permissions_state: () => ({
+    accessibility: 'prompt',
+    screenCapture: 'denied',
+    microphone: 'prompt',
+    fullDiskAccess: 'prompt',
+    allRequiredGranted: false,
+  }),
+  permissions_open_settings: () => null,
+  permissions_force_native_register: () => null,
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

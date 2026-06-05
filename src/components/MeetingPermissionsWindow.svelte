@@ -173,12 +173,45 @@
   <header>
     <h1>Meeting Permissions</h1>
     <p class="subtitle">
-      HQ Sync needs three macOS privacy grants to detect meetings and record them locally.
+      These macOS grants power one optional feature — recording your meetings. HQ Sync
+      only uses them around meetings; it never watches your screen or controls your Mac otherwise.
       {#if allGranted}
         <strong>All set</strong> — you can close this window.
       {/if}
     </p>
   </header>
+
+  <!-- Friendly "why we ask" notice. macOS labels Screen Recording / Accessibility /
+       Full Disk Access broadly — wording that can read as "full system access." This
+       card explains, in plain terms, the narrow purpose of each grant and reassures
+       the user that sync itself needs none of them. -->
+  <section class="why-card" aria-label="Why HQ Sync asks for these permissions">
+    <h2>Why we ask for these</h2>
+    <p class="why-lead">
+      macOS describes Screen Recording, Accessibility, and Full Disk Access in broad
+      terms — it can look like “full system access.” HQ Sync uses each one narrowly, and
+      only for recording meetings:
+    </p>
+    <ul class="why-list">
+      <li>
+        <span class="why-key">Accessibility</span>
+        <span class="why-val">notices which app is in front, so HQ Sync knows when a meeting starts. It never controls your Mac.</span>
+      </li>
+      <li>
+        <span class="why-key">Screen Recording &amp; System Audio</span>
+        <span class="why-val">captures the meeting window and the other participants’ audio — only while you’re on a call.</span>
+      </li>
+      <li>
+        <span class="why-key">Microphone</span>
+        <span class="why-val">records your side of the conversation.</span>
+      </li>
+    </ul>
+    <p class="why-foot">
+      Recordings are captured on your Mac. Not recording meetings? You can skip all of
+      this — syncing your files works without any of these grants. Full Disk Access is
+      optional and isn’t needed for the current capture path.
+    </p>
+  </section>
 
   <!-- Quick-prompt button — fires the native macOS prompts for any
        permission still in NotDetermined. Safer first move than dragging
@@ -297,6 +330,54 @@
   header .subtitle strong {
     color: #4ade80;
     font-weight: 500;
+  }
+
+  .why-card {
+    margin: 14px 22px 0;
+    padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+  }
+  .why-card h2 {
+    margin: 0 0 6px;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: #fafafa;
+  }
+  .why-lead,
+  .why-foot {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.55;
+    color: rgba(250, 250, 250, 0.6);
+  }
+  .why-list {
+    margin: 9px 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .why-list li {
+    font-size: 12px;
+    line-height: 1.5;
+    color: rgba(250, 250, 250, 0.72);
+  }
+  .why-key {
+    color: #fafafa;
+    font-weight: 500;
+  }
+  .why-key::after {
+    content: ' — ';
+    color: rgba(250, 250, 250, 0.4);
+    font-weight: 400;
+  }
+  .why-foot {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
   }
 
   .quick-prompt {
