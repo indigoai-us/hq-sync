@@ -423,7 +423,7 @@
     margin: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 29px;
   }
 
@@ -681,7 +681,7 @@
     margin: 0 0 var(--space-2);
     color: var(--muted-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -761,7 +761,7 @@
   .markdown-body :global(h6) {
     margin: var(--space-5) 0 var(--space-2);
     color: var(--fg);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 1.3;
   }
 
@@ -841,6 +841,6 @@
 
   .markdown-body :global(strong) {
     color: var(--fg);
-    font-weight: 680;
+    font-weight: 600;
   }
 </style>

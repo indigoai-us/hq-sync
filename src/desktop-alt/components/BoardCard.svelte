@@ -51,7 +51,7 @@
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 18px;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
@@ -74,7 +74,7 @@
     background: var(--row-active);
     color: var(--fg);
     font-size: var(--text-micro);
-    font-weight: 750;
+    font-weight: 600;
     line-height: 28px;
     text-align: center;
     text-transform: uppercase;

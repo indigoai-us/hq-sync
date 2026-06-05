@@ -145,7 +145,7 @@
     margin: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 22px;
   }
 
@@ -184,7 +184,7 @@
     background: transparent;
     color: var(--muted);
     font-size: var(--text-micro);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
     text-transform: uppercase;
     transition: none;
@@ -231,7 +231,7 @@
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -299,7 +299,7 @@
     background: var(--row-active);
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     white-space: nowrap;
   }
 
@@ -348,7 +348,7 @@
     background: rgba(99, 102, 241, 0.14);
     color: #a5a8ff;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 1;
     letter-spacing: 0.02em;
     overflow: visible;
@@ -443,7 +443,7 @@
   .empty-state p {
     margin: 0 0 4px;
     color: var(--fg);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .empty-state span {

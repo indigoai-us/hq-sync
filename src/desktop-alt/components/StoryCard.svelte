@@ -169,7 +169,7 @@
     background: var(--row-active);
     color: var(--muted-2);
     font-size: var(--text-micro);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 14px;
     text-transform: uppercase;
   }
@@ -203,7 +203,7 @@
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 18px;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;

@@ -345,8 +345,23 @@ export const STATUS_FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: 'archived', label: 'Archived' },
 ];
 
-/** Raw board statuses that indicate a project is live/running. */
+/** Raw board statuses that indicate a project is live/running (earns the
+ * pulsing "live" emphasis). */
 const LIVE_BOARD_STATUSES = new Set(['live', 'active', 'running']);
+
+/**
+ * Raw board statuses that mark a project as actively in progress. HQ's
+ * `board.json` uses `in_progress` (snake_case) for projects under active work —
+ * distinct from the `live`/`active`/`running` set above that earns the pulsing
+ * "live" emphasis. A project carrying this status reads as In Progress even
+ * before its first story completes, so a project the user has explicitly
+ * started doesn't get mis-grouped under "Planned".
+ */
+const IN_PROGRESS_BOARD_STATUSES = new Set([
+  'in_progress',
+  'in-progress',
+  'inprogress',
+]);
 
 /**
  * Resolve a project's effective Board-list status by combining its raw board
@@ -361,13 +376,18 @@ export function projectListStatus(
   if (rollup === 'archived') return 'archived';
   if (rollup === 'complete') return 'complete';
 
-  const isLiveBoard = LIVE_BOARD_STATUSES.has((project.status ?? '').toLowerCase());
+  const raw = (project.status ?? '').toLowerCase();
+  const isLiveBoard = LIVE_BOARD_STATUSES.has(raw);
+  const isInProgressBoard = IN_PROGRESS_BOARD_STATUSES.has(raw);
   if (rollup === 'in-progress') {
     return isLiveBoard ? 'live' : 'in-progress';
   }
-  // pending rollup: a live board with no completed stories still reads as
-  // in-progress emphasis only when it's actually live; otherwise pending.
-  return isLiveBoard ? 'live' : 'pending';
+  // pending rollup (no completed stories yet): a live board still earns `live`
+  // emphasis; a board the user explicitly marked in-progress reads as
+  // in-progress so it surfaces under "In Progress"; otherwise it's planned.
+  if (isLiveBoard) return 'live';
+  if (isInProgressBoard) return 'in-progress';
+  return 'pending';
 }
 
 /** Whether a project's effective list status passes the given filter pill. */

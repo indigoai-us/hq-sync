@@ -43,22 +43,34 @@ html[data-window='desktop-alt'] {
    * here so there is a single place to read the desktop palette.
    */
 
-  /* Window backgrounds (desktop-specific, monochrome neutrals). */
-  --bg: #0a0a0a; /* shell / sidebar / main background */
-  --bg-subtle: #050505; /* status bar */
-  --bg-body: #131316; /* document body behind the window surface */
+  /* Window backgrounds — the monochrome liquid-glass ground. The shell paints
+     a subtle cool-dark gradient (--bg-gradient); --bg is its solid mid value
+     for the handful of surfaces that want a flat fill. Translucent white-alpha
+     "glass" surfaces (--surface-*) float over it; hierarchy comes from alpha,
+     not hue. Mirrors the Paper "Desktop Sync" build. */
+  --bg: #161618; /* solid mid of the shell gradient */
+  --bg-gradient: linear-gradient(155deg, #1c1c1f 0%, #161618 55%, #141416 100%);
+  --bg-subtle: rgba(255, 255, 255, 0.02); /* live strip / footer glass */
+  --bg-body: #121214; /* document body behind the window surface */
   --desktop: #1a1a1c; /* reserved desktop-canvas surface */
 
-  /* Text tiers. */
-  --fg: #fafafa; /* primary text / headings */
-  --muted: #71717a; /* secondary / label text */
-  --muted-2: #a1a1aa; /* slightly brighter secondary */
-  --muted-3: #52525b; /* faintest tier (sidebar idle) */
+  /* Floating glass surfaces (translucent white over the gradient ground). */
+  --surface-rail: rgba(255, 255, 255, 0.014); /* left nav rail */
+  --surface-panel: rgba(255, 255, 255, 0.025); /* title bar / inspector */
+  --surface-raise: rgba(255, 255, 255, 0.045); /* tiles, chips, inputs */
 
-  /* Borders + hover/active surfaces — same neutral-alpha language as the
-     popover's --popover-border / --popover-divider / --popover-action-hover. */
-  --border: rgba(255, 255, 255, 0.1);
-  --border-strong: rgba(255, 255, 255, 0.14);
+  /* Text tiers — white-alpha so text reads as light on glass, never flat grey.
+     Primary is a near-white with a whisper of warmth; the muted tiers carry
+     hierarchy by opacity. */
+  --fg: #f3f3f4; /* primary text / headings */
+  --fg-data: rgba(255, 255, 255, 0.7); /* mono values, secondary data */
+  --muted: rgba(255, 255, 255, 0.52); /* secondary / label text */
+  --muted-2: rgba(255, 255, 255, 0.7); /* slightly brighter secondary */
+  --muted-3: rgba(255, 255, 255, 0.3); /* faintest tier — caps, idle nav */
+
+  /* Borders + hover/active surfaces — hairline white-alpha, 7% baseline. */
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.12);
   --row-hover: rgba(255, 255, 255, 0.035);
   --row-active: rgba(255, 255, 255, 0.06);
   --scrollbar-thumb: rgba(255, 255, 255, 0.08);
@@ -79,43 +91,38 @@ html[data-window='desktop-alt'] {
   --accent: #6366f1;
   --accent-soft: rgba(99, 102, 241, 0.16);
 
-  /* ---- ONE TYPE SIZE ----------------------------------------------------
-   * The big window is a single-size surface (mirroring hq-console): 13px
-   * everywhere, hierarchy carried by weight (400 body / 600 headings) and the
-   * grey(--muted)/white(--fg) split, never by size. The popover keeps its
-   * 4-step ramp; here we collapse all four --text-* steps onto one value so
-   * any component still reading a token can't reintroduce a size jump. New
-   * code should use var(--text-base). See DESIGN.md → "Big-window type".
-   * Declared in px (not rem) so the single size is exact and immune to the
-   * root-element rem-resolution quirk. */
-  --text-xs: 13px;
-  --text-sm: 13px;
-  --text-base: 13px;
-  --text-lg: 13px;
-  /* The one permitted second size: monospace ALL-CAPS micro-labels and pills
-     (status tags, section eyebrows, table headers, scope pills, kbd). Smaller
-     so the uppercase tracking reads as a quiet label, not a shout. */
-  --text-micro: 11px;
+  /* ---- TYPE SCALE -------------------------------------------------------
+   * A compact, high-density ramp mirroring the Paper "Desktop Sync" build.
+   * Hierarchy is carried by size + weight + the white-alpha tiers together —
+   * restrained, never shouting. Weight discipline (hq-console standard): body
+   * 400, active-nav / labels 500, 600 reserved for genuine headings, KPI
+   * numbers, and uppercase caps. Declared in px so sizes are exact. */
+  --text-micro: 10px; /* uppercase caps, eyebrows (tracked +0.08em) */
+  --text-xs: 11px; /* mono data values, dense secondary */
+  --text-sm: 12px; /* body-small, buttons, row meta */
+  --text-base: 13px; /* primary body / row labels */
+  --text-lg: 15px; /* panel headings (H1 within a pane) */
+  --text-kpi: 22px; /* big-number KPI / page display figures */
 
-  /* Mono prefers the bundled Geist Mono; falls back to the system stack. */
+  /* Type families. Inter for UI + body, Inter Tight for display headings,
+     Geist Mono for data (IDs, paths, counts, versions). */
+  --font-sans: 'Inter Variable', ui-sans-serif, -apple-system, system-ui,
+    'SF Pro Text', sans-serif;
+  --font-display: 'Inter Tight Variable', 'Inter Variable', ui-sans-serif,
+    -apple-system, system-ui, sans-serif;
   --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo,
     Monaco, monospace;
 
   color-scheme: light dark;
   background: var(--bg);
   color: var(--fg);
-  /* Bundled Geist (variable axis) — registered family name is
-     'Geist Variable'. Falls back to the native stack if the font asset is
-     unavailable. */
-  font-family:
-    'Geist Variable', ui-sans-serif, -apple-system, system-ui, 'SF Pro Text',
-    sans-serif;
+  font-family: var(--font-sans);
   font-size: 13px;
+  line-height: 1.35;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums lining-nums;
-  /* Subtle optical tracking, matching hq-console's high-end finish. */
-  letter-spacing: -0.006em;
+  letter-spacing: -0.003em;
 }
 
 html[data-window='desktop-alt'] body {
@@ -131,16 +138,22 @@ html[data-window='desktop-alt'] body {
 @media (prefers-color-scheme: light) {
   html[data-window='desktop-alt'] {
     --bg: #f6f6f8;
-    --bg-subtle: #ececef;
+    --bg-gradient: linear-gradient(155deg, #fbfbfc 0%, #f5f5f7 55%, #f1f1f4 100%);
+    --bg-subtle: rgba(0, 0, 0, 0.02);
     --bg-body: #e7e7ea;
     --desktop: #ffffff;
 
+    --surface-rail: rgba(0, 0, 0, 0.012);
+    --surface-panel: rgba(0, 0, 0, 0.025);
+    --surface-raise: rgba(0, 0, 0, 0.045);
+
     --fg: #111113;
+    --fg-data: rgba(0, 0, 0, 0.66);
     --muted: rgba(0, 0, 0, 0.5);
     --muted-2: rgba(0, 0, 0, 0.62);
     --muted-3: rgba(0, 0, 0, 0.38);
 
-    --border: rgba(0, 0, 0, 0.1);
+    --border: rgba(0, 0, 0, 0.09);
     --border-strong: rgba(0, 0, 0, 0.14);
     --row-hover: rgba(0, 0, 0, 0.035);
     --row-active: rgba(0, 0, 0, 0.06);
@@ -200,40 +213,101 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 
 .desktop-shell {
   display: grid;
-  grid-template-columns: var(--desktop-sidebar-width, 216px) minmax(0, 1fr);
+  grid-template-rows:
+    var(--desktop-titlebar-height, 42px)
+    minmax(0, 1fr)
+    var(--desktop-status-bar-height, 32px);
   width: 100%;
   height: 100%;
   min-width: 0;
   /* Single-scroll guarantee: only leaf scrollers (.company-list,
      .desktop-main-scroll) may scroll — every ancestor clips. */
   overflow: hidden;
-  background: var(--bg);
+  /* Monochrome liquid-glass ground — a subtle cool-dark gradient. */
+  background: var(--bg-gradient);
+}
+
+/* ---- Title bar: full-width top region with the always-visible sync verdict.
+   The macOS traffic lights (TitleBarStyle::Overlay) overlay its top-left, so it
+   carries a left inset to clear them. */
+.desktop-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: var(--desktop-titlebar-height, 42px);
+  padding: 0 14px 0 78px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-panel);
+}
+
+/* ---- Body: sidebar + content, between the title bar and live strip. */
+.desktop-body {
+  display: grid;
+  grid-template-columns: var(--desktop-sidebar-width, 216px) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .desktop-sidebar {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   width: var(--desktop-sidebar-width, 216px);
   min-width: var(--desktop-sidebar-width, 216px);
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  /* Clears the native macOS traffic lights used by TitleBarStyle::Overlay. */
-  padding: 38px 10px 10px;
+  padding: 12px 10px 10px;
   border-right: 1px solid var(--border);
-  background: var(--bg);
+  background: var(--surface-rail);
   color: var(--muted-3);
 }
 
+/* Search affordance at the top of the rail. */
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-raise);
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: background-color 120ms ease;
+}
+
+.sidebar-search:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.sidebar-search svg {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  opacity: 0.7;
+}
+
+.sidebar-search .sidebar-search-label {
+  flex: 1;
+  font-size: var(--text-sm);
+  color: var(--muted);
+}
+
 .sidebar-title {
-  height: 24px;
+  height: 22px;
   padding: 0 8px;
   color: var(--fg);
+  font-family: var(--font-display);
   font-size: var(--text-base);
-  font-weight: 650;
-  line-height: 24px;
-  letter-spacing: 0.01em;
+  font-weight: 600;
+  line-height: 22px;
+  letter-spacing: -0.01em;
 }
 
 .sidebar-nav {
@@ -250,7 +324,9 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   width: 100%;
   height: 28px;
   min-width: 0;
-  padding: 0 8px;
+  /* Extra left inset opens a clear gap between the active "you are here" dot in
+     the gutter and the label text. */
+  padding: 0 8px 0 16px;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -271,16 +347,17 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 .sidebar-nav button.active {
   background: var(--row-active);
   color: var(--fg);
+  font-weight: 500;
 }
 
 /* "You are here" cue: a small accent dot in the gutter, not a side stripe. */
 .sidebar-nav button.active::before {
   content: '';
   position: absolute;
-  left: 2px;
+  left: 6px;
   top: 50%;
-  width: 3px;
-  height: 3px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: var(--accent);
   transform: translateY(-50%);
@@ -310,12 +387,12 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .section-label {
-  padding: 0 8px 6px;
-  color: var(--muted);
+  padding: 0 8px 6px 16px;
+  color: var(--muted-3);
   font-size: var(--text-micro);
   font-weight: 600;
   line-height: 16px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -335,27 +412,28 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 
 .desktop-content,
 .desktop-main {
+  display: flex;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 
 .desktop-main {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) var(--desktop-status-bar-height, 26px);
+  flex-direction: column;
   width: 100%;
   height: 100%;
-  background: var(--bg);
+  background: transparent;
 }
 
 .desktop-main-scroll {
+  flex: 1;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
 }
 
 .page {
-  padding: 28px 32px;
+  padding: 16px 22px;
   animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
   will-change: transform;
 }
@@ -385,16 +463,17 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .page-header {
-  margin-bottom: 18px;
+  margin-bottom: 14px;
 }
 
 .page-header h1 {
   margin: 0;
   color: var(--fg);
-  font-size: var(--text-base);
-  font-weight: 650;
-  line-height: 18px;
-  letter-spacing: 0.01em;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  line-height: 20px;
+  letter-spacing: -0.01em;
 }
 
 .placeholder-panel {
@@ -423,11 +502,190 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: var(--desktop-status-bar-height, 26px);
-  padding: 0 10px;
+  height: var(--desktop-status-bar-height, 32px);
+  padding: 0 14px;
   border-top: 1px solid var(--border);
-  background: var(--bg-subtle);
+  background: var(--surface-panel);
   color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+/* ---- Title bar verdict (always-visible sync status). ------------------- */
+.titlebar-traffic {
+  display: flex;
+  gap: 8px;
+  margin-left: -62px;
+  padding-right: 8px;
+}
+
+.titlebar-traffic span {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.titlebar-verdict {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.titlebar-verdict .verdict-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted-2);
+}
+
+.titlebar-verdict .verdict-dot.syncing {
+  background: var(--blue);
+  animation: status-breathe 1.2s ease-in-out infinite;
+}
+.titlebar-verdict .verdict-dot.idle {
+  background: var(--emerald);
+}
+.titlebar-verdict .verdict-dot.error {
+  background: var(--red);
+}
+.titlebar-verdict .verdict-dot.conflict {
+  background: var(--amber);
+}
+
+.titlebar-verdict .verdict-word {
+  flex: 0 0 auto;
+  color: var(--fg);
   font-size: var(--text-base);
-  line-height: var(--desktop-status-bar-height, 26px);
+  font-weight: 500;
+}
+
+.titlebar-verdict .verdict-counts {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.01em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.titlebar-spacer {
+  flex: 1;
+}
+
+.titlebar-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: var(--text-xs);
+}
+
+.titlebar-meta .meta-mono {
+  font-family: var(--font-mono);
+  color: var(--fg-data);
+}
+
+.titlebar-divider {
+  width: 1px;
+  height: 14px;
+  background: var(--border-strong);
+}
+
+.titlebar-sync-now {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-raise);
+  color: var(--fg);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  cursor: default;
+  transition: background-color 120ms ease;
+}
+
+.titlebar-sync-now:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.titlebar-sync-now:disabled {
+  opacity: 0.55;
+}
+
+.titlebar-sync-now svg {
+  width: 13px;
+  height: 13px;
+}
+
+/* ---- Sidebar account chip (bottom of the rail). ----------------------- */
+.sidebar-account {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  margin-top: auto;
+  padding: 8px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: default;
+  transition: background-color 120ms ease;
+}
+
+.sidebar-account:hover {
+  background: var(--row-hover);
+}
+
+.sidebar-account .account-avatar svg {
+  color: var(--muted-2);
+}
+
+.sidebar-account .account-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--surface-raise);
+  color: var(--fg);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.sidebar-account .account-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.sidebar-account .account-name {
+  overflow: hidden;
+  color: var(--fg);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-account .account-status {
+  overflow: hidden;
+  color: var(--muted-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
