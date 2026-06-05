@@ -17,6 +17,7 @@
   } from '../lib/library';
   import LibraryList from './LibraryList.svelte';
   import LibraryDetailPanel from './LibraryDetailPanel.svelte';
+  import MarketplacePanel from '../panels/MarketplacePanel.svelte';
 
   interface Props {
     /** The loaded library payload (workers + skills) for this scope. */
@@ -29,8 +30,12 @@
 
   let { items, loading = false, error = null }: Props = $props();
 
-  type Filter = 'all' | 'workers' | 'skills';
+  type Filter = 'all' | 'workers' | 'skills' | 'marketplace';
   let filter = $state<Filter>('all');
+  // The Marketplace tab is a self-contained surface (its own fetch + search +
+  // detail slide-over via MarketplacePanel), so the library toolbar's scope
+  // filter and text search don't apply while it's active.
+  const isMarketplace = $derived(filter === 'marketplace');
   let query = $state('');
   let selected = $state<LibraryItem | null>(null);
 
@@ -87,6 +92,7 @@
     { id: 'all', label: 'All' },
     { id: 'workers', label: 'Workers' },
     { id: 'skills', label: 'Skills' },
+    { id: 'marketplace', label: 'Marketplace' },
   ];
 
   function toggleFacet(facet: string): void {
@@ -143,7 +149,7 @@
     </div>
 
     <div class="toolbar-right">
-      {#if showScopeFilter}
+      {#if showScopeFilter && !isMarketplace}
         <div class="scope-filter" data-scope-filter>
           <button
             type="button"
@@ -183,31 +189,37 @@
         </div>
       {/if}
 
-      <input
-        class="search"
-        type="search"
-        placeholder="Search…"
-        aria-label="Search library"
-        bind:value={query}
-      />
+      {#if !isMarketplace}
+        <input
+          class="search"
+          type="search"
+          placeholder="Search…"
+          aria-label="Search library"
+          bind:value={query}
+        />
+      {/if}
     </div>
   </div>
 
-  {#if error}
-    <div class="browser-error" role="alert">{error}</div>
-  {/if}
-
-  {#if loading}
-    <div class="browser-loading" aria-busy="true">
-      {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
-        <div class="card-skeleton"></div>
-      {/each}
-    </div>
+  {#if isMarketplace}
+    <MarketplacePanel />
   {:else}
-    <LibraryList items={scopedItems} {query} onselect={selectItem} />
-  {/if}
+    {#if error}
+      <div class="browser-error" role="alert">{error}</div>
+    {/if}
 
-  <LibraryDetailPanel item={selected} onclose={closeDetail} />
+    {#if loading}
+      <div class="browser-loading" aria-busy="true">
+        {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
+          <div class="card-skeleton"></div>
+        {/each}
+      </div>
+    {:else}
+      <LibraryList items={scopedItems} {query} onselect={selectItem} />
+    {/if}
+
+    <LibraryDetailPanel item={selected} onclose={closeDetail} />
+  {/if}
 </div>
 
 <style>
