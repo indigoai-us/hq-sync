@@ -4,6 +4,7 @@
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
+  import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
@@ -31,7 +32,9 @@
       ? 'dm-banner'
       : view === 'company' || view === 'desktop'
         ? 'desktop-alt'
-        : 'main'
+        : view === 'permissions'
+          ? 'meeting-permissions'
+          : 'main'
   );
   document.documentElement.dataset.forceTheme = theme;
 
@@ -41,7 +44,10 @@
   }
 </script>
 
-{#if view === 'desktop'}
+{#if view === 'permissions'}
+  <!-- The Meeting Permissions wizard. Resize the preview viewport to ~620x720. -->
+  <MeetingPermissionsWindow />
+{:else if view === 'desktop'}
   <!-- The full desktop-alt window shell (title bar verdict, sidebar, pages,
        live strip). Resize the preview viewport to ~1180x720. -->
   <DesktopApp />
