@@ -5,6 +5,7 @@ import {
   buildSourceRows,
   currentSyncLabel,
   emptyWorkspaceStats,
+  friendlySyncError,
   type WorkspaceSyncStats,
 } from './sync-model';
 import { CORE_SETUP_LABEL } from '../../lib/progressLabel';
@@ -69,6 +70,60 @@ describe('currentSyncLabel core-noise collapsing', () => {
       [],
     );
     expect(label).toBe('Acme / knowledge/strategy.md');
+  });
+});
+
+describe('friendlySyncError', () => {
+  it('summarizes SCOPE_SHRINK_BLOCKED without leaking UIDs and keeps the count', () => {
+    const raw =
+      'ScopeShrinkBlockedError code=SCOPE_SHRINK_BLOCKED Sync scope shrank for ' +
+      'cmp_01KQ7P52H2T70HAWX9E65Z2BZV (all → shared); 4150 dirty file(s) outside the new scope';
+    const { summary, detail } = friendlySyncError(raw);
+
+    expect(summary.length).toBeLessThanOrEqual(90);
+    expect(summary).not.toContain('cmp_');
+    expect(summary).not.toContain('code=');
+    expect(summary).not.toContain('ScopeShrinkBlockedError');
+    expect(summary).toBe(
+      "A workspace's sharing scope shrank, so sync paused to avoid removing files outside it.",
+    );
+    expect(detail).not.toBeNull();
+    expect(detail).toContain('4,150');
+    expect(detail).not.toContain('cmp_');
+  });
+
+  it('maps network failures to a connection message with no detail', () => {
+    const { summary, detail } = friendlySyncError(
+      'NetworkError code=NET_FAIL Connection reset by peer',
+    );
+    expect(summary).toBe("Couldn't reach the sync server — check your connection.");
+    expect(detail).toBeNull();
+  });
+
+  it('maps auth failures to a sign-in message', () => {
+    const { summary, detail } = friendlySyncError('HttpError code=AUTH 401 token expired');
+    expect(summary).toBe('Your session needs a refresh — sign in again.');
+    expect(detail).toBeNull();
+  });
+
+  it('truncates an unknown long message and exposes the full cleaned detail', () => {
+    const long =
+      'SomethingWeirdError code=MYSTERY the sync runner produced an unusually long ' +
+      'diagnostic line that goes well beyond ninety characters and just keeps describing internal state';
+    const { summary, detail } = friendlySyncError(long);
+
+    expect(summary.length).toBeLessThanOrEqual(91); // 90 chars + ellipsis
+    expect(summary.endsWith('…')).toBe(true);
+    expect(summary).not.toContain('code=');
+    expect(summary).not.toContain('SomethingWeirdError');
+    expect(detail).not.toBeNull();
+    expect(detail?.length ?? 0).toBeGreaterThan(summary.length);
+  });
+
+  it('returns no detail when the summary already says it all', () => {
+    const { summary, detail } = friendlySyncError('Disk full.');
+    expect(summary).toBe('Disk full.');
+    expect(detail).toBeNull();
   });
 });
 

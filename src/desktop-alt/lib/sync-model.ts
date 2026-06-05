@@ -405,6 +405,127 @@ export function buildAttentionItems(args: {
   return items;
 }
 
+// ── Friendly sync-error mapping ─────────────────────────────────────────────
+// Raw backend `sync:error` messages are engineer-facing: a `SomethingError`
+// class-name prefix, `code=CONSTANT` tokens, and internal UIDs
+// (`cmp_…`/`prs_…`/`lst_…`). Surfacing them verbatim sprawls across the title
+// bar and the banner. `friendlySyncError` returns a SHORT plain-language
+// `summary` for the title bar plus a cleaned `detail` for an expandable
+// (null when the summary already says it all). Pure — no imports.
+
+export interface FriendlySyncError {
+  summary: string;
+  detail: string | null;
+}
+
+/** First number+grouping run in the text (e.g. "4150" → "4,150"). */
+function formatDirtyCount(raw: string): string | null {
+  const match = raw.match(/(\d[\d,]*)\s+dirty\s+file/i);
+  if (!match) return null;
+  const digits = match[1].replace(/,/g, '');
+  const n = Number(digits);
+  if (!Number.isFinite(n)) return null;
+  return n.toLocaleString('en-US');
+}
+
+/**
+ * Strip engineer-facing noise from a raw error string:
+ *  - a leading `SomethingError ` class-name prefix
+ *  - `code=CONSTANT` tokens
+ *  - internal UIDs (`cmp_…`/`prs_…`/`lst_…`) → "a workspace" for company UIDs,
+ *    dropped otherwise
+ * then collapse leftover whitespace/punctuation.
+ */
+function cleanRawError(raw: string): string {
+  let text = raw.trim();
+  // Leading `SomethingError ` class-name prefix (PascalCase ending in Error).
+  text = text.replace(/^[A-Z][A-Za-z0-9]*Error[:\s]+/, '');
+  // `code=CONSTANT` tokens.
+  text = text.replace(/\bcode=[A-Z0-9_]+\b/gi, '');
+  // Company UIDs → neutral phrase.
+  text = text.replace(/\bcmp_[0-9A-Za-z]+\b/g, 'a workspace');
+  // Other internal UIDs → dropped.
+  text = text.replace(/\b(?:prs|lst)_[0-9A-Za-z]+\b/g, '');
+  // Tidy up doubled spaces and stray spaces before punctuation.
+  text = text.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1').trim();
+  // Drop a dangling "for ;" / "for ." left when a UID was the object.
+  text = text.replace(/\bfor\s*([,.;:])/gi, '$1').replace(/\s{2,}/g, ' ').trim();
+  return text;
+}
+
+export function friendlySyncError(raw: string): FriendlySyncError {
+  const source = (raw ?? '').trim();
+  if (!source) {
+    return { summary: 'Sync ran into a problem.', detail: null };
+  }
+
+  const cleaned = cleanRawError(source);
+  const lower = source.toLowerCase();
+
+  // Known codes — case-insensitive substring match on the RAW string.
+  if (lower.includes('scope_shrink_blocked')) {
+    const count = formatDirtyCount(source);
+    const detail = count
+      ? `${count} files sit outside the new scope. Re-check the workspace's visibility, or move those files in.`
+      : "Re-check the workspace's visibility, or move the affected files back inside it.";
+    return {
+      summary:
+        "A workspace's sharing scope shrank, so sync paused to avoid removing files outside it.",
+      detail,
+    };
+  }
+
+  if (lower.includes('first_push_blocked')) {
+    return {
+      summary: 'A protected file was about to upload — sync stopped it.',
+      detail: cleaned || null,
+    };
+  }
+
+  if (
+    lower.includes('net_fail') ||
+    lower.includes('network') ||
+    lower.includes('connection') ||
+    lower.includes('reset') ||
+    lower.includes('timeout') ||
+    lower.includes('enotfound')
+  ) {
+    return {
+      summary: "Couldn't reach the sync server — check your connection.",
+      detail: null,
+    };
+  }
+
+  if (
+    lower.includes('unauthor') ||
+    lower.includes('auth') ||
+    lower.includes('401') ||
+    lower.includes('403') ||
+    lower.includes('token')
+  ) {
+    return {
+      summary: 'Your session needs a refresh — sign in again.',
+      detail: null,
+    };
+  }
+
+  // Default: trim the cleaned text to its first sentence or ~90 chars.
+  const firstSentence = cleaned.match(/^[^.!?]*[.!?]/);
+  let summary = firstSentence ? firstSentence[0].trim() : cleaned;
+  let truncated = false;
+  if (summary.length > 90) {
+    summary = `${summary.slice(0, 90).trimEnd()}…`;
+    truncated = true;
+  } else if (firstSentence && firstSentence[0].trim().length < cleaned.length) {
+    // First sentence is shorter than the whole cleaned message.
+    truncated = false;
+  }
+
+  const summaryCore = summary.replace(/…$/, '').trim();
+  const detail = truncated || cleaned.length > summaryCore.length ? cleaned : null;
+  return { summary, detail };
+}
+
 export function latestFullSync(workspaces: Workspace[], status: SyncStatus | null): string | null {
   if (status?.lastSyncAt) return status.lastSyncAt;
 

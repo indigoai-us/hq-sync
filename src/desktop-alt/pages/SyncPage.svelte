@@ -3,6 +3,7 @@
   import SourcesList from '../components/SourcesList.svelte';
   import {
     formatBytes,
+    friendlySyncError,
     timeAgo,
     type ActivityEntry,
     type DaemonStatus,
@@ -56,6 +57,11 @@
     [...activity].sort((a, b) => b.at - a.at).slice(0, 6),
   );
 
+  // Plain-language headline + optional technical detail for the error banner.
+  const friendlyError = $derived(
+    syncErrorMessage ? friendlySyncError(syncErrorMessage) : null,
+  );
+
   function activityVerb(entry: ActivityEntry): string {
     if (entry.direction === 'up') return 'Uploaded';
     if (entry.direction === 'deleted') return 'Deleted';
@@ -71,8 +77,16 @@
 </script>
 
 <section class="sync-page" aria-label="Sync">
-  {#if syncErrorMessage}
-    <p class="sync-error" role="alert">{syncErrorMessage}</p>
+  {#if friendlyError}
+    <div class="sync-error">
+      <p class="sync-error-summary" role="alert">{friendlyError.summary}</p>
+      {#if friendlyError.detail}
+        <details class="sync-error-details">
+          <summary>Technical details</summary>
+          <p class="sync-error-detail-text">{friendlyError.detail}</p>
+        </details>
+      {/if}
+    </div>
   {/if}
 
   <div class="sync-grid">
@@ -181,8 +195,37 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     background: var(--surface-raise);
+  }
+
+  .sync-error-summary {
+    margin: 0;
     color: var(--amber);
     font-size: var(--text-sm);
+    line-height: 17px;
+  }
+
+  .sync-error-details {
+    margin-top: 6px;
+  }
+
+  .sync-error-details summary {
+    color: var(--muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .sync-error-details summary:hover {
+    color: var(--muted-2);
+  }
+
+  .sync-error-detail-text {
+    margin: 6px 0 0;
+    color: var(--muted-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 16px;
+    overflow-wrap: anywhere;
   }
 
   .activity-empty,
