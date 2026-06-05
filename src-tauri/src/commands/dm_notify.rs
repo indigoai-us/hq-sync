@@ -71,6 +71,17 @@ const EVENT_NOTIFICATION_DM_ACTION: &str = "notification:dm-action";
 /// MessagesShell. There is NO parallel thread poller.
 pub const EVENT_THREAD_NEW_REPLY: &str = "thread:new-reply";
 
+/// Tauri event emitted by the SINGLE poll path when reactions on a message in
+/// the conversation the user currently has open change (US-025). A "reaction"
+/// wake on the person topic routes through the same `poll_dm_once` → `do_poll`
+/// path as DMs/channels/threads (the MQTT wake is ids-only); `do_poll`
+/// re-fetches the open conversation's reactions and emits this for each message
+/// whose aggregate set changed since the last poll. Payload is `MessageReactions`
+/// (`{ messageScope, messageId, reactions }` — see messages.rs). The open
+/// Conversation host applies it via `applyReactionEvent`, reconciling any
+/// optimistic toggle. There is NO parallel reaction poller.
+pub const EVENT_MESSAGE_REACTION: &str = "message:reaction";
+
 /// Label of the DM detail window (mirrors share-detail).
 const DM_DETAIL_LABEL: &str = "dm-detail";
 
@@ -1063,6 +1074,174 @@ impl ActiveThreadState {
     }
 }
 
+/// Managed state: the conversation the user currently has open and the message
+/// ids visible in it, so the SINGLE poll path can re-fetch reactions on a
+/// "reaction" wake (US-025). Set by `set_active_conversation` when a Conversation
+/// host opens/changes its message list and cleared when it closes. The poll path
+/// reads `scope` + `message_ids` to know what to re-fetch, and `last_seen` (a
+/// per-message JSON snapshot of the last-emitted aggregate set) so it only emits
+/// `message:reaction` for messages whose reactions actually changed.
+#[derive(Default)]
+pub struct ActiveConversationInner {
+    /// The open conversation's messageScope (`dm:…` | `chan:…`); `None` = none.
+    pub scope: Option<String>,
+    /// The eventIds currently rendered in the open Conversation.
+    pub message_ids: Vec<String>,
+    /// messageId → last-emitted aggregate snapshot (serialized) so the poll only
+    /// emits genuinely-changed reaction sets.
+    pub last_seen: HashMap<String, String>,
+}
+
+pub struct ActiveConversationState(pub Mutex<ActiveConversationInner>);
+
+impl ActiveConversationState {
+    pub fn new() -> Self {
+        ActiveConversationState(Mutex::new(ActiveConversationInner::default()))
+    }
+}
+
+/// Tauri command: register (or clear) the conversation the open Conversation host
+/// currently shows (US-025). Called with the messageScope + the visible message
+/// ids when a DM/channel/thread pane opens or its message list changes, so the
+/// SINGLE poll path knows which messages to re-fetch reactions for on a
+/// "reaction" wake.
+///
+/// Behavior:
+///   * A *new* scope replaces the active conversation and clears the last-seen
+///     snapshot (so a switch doesn't suppress the first emit for the new one).
+///   * The *same* scope MERGES the message-id sets (deduped). This lets a
+///     ThreadPanel (whose replies share the parent conversation's scope) and the
+///     main pane coexist over the single active-conversation slot — `poll_reactions`
+///     re-fetches the union, and both hosts' `message:reaction` listeners apply
+///     the per-message events (each ignoring ids it doesn't render).
+///   * A `None` scope clears it (host teardown / close).
+#[tauri::command]
+pub fn set_active_conversation(
+    app: AppHandle,
+    scope: Option<String>,
+    message_ids: Option<Vec<String>>,
+) -> Result<(), String> {
+    let Some(state) = app.try_state::<ActiveConversationState>() else {
+        return Ok(());
+    };
+    let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+    match scope.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => {
+            let incoming: Vec<String> = message_ids
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+                .collect();
+            if guard.scope.as_deref() == Some(s) {
+                // Same conversation — merge the id sets (dedupe, preserve order).
+                for id in incoming {
+                    if !guard.message_ids.contains(&id) {
+                        guard.message_ids.push(id);
+                    }
+                }
+            } else {
+                // A scope change invalidates the last-seen snapshot.
+                guard.last_seen.clear();
+                guard.scope = Some(s.to_string());
+                guard.message_ids = incoming;
+            }
+            log(LOG_TAG, &format!("DM_NOTIFY_ACTIVE_CONV_SET scope={s}"));
+        }
+        None => {
+            *guard = ActiveConversationInner::default();
+            log(LOG_TAG, "DM_NOTIFY_ACTIVE_CONV_CLEAR");
+        }
+    }
+    Ok(())
+}
+
+/// Re-fetch reactions for the open conversation and emit `message:reaction` for
+/// any message whose aggregate set changed since the last poll (US-025). Folded
+/// into the SINGLE `do_poll` path (NOT a parallel poller). Best-effort: any
+/// failure logs and returns without disturbing the rest of the poll. No-op when
+/// no conversation is open.
+async fn poll_reactions(app: &AppHandle, base_url: &str, access_token: &str) {
+    // Snapshot the descriptor without holding the lock across the network calls.
+    let (scope, message_ids) = {
+        let Some(state) = app.try_state::<ActiveConversationState>() else {
+            return;
+        };
+        let guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        match guard.scope.clone() {
+            Some(s) if !guard.message_ids.is_empty() => (s, guard.message_ids.clone()),
+            _ => return, // nothing open / no messages
+        }
+    };
+
+    for message_id in &message_ids {
+        let url = format!(
+            "{}/v1/notify/reactions?messageScope={}&messageId={}",
+            base_url,
+            esc_thread_seg(&scope),
+            esc_thread_seg(message_id),
+        );
+        let resp = build_client()
+            .get(&url)
+            .header("authorization", format!("Bearer {}", access_token))
+            .send()
+            .await;
+
+        let reactions = match resp {
+            Err(e) => {
+                log(LOG_TAG, &format!("DM_NOTIFY_REACTION_POLL_NETWORK_FAIL {e}"));
+                continue;
+            }
+            Ok(r) => {
+                let status = r.status();
+                if !status.is_success() {
+                    log(LOG_TAG, &format!("DM_NOTIFY_REACTION_POLL_ERROR status={status}"));
+                    continue;
+                }
+                match r.json::<Vec<crate::commands::messages::ReactionAggregate>>().await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log(LOG_TAG, &format!("DM_NOTIFY_REACTION_POLL_ERROR parse: {e}"));
+                        continue;
+                    }
+                }
+            }
+        };
+
+        // Compare against the last-emitted snapshot; emit only on a change. Bail
+        // if the conversation was closed/swapped while we were fetching.
+        let snapshot = serde_json::to_string(&reactions).unwrap_or_default();
+        let changed = {
+            let Some(state) = app.try_state::<ActiveConversationState>() else {
+                return;
+            };
+            let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.scope.as_deref() != Some(scope.as_str()) {
+                return; // conversation closed or swapped — stale fetch
+            }
+            if guard.last_seen.get(message_id) == Some(&snapshot) {
+                false
+            } else {
+                guard.last_seen.insert(message_id.clone(), snapshot);
+                true
+            }
+        };
+
+        if changed {
+            let payload = crate::commands::messages::MessageReactions {
+                message_scope: scope.clone(),
+                message_id: message_id.clone(),
+                reactions,
+            };
+            log(
+                LOG_TAG,
+                &format!("DM_NOTIFY_REACTION_CHANGED scope={scope} id={message_id}"),
+            );
+            let _ = app.emit(EVENT_MESSAGE_REACTION, &payload);
+        }
+    }
+}
+
 /// Build the `GET /v1/notify/threads` URL. Pure + side-effect-free so the query
 /// shape is unit-testable. Exactly one of `channelId` / `withPersonUid` rides
 /// alongside `rootEventId` + `scope`, matching the US-021 contract. Segments are
@@ -1616,6 +1795,13 @@ async fn do_poll(app: &AppHandle) {
     // the ThreadPanel currently has open and emits `thread:new-reply` for replies
     // it hasn't surfaced yet. No-op when no panel is open. NOT a parallel poller.
     poll_active_thread(app, &base_url, &access_token).await;
+
+    // Fold reaction-activity polling into the SAME single path (US-025) — a
+    // "reaction" wake on the person topic routes here. Re-fetches reactions for
+    // whichever conversation is open and emits `message:reaction` for messages
+    // whose aggregate set changed. No-op when no conversation is open. NOT a
+    // parallel poller.
+    poll_reactions(app, &base_url, &access_token).await;
 
     let since = read_cursor(&machine_id);
     let url = match since.as_deref() {

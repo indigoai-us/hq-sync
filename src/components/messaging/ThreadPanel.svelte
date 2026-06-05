@@ -22,6 +22,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
+  import { type ReactionEvent, dmScope, channelScope } from '../../lib/reactions';
+  import { ReactionController } from '../../lib/reactionController.svelte';
 
   // A thread message (root or reply) as returned by fetch_thread / carried on a
   // thread:new-reply event. Mirrors the Rust `ThreadReply` (camelCase).
@@ -78,6 +80,33 @@
   // Dedupe set so an optimistic append + the live thread:new-reply (or a reload)
   // don't double-render the same reply.
   let seenIds = $state(new Set<string>());
+
+  // Reactions (US-025) for the thread's replies. Replies share the PARENT
+  // conversation's messageScope (dm:peer | chan:channelId), so this controller
+  // MERGES its reply ids into the same active-conversation slot the main pane
+  // owns — it passes clearOnDispose=false so closing the thread doesn't wipe the
+  // still-open main pane's registration.
+  const reactionScope = $derived(
+    scope === 'channel' ? channelScope(channelId ?? '') : dmScope(withPersonUid ?? ''),
+  );
+  let reactionsCtl = $state<ReactionController | null>(null);
+
+  $effect(() => {
+    const s = reactionScope;
+    const controller = new ReactionController(s, false);
+    reactionsCtl = controller;
+    return () => controller.dispose();
+  });
+
+  // Keep the thread's reply ids registered + loaded (skip optimistic local-* ids).
+  $effect(() => {
+    const controller = reactionsCtl;
+    if (!controller) return;
+    const ids = replies
+      .filter((r) => !r.eventId.startsWith('local-'))
+      .map((r) => r.eventId);
+    void controller.setMessages(ids);
+  });
 
   function appendReply(r: ThreadReplyRow): void {
     if (seenIds.has(r.eventId)) return;
@@ -175,6 +204,12 @@
       },
     ).then((fn) => unlisteners.push(fn));
 
+    // Reactions on a thread reply changed (US-025). The controller ignores events
+    // for any scope other than this thread's parent conversation.
+    listen<ReactionEvent>('message:reaction', (e) => {
+      reactionsCtl?.applyEvent(e.payload);
+    }).then((fn) => unlisteners.push(fn));
+
     void load();
 
     return () => {
@@ -224,6 +259,8 @@
       {sendError}
       placeholder="Reply in thread…"
       onsend={sendReply}
+      reactions={reactionsCtl?.map ?? {}}
+      ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
     />
   </div>
 </aside>

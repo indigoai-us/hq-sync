@@ -181,6 +181,7 @@ fn main() {
         .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::dm_notify::SeenChannelState::new())
         .manage(commands::dm_notify::ActiveThreadState::new())
+        .manage(commands::dm_notify::ActiveConversationState::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         .manage(commands::packages::PendingPackages(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
@@ -309,6 +310,7 @@ fn main() {
             commands::dm_notify::fetch_thread,
             commands::dm_notify::send_thread_reply,
             commands::dm_notify::set_active_thread,
+            commands::dm_notify::set_active_conversation,
             commands::dm_notify::list_dm_requests,
             commands::dm_notify::respond_dm_request,
             commands::messages::open_messages_window,
@@ -325,6 +327,8 @@ fn main() {
             commands::messages::list_channel_members,
             commands::messages::remove_channel_member,
             commands::messages::mark_channel_read,
+            commands::messages::toggle_reaction,
+            commands::messages::fetch_reactions,
             commands::notification_history::fetch_notification_history,
             commands::notification_history::open_notification_history,
             commands::notifications::notification_permission_state,
