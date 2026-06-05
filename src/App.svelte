@@ -3,6 +3,15 @@
   import { invoke } from '@tauri-apps/api/core';
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
+  import {
+    isPermissionGranted as isNotifyPermissionGranted,
+    sendNotification,
+  } from '@tauri-apps/plugin-notification';
+  import {
+    type DmRequest,
+    requestBannerTitle,
+    requestBannerBody,
+  } from './lib/dmRequests';
   import SignInPrompt from './components/SignInPrompt.svelte';
   import Popover from './components/Popover.svelte';
   import Settings from './components/Settings.svelte';
@@ -1499,6 +1508,59 @@
             pendingRequests:
               e.payload.pendingRequests || unreadSummary.pendingRequests,
           };
+        }
+      )
+    );
+
+    // --- Incoming connection-request listeners (US-011) ---
+    // The SINGLE DM poll path diffs the pending-requests list each cycle and
+    // emits `dm:request-new` for a brand-new incoming request and
+    // `dm:request-update` when a pending request leaves the set (accepted /
+    // declined / blocked — or flipped from the Requests window via
+    // respond_dm_request). These keep the popover Messages request-count accent
+    // (`unreadSummary.pendingRequests`) live and surface a DISTINCT native banner
+    // ("{name} wants to connect") — separate copy from a normal incoming DM.
+    unlisteners.push(
+      await listen<DmRequest>('dm:request-new', async (e) => {
+        const req = e.payload;
+        // Bump the popover request-count accent immediately (the poll path emits
+        // 0 for requests on dm:unread-summary by design, so we own this count
+        // off the request events).
+        unreadSummary = {
+          unreadDms: unreadSummary.unreadDms,
+          pendingRequests: unreadSummary.pendingRequests + 1,
+        };
+
+        // Distinct native banner — "{name} wants to connect" — so a connection
+        // request is visually different from a normal DM banner. Best-effort:
+        // never throw if notifications are denied/unavailable.
+        try {
+          if (await isNotifyPermissionGranted()) {
+            sendNotification({
+              title: requestBannerTitle(req),
+              body: requestBannerBody(req),
+            });
+          }
+        } catch (err) {
+          console.error('dm-request: banner failed', err);
+        }
+      })
+    );
+
+    unlisteners.push(
+      await listen<{ pairKey: string; state?: string; withPersonUid?: string }>(
+        'dm:request-update',
+        (e) => {
+          // A pending request resolved (accepted / declined / blocked / pruned).
+          // Decrement the popover request-count accent (never below zero). The
+          // optimistic Pending→active bubble flip and the Requests-list prune
+          // live in the Messages window (MessagesShell), which listens for this
+          // same event; here we only keep the popover accent honest.
+          unreadSummary = {
+            unreadDms: unreadSummary.unreadDms,
+            pendingRequests: Math.max(0, unreadSummary.pendingRequests - 1),
+          };
+          void e;
         }
       )
     );
