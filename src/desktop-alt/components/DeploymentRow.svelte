@@ -220,7 +220,7 @@
   .subdomain {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 18px;
   }
 
@@ -284,7 +284,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     white-space: nowrap;
     cursor: pointer;
   }
@@ -393,7 +393,7 @@
   .detail-field dt {
     color: var(--muted);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 14px;
     text-transform: uppercase;
     letter-spacing: 0.03em;

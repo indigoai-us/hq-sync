@@ -283,7 +283,7 @@
     color: var(--muted-3);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
     line-height: 16px;
     text-align: center;
@@ -421,7 +421,7 @@
     background: var(--row-active);
     color: var(--bg);
     font-size: var(--text-base);
-    font-weight: 800;
+    font-weight: 600;
     line-height: 1;
   }
 

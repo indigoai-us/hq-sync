@@ -203,7 +203,7 @@
   .activity-empty strong {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .activity-empty span {

@@ -284,7 +284,7 @@
   .command-copy strong {
     color: currentColor;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .command-copy span {

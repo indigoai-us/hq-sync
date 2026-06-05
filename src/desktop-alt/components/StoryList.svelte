@@ -214,7 +214,7 @@
     background: var(--row-active);
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
   }
 
@@ -270,7 +270,7 @@
   .empty-state p {
     margin: 0 0 var(--space-1);
     color: var(--fg);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .empty-state span {
