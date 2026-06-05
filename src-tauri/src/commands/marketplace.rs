@@ -168,6 +168,122 @@ pub async fn get_marketplace_listing(id: String) -> Result<MarketplaceListingDet
     parse_detail_response(status, &text)
 }
 
+// =============================================================================
+// US-022 — emergency yank / takedown (admin-gated kill switch)
+// =============================================================================
+//
+// The ModerationPanel's Yank action calls `POST /v1/moderation/listings/{id}/yank`
+// on hq-pro. Unlike the public browse/detail routes, the moderation routes are
+// JWT-authed AND admin-gated SERVER-SIDE (the handler requires an `@getindigo.ai`
+// id_token email — see hq-pro `src/vault-service/handlers/moderation.ts`). So we
+// attach the caller's bearer token; the server is the SOLE authorization
+// boundary (a non-admin token gets a 403, never a yank). This command never
+// makes its own admin decision — it just forwards the authed request and relays
+// the server's outcome.
+//
+// A yank is a runtime status flip on the server (no deploy): the listing leaves
+// the public `approved#<type>` partition instantly, so browse stops returning
+// it and detail/install 404. V1 LIMITATION (surfaced in the panel UI):
+// already-installed users are NOT auto-removed.
+
+/// Result of a successful yank — the new status plus the server's v1-limitation
+/// note (so the panel can render "already-installed users are not auto-removed").
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct YankResult {
+    /// The listing's id that was yanked.
+    pub id: String,
+    /// New status — always `"yanked"` on success.
+    pub status: String,
+    /// Server-provided note describing the v1 limitation (already-installed
+    /// users not auto-removed). Surfaced to the admin in the panel.
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Yank (emergency takedown) a marketplace listing. Admin-gated on the SERVER
+/// (`@getindigo.ai` id_token) — this command forwards the caller's bearer token
+/// and relays the outcome. A `reason` is required (recorded for the audit trail).
+///
+/// On success the listing is flipped to `status = yanked` server-side and
+/// instantly disappears from public browse + detail + install — a runtime status
+/// flip, no deploy. Already-installed users are NOT auto-removed in v1 (the
+/// returned `note` says so; the panel renders it).
+#[tauri::command]
+pub async fn yank_marketplace_listing(id: String, reason: String) -> Result<YankResult, String> {
+    let id = id.trim();
+    if !is_safe_id(id) {
+        return Err(format!("invalid listing id: {id:?}"));
+    }
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err("a reason is required to yank a listing".to_string());
+    }
+
+    let base = api_base()?;
+    let url = format!("{base}/v1/moderation/listings/{id}/yank");
+    // Authed: the moderation routes are admin-gated server-side, so we MUST
+    // attach the caller's bearer token. The server is the authorization boundary.
+    let jwt = resolve_jwt().await?;
+
+    let res = build_client()
+        .post(&url)
+        .bearer_auth(&jwt)
+        .json(&serde_json::json!({ "reason": reason }))
+        .send()
+        .await
+        .map_err(|e| format!("yank request: {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| format!("yank read: {e}"))?;
+
+    parse_yank_response(id, status, &text)
+}
+
+/// Pure parser: map the yank endpoint's (status, body) to a typed result. 403 →
+/// a clear not-authorized message (the server admin-gate rejected the caller);
+/// 409 → a status-conflict message (not yankable / lost optimistic-lock race);
+/// other non-2xx → the raw server error.
+fn parse_yank_response(
+    id: &str,
+    status: StatusCode,
+    text: &str,
+) -> Result<YankResult, String> {
+    if status == StatusCode::FORBIDDEN {
+        return Err("not authorized to yank listings (admin only)".to_string());
+    }
+    if status == StatusCode::CONFLICT {
+        // Surface the server's message (e.g. "Listing is not in a yankable
+        // status") so the admin understands why nothing changed.
+        let msg = serde_json::from_str::<serde_json::Value>(text.trim())
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| "listing could not be yanked (status conflict)".to_string());
+        return Err(msg);
+    }
+    if !status.is_success() {
+        return Err(format!("yank HTTP {status}: {text}"));
+    }
+
+    let body: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("yank response is not valid JSON: {e}"))?;
+    let listing = body.get("listing");
+    let new_status = listing
+        .and_then(|l| l.get("status"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("yanked")
+        .to_string();
+    let note = body
+        .get("note")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(YankResult {
+        id: id.to_string(),
+        status: new_status,
+        note,
+    })
+}
+
 // ---- pure parsers (status + body → typed result) ---------------------------
 
 fn parse_browse_response(status: StatusCode, text: &str) -> Result<Vec<MarketplaceListing>, String> {
@@ -653,6 +769,47 @@ mod tests {
         assert!(!is_safe_id("lst?q=1"));
         assert!(!is_safe_id("lst 1"));
         assert!(!is_safe_id(&"a".repeat(300)));
+    }
+
+    // ---- US-022: emergency yank / takedown parser tests --------------------
+
+    #[test]
+    fn yank_parses_success_with_status_and_note() {
+        let body = r#"{"listing":{"id":"lst_1","status":"yanked","statusTypeKey":"yanked#skill"},
+            "note":"Listing yanked from public browse, detail, and install. Already-installed users are NOT auto-removed in v1 (no remote uninstall)."}"#;
+        let res = parse_yank_response("lst_1", StatusCode::OK, body).expect("parsed");
+        assert_eq!(res.id, "lst_1");
+        assert_eq!(res.status, "yanked");
+        assert!(res.note.contains("Already-installed users are NOT auto-removed"));
+    }
+
+    #[test]
+    fn yank_maps_403_to_admin_only_message() {
+        // The server admin-gate (default-deny) rejected the caller. The panel
+        // must show a clear "admin only" message, never a generic HTTP error.
+        let err = parse_yank_response("lst_1", StatusCode::FORBIDDEN, r#"{"code":"FORBIDDEN"}"#)
+            .unwrap_err();
+        assert!(err.contains("admin"), "got: {err}");
+    }
+
+    #[test]
+    fn yank_maps_409_to_server_status_conflict_message() {
+        // 409 = not yankable (already rejected/yanked) or a lost optimistic-lock
+        // race. Surface the server's own message so the admin understands.
+        let err = parse_yank_response(
+            "lst_1",
+            StatusCode::CONFLICT,
+            r#"{"error":"Listing is not in a yankable status","status":"rejected"}"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, "Listing is not in a yankable status");
+    }
+
+    #[test]
+    fn yank_surfaces_other_http_errors() {
+        let err = parse_yank_response("lst_1", StatusCode::INTERNAL_SERVER_ERROR, "boom")
+            .unwrap_err();
+        assert!(err.contains("500"));
     }
 
     #[test]

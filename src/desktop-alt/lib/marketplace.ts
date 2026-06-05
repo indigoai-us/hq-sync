@@ -160,6 +160,40 @@ export function companyInstallTargets(workspaces: Workspace[]): InstallTarget[] 
   return [personal, ...companies];
 }
 
+// ---------------------------------------------------------------------------
+// US-022 — emergency yank / takedown (admin-gated kill switch).
+// ---------------------------------------------------------------------------
+
+/** Result of a successful yank — mirrors the Rust `YankResult` 1:1. */
+export interface YankResult {
+  /** The listing id that was yanked. */
+  id: string;
+  /** New status — always `"yanked"` on success. */
+  status: string;
+  /**
+   * Server note describing the v1 limitation (already-installed users are NOT
+   * auto-removed). The ModerationPanel renders this to the admin.
+   */
+  note: string;
+}
+
+/**
+ * Yank (emergency takedown) a marketplace listing. Admin-gated on the SERVER
+ * (`@getindigo.ai` id_token) — the Rust command forwards the caller's bearer
+ * token and the server is the sole authorization boundary. A non-empty `reason`
+ * is required (recorded for the audit trail; the Rust side also validates).
+ *
+ * On success the listing flips to `status = yanked` server-side and instantly
+ * disappears from public browse + detail + install (a runtime status flip, no
+ * deploy). Already-installed users are NOT auto-removed in v1.
+ */
+export async function yankMarketplaceListing(
+  id: string,
+  reason: string,
+): Promise<YankResult> {
+  return invoke<YankResult>('yank_marketplace_listing', { id, reason });
+}
+
 /**
  * Install a marketplace pack into the chosen scope. Streams progress via the
  * `marketplace:install-progress` event and resolves/rejects on the terminal

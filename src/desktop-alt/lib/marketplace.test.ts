@@ -1,13 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // `marketplace.ts` imports `invoke` at module load. We never exercise the real
 // IPC here (these are pure-logic tests), so a no-op mock keeps the import happy.
+// The yank tests below DO assert the invoke call shape, so we capture the mock.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 
+import { invoke } from '@tauri-apps/api/core';
 import {
   companyInstallTargets,
   filterListings,
   listingHaystack,
+  yankMarketplaceListing,
   type MarketplaceListing,
 } from './marketplace';
 import type { Workspace } from '../../lib/workspaces';
@@ -39,6 +42,38 @@ const workspace = (overrides: Partial<Workspace> = {}): Workspace => ({
   lastSyncedAt: null,
   brokenReason: null,
   ...overrides,
+});
+
+describe('yankMarketplaceListing — US-022 emergency kill switch', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('invokes the yank command with the id + reason and returns the result', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      id: 'lst_1',
+      status: 'yanked',
+      note: 'Already-installed users are NOT auto-removed in v1 (no remote uninstall).',
+    });
+
+    const result = await yankMarketplaceListing('lst_1', 'DMCA takedown');
+
+    expect(invoke).toHaveBeenCalledWith('yank_marketplace_listing', {
+      id: 'lst_1',
+      reason: 'DMCA takedown',
+    });
+    expect(result.status).toBe('yanked');
+    expect(result.note).toMatch(/already-installed users are NOT auto-removed/i);
+  });
+
+  it('propagates a server authorization rejection (admin-gated server-side)', async () => {
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('not authorized to yank listings (admin only)'),
+    );
+    await expect(yankMarketplaceListing('lst_1', 'abuse')).rejects.toThrow(
+      /admin only/i,
+    );
+  });
 });
 
 describe('filterListings', () => {
