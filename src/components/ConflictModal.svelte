@@ -6,11 +6,10 @@
   interface Props {
     conflicts: ConflictFile[];
     onresolve: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
-    onopen: (path: string) => void;
     ondismiss: () => void;
   }
 
-  let { conflicts, onresolve, onopen, ondismiss }: Props = $props();
+  let { conflicts, onresolve, ondismiss }: Props = $props();
 
   let pendingCount = $derived(
     conflicts.filter((c) => c.status === 'pending').length
@@ -65,7 +64,7 @@
   <!-- Scrollable conflict list -->
   <div class="conflict-list">
     {#each conflicts as conflict (conflict.path)}
-      <ConflictRow {conflict} {onresolve} {onopen} />
+      <ConflictRow {conflict} {onresolve} />
     {/each}
   </div>
 
@@ -80,7 +79,7 @@
         }
       }}
     >
-      All → Keep Local
+      All → Keep local
     </button>
     <button
       class="bulk-btn bulk-remote"
@@ -91,7 +90,7 @@
         }
       }}
     >
-      All → Keep Remote
+      All → Use cloud version
     </button>
   </div>
 </div>
@@ -246,7 +245,7 @@
     background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
-  /* Bulk "All → Keep Remote" — secondary action, calm grey treatment. */
+  /* Bulk "All → Use cloud version" — secondary action, calm grey treatment. */
   .bulk-remote {
     color: var(--popover-text, #e0e0e0);
     background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));

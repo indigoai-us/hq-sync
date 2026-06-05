@@ -1,4 +1,7 @@
-//! Conflict resolution commands — resolve file conflicts and open in editor.
+//! Conflict resolution commands — resolve file conflicts (`keep-local` /
+//! `keep-remote`) and open the original conflicted file in the editor.
+//! There is no on-disk conflict mirror anymore (hq-cloud US-001 dropped the
+//! `<file>.conflict-…` sibling in favour of S3 versioning).
 
 use std::process::Command;
 use std::time::Duration;
@@ -169,10 +172,15 @@ pub fn resolve_conflict(path: String, strategy: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Open a file in the system default editor.
+/// Open the ORIGINAL conflicted file in the system default editor.
 ///
-/// Resolves the HQ folder path, constructs the full path as `{hq_folder}/{path}`,
-/// and uses macOS `open` command to launch the default application.
+/// As of the conflict-versioning change (hq-cloud US-001) there is no longer a
+/// sibling `<file>.conflict-<ts>-<machine>.<ext>` mirror on disk — S3 versioning
+/// is the safety net — so `path` is the conflict's `originalPath` and this
+/// resolves the full path as `{hq_folder}/{path}`, guarded against traversal by
+/// [`build_full_path`]. The conflict-resolution UI no longer surfaces an
+/// open-in-editor action; this command is retained for callers that want to
+/// reveal the real file.
 #[tauri::command]
 pub fn open_in_editor(path: String) -> Result<(), String> {
     let hq_folder = resolve_hq_folder_path()?;

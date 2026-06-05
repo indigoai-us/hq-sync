@@ -674,10 +674,6 @@
     }
   }
 
-  async function handleOpenInEditor(path: string) {
-    await conflictStore.openInEditor(path);
-  }
-
   function handleDismissConflicts() {
     showConflictModal = false;
   }
@@ -1708,7 +1704,6 @@
       onsettings={handleSettings}
       onsignout={handleSignOut}
       onresolve={handleResolveConflict}
-      onopen={handleOpenInEditor}
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}

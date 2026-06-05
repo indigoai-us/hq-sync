@@ -1,13 +1,67 @@
 import { invoke } from '@tauri-apps/api/core';
 
+/**
+ * Shape of a single entry in `<hqRoot>/.hq-conflicts/index.json`, as recorded
+ * by the sync engine (@indigoai-us/hq-cloud) on a conflict.
+ *
+ * As of the conflict-versioning change (hq-cloud US-001), the engine NO LONGER
+ * writes a sibling `<file>.conflict-<ts>-<machine>.<ext>` mirror file — S3
+ * versioning is the safety net instead. Consequently `conflictPath` is gone
+ * from this entry; consumers must not read it.
+ */
+export interface ConflictIndexEntry {
+  /** Stable identifier for the conflict record. */
+  id: string;
+  /** Repo-relative path of the file that conflicted (the real file on disk). */
+  originalPath: string;
+  /** ISO timestamp the conflict was detected. */
+  detectedAt: string;
+  /** Which leg of the sync surfaced the conflict. */
+  side: 'push' | 'pull';
+  /** Machine that recorded the conflict. */
+  machineId: string;
+  /** Content hash of the local copy at detection time. */
+  localHash: string;
+  /** Content hash of the remote copy at detection time. */
+  remoteHash: string;
+  /** S3 version id of the remote object, when the engine captured one. */
+  remoteVersionId?: string;
+}
+
+/**
+ * UI-facing conflict model. Derived from {@link ConflictIndexEntry}; carries
+ * the resolution lifecycle state the components render. Keyed by `path`
+ * (the original on-disk path) — there is no separate mirror path anymore.
+ */
 export interface ConflictFile {
+  /** Repo-relative original path (was `originalPath` in the index entry). */
   path: string;
+  /** ISO timestamp the conflict was detected, surfaced in the UI. */
+  detectedAt?: string;
+  /** Which sync leg surfaced it (`push`/`pull`), surfaced in the UI. */
+  side?: 'push' | 'pull';
+  /** Machine that recorded the conflict. */
+  machineId?: string;
   localHash: string;
   remoteHash: string;
-  canAutoResolve: boolean;
+  /** S3 version id of the remote copy, when available. */
+  remoteVersionId?: string;
   status: 'pending' | 'resolving' | 'resolved' | 'error';
   resolution?: 'keep-local' | 'keep-remote';
   error?: string;
+}
+
+/** Map a raw index entry (new engine shape) into the UI-facing model. */
+export function fromIndexEntry(entry: ConflictIndexEntry): Omit<ConflictFile, 'status'> {
+  return {
+    path: entry.originalPath,
+    detectedAt: entry.detectedAt,
+    side: entry.side,
+    machineId: entry.machineId,
+    localHash: entry.localHash,
+    remoteHash: entry.remoteHash,
+    remoteVersionId: entry.remoteVersionId,
+  };
 }
 
 class ConflictStore {
@@ -46,13 +100,12 @@ class ConflictStore {
     this._listeners.forEach((fn) => fn());
   }
 
-  addConflict(conflict: {
-    path: string;
-    localHash: string;
-    remoteHash: string;
-    canAutoResolve: boolean;
-  }) {
-    // Deduplicate by path
+  /**
+   * Add a conflict from a raw index entry (new engine shape). Deduplicated by
+   * original path so the same file surfacing twice in a run is shown once.
+   */
+  addConflict(entry: ConflictIndexEntry) {
+    const conflict = fromIndexEntry(entry);
     if (this._conflicts.some((c) => c.path === conflict.path)) return;
     this._conflicts = [
       ...this._conflicts,
@@ -80,14 +133,6 @@ class ConflictStore {
     const pendingPaths = this.pending.map((c) => c.path);
     for (const path of pendingPaths) {
       await this.resolveConflict(path, strategy);
-    }
-  }
-
-  async openInEditor(path: string) {
-    try {
-      await invoke('open_in_editor', { path });
-    } catch (e) {
-      console.error('Failed to open in editor:', e);
     }
   }
 

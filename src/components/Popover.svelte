@@ -181,7 +181,6 @@
     onsettings: () => void;
     onsignout: () => void;
     onresolve?: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
-    onopen?: (path: string) => void;
     ondismissconflicts?: () => void;
     oninstallupdate?: () => void;
     /** Run `npm install -g @indigoai-us/hq-cli@latest` via the Rust
@@ -291,7 +290,6 @@
     onsettings,
     onsignout,
     onresolve,
-    onopen,
     ondismissconflicts,
     oninstallupdate,
     oninstallhqcliupdate,
@@ -687,11 +685,10 @@
 
   <!-- Body -->
   <section class="popover-body">
-    {#if showConflictModal && conflicts.length > 0 && onresolve && onopen && ondismissconflicts}
+    {#if showConflictModal && conflicts.length > 0 && onresolve && ondismissconflicts}
       <ConflictModal
         {conflicts}
         onresolve={onresolve}
-        onopen={onopen}
         ondismiss={ondismissconflicts}
       />
     {:else}

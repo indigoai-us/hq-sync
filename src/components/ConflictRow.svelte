@@ -4,15 +4,37 @@
   interface Props {
     conflict: ConflictFile;
     onresolve: (path: string, strategy: 'keep-local' | 'keep-remote') => void;
-    onopen: (path: string) => void;
   }
 
-  let { conflict, onresolve, onopen }: Props = $props();
+  let { conflict, onresolve }: Props = $props();
 
   let fileName = $derived(conflict.path.split('/').pop() ?? conflict.path);
 
   let localShort = $derived(conflict.localHash.slice(0, 7));
   let remoteShort = $derived(conflict.remoteHash.slice(0, 7));
+
+  // Detected time, formatted for display. Falls back gracefully if the engine
+  // didn't stamp the entry (older index records).
+  let detectedLabel = $derived.by(() => {
+    if (!conflict.detectedAt) return null;
+    const d = new Date(conflict.detectedAt);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  });
+
+  // Which sync leg surfaced the conflict, phrased for a non-technical reader.
+  let sideLabel = $derived(
+    conflict.side === 'push'
+      ? 'while sending'
+      : conflict.side === 'pull'
+        ? 'while receiving'
+        : null
+  );
 </script>
 
 <div
@@ -43,18 +65,26 @@
       <span class="file-path" title={conflict.path}>
         {fileName}
       </span>
-
-      {#if conflict.canAutoResolve}
-        <span class="auto-badge">auto</span>
-      {/if}
     </div>
   </div>
+
+  <div class="meta-row">
+    <span class="meta-path" title={conflict.path}>{conflict.path}</span>
+  </div>
+
+  {#if detectedLabel || sideLabel}
+    <div class="meta-row meta-detected">
+      {#if detectedLabel}<span>Detected {detectedLabel}</span>{/if}
+      {#if detectedLabel && sideLabel}<span class="meta-dot">·</span>{/if}
+      {#if sideLabel}<span>{sideLabel}</span>{/if}
+    </div>
+  {/if}
 
   <div class="hash-row">
     <span class="hash-label">local</span>
     <code class="hash-value">{localShort}</code>
     <span class="hash-separator">vs</span>
-    <span class="hash-label">remote</span>
+    <span class="hash-label">cloud</span>
     <code class="hash-value">{remoteShort}</code>
   </div>
 
@@ -69,21 +99,15 @@
     </div>
   {:else if conflict.status === 'resolved'}
     <div class="resolved-state">
-      Resolved: {conflict.resolution === 'keep-local' ? 'kept local' : 'kept remote'}
+      Resolved: {conflict.resolution === 'keep-local' ? 'kept local' : 'used cloud version'}
     </div>
   {:else}
     <div class="actions">
       <button class="action-btn local-btn" aria-label="Keep local version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-local')}>
-        Keep Local
+        Keep local
       </button>
-      <button class="action-btn remote-btn" aria-label="Keep remote version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-remote')}>
-        Keep Remote
-      </button>
-      <button class="action-btn editor-btn" onclick={() => onopen(conflict.path)} title="Open in editor" aria-label="Open {fileName} in editor">
-        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M11.5 1.5l3 3-9 9H2.5v-3l9-9Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M9.5 3.5l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
+      <button class="action-btn remote-btn" aria-label="Use cloud version of {fileName}" onclick={() => onresolve(conflict.path, 'keep-remote')}>
+        Use cloud version
       </button>
     </div>
   {/if}
@@ -157,16 +181,33 @@
     min-width: 0;
   }
 
-  .auto-badge {
-    flex-shrink: 0;
-    font-size: 0.625rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 0.1rem 0.35rem;
-    border-radius: 4px;
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-    color: var(--popover-text-heading, #ffffff);
+  .meta-row {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding-left: 1.625rem;
+    min-width: 0;
+  }
+
+  .meta-path {
+    font-size: 0.6875rem;
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    color: var(--popover-text-muted, #a0a0b0);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: rtl;
+    text-align: left;
+    min-width: 0;
+  }
+
+  .meta-detected {
+    font-size: 0.6875rem;
+    color: var(--popover-text-muted, #a0a0b0);
+  }
+
+  .meta-dot {
+    opacity: 0.6;
   }
 
   .hash-row {
@@ -268,9 +309,9 @@
     background: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
   }
 
-  /* Secondary "Keep Remote" action — calm secondary button. The destructive-
-     looking amber treatment was misleading; both Keep Local and Keep Remote
-     are equally valid choices for the user. */
+  /* Secondary "Use cloud version" action — calm secondary button. Both
+     Keep local and Use cloud version are equally valid choices for the user;
+     a destructive-looking treatment would be misleading. */
   .remote-btn {
     color: var(--popover-text, rgba(255, 255, 255, 0.86));
     background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
@@ -279,17 +320,6 @@
   .remote-btn:hover {
     background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
     color: var(--popover-text-heading, #ffffff);
-  }
-
-  .editor-btn {
-    color: var(--popover-text-muted, #a0a0b0);
-    background: rgba(255, 255, 255, 0.05);
-    padding: 0.25rem;
-  }
-
-  .editor-btn:hover {
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--popover-text, #e0e0e0);
   }
 
   @media (prefers-color-scheme: light) {
@@ -310,14 +340,6 @@
 
     .hash-value {
       background: rgba(0, 0, 0, 0.04);
-    }
-
-    .editor-btn {
-      background: rgba(0, 0, 0, 0.04);
-    }
-
-    .editor-btn:hover {
-      background: rgba(0, 0, 0, 0.08);
     }
   }
 </style>
