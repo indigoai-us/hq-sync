@@ -5,6 +5,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import Conversation, { type ConversationMessage } from './messaging/Conversation.svelte';
+  import { type ReactionEvent, dmScope } from '../lib/reactions';
+  import { ReactionController } from '../lib/reactionController.svelte';
 
   // The DM that opened the window (the reply target). Also the most recent
   // inbound message — it anchors who the conversation is with.
@@ -37,6 +39,31 @@
 
   let sending = $state(false);
   let sendError = $state<string | null>(null);
+
+  // Reactions (US-025) for this DM conversation. Created when the DM event
+  // arrives (its peer is the scope), kept in step with the visible messages.
+  let reactionsCtl = $state<ReactionController | null>(null);
+
+  $effect(() => {
+    const peer = event?.fromPersonUid;
+    if (!peer) {
+      reactionsCtl?.dispose();
+      reactionsCtl = null;
+      return;
+    }
+    const controller = new ReactionController(dmScope(peer));
+    reactionsCtl = controller;
+    return () => controller.dispose();
+  });
+
+  $effect(() => {
+    const controller = reactionsCtl;
+    if (!controller) return;
+    const ids = messages
+      .filter((m) => !m.eventId.startsWith('local-'))
+      .map((m) => m.eventId);
+    void controller.setMessages(ids);
+  });
 
   /**
    * Merge the server thread (newest-first) into chronological order and ensure
@@ -113,18 +140,27 @@
   $effect(() => {
     let unlisten: (() => void) | undefined;
 
+    const unlisteners: Array<() => void> = [];
+
     listen<DmEvent>('dm:detail-event', (e) => {
       event = e.payload;
       void loadThread(e.payload);
     }).then((fn) => {
       unlisten = fn;
+      unlisteners.push(fn);
       // Ready-handshake: tell Rust the listener is mounted so it emits the
       // pending event + shows the window (mirrors ShareDetail).
       invoke('dm_detail_window_ready');
     });
 
+    // Live reaction reconcile for this DM (US-025).
+    listen<ReactionEvent>('message:reaction', (e) => {
+      reactionsCtl?.applyEvent(e.payload);
+    }).then((fn) => unlisteners.push(fn));
+
     return () => {
       unlisten?.();
+      for (const fn of unlisteners) fn();
     };
   });
 </script>
@@ -151,6 +187,8 @@
       {sendError}
       placeholder={`Reply to ${event.fromDisplayName}…`}
       onsend={sendReply}
+      reactions={reactionsCtl?.map ?? {}}
+      ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
     />
   {/if}
 </div>

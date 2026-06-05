@@ -19,6 +19,8 @@
     scopeChipLabel,
     isInvitedNotJoined,
   } from '../../lib/channels';
+  import { type ReactionEvent, channelScope } from '../../lib/reactions';
+  import { ReactionController } from '../../lib/reactionController.svelte';
 
   interface Props {
     channel: Channel;
@@ -71,6 +73,12 @@
 
   let rosterOpen = $state(false);
   let memberCount = $state<number | null>(channel.memberCount ?? null);
+
+  // Reactions (US-025) for the open channel. Recreated when the selected channel
+  // changes (each channel is its own messageScope), kept in step with the visible
+  // messages. Only meaningful for a joined channel (the invited preview has no
+  // reactions surface).
+  let reactionsCtl = $state<ReactionController | null>(null);
 
   const title = $derived(channelDisplayName(current));
   const chip = $derived(scopeChipLabel(current));
@@ -183,6 +191,32 @@
     void load();
   });
 
+  // Reactions controller lifecycle: one per channel id. Recreated on channel
+  // swap so each channel keeps its own messageScope; disposed on teardown.
+  $effect(() => {
+    const id = channel.channelId;
+    if (!id) {
+      reactionsCtl?.dispose();
+      reactionsCtl = null;
+      return;
+    }
+    const controller = new ReactionController(channelScope(id));
+    reactionsCtl = controller;
+    return () => controller.dispose();
+  });
+
+  // Keep the active-conversation registration + loaded reactions in step with the
+  // visible channel messages (skip optimistic local-* ids — no server reactions
+  // yet). Only for a joined channel (the invited preview has no toggle surface).
+  $effect(() => {
+    const controller = reactionsCtl;
+    if (!controller || invited) return;
+    const ids = messages
+      .filter((m) => !m.eventId.startsWith('local-'))
+      .map((m) => m.eventId);
+    void controller.setMessages(ids);
+  });
+
   // Live refresh: a `channel:new-message` for THIS channel reloads the thread
   // (and re-marks read since the user is looking at it). Other channels are
   // handled by the parent list. `channel:updated` for this channel patches the
@@ -193,6 +227,11 @@
       if (e.payload.channelId === current.channelId) {
         void load();
       }
+    }).then((fn) => unlisteners.push(fn));
+    // Reactions on a message in this channel changed (US-025). The controller
+    // ignores events for any other scope, so this is safe even mid-swap.
+    listen<ReactionEvent>('message:reaction', (e) => {
+      reactionsCtl?.applyEvent(e.payload);
     }).then((fn) => unlisteners.push(fn));
     listen<Channel>('channel:updated', (e) => {
       if (e.payload.channelId === current.channelId) {
@@ -268,6 +307,8 @@
     onsend={send}
     {onopenthread}
     {activeRootEventId}
+    reactions={reactionsCtl?.map ?? {}}
+    ontogglereaction={reactionsCtl ? reactionsCtl.toggle : undefined}
   />
 {/if}
 

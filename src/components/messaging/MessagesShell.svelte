@@ -49,6 +49,8 @@
     bumpChannelUnread,
     clearChannelUnread,
   } from '../../lib/channels';
+  import { type ReactionEvent, dmScope } from '../../lib/reactions';
+  import { ReactionController } from '../../lib/reactionController.svelte';
 
   type Segment = 'dms' | 'requests' | 'channels';
 
@@ -138,6 +140,38 @@
 
   let sending = $state(false);
   let sendError = $state<string | null>(null);
+
+  // Reactions (US-025) for the open DM conversation. Recreated when the selected
+  // peer changes (each conversation is its own messageScope); the message list is
+  // (re)registered whenever `messages` changes so the Rust poll path knows which
+  // messages to re-fetch reactions for on a "reaction" wake.
+  let dmReactions = $state<ReactionController | null>(null);
+
+  $effect(() => {
+    const peer = selected;
+    if (!peer || peer.personUid.startsWith('email:')) {
+      // No durable conversation yet (compose-pending / unresolved email) → no
+      // reactions surface.
+      dmReactions?.dispose();
+      dmReactions = null;
+      return;
+    }
+    const controller = new ReactionController(dmScope(peer.personUid));
+    dmReactions = controller;
+    return () => controller.dispose();
+  });
+
+  // Keep the active-conversation registration + loaded reactions in step with the
+  // visible DM messages (skips optimistic local-* / pending-* ids — those have no
+  // server reactions yet).
+  $effect(() => {
+    const controller = dmReactions;
+    if (!controller) return;
+    const ids = messages
+      .filter((m) => !m.pending && !m.eventId.startsWith('local-') && !m.eventId.startsWith('pending-'))
+      .map((m) => m.eventId);
+    void controller.setMessages(ids);
+  });
 
   // New Message compose overlay (US-010).
   let composing = $state(false);
@@ -506,6 +540,13 @@
       }
     }).then((fn) => unlisteners.push(fn));
 
+    // Reactions on a message in the open DM conversation changed (US-025). The
+    // controller ignores events for any scope other than its own, so this safely
+    // no-ops when the open pane is a channel or nothing is selected.
+    listen<ReactionEvent>('message:reaction', (e) => {
+      dmReactions?.applyEvent(e.payload);
+    }).then((fn) => unlisteners.push(fn));
+
     // A brand-new channel/invite appeared, or a channel's metadata changed.
     // Upsert it into the rail so it shows live without a manual refresh.
     listen<Channel>('channel:updated', (e) => {
@@ -687,6 +728,8 @@
         onsend={sendReply}
         onopenthread={handleOpenDmThread}
         activeRootEventId={openThread?.scope === 'dm' ? openThread.rootEventId : null}
+        reactions={dmReactions?.map ?? {}}
+        ontogglereaction={dmReactions ? dmReactions.toggle : undefined}
       />
     {/if}
   </section>
