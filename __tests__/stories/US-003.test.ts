@@ -58,9 +58,12 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     const companies = getDesktopCompanies(workspaces);
     const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
 
+    // Window redesign (#175) added a titlebar and grew the status bar; assert
+    // the shipped layout contract.
     expect(DESKTOP_SHELL_LAYOUT).toEqual({
       sidebarWidthPx: 216,
-      statusBarHeightPx: 26,
+      titleBarHeightPx: 42,
+      statusBarHeightPx: 32,
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
     // The top-level Board surface was removed — the board lives on each

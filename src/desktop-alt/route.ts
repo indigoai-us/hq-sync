@@ -1,7 +1,7 @@
 import type { Workspace } from '../lib/workspaces';
 
 export type DesktopRoute = {
-  kind: 'sync' | 'meetings' | 'library' | 'company';
+  kind: 'sync' | 'meetings' | 'library' | 'moderation' | 'company';
   /** Company slug — set for `company` routes. */
   slug?: string;
 };
@@ -41,9 +41,22 @@ export function isDesktopRouteActive(route: DesktopRoute, candidate: DesktopRout
   return route.kind !== 'company' || route.slug === candidate.slug;
 }
 
+/** Options that gate which sidebar rows are visible. */
+export interface DesktopSidebarOptions {
+  /**
+   * Whether the signed-in user is a moderation admin (@getindigo.ai). DEFAULT-
+   * DENY: the Moderation row is added ONLY when this is explicitly `true`. While
+   * the admin check is still resolving (or on any error) callers pass `false`,
+   * so the row stays hidden — it never flashes for a non-admin. The server is
+   * the real authorization boundary; this is a UX-only gate.
+   */
+  isAdmin?: boolean;
+}
+
 export function getDesktopSidebarRows(
   route: DesktopRoute,
   companies: Workspace[],
+  options: DesktopSidebarOptions = {},
 ): DesktopSidebarRow[] {
   const primaryRows: DesktopSidebarRow[] = [
     {
@@ -65,6 +78,17 @@ export function getDesktopSidebarRows(
       active: isDesktopRouteActive(route, { kind: 'library' }),
     },
   ];
+
+  // Admin-only Moderation row (default-deny). Appended after the standing
+  // primary destinations; it carries no numbered hotkey, so company hotkeys
+  // (⌘4+) are unaffected whether or not the user is an admin.
+  if (options.isAdmin === true) {
+    primaryRows.push({
+      route: { kind: 'moderation' },
+      label: 'Moderation',
+      active: isDesktopRouteActive(route, { kind: 'moderation' }),
+    });
+  }
 
   return primaryRows.concat(
     companies.map((company, index) => {

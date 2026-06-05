@@ -95,6 +95,21 @@ pub struct LibraryItems {
     pub skills: Vec<LibrarySkill>,
 }
 
+/// Pack/worker/skill authorship attribution (US-001). Optional everywhere —
+/// legacy worker.yaml / SKILL.md without an `author` block deserialize fine
+/// (every field is `#[serde(default)]` and the whole struct is wrapped in an
+/// `Option`), so this is strictly backwards-compatible.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Author {
+    #[serde(default)]
+    pub uid: String,
+    #[serde(default)]
+    pub handle: String,
+    #[serde(default)]
+    pub display_name: String,
+}
+
 /// A named skill reference inside a worker's detail.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -116,6 +131,9 @@ pub struct WorkerDetail {
     pub description: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
+    /// Optional authorship attribution (US-001). Absent on legacy workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<Author>,
     #[serde(default)]
     pub skills: Vec<WorkerSkillRef>,
     /// Free-form instructions rendered as markdown by the frontend. Normalized to
@@ -133,6 +151,9 @@ pub struct SkillDetail {
     pub description: String,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
+    /// Optional authorship attribution (US-001). Absent on legacy skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<Author>,
     /// The markdown body after the frontmatter fence — rendered by the frontend.
     #[serde(default)]
     pub body: String,
@@ -183,6 +204,9 @@ struct WorkerBlock {
     description: String,
     #[serde(default)]
     team: Option<String>,
+    /// Optional authorship (US-001). Absent on legacy worker.yaml.
+    #[serde(default)]
+    author: Option<Author>,
 }
 
 /// `SKILL.md` frontmatter — `name`, `description`, optional `allowed-tools`.
@@ -195,6 +219,9 @@ struct SkillFrontmatter {
     /// May be a YAML list or a comma-separated string.
     #[serde(default, rename = "allowed-tools")]
     allowed_tools: Option<serde_yaml::Value>,
+    /// Optional authorship (US-001). Absent on legacy SKILL.md frontmatter.
+    #[serde(default)]
+    author: Option<Author>,
 }
 
 // ---- HQ folder resolution (mirrors projects_local.rs) ----------------------
@@ -584,6 +611,7 @@ fn read_worker_detail(hq_root: &Path, worker_path: &str) -> Result<WorkerDetail,
         type_: parsed.worker.type_,
         description: parsed.worker.description,
         team: parsed.worker.team,
+        author: parsed.worker.author,
         skills: normalize_worker_skills(parsed.skills.as_ref()),
         instructions: normalize_instructions(parsed.instructions.as_ref()),
     })
@@ -611,6 +639,7 @@ fn read_skill_detail(hq_root: &Path, skill_path: &str) -> Result<SkillDetail, St
         name: front.name,
         description: front.description,
         allowed_tools: normalize_tools(front.allowed_tools.as_ref()),
+        author: front.author,
         body: body.trim_start_matches('\n').to_string(),
     })
 }
@@ -894,6 +923,23 @@ skills:
         )
         .unwrap();
 
+        // A skill WITH an author block (US-001) — must surface uid/handle/displayName.
+        fs::create_dir_all(claude_skills.join("authored")).unwrap();
+        fs::write(
+            claude_skills.join("authored/SKILL.md"),
+            "---\nname: authored\ndescription: Has an author\nauthor:\n  uid: prs_abc123\n  handle: corey\n  displayName: Corey Epstein\n---\n\n# Authored\n",
+        )
+        .unwrap();
+
+        // A worker.yaml WITH an author block (US-001).
+        let authored_worker = root.join("core/workers/public/dev-team/authored");
+        fs::create_dir_all(&authored_worker).unwrap();
+        fs::write(
+            authored_worker.join("worker.yaml"),
+            "worker:\n  id: authored\n  name: \"Authored\"\n  type: CodeWorker\n  team: dev-team\n  description: \"Has an author\"\n  author:\n    uid: prs_abc123\n    handle: corey\n    displayName: Corey Epstein\n",
+        )
+        .unwrap();
+
         root
     }
 
@@ -1088,6 +1134,50 @@ skills:
         let items = scan_root_library(&root);
         assert!(items.workers.is_empty());
         assert!(items.skills.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// US-001: a SKILL.md WITHOUT an author block reads cleanly (author=None),
+    /// and one WITH an author surfaces uid/handle/displayName. Backwards-compat:
+    /// the legacy `run` skill (no author) must still parse.
+    #[test]
+    fn skill_detail_reads_optional_author() {
+        let root = make_fixture_tree();
+
+        // Legacy skill: no author block → author is None, still valid.
+        let plain = read_skill_detail(&root, ".claude/skills/run/SKILL.md").expect("run detail");
+        assert!(plain.author.is_none());
+
+        // Authored skill: uid/handle/displayName surfaced.
+        let authored =
+            read_skill_detail(&root, ".claude/skills/authored/SKILL.md").expect("authored detail");
+        let a = authored.author.expect("author present");
+        assert_eq!(a.uid, "prs_abc123");
+        assert_eq!(a.handle, "corey");
+        assert_eq!(a.display_name, "Corey Epstein");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// US-001: worker.yaml author block is optional. Legacy worker (architect,
+    /// no author) reads as None; an authored worker surfaces the attribution.
+    #[test]
+    fn worker_detail_reads_optional_author() {
+        let root = make_fixture_tree();
+
+        // Legacy worker: no author → None, parse still succeeds.
+        let plain = read_worker_detail(&root, "core/workers/public/dev-team/architect/")
+            .expect("architect detail");
+        assert!(plain.author.is_none());
+
+        // Authored worker: attribution surfaced.
+        let authored = read_worker_detail(&root, "core/workers/public/dev-team/authored/")
+            .expect("authored worker detail");
+        let a = authored.author.expect("author present");
+        assert_eq!(a.uid, "prs_abc123");
+        assert_eq!(a.handle, "corey");
+        assert_eq!(a.display_name, "Corey Epstein");
+
         let _ = fs::remove_dir_all(&root);
     }
 

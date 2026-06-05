@@ -17,6 +17,9 @@
   } from '../lib/library';
   import LibraryList from './LibraryList.svelte';
   import LibraryDetailPanel from './LibraryDetailPanel.svelte';
+  import MarketplacePanel from '../panels/MarketplacePanel.svelte';
+  import SubmitPanel from '../panels/SubmitPanel.svelte';
+  import ProfilePanel from '../panels/ProfilePanel.svelte';
 
   interface Props {
     /** The loaded library payload (workers + skills) for this scope. */
@@ -29,8 +32,16 @@
 
   let { items, loading = false, error = null }: Props = $props();
 
-  type Filter = 'all' | 'workers' | 'skills';
+  type Filter = 'all' | 'workers' | 'skills' | 'marketplace' | 'submit' | 'profile';
   let filter = $state<Filter>('all');
+  // The Marketplace, Submit, and Profile tabs are self-contained surfaces (their
+  // own fetch / forms / detail slide-overs), so the library toolbar's scope
+  // filter and text search don't apply while any is active.
+  const isMarketplace = $derived(filter === 'marketplace');
+  const isSubmit = $derived(filter === 'submit');
+  const isProfile = $derived(filter === 'profile');
+  // Tabs that own their full body (no shared toolbar search / scope filter).
+  const isStandaloneTab = $derived(isMarketplace || isSubmit || isProfile);
   let query = $state('');
   let selected = $state<LibraryItem | null>(null);
 
@@ -87,6 +98,9 @@
     { id: 'all', label: 'All' },
     { id: 'workers', label: 'Workers' },
     { id: 'skills', label: 'Skills' },
+    { id: 'marketplace', label: 'Marketplace' },
+    { id: 'submit', label: 'Submit' },
+    { id: 'profile', label: 'Profile' },
   ];
 
   function toggleFacet(facet: string): void {
@@ -143,7 +157,7 @@
     </div>
 
     <div class="toolbar-right">
-      {#if showScopeFilter}
+      {#if showScopeFilter && !isStandaloneTab}
         <div class="scope-filter" data-scope-filter>
           <button
             type="button"
@@ -183,31 +197,41 @@
         </div>
       {/if}
 
-      <input
-        class="search"
-        type="search"
-        placeholder="Search…"
-        aria-label="Search library"
-        bind:value={query}
-      />
+      {#if !isStandaloneTab}
+        <input
+          class="search"
+          type="search"
+          placeholder="Search…"
+          aria-label="Search library"
+          bind:value={query}
+        />
+      {/if}
     </div>
   </div>
 
-  {#if error}
-    <div class="browser-error" role="alert">{error}</div>
-  {/if}
-
-  {#if loading}
-    <div class="browser-loading" aria-busy="true">
-      {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
-        <div class="card-skeleton"></div>
-      {/each}
-    </div>
+  {#if isMarketplace}
+    <MarketplacePanel />
+  {:else if isSubmit}
+    <SubmitPanel />
+  {:else if isProfile}
+    <ProfilePanel />
   {:else}
-    <LibraryList items={scopedItems} {query} onselect={selectItem} />
-  {/if}
+    {#if error}
+      <div class="browser-error" role="alert">{error}</div>
+    {/if}
 
-  <LibraryDetailPanel item={selected} onclose={closeDetail} />
+    {#if loading}
+      <div class="browser-loading" aria-busy="true">
+        {#each [0, 1, 2, 3, 4, 5] as cell (cell)}
+          <div class="card-skeleton"></div>
+        {/each}
+      </div>
+    {:else}
+      <LibraryList items={scopedItems} {query} onselect={selectItem} />
+    {/if}
+
+    <LibraryDetailPanel item={selected} onclose={closeDetail} />
+  {/if}
 </div>
 
 <style>

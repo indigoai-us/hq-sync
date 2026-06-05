@@ -34,22 +34,24 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     expect(app).toContain('filesProgressed={syncFilesProgressed}');
     expect(app).toContain('totalFiles={effectiveTotalFiles}');
 
-    expect(bar).toContain('<div class="status-left">');
-    expect(bar).toContain('<div class="status-right">');
+    // Window redesign (#175) replaced the three-region sparkbar status bar with
+    // the monochrome liquid-glass two-region live strip (ls-left / ls-right).
+    expect(bar).toContain('<div class="ls-left">');
+    expect(bar).toContain('<div class="ls-right">');
     expect(app).toContain('loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>()');
     expect(app).toContain('.filter((event) => isToday(event, now))');
     expect(app).toContain('.filter((event) => (eventStart(event)?.getTime() ?? 0) >= now.getTime())');
     expect(app).toContain('return `${company} · in ${minutes}m`;');
     expect(bar).toContain('{#if nextMeetingLabel}');
-    expect(bar).toContain('Connected');
+    expect(bar).toContain('Idle · all safe');
     expect(bar).toContain("if (state === 'syncing') return 'syncing';");
     expect(bar).toContain("if (state === 'error' || state === 'auth-error') return 'error';");
     expect(bar).toContain("if (state === 'conflict' || state === 'setup-needed') return 'conflict';");
     expect(bar).toContain("return 'idle';");
     expect(bar).toContain('Math.round((filesProgressed / totalFiles) * 100)');
-    expect(bar).toContain('`Syncing ${progress?.company ?? \'workspace\'} · ${syncPercent}%`');
-    expect(bar).toContain('class="sparkbars"');
-    expect(bar).toContain('indigo-vpn');
+    expect(bar).toContain('{filesProgressed}/{totalFiles} files');
+    expect(bar).toContain('class="ls-progress"');
+    expect(bar).toContain('{progress.path}');
     expect(bar).toContain('v{version}');
   });
 
