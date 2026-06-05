@@ -187,7 +187,7 @@
     margin: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 22px;
   }
 
@@ -223,7 +223,7 @@
 
   .counts strong {
     color: var(--fg);
-    font-weight: 750;
+    font-weight: 600;
   }
 
   .toolbar-button,
@@ -237,7 +237,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     white-space: nowrap;
     cursor: default;
   }
@@ -306,7 +306,7 @@
     overflow: hidden;
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -326,7 +326,7 @@
     border-bottom: 1px solid var(--border);
     color: var(--muted);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 15px;
     text-transform: uppercase;
   }

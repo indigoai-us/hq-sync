@@ -338,7 +338,7 @@
     margin: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 22px;
   }
 
@@ -400,7 +400,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     white-space: nowrap;
     cursor: default;
   }
@@ -443,7 +443,7 @@
     overflow: hidden;
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 18px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -513,7 +513,7 @@
     color: var(--muted-3);
     font-family: var(--font-mono);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
   }
 
@@ -561,7 +561,7 @@
     background: var(--row-active);
     color: var(--fg);
     font-size: var(--text-micro);
-    font-weight: 750;
+    font-weight: 600;
     line-height: 28px;
     text-align: center;
     text-transform: uppercase;
@@ -585,7 +585,7 @@
   .recent-copy strong {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 18px;
   }
 

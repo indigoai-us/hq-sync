@@ -54,7 +54,7 @@
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 20px;
     text-overflow: ellipsis;
     white-space: nowrap;

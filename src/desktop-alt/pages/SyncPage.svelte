@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Workspace } from '../../lib/workspaces';
-  import HeroStatus from '../components/HeroStatus.svelte';
   import SourcesList from '../components/SourcesList.svelte';
   import {
     formatBytes,
@@ -38,24 +37,19 @@
     actionError?: string;
   }
 
+  // The sync verdict + Sync Now / Settings actions now live in the global title
+  // bar and sidebar, so this page is just the workspace ledger + activity feed.
+  // Remaining hero-only props (status, daemon, indexedFiles, onsettings, …) are
+  // still accepted by the parent but intentionally not consumed here.
   let {
     workspaces,
     syncState,
     ready = true,
     progress,
-    companies,
-    status,
-    daemon,
-    indexedFiles,
-    observedVaultBytes,
     statsBySlug,
     cloudReachable,
     activity,
-    onsync,
-    onsettings,
-    onaddsource,
-    actionMessage = '',
-    actionError = '',
+    syncErrorMessage = '',
   }: Props = $props();
 
   const recentActivity = $derived(
@@ -67,25 +61,19 @@
     if (entry.direction === 'deleted') return 'Deleted';
     return entry.isNew ? 'Added' : 'Downloaded';
   }
+
+  // Show the trailing two path segments in mono — enough to recognize the file
+  // without overflowing the narrow feed column.
+  function shortPath(path: string): string {
+    const parts = path.split('/').filter(Boolean);
+    return parts.length <= 2 ? path : `…/${parts.slice(-2).join('/')}`;
+  }
 </script>
 
 <section class="sync-page" aria-label="Sync">
-  <HeroStatus
-    {syncState}
-    {progress}
-    {companies}
-    {workspaces}
-    {status}
-    {daemon}
-    {indexedFiles}
-    {observedVaultBytes}
-    loading={!ready}
-    {onsync}
-    {onsettings}
-    {onaddsource}
-    {actionMessage}
-    {actionError}
-  />
+  {#if syncErrorMessage}
+    <p class="sync-error" role="alert">{syncErrorMessage}</p>
+  {/if}
 
   <div class="sync-grid">
     <SourcesList
@@ -127,8 +115,11 @@
               <li>
                 <span class="activity-dot {item.direction}"></span>
                 <div class="activity-copy">
-                  <strong>{activityVerb(item)} {item.path}</strong>
-                  <span>
+                  <span class="activity-line">
+                    <span class="activity-verb">{activityVerb(item)}</span>
+                    <span class="activity-path">{shortPath(item.path)}</span>
+                  </span>
+                  <span class="activity-meta">
                     {item.author ? `${item.author} · ` : ''}{item.company} · {formatBytes(item.bytes)} · {timeAgo(item.at)}
                   </span>
                 </div>
@@ -171,14 +162,27 @@
   .panel-header h2 {
     margin: 0;
     color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 680;
-    line-height: 22px;
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 20px;
+    letter-spacing: -0.01em;
   }
 
   .panel-header span {
-    color: var(--muted);
-    font-size: var(--text-base);
+    color: var(--muted-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  .sync-error {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raise);
+    color: var(--amber);
+    font-size: var(--text-sm);
   }
 
   .activity-empty,
@@ -199,7 +203,7 @@
   .activity-empty strong {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .activity-empty span {
@@ -220,7 +224,7 @@
     display: grid;
     grid-template-columns: 12px minmax(0, 1fr);
     gap: 8px;
-    padding: 8px 12px;
+    padding: 7px 12px;
     transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
@@ -252,24 +256,42 @@
     min-width: 0;
   }
 
-  .activity-copy strong,
-  .activity-copy span {
-    display: block;
+  .activity-line,
+  .activity-meta {
+    display: flex;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .activity-copy strong {
-    color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 650;
+  .activity-line {
+    gap: 5px;
+    align-items: baseline;
     line-height: 17px;
   }
 
-  .activity-copy span {
+  .activity-verb {
+    flex: 0 0 auto;
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: 500;
+  }
+
+  .activity-path {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fg-data);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-meta {
+    display: block;
     color: var(--muted);
-    font-size: var(--text-base);
+    font-size: var(--text-xs);
     line-height: 16px;
   }
 

@@ -261,7 +261,7 @@
   .kind-tag {
     color: var(--muted);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -270,7 +270,7 @@
     margin: var(--space-1) 0 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 22px;
     overflow-wrap: anywhere;
   }
@@ -291,7 +291,7 @@
     background: var(--row-active);
     color: var(--muted-3);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
     text-transform: lowercase;
   }
@@ -352,7 +352,7 @@
     margin: 0 0 var(--space-2);
     color: var(--muted-3);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -394,7 +394,7 @@
   .skill-name {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .skill-desc {
@@ -438,7 +438,7 @@
   .markdown-body :global(h6) {
     margin: var(--space-5) 0 var(--space-2);
     color: var(--fg);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 1.3;
   }
 
@@ -518,7 +518,7 @@
 
   .markdown-body :global(strong) {
     color: var(--fg);
-    font-weight: 680;
+    font-weight: 600;
   }
 
   @keyframes backdrop-fade {

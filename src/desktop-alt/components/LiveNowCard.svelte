@@ -148,7 +148,7 @@
   .card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
   .card.live { border-color: rgba(52, 211, 153, 0.22); }
   .card-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
-  .card-header h3 { margin: 0; color: var(--muted); font-size: var(--text-base); font-weight: 650; line-height: 18px; }
+  .card-header h3 { margin: 0; color: var(--muted); font-size: var(--text-base); font-weight: 600; line-height: 18px; }
   .card-header h3.live-title { color: var(--emerald); }
   .card-header > span { flex: 0 0 auto; color: var(--muted-3); font-size: var(--text-base); line-height: 18px; }
   .card-body { padding: 14px 16px; }
@@ -156,18 +156,18 @@
   .live-icon { display: flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 48px; height: 48px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted-2); }
   .live-icon.recording { border-color: rgba(52, 211, 153, 0.4); color: var(--emerald); }
   .live-copy { min-width: 0; }
-  .live-name { overflow: hidden; color: var(--fg); font-size: var(--text-base); font-weight: 650; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+  .live-name { overflow: hidden; color: var(--fg); font-size: var(--text-base); font-weight: 600; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
   .live-sub { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: var(--text-base); line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
   .live-error { margin: 12px 0 0; color: var(--red); font-size: var(--text-base); line-height: 18px; }
   .live-company { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
-  .lc-label { flex: 0 0 auto; color: var(--muted); font-size: var(--text-base); font-weight: 650; line-height: 16px; }
+  .lc-label { flex: 0 0 auto; color: var(--muted); font-size: var(--text-base); font-weight: 600; line-height: 16px; }
   .lc-select { min-width: 0; flex: 1 1 auto; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--fg); font: inherit; font-size: var(--text-base); line-height: 16px; cursor: default; }
   .lc-select:hover:not(:disabled) { border-color: var(--border-strong); }
   .lc-select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
   .lc-select:disabled { opacity: 0.56; }
   .live-actions { display: flex; gap: 8px; margin-top: 14px; }
   .empty-copy { margin: 0; color: var(--muted); font-size: var(--text-base); line-height: 18px; }
-  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); font: inherit; font-size: var(--text-base); font-weight: 650; white-space: nowrap; cursor: default; transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1), opacity 140ms cubic-bezier(.2,.7,.2,1); }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg); font: inherit; font-size: var(--text-base); font-weight: 600; white-space: nowrap; cursor: default; transition: background 140ms cubic-bezier(.2,.7,.2,1), border-color 140ms cubic-bezier(.2,.7,.2,1), opacity 140ms cubic-bezier(.2,.7,.2,1); }
   .btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--row-hover); }
   .btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
   .btn:disabled { opacity: 0.56; }

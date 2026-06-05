@@ -289,7 +289,7 @@
     color: var(--muted);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -367,7 +367,7 @@
   .section-label {
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     text-transform: capitalize;
   }
 

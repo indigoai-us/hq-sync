@@ -141,7 +141,7 @@
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 29px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -181,7 +181,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     text-overflow: ellipsis;
     white-space: nowrap;
     cursor: default;

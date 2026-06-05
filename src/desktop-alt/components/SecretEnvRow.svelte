@@ -131,7 +131,7 @@
   .env-name {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 18px;
   }
 
@@ -140,7 +140,7 @@
     padding: 2px 8px;
     border-radius: 999px;
     font-size: var(--text-base);
-    font-weight: 750;
+    font-weight: 600;
     line-height: 15px;
     text-align: center;
   }
@@ -184,7 +184,7 @@
   .tree-head {
     color: var(--muted);
     font-size: var(--text-micro);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 15px;
     text-transform: uppercase;
   }
@@ -197,7 +197,7 @@
     color: var(--fg);
     font-family: var(--font-mono);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
   }
 

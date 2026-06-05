@@ -254,7 +254,7 @@
     margin: 14px 0 6px;
     color: var(--muted);
     font-size: var(--text-micro);
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0.08em;
     line-height: 16px;
     text-transform: uppercase;

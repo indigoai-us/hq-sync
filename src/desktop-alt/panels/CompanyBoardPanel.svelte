@@ -450,7 +450,7 @@
     margin: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 22px;
   }
 
@@ -501,7 +501,7 @@
     min-width: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 18px;
   }
 
@@ -671,7 +671,7 @@
     background: var(--row-hover);
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
   }
 
