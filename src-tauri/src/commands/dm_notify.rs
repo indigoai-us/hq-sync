@@ -61,6 +61,16 @@ pub const EVENT_DM_NEW_EVENTS: &str = "dm:new-events";
 /// to "open". Frontend listener lives in App.svelte.
 const EVENT_NOTIFICATION_DM_ACTION: &str = "notification:dm-action";
 
+/// Tauri event emitted by the SINGLE poll path when a new reply lands in the
+/// thread the user currently has open (US-022). A "thread" wake on the person
+/// topic routes through the same `poll_dm_once` → `do_poll` path as DMs/channels
+/// (the MQTT wake is ids-only); `do_poll` re-fetches the active thread and emits
+/// this for each reply not previously seen. Payload is `{ rootEventId, reply,
+/// replyCount }` — the open ThreadPanel appends `reply` and the root bubble in
+/// the main Conversation bumps to `replyCount`. Listened for in ThreadPanel +
+/// MessagesShell. There is NO parallel thread poller.
+pub const EVENT_THREAD_NEW_REPLY: &str = "thread:new-reply";
+
 /// Label of the DM detail window (mirrors share-detail).
 const DM_DETAIL_LABEL: &str = "dm-detail";
 
@@ -973,6 +983,463 @@ async fn poll_requests(app: &AppHandle, base_url: &str, access_token: &str) {
     }
 }
 
+// ── Threads: fetch + reply + fold thread activity into the SINGLE poll (US-022) ──
+//
+// A thread is a side-conversation hung off a root message (a DM or a channel
+// message). The backend (hq-pro, US-021) exposes:
+//
+//   GET  /v1/notify/threads?rootEventId=&scope=dm|channel[&channelId=|&withPersonUid=]
+//        → { root, replies, replyCount }
+//   POST /v1/notify/dm                         (+ optional rootEventId) — DM reply
+//   POST /v1/notify/channels/{id}/messages     (+ optional rootEventId) — channel reply
+//
+// Realtime: a "thread" wake ({type:"thread", rootEventId, eventId,...}) lands on
+// the person topic and routes through the SAME `poll_dm_once` → `do_poll` path as
+// DMs/channels. `do_poll` re-fetches whichever thread the user currently has open
+// (tracked in `ActiveThreadState`, set by the frontend when a ThreadPanel opens /
+// cleared when it closes) and emits `thread:new-reply` for replies it hasn't seen
+// yet. There is NO parallel thread poller.
+
+/// One message in a thread (the pinned root or a reply). Same wire shape as a DM
+/// `ThreadMessage` / channel `ChannelMessage` — `direction` is tagged by the
+/// server relative to the caller ("in"/"out"). Tolerant of server additions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadReply {
+    pub event_id: String,
+    pub from_person_uid: String,
+    #[serde(default)]
+    pub from_email: String,
+    #[serde(default)]
+    pub from_display_name: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub direction: String,
+}
+
+/// The full thread view returned by `GET /v1/notify/threads`: the pinned root
+/// message, the reply list (newest-first, like the other thread/channel fetches),
+/// and the authoritative `replyCount`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadView {
+    pub root: ThreadReply,
+    #[serde(default)]
+    pub replies: Vec<ThreadReply>,
+    #[serde(default)]
+    pub reply_count: u32,
+}
+
+/// Managed state: the thread the user currently has open in the ThreadPanel, if
+/// any (US-022). Set by `set_active_thread` when a panel opens and cleared when it
+/// closes. The SINGLE poll path reads this to know which thread to re-fetch on a
+/// "thread" wake and which reply event-ids it has already surfaced, so it only
+/// emits `thread:new-reply` for genuinely new replies.
+#[derive(Default)]
+pub struct ActiveThreadInner {
+    /// The root message id of the open thread (`None` = no panel open).
+    pub root_event_id: Option<String>,
+    /// "dm" | "channel".
+    pub scope: String,
+    /// Present for a channel thread.
+    pub channel_id: Option<String>,
+    /// Present for a DM thread.
+    pub with_person_uid: Option<String>,
+    /// Reply event-ids already surfaced (seeded on open) so the poll only emits
+    /// genuinely-new replies.
+    pub seen_reply_ids: HashSet<String>,
+}
+
+pub struct ActiveThreadState(pub Mutex<ActiveThreadInner>);
+
+impl ActiveThreadState {
+    pub fn new() -> Self {
+        ActiveThreadState(Mutex::new(ActiveThreadInner::default()))
+    }
+}
+
+/// Build the `GET /v1/notify/threads` URL. Pure + side-effect-free so the query
+/// shape is unit-testable. Exactly one of `channelId` / `withPersonUid` rides
+/// alongside `rootEventId` + `scope`, matching the US-021 contract. Segments are
+/// minimally escaped (`esc_thread_seg`) so a reserved char can't break the URL.
+fn build_threads_url(
+    base_url: &str,
+    root_event_id: &str,
+    scope: &str,
+    channel_id: Option<&str>,
+    with_person_uid: Option<&str>,
+) -> String {
+    let mut url = format!(
+        "{}/v1/notify/threads?rootEventId={}&scope={}",
+        base_url,
+        esc_thread_seg(root_event_id),
+        esc_thread_seg(scope),
+    );
+    match scope {
+        "channel" => {
+            if let Some(id) = channel_id.map(str::trim).filter(|s| !s.is_empty()) {
+                url.push_str(&format!("&channelId={}", esc_thread_seg(id)));
+            }
+        }
+        _ => {
+            if let Some(uid) = with_person_uid.map(str::trim).filter(|s| !s.is_empty()) {
+                url.push_str(&format!("&withPersonUid={}", esc_thread_seg(uid)));
+            }
+        }
+    }
+    url
+}
+
+/// Minimal query-value escape for thread URL params (server-issued ids are
+/// URL-safe; this is defense-in-depth, mirroring `messages::esc_seg`). Keeps the
+/// dep surface at zero — only the reserved chars that would break the query.
+fn esc_thread_seg(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '/' => "%2F".to_string(),
+            '?' => "%3F".to_string(),
+            '#' => "%23".to_string(),
+            '&' => "%26".to_string(),
+            '=' => "%3D".to_string(),
+            ' ' => "%20".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
+/// Normalize a thread scope to "dm" | "channel" (defaults to "dm" for anything
+/// unrecognized). Pure so the mapping is unit-testable.
+fn normalize_scope(scope: &str) -> String {
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "channel" => "channel".to_string(),
+        _ => "dm".to_string(),
+    }
+}
+
+/// Tauri command: fetch one thread (its pinned root + reply list + count).
+/// `GET /v1/notify/threads`. `scope` is "dm" | "channel"; a channel thread takes
+/// `channel_id`, a DM thread takes `with_person_uid`. Surfaces failures to the
+/// caller so the ThreadPanel can show a load error.
+#[tauri::command]
+pub async fn fetch_thread(
+    scope: String,
+    root_event_id: String,
+    channel_id: Option<String>,
+    with_person_uid: Option<String>,
+) -> Result<ThreadView, String> {
+    let root = root_event_id.trim();
+    if root.is_empty() {
+        return Err("rootEventId must not be empty".to_string());
+    }
+    let scope_norm = normalize_scope(&scope);
+
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FETCH_FAIL auth: {e}"));
+        format!("Not signed in: {e}")
+    })?;
+
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FETCH_FAIL vault url: {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let url = build_threads_url(
+        &base_url,
+        root,
+        &scope_norm,
+        channel_id.as_deref(),
+        with_person_uid.as_deref(),
+    );
+
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FETCH_FAIL network: {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_THREAD_FETCH_FAIL status={status} msg={server_msg:?}"),
+        );
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Failed to load thread (status {})", status.as_u16())));
+    }
+
+    let view = resp.json::<ThreadView>().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_THREAD_FETCH_FAIL parse: {e}"));
+        format!("Could not parse thread response: {e}")
+    })?;
+
+    log(
+        LOG_TAG,
+        &format!(
+            "DM_NOTIFY_THREAD_FETCH_OK root={root} scope={scope_norm} replies={}",
+            view.replies.len()
+        ),
+    );
+    Ok(view)
+}
+
+/// Build the reply POST body for a thread reply. Always carries `body` +
+/// `rootEventId`; a DM reply also carries `toPersonUid` (channel replies address
+/// the channel via the URL path). Pure so the wire shape is unit-testable.
+fn build_thread_reply_payload(
+    scope: &str,
+    root_event_id: &str,
+    to_person_uid: Option<&str>,
+    body: &str,
+) -> serde_json::Value {
+    if scope == "channel" {
+        serde_json::json!({ "body": body, "rootEventId": root_event_id })
+    } else {
+        let uid = to_person_uid.unwrap_or_default();
+        serde_json::json!({ "toPersonUid": uid, "body": body, "rootEventId": root_event_id })
+    }
+}
+
+/// Tauri command: post a reply into a thread (US-022). For a DM thread it POSTs
+/// `/v1/notify/dm` with `{ toPersonUid, body, rootEventId }`; for a channel
+/// thread it POSTs `/v1/notify/channels/{id}/messages` with `{ body, rootEventId }`.
+/// Surfaces failures to the caller so the panel composer can show delivery
+/// feedback. Takes the same auth + URL plumbing as `send_dm` / `send_channel_message`.
+#[tauri::command]
+pub async fn send_thread_reply(
+    scope: String,
+    root_event_id: String,
+    body: String,
+    channel_id: Option<String>,
+    to_person_uid: Option<String>,
+) -> Result<(), String> {
+    let body_text = body.trim();
+    if body_text.is_empty() {
+        return Err("Message body must not be empty".to_string());
+    }
+    let root = root_event_id.trim();
+    if root.is_empty() {
+        return Err("rootEventId must not be empty".to_string());
+    }
+    let scope_norm = normalize_scope(&scope);
+
+    let person_uid = to_person_uid.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let channel = channel_id.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if scope_norm == "channel" && channel.is_none() {
+        return Err("A channel thread reply requires a channelId".to_string());
+    }
+    if scope_norm == "dm" && person_uid.is_none() {
+        return Err("A DM thread reply requires a toPersonUid".to_string());
+    }
+
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_THREAD_REPLY_FAIL auth: {e}"));
+        format!("Not signed in: {e}")
+    })?;
+
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_REPLY_FAIL vault url: {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let url = if scope_norm == "channel" {
+        format!(
+            "{}/v1/notify/channels/{}/messages",
+            base_url,
+            esc_thread_seg(channel.unwrap_or_default())
+        )
+    } else {
+        format!("{}/v1/notify/dm", base_url)
+    };
+    let payload = build_thread_reply_payload(&scope_norm, root, person_uid, body_text);
+
+    let resp = build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_REPLY_FAIL network: {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if status.is_success() {
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_THREAD_REPLY_OK root={root} scope={scope_norm}"),
+        );
+        return Ok(());
+    }
+
+    let server_msg = resp
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+    log(
+        LOG_TAG,
+        &format!("DM_NOTIFY_THREAD_REPLY_FAIL status={status} msg={server_msg:?}"),
+    );
+    Err(server_msg.unwrap_or_else(|| format!("Reply failed (status {})", status.as_u16())))
+}
+
+/// Tauri command: register (or clear) the thread the ThreadPanel currently has
+/// open (US-022). Called with the root id + scope + the reply ids already shown
+/// when a panel opens, so the SINGLE poll path knows which thread to re-fetch on a
+/// "thread" wake and which replies it has already surfaced. Called with a `None`
+/// root (or the panel-close path) to clear it.
+#[tauri::command]
+pub fn set_active_thread(
+    app: AppHandle,
+    root_event_id: Option<String>,
+    scope: Option<String>,
+    channel_id: Option<String>,
+    with_person_uid: Option<String>,
+    seen_reply_ids: Option<Vec<String>>,
+) -> Result<(), String> {
+    let Some(state) = app.try_state::<ActiveThreadState>() else {
+        return Ok(());
+    };
+    let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+    match root_event_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(root) => {
+            guard.root_event_id = Some(root.to_string());
+            guard.scope = normalize_scope(scope.as_deref().unwrap_or("dm"));
+            guard.channel_id = channel_id.map(|c| c.trim().to_string()).filter(|s| !s.is_empty());
+            guard.with_person_uid =
+                with_person_uid.map(|c| c.trim().to_string()).filter(|s| !s.is_empty());
+            guard.seen_reply_ids = seen_reply_ids.unwrap_or_default().into_iter().collect();
+            log(LOG_TAG, &format!("DM_NOTIFY_ACTIVE_THREAD_SET root={root}"));
+        }
+        None => {
+            *guard = ActiveThreadInner::default();
+            log(LOG_TAG, "DM_NOTIFY_ACTIVE_THREAD_CLEAR");
+        }
+    }
+    Ok(())
+}
+
+/// Poll the active thread (if any) and emit `thread:new-reply` for replies the
+/// open panel hasn't seen yet. Folded into the SINGLE `do_poll` path (NOT a
+/// parallel poller). Best-effort: any failure logs and returns without disturbing
+/// the rest of the poll. No-op when no thread is open.
+async fn poll_active_thread(app: &AppHandle, base_url: &str, access_token: &str) {
+    // Snapshot the active-thread descriptor without holding the lock across the
+    // network call.
+    let descriptor = {
+        let Some(state) = app.try_state::<ActiveThreadState>() else {
+            return;
+        };
+        let guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.root_event_id.as_ref().map(|root| {
+            (
+                root.clone(),
+                guard.scope.clone(),
+                guard.channel_id.clone(),
+                guard.with_person_uid.clone(),
+            )
+        })
+    };
+    let Some((root, scope, channel_id, with_person_uid)) = descriptor else {
+        return; // no panel open
+    };
+
+    let url = build_threads_url(
+        base_url,
+        &root,
+        &normalize_scope(&scope),
+        channel_id.as_deref(),
+        with_person_uid.as_deref(),
+    );
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .send()
+        .await;
+
+    let view = match resp {
+        Err(e) => {
+            log(LOG_TAG, &format!("DM_NOTIFY_THREAD_POLL_NETWORK_FAIL {e}"));
+            return;
+        }
+        Ok(r) => {
+            let status = r.status();
+            if !status.is_success() {
+                log(LOG_TAG, &format!("DM_NOTIFY_THREAD_POLL_ERROR status={status}"));
+                return;
+            }
+            match r.json::<ThreadView>().await {
+                Ok(v) => v,
+                Err(e) => {
+                    log(LOG_TAG, &format!("DM_NOTIFY_THREAD_POLL_ERROR parse: {e}"));
+                    return;
+                }
+            }
+        }
+    };
+
+    // Compute the genuinely-new replies under the lock, then reconcile the
+    // seen-set. Bail (without emitting) if the panel was closed or swapped while
+    // we were fetching.
+    let new_replies: Vec<ThreadReply> = {
+        let Some(state) = app.try_state::<ActiveThreadState>() else {
+            return;
+        };
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.root_event_id.as_deref() != Some(root.as_str()) {
+            return; // panel closed or swapped — stale fetch
+        }
+        let fresh: Vec<ThreadReply> = view
+            .replies
+            .iter()
+            .filter(|r| !guard.seen_reply_ids.contains(&r.event_id))
+            .cloned()
+            .collect();
+        for r in &fresh {
+            guard.seen_reply_ids.insert(r.event_id.clone());
+        }
+        fresh
+    };
+
+    if new_replies.is_empty() {
+        return;
+    }
+
+    // Emit oldest→newest so the panel appends in chronological order. The server
+    // returns newest-first, so reverse.
+    for reply in new_replies.iter().rev() {
+        let payload = serde_json::json!({
+            "rootEventId": root,
+            "reply": reply,
+            "replyCount": view.reply_count,
+        });
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_THREAD_NEW_REPLY root={root} reply={}", reply.event_id),
+        );
+        let _ = app.emit(EVENT_THREAD_NEW_REPLY, &payload);
+    }
+}
+
 // ── Channels: fold channel activity into the SINGLE poll path (US-018) ───────────
 //
 // A "channel" wake arrives on the caller's person topic and routes through the
@@ -1143,6 +1610,12 @@ async fn do_poll(app: &AppHandle) {
     // "channel" wake on the person topic routes here. Best-effort; emits
     // `channel:new-message` / `channel:updated`. NOT a parallel poller.
     poll_channels(app, &base_url, &access_token).await;
+
+    // Fold thread-activity polling into the SAME single path (US-022) — a
+    // "thread" wake on the person topic routes here. Re-fetches whichever thread
+    // the ThreadPanel currently has open and emits `thread:new-reply` for replies
+    // it hasn't surfaced yet. No-op when no panel is open. NOT a parallel poller.
+    poll_active_thread(app, &base_url, &access_token).await;
 
     let since = read_cursor(&machine_id);
     let url = match since.as_deref() {
@@ -1749,5 +2222,104 @@ mod tests {
         assert_eq!(thread.messages[0].from_person_uid, "prs_me");
         assert_eq!(thread.messages[1].direction, "in");
         assert!(thread.next_cursor.is_none());
+    }
+
+    // ── Threads (US-022) ──────────────────────────────────────────────────────
+
+    #[test]
+    fn threads_url_dm_scope_carries_with_person_uid() {
+        let url = build_threads_url(
+            "https://api.example.com",
+            "evt_root",
+            "dm",
+            None,
+            Some("prs_peer"),
+        );
+        assert_eq!(
+            url,
+            "https://api.example.com/v1/notify/threads?rootEventId=evt_root&scope=dm&withPersonUid=prs_peer"
+        );
+    }
+
+    #[test]
+    fn threads_url_channel_scope_carries_channel_id() {
+        let url = build_threads_url(
+            "https://api.example.com",
+            "evt_root",
+            "channel",
+            Some("chn_1"),
+            // A stray withPersonUid is ignored for a channel-scoped thread.
+            Some("prs_ignored"),
+        );
+        assert_eq!(
+            url,
+            "https://api.example.com/v1/notify/threads?rootEventId=evt_root&scope=channel&channelId=chn_1"
+        );
+    }
+
+    #[test]
+    fn normalize_scope_defaults_to_dm() {
+        assert_eq!(normalize_scope("channel"), "channel");
+        assert_eq!(normalize_scope("CHANNEL"), "channel");
+        assert_eq!(normalize_scope("dm"), "dm");
+        assert_eq!(normalize_scope("anything"), "dm");
+        assert_eq!(normalize_scope(""), "dm");
+    }
+
+    #[test]
+    fn thread_reply_payload_dm_carries_recipient_and_root() {
+        let payload = build_thread_reply_payload("dm", "evt_root", Some("prs_peer"), "hi there");
+        assert_eq!(payload["toPersonUid"], "prs_peer");
+        assert_eq!(payload["rootEventId"], "evt_root");
+        assert_eq!(payload["body"], "hi there");
+        let obj = payload.as_object().expect("object");
+        assert_eq!(obj.len(), 3);
+    }
+
+    #[test]
+    fn thread_reply_payload_channel_omits_recipient() {
+        // A channel reply addresses the channel via the URL path, so the body
+        // carries only body + rootEventId — never a toPersonUid.
+        let payload = build_thread_reply_payload("channel", "evt_root", Some("prs_x"), "yo");
+        assert_eq!(payload["rootEventId"], "evt_root");
+        assert_eq!(payload["body"], "yo");
+        let obj = payload.as_object().expect("object");
+        assert_eq!(obj.len(), 2);
+        assert!(!obj.contains_key("toPersonUid"));
+    }
+
+    #[test]
+    fn thread_view_deserializes_root_replies_and_count() {
+        let json = r#"{
+            "root": {
+                "eventId": "evt_root",
+                "fromPersonUid": "prs_a",
+                "body": "the root message",
+                "createdAt": "2026-06-05T00:00:00Z",
+                "direction": "in"
+            },
+            "replies": [
+                {
+                    "eventId": "evt_r2",
+                    "fromPersonUid": "prs_me",
+                    "body": "second reply",
+                    "createdAt": "2026-06-05T00:02:00Z",
+                    "direction": "out"
+                },
+                {
+                    "eventId": "evt_r1",
+                    "fromPersonUid": "prs_a",
+                    "body": "first reply",
+                    "createdAt": "2026-06-05T00:01:00Z",
+                    "direction": "in"
+                }
+            ],
+            "replyCount": 2
+        }"#;
+        let view: ThreadView = serde_json::from_str(json).expect("ThreadView parses");
+        assert_eq!(view.root.event_id, "evt_root");
+        assert_eq!(view.replies.len(), 2);
+        assert_eq!(view.reply_count, 2);
+        assert_eq!(view.replies[0].direction, "out");
     }
 }

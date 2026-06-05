@@ -29,9 +29,22 @@
     // channel's metadata when membership/member-count changes here.
     onchannelchange?: (channel: Channel) => void;
     onread?: (channelId: string) => void;
+    // Threads (US-022). Forwarded to <Conversation/> so a root message's
+    // reply-count affordance opens the ThreadPanel in MessagesShell. Called with
+    // the root message's eventId; the parent supplies this channel's id as the
+    // thread scope. `activeRootEventId` highlights the open thread's root bubble.
+    onopenthread?: (rootEventId: string) => void;
+    activeRootEventId?: string | null;
   }
 
-  let { channel, selfPersonUid = null, onchannelchange, onread }: Props = $props();
+  let {
+    channel,
+    selfPersonUid = null,
+    onchannelchange,
+    onread,
+    onopenthread,
+    activeRootEventId = null,
+  }: Props = $props();
 
   interface ChannelMessageRow extends ConversationMessage {
     fromEmail?: string;
@@ -253,6 +266,8 @@
     {sendError}
     placeholder={`Message #${title}…`}
     onsend={send}
+    {onopenthread}
+    {activeRootEventId}
   />
 {/if}
 

@@ -35,6 +35,7 @@
   import ChannelList from './ChannelList.svelte';
   import ChannelView from './ChannelView.svelte';
   import CreateChannel from './CreateChannel.svelte';
+  import ThreadPanel from './ThreadPanel.svelte';
   import {
     type DmRequest,
     type RequestAction,
@@ -143,6 +144,59 @@
 
   function openCompose(): void {
     composing = true;
+  }
+
+  // Threads (US-022). The open thread, if any, opened from a root message's
+  // reply-count affordance in the DM or channel pane. Rendered as a right-side
+  // ThreadPanel (overlay on narrow widths, third column on wide). `null` = closed.
+  interface OpenThread {
+    rootEventId: string;
+    scope: 'dm' | 'channel';
+    channelId: string | null;
+    withPersonUid: string | null;
+    title: string;
+    showAuthors: boolean;
+  }
+  let openThread = $state<OpenThread | null>(null);
+
+  // Open the thread for a DM root message. The reply recipient is the selected peer.
+  function handleOpenDmThread(rootEventId: string): void {
+    if (!selected) return;
+    openThread = {
+      rootEventId,
+      scope: 'dm',
+      channelId: null,
+      withPersonUid: selected.personUid,
+      title: `Thread · ${displayLabel(selected)}`,
+      showAuthors: false,
+    };
+  }
+
+  // Open the thread for a channel root message. The channel is the current channel.
+  function handleOpenChannelThread(rootEventId: string): void {
+    if (!selectedChannel) return;
+    openThread = {
+      rootEventId,
+      scope: 'channel',
+      channelId: selectedChannel.channelId,
+      withPersonUid: null,
+      title: `Thread · #${selectedChannel.name}`,
+      showAuthors: true,
+    };
+  }
+
+  function closeThread(): void {
+    openThread = null;
+  }
+
+  // A reply landed (or the thread loaded) — bump the matching root message's
+  // live reply-count in the DM message list so its affordance stays current.
+  function handleThreadReplyCount(rootEventId: string, replyCount: number): void {
+    messages = messages.map((m) =>
+      m.rootEventId === rootEventId || m.eventId === rootEventId
+        ? { ...m, rootEventId: m.rootEventId ?? m.eventId, replyCount }
+        : m,
+    );
   }
 
   // Handle a successful compose send. On a connection-requested (202) result the
@@ -306,6 +360,8 @@
 
   function selectChannel(c: Channel): void {
     selectedChannel = c;
+    // Switching channels closes any open thread (it belonged to the old channel).
+    openThread = null;
     // Opening a channel optimistically clears its rail unread; ChannelView also
     // calls mark_channel_read server-side.
     channels = clearChannelUnread(channels, c.channelId);
@@ -362,6 +418,8 @@
     messages = [];
     threadError = null;
     sendError = null;
+    // Switching conversations closes any open thread (it belonged to the old one).
+    openThread = null;
     loadingThread = true;
     try {
       const resp = await invoke<ThreadResponse>('fetch_dm_thread', {
@@ -599,6 +657,8 @@
           {selfPersonUid}
           onchannelchange={handleChannelChange}
           onread={handleChannelRead}
+          onopenthread={handleOpenChannelThread}
+          activeRootEventId={openThread?.scope === 'channel' ? openThread.rootEventId : null}
         />
       {:else}
         <div class="pane-empty">
@@ -625,9 +685,26 @@
         {sendError}
         placeholder={`Message ${displayLabel(selected)}…`}
         onsend={sendReply}
+        onopenthread={handleOpenDmThread}
+        activeRootEventId={openThread?.scope === 'dm' ? openThread.rootEventId : null}
       />
     {/if}
   </section>
+
+  {#if openThread}
+    <section class="thread-column">
+      <ThreadPanel
+        rootEventId={openThread.rootEventId}
+        scope={openThread.scope}
+        channelId={openThread.channelId}
+        withPersonUid={openThread.withPersonUid}
+        title={openThread.title}
+        showAuthors={openThread.showAuthors}
+        onclose={closeThread}
+        onreplycount={handleThreadReplyCount}
+      />
+    </section>
+  {/if}
 
   {#if composing}
     <ComposeMessage onclose={() => (composing = false)} onsent={handleComposeSent} />
@@ -989,5 +1066,35 @@
     font-size: var(--text-micro);
     color: var(--muted);
     white-space: nowrap;
+  }
+
+  /* ── Thread panel column (US-022) ──────────────────────────────────────── */
+  /* Wide (desktop-alt) default: a fixed third column to the right of the
+     conversation pane. */
+  .thread-column {
+    width: 340px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  /* Narrow: overlay the conversation pane instead of squeezing a third column
+     into a small window. The panel slides over from the right and covers the
+     pane; the close/back affordance returns to the main conversation. */
+  @media (max-width: 720px) {
+    .thread-column {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: min(100%, 420px);
+      box-shadow: -12px 0 32px rgba(0, 0, 0, 0.4);
+      z-index: 5;
+    }
+
+    .messages-window {
+      position: relative;
+    }
   }
 </style>

@@ -27,6 +27,13 @@
     // text (e.g. "Pending — waiting for Ada to accept").
     pending?: boolean;
     pendingLabel?: string | null;
+    // Threads (US-022). A root message carries its own eventId as `rootEventId`
+    // and a `replyCount`; when `replyCount > 0` a tap-visible "{n} replies · last
+    // {time}" affordance renders under the bubble and opens the thread via
+    // `onopenthread`. `lastReplyAt` (ISO) drives the "last {time}" stamp.
+    rootEventId?: string | null;
+    replyCount?: number | null;
+    lastReplyAt?: string | null;
   }
 
   interface Props {
@@ -45,15 +52,19 @@
     // performs the send + optimistic append; on success it should leave
     // `sendError` null, which clears the composer.
     onsend: (text: string) => void | Promise<void>;
-    // Reserved for later stories (reactions, open-in-thread). No-op by default.
+    // Reserved for later stories (reactions). No-op by default.
     onreact?: (eventId: string) => void;
-    onopenthread?: (eventId: string) => void;
+    // Threads (US-022). Called with a root message's `rootEventId` when the user
+    // taps its reply-count affordance — the parent opens the ThreadPanel.
+    onopenthread?: (rootEventId: string) => void;
+    // When set, the root bubble whose `rootEventId` matches gets an "active
+    // thread" highlight (the ThreadPanel for it is open).
+    activeRootEventId?: string | null;
   }
 
-  // `onreact` / `onopenthread` are part of the public API for later stories
-  // (reactions, open-in-thread) but unused here, so they're intentionally left
-  // out of the destructure to avoid unused-binding noise — they still type-check
-  // as accepted props via the `Props` interface.
+  // `onreact` is part of the public API for a later story (reactions) but unused
+  // here, so it's intentionally left out of the destructure to avoid
+  // unused-binding noise — it still type-checks as an accepted prop.
   let {
     messages,
     showAuthors = false,
@@ -63,6 +74,8 @@
     sendError = null,
     placeholder = 'Reply…',
     onsend,
+    onopenthread,
+    activeRootEventId = null,
   }: Props = $props();
 
   let replyText = $state('');
@@ -111,6 +124,35 @@
     }
   }
 
+  // Short relative-time stamp for the "last {time}" reply affordance (US-022).
+  // Falls back to the absolute clock time for anything older than a day or
+  // unparseable.
+  function formatRelative(iso: string | null | undefined): string {
+    if (!iso) return '';
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return '';
+    const diffMs = Date.now() - then;
+    if (diffMs < 0) return 'now';
+    const sec = Math.floor(diffMs / 1000);
+    if (sec < 60) return 'just now';
+    const min = Math.floor(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.floor(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    return formatTime(iso);
+  }
+
+  // True when this message is a thread root that should show the reply-count
+  // affordance (it carries a rootEventId and at least one reply).
+  function hasReplies(msg: ConversationMessage): boolean {
+    return !!msg.rootEventId && (msg.replyCount ?? 0) > 0;
+  }
+
+  function openThread(rootEventId: string | null | undefined): void {
+    const id = rootEventId?.trim();
+    if (id) onopenthread?.(id);
+  }
+
   async function copyPrompt(id: string, prompt: string | null | undefined): Promise<void> {
     const p = prompt?.trim();
     if (!p) return;
@@ -139,7 +181,10 @@
       {#if showAuthors && msg.direction === 'in'}
         <span class="dm-msg-author">{msg.fromDisplayName}</span>
       {/if}
-      <div class="dm-bubble">
+      <div
+        class="dm-bubble"
+        class:dm-bubble-thread-active={!!activeRootEventId && msg.rootEventId === activeRootEventId}
+      >
         <p class="dm-bubble-body">{msg.body}</p>
         {#if msg.details}
           <div class="dm-bubble-details">{msg.details}</div>
@@ -154,6 +199,22 @@
           </button>
         {/if}
       </div>
+      {#if hasReplies(msg)}
+        <button
+          class="thread-affordance"
+          type="button"
+          onclick={() => openThread(msg.rootEventId)}
+          aria-label={`Open thread — ${msg.replyCount} ${(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}`}
+        >
+          <span class="thread-affordance-count">
+            {msg.replyCount}
+            {(msg.replyCount ?? 0) === 1 ? 'reply' : 'replies'}
+          </span>
+          {#if msg.lastReplyAt}
+            <span class="thread-affordance-time">· last {formatRelative(msg.lastReplyAt)}</span>
+          {/if}
+        </button>
+      {/if}
       {#if msg.pending}
         <span class="dm-msg-pending">{msg.pendingLabel || 'Pending'}</span>
       {:else}
@@ -294,6 +355,53 @@
     padding: 0.0625rem 0.4375rem;
     border-radius: 999px;
     margin: 0.1875rem 0.25rem 0;
+  }
+
+  /* ── Thread reply-count affordance (US-022) ───────────────────────────── */
+  /* Tap-visible (NOT hover-gated) — the standalone window is frameless and has
+     no reliable hover, so the affordance is always rendered under a root bubble
+     that has replies. */
+
+  .thread-affordance {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    align-self: inherit;
+    margin: 0.25rem 0.125rem 0;
+    padding: 0.1875rem 0.5rem;
+    border: 1px solid rgba(120, 170, 255, 0.28);
+    border-radius: 999px;
+    background: rgba(120, 170, 255, 0.12);
+    color: #bcd4ff;
+    font-family: inherit;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+  }
+
+  .thread-affordance:hover,
+  .thread-affordance:focus-visible {
+    background: rgba(120, 170, 255, 0.22);
+    border-color: rgba(120, 170, 255, 0.45);
+    outline: none;
+  }
+
+  .thread-affordance-count {
+    font-weight: 600;
+  }
+
+  .thread-affordance-time {
+    font-weight: 500;
+    color: rgba(188, 212, 255, 0.72);
+  }
+
+  /* The root bubble of the thread currently open in the ThreadPanel. */
+  .dm-bubble-thread-active {
+    box-shadow:
+      0 0 0 1px rgba(120, 170, 255, 0.55),
+      0 0 0 4px rgba(120, 170, 255, 0.16);
   }
 
   .btn {
