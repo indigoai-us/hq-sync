@@ -18,6 +18,7 @@
   import LibraryList from './LibraryList.svelte';
   import LibraryDetailPanel from './LibraryDetailPanel.svelte';
   import MarketplacePanel from '../panels/MarketplacePanel.svelte';
+  import SubmitPanel from '../panels/SubmitPanel.svelte';
 
   interface Props {
     /** The loaded library payload (workers + skills) for this scope. */
@@ -30,12 +31,15 @@
 
   let { items, loading = false, error = null }: Props = $props();
 
-  type Filter = 'all' | 'workers' | 'skills' | 'marketplace';
+  type Filter = 'all' | 'workers' | 'skills' | 'marketplace' | 'submit';
   let filter = $state<Filter>('all');
-  // The Marketplace tab is a self-contained surface (its own fetch + search +
-  // detail slide-over via MarketplacePanel), so the library toolbar's scope
-  // filter and text search don't apply while it's active.
+  // The Marketplace and Submit tabs are self-contained surfaces (their own
+  // fetch / forms / detail slide-overs), so the library toolbar's scope filter
+  // and text search don't apply while either is active.
   const isMarketplace = $derived(filter === 'marketplace');
+  const isSubmit = $derived(filter === 'submit');
+  // Tabs that own their full body (no shared toolbar search / scope filter).
+  const isStandaloneTab = $derived(isMarketplace || isSubmit);
   let query = $state('');
   let selected = $state<LibraryItem | null>(null);
 
@@ -93,6 +97,7 @@
     { id: 'workers', label: 'Workers' },
     { id: 'skills', label: 'Skills' },
     { id: 'marketplace', label: 'Marketplace' },
+    { id: 'submit', label: 'Submit' },
   ];
 
   function toggleFacet(facet: string): void {
@@ -149,7 +154,7 @@
     </div>
 
     <div class="toolbar-right">
-      {#if showScopeFilter && !isMarketplace}
+      {#if showScopeFilter && !isStandaloneTab}
         <div class="scope-filter" data-scope-filter>
           <button
             type="button"
@@ -189,7 +194,7 @@
         </div>
       {/if}
 
-      {#if !isMarketplace}
+      {#if !isStandaloneTab}
         <input
           class="search"
           type="search"
@@ -203,6 +208,8 @@
 
   {#if isMarketplace}
     <MarketplacePanel />
+  {:else if isSubmit}
+    <SubmitPanel />
   {:else}
     {#if error}
       <div class="browser-error" role="alert">{error}</div>

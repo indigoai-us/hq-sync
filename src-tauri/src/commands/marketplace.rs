@@ -982,6 +982,405 @@ async fn stream_install(
     }
 }
 
+// =============================================================================
+// US-013 — desktop Submit tab (publish a local pack via the `hq publish` flow)
+// =============================================================================
+//
+// The Submit tab lets a VERIFIED creator pick a local skill/worker directory and
+// submit it to the marketplace. This command shells out to the US-004 CLI
+// (`hq publish <path>`), the single source of truth for packing + validation +
+// the authenticated `POST /v1/listings` upload, and maps its output into a typed
+// result the UI can render:
+//
+//   * On success the CLI prints `Published <name>@<ver> — listing <id> (pending_review).`
+//     → we parse the listing id + status and return them so the panel shows the
+//     pending_review confirmation.
+//   * On a validation failure / not-logged-in / not-verified the CLI exits
+//     non-zero and prints `Error: <message>` → we surface that message verbatim
+//     inline, and classify the not-verified case so the panel can show the
+//     request-access affordance.
+//
+// Verification is enforced SERVER-SIDE (US-011 returns a 403 with a request-
+// access guidance code on the publish route; the CLI maps it to a clear "ensure
+// your creator account is verified" error). There is no cheap GET "am I a
+// verified creator?" signal, so the UI is OPTIMISTIC: it shows the Submit form,
+// runs the publish, and renders the server's not-verified outcome as the
+// request-access prompt. `request_creator_access` POSTs `/v1/creators/request-
+// access` so the prompt's button is actionable from the same surface.
+
+/// Outcome of a successful desktop publish — the new listing's id + status (the
+/// status is `pending_review` for a fresh submission). Mirrors the TS
+/// `PublishResult` 1:1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishResult {
+    /// The created listing id (parsed from the CLI success notice).
+    pub listing_id: String,
+    /// Listing status — `pending_review` for a new submission.
+    pub status: String,
+    /// The raw CLI success notice (shown to the user as confirmation prose).
+    pub notice: String,
+}
+
+/// A classified publish FAILURE. `not_verified` distinguishes the verified-
+/// creator gate (so the panel shows the request-access prompt) from an ordinary
+/// validation / network error (shown inline as-is). Mirrors TS `PublishError`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublishError {
+    /// Human-readable error (the CLI's `Error:` message, validation text, etc.).
+    pub message: String,
+    /// True when the failure is the verified-creator gate (→ request access).
+    pub not_verified: bool,
+}
+
+impl std::fmt::Display for PublishError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for PublishError {}
+
+/// Validate a user-picked publish path: it must be a non-empty, existing
+/// directory under the user's HQ tree is NOT required (a creator may publish from
+/// anywhere on disk), but we reject the empty string and assert the directory
+/// exists so the CLI isn't spawned on garbage. Defense-in-depth against an empty
+/// or whitespace-only path the picker shouldn't produce but the IPC could.
+fn validate_publish_path(raw: &str) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("no directory selected to publish".to_string());
+    }
+    let path = PathBuf::from(trimmed);
+    if !path.exists() {
+        return Err(format!("selected path does not exist: {trimmed}"));
+    }
+    if !path.is_dir() {
+        return Err(format!(
+            "selected path is not a directory (pick a skill/worker folder): {trimmed}"
+        ));
+    }
+    Ok(path)
+}
+
+/// Classify whether a CLI error message is the verified-creator gate. The
+/// US-004 CLI maps the publish 403 (US-011 `NOT_VERIFIED_CREATOR`) to a message
+/// containing "verified" / "Not authorized to publish"; we also match the raw
+/// server code in case it bubbles through. Pure + case-insensitive.
+fn is_not_verified_error(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("not_verified_creator")
+        || m.contains("verified creator")
+        || m.contains("creator account is verified")
+        || m.contains("not authorized to publish")
+        || (m.contains("verified") && m.contains("publish"))
+}
+
+/// Parse the `hq publish` outcome (exit status + captured stdout/stderr) into a
+/// typed result. Pure so the parsing is unit-tested without spawning a process.
+///
+///   * Success → extract the listing id + status from the success notice line
+///     `Published <name>@<ver> — listing <id> (pending_review).`. If the line
+///     shape drifts we still succeed with a `(unknown)` id rather than failing a
+///     genuine publish.
+///   * Failure → take the most specific message available (the CLI's `Error:`
+///     line, else the last non-empty stderr/stdout line), classify not-verified.
+fn parse_publish_outcome(
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Result<PublishResult, PublishError> {
+    if success {
+        // Find the success notice line ("Published … listing <id> (<status>).").
+        let notice = stdout
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("Published "))
+            .unwrap_or_else(|| stdout.trim())
+            .to_string();
+        let (listing_id, status) = parse_listing_notice(&notice);
+        return Ok(PublishResult {
+            listing_id,
+            status,
+            notice,
+        });
+    }
+
+    // Failure: prefer an explicit "Error: <msg>" line; else the last meaningful
+    // line of stderr, then stdout. ANSI colour codes from chalk are stripped.
+    let message = extract_error_message(stderr, stdout);
+    let not_verified = is_not_verified_error(&message);
+    Err(PublishError {
+        message,
+        not_verified,
+    })
+}
+
+/// Pull `<id>` and `<status>` out of a `… listing <id> (<status>).` notice. Falls
+/// back to `("(unknown)", "pending_review")` if the shape doesn't match.
+fn parse_listing_notice(notice: &str) -> (String, String) {
+    let mut listing_id = "(unknown)".to_string();
+    let mut status = "pending_review".to_string();
+
+    if let Some(rest) = notice.split("listing ").nth(1) {
+        // rest ≈ "lst_123 (pending_review)." — id is up to the first space/paren.
+        let id: String = rest
+            .chars()
+            .take_while(|c| !c.is_whitespace() && *c != '(')
+            .collect();
+        if !id.is_empty() {
+            listing_id = id;
+        }
+        if let Some(open) = rest.find('(') {
+            if let Some(close_rel) = rest[open + 1..].find(')') {
+                let s = rest[open + 1..open + 1 + close_rel].trim();
+                if !s.is_empty() {
+                    status = s.to_string();
+                }
+            }
+        }
+    }
+    (listing_id, status)
+}
+
+/// Best-effort extraction of a human error from CLI output. Strips ANSI escapes,
+/// prefers an `Error: …` line, else the last non-empty line of stderr then stdout.
+fn extract_error_message(stderr: &str, stdout: &str) -> String {
+    let strip = |s: &str| -> String {
+        // Remove ANSI CSI sequences (chalk colour) without a regex crate.
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                // ESC — skip until a letter (the CSI final byte).
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    while let Some(&n) = chars.peek() {
+                        chars.next();
+                        if n.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+
+    for src in [stderr, stdout] {
+        let cleaned = strip(src);
+        // Prefer a line that begins with the CLI's "Error:" prefix.
+        if let Some(line) = cleaned
+            .lines()
+            .map(str::trim)
+            .find(|l| l.to_ascii_lowercase().starts_with("error:"))
+        {
+            // Drop the leading "Error:" label for a cleaner inline message.
+            let msg = line.trim_start_matches(|c: char| c != ':');
+            let msg = msg.trim_start_matches(':').trim();
+            if !msg.is_empty() {
+                return msg.to_string();
+            }
+            return line.to_string();
+        }
+    }
+    // No "Error:" line — take the last non-empty line of stderr, else stdout.
+    for src in [stderr, stdout] {
+        let cleaned = strip(src);
+        if let Some(line) = cleaned.lines().map(str::trim).rev().find(|l| !l.is_empty()) {
+            return line.to_string();
+        }
+    }
+    "publish failed (no output from `hq publish`)".to_string()
+}
+
+/// Publish a local skill/worker directory to the marketplace by shelling out to
+/// the US-004 `hq publish <path>` CLI. Streams the CLI's stdout/stderr to the
+/// window as `marketplace:publish-progress` lines, and returns a typed
+/// `PublishResult` (listing id + `pending_review` status) on success.
+///
+/// On failure the returned `PublishError` carries the CLI's message and a
+/// `not_verified` flag so the panel can show the request-access prompt for the
+/// verified-creator gate (US-011) vs. an inline validation error otherwise.
+///
+/// Verification + validation are enforced by the CLI/server, never trusted from
+/// the UI — this command is a thin, auth-passthrough wrapper (the CLI reads the
+/// cached Cognito token itself, exactly like US-009's install path).
+#[tauri::command]
+pub async fn publish_marketplace_pack(
+    app: AppHandle,
+    path: String,
+) -> Result<PublishResult, PublishError> {
+    let dir = validate_publish_path(&path).map_err(|message| PublishError {
+        message,
+        not_verified: false,
+    })?;
+    let hq_root = resolve_hq_folder();
+    let hq = paths::resolve_bin("hq");
+
+    let path_str = dir.to_string_lossy().to_string();
+    log("marketplace", &format!("publish `hq publish {path_str}`"));
+
+    let mut child = tokio::process::Command::new(&hq)
+        .args(["publish", &path_str])
+        .env("PATH", paths::child_path())
+        .current_dir(&hq_root)
+        .env("HQ_NO_UPDATE_CHECK", "1")
+        .env("HQ_ROOT", &hq_root)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| PublishError {
+            message: format!("spawn `hq publish`: {e}"),
+            not_verified: false,
+        })?;
+
+    // Capture stdout + stderr fully (we need them to parse the result), while
+    // ALSO relaying each line to the UI as live progress.
+    let stdout_acc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_acc = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+
+    let mut handles = Vec::new();
+    if let Some(out) = child.stdout.take() {
+        let app = app.clone();
+        let acc = stdout_acc.clone();
+        handles.push(tokio::spawn(async move {
+            let mut lines = BufReader::new(out).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = app.emit(
+                    "marketplace:publish-progress",
+                    serde_json::json!({ "stream": "stdout", "line": line }),
+                );
+                if let Ok(mut s) = acc.lock() {
+                    s.push_str(&line);
+                    s.push('\n');
+                }
+            }
+        }));
+    }
+    if let Some(err) = child.stderr.take() {
+        let app = app.clone();
+        let acc = stderr_acc.clone();
+        handles.push(tokio::spawn(async move {
+            let mut lines = BufReader::new(err).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = app.emit(
+                    "marketplace:publish-progress",
+                    serde_json::json!({ "stream": "stderr", "line": line }),
+                );
+                if let Ok(mut s) = acc.lock() {
+                    s.push_str(&line);
+                    s.push('\n');
+                }
+            }
+        }));
+    }
+
+    let status = child.wait().await.map_err(|e| PublishError {
+        message: format!("await `hq publish`: {e}"),
+        not_verified: false,
+    })?;
+    // Ensure both reader tasks have drained before we read the buffers.
+    for h in handles {
+        let _ = h.await;
+    }
+
+    let stdout = stdout_acc.lock().map(|s| s.clone()).unwrap_or_default();
+    let stderr = stderr_acc.lock().map(|s| s.clone()).unwrap_or_default();
+
+    match parse_publish_outcome(status.success(), &stdout, &stderr) {
+        Ok(result) => {
+            let _ = app.emit(
+                "marketplace:publish-complete",
+                serde_json::json!({ "listingId": result.listing_id, "status": result.status }),
+            );
+            Ok(result)
+        }
+        Err(err) => {
+            let _ = app.emit(
+                "marketplace:publish-error",
+                serde_json::json!({ "message": err.message, "notVerified": err.not_verified }),
+            );
+            Err(err)
+        }
+    }
+}
+
+/// Open a native folder picker for the Submit flow and return the chosen pack
+/// directory (or `None` if the user cancelled). Mirrors `folder_picker::pick_folder`
+/// but titled for choosing a skill/worker pack to publish. Holds a `ModalGuard`
+/// for the dialog's lifetime so the popover/window doesn't steal key-window focus
+/// and dismiss the panel.
+#[tauri::command]
+pub async fn pick_pack_directory() -> Result<Option<String>, String> {
+    let _guard = crate::tray::ModalGuard::new();
+    let result = rfd::AsyncFileDialog::new()
+        .set_title("Choose a skill or worker folder to publish")
+        .pick_folder()
+        .await;
+    Ok(result.map(|handle| handle.path().to_string_lossy().to_string()))
+}
+
+/// Request verified-creator access (the unverified Submit affordance, US-011).
+/// POSTs `/v1/creators/request-access` with the caller's bearer token and an
+/// optional reason; returns the server's human guidance message. The server
+/// records the request and an Indigo admin reviews it out-of-band.
+#[tauri::command]
+pub async fn request_creator_access(reason: Option<String>) -> Result<String, String> {
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/request-access");
+    let jwt = resolve_jwt().await?;
+
+    let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
+    let body = match &reason {
+        Some(r) => serde_json::json!({ "reason": r }),
+        None => serde_json::json!({}),
+    };
+
+    let res = build_client()
+        .post(&url)
+        .bearer_auth(&jwt)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("request-access request: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("request-access read: {e}"))?;
+
+    parse_request_access_response(status, &text)
+}
+
+/// Pure parser for the request-access endpoint. The server returns 202 with a
+/// `{ message }` on success; surface that message (or a sensible default).
+fn parse_request_access_response(status: StatusCode, text: &str) -> Result<String, String> {
+    if status == StatusCode::UNAUTHORIZED {
+        return Err("sign in required to request creator access".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("request-access HTTP {status}: {text}"));
+    }
+    let default = "Your verified-creator request was received. An Indigo admin will review it."
+        .to_string();
+    let body = text.trim();
+    if body.is_empty() {
+        return Ok(default);
+    }
+    let parsed: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("request-access response not JSON: {e}"))?;
+    Ok(parsed
+        .get("message")
+        .and_then(|m| m.as_str())
+        .filter(|m| !m.is_empty())
+        .map(String::from)
+        .unwrap_or(default))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1446,5 +1845,112 @@ mod tests {
             filter.should_sync(&root.join("companies/indigo/skills/impeccable/SKILL.md")),
             "company-scoped pack content should sync to teammates"
         );
+    }
+
+    // ---- US-013: desktop Submit (publish) parser tests ---------------------
+
+    #[test]
+    fn publish_success_parses_listing_id_and_pending_status() {
+        let stdout = "Published impeccable@1.2.0 — listing lst_abc123 (pending_review).\n  Attributed to Corey (@corey).\n";
+        let result = parse_publish_outcome(true, stdout, "").expect("ok");
+        assert_eq!(result.listing_id, "lst_abc123");
+        assert_eq!(result.status, "pending_review");
+        assert!(result.notice.contains("listing lst_abc123"));
+    }
+
+    #[test]
+    fn publish_success_tolerates_notice_drift() {
+        // If the success line shape drifts we must NOT fail a genuine publish.
+        let result = parse_publish_outcome(true, "ok, all done\n", "").expect("ok");
+        assert_eq!(result.listing_id, "(unknown)");
+        assert_eq!(result.status, "pending_review");
+    }
+
+    #[test]
+    fn publish_validation_error_surfaces_inline_and_is_not_not_verified() {
+        // AC2: a validation failure shows inline; it is NOT the verified gate.
+        let stderr = "Error: package.yaml is invalid: missing required field `name`\n";
+        let err = parse_publish_outcome(false, "", stderr).unwrap_err();
+        assert_eq!(
+            err.message,
+            "package.yaml is invalid: missing required field `name`"
+        );
+        assert!(!err.not_verified, "validation error must not flag not_verified");
+    }
+
+    #[test]
+    fn publish_unverified_error_is_classified_for_request_access() {
+        // AC3: the verified-creator gate (US-011) → not_verified so the panel
+        // shows the request-access prompt. The CLI 403 message variant:
+        let cli = "Error: Not authorized to publish — run `hq login` and ensure your creator account is verified.";
+        let err = parse_publish_outcome(false, "", cli).unwrap_err();
+        assert!(err.not_verified, "CLI 403 message must classify as not_verified");
+
+        // And the raw server code, in case it bubbles through unmapped:
+        let raw = parse_publish_outcome(false, "", "NOT_VERIFIED_CREATOR").unwrap_err();
+        assert!(raw.not_verified);
+    }
+
+    #[test]
+    fn publish_error_strips_ansi_colour_codes() {
+        // chalk wraps the CLI's "Error:" in ANSI; the inline message must be clean.
+        let stderr = "\u{1b}[31mError:\u{1b}[39m not logged in — run `hq login`\n";
+        let err = parse_publish_outcome(false, "", stderr).unwrap_err();
+        assert_eq!(err.message, "not logged in — run `hq login`");
+        assert!(!err.message.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn publish_error_falls_back_to_last_line_without_error_prefix() {
+        let err = parse_publish_outcome(false, "", "boom\nsomething broke\n").unwrap_err();
+        assert_eq!(err.message, "something broke");
+    }
+
+    #[test]
+    fn validate_publish_path_rejects_empty() {
+        assert!(validate_publish_path("   ").is_err());
+        assert!(validate_publish_path("/definitely/not/a/real/path/xyz123").is_err());
+    }
+
+    #[test]
+    fn validate_publish_path_accepts_existing_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = validate_publish_path(&tmp.path().to_string_lossy()).expect("ok");
+        assert!(p.is_dir());
+    }
+
+    #[test]
+    fn request_access_parses_message_and_defaults() {
+        let body = r#"{"status":"request_received","message":"We got it, Corey.","requestAccessPath":"/v1/creators/request-access"}"#;
+        assert_eq!(
+            parse_request_access_response(StatusCode::ACCEPTED, body).unwrap(),
+            "We got it, Corey."
+        );
+        // Empty body → sensible default (not an error).
+        assert!(parse_request_access_response(StatusCode::ACCEPTED, "")
+            .unwrap()
+            .contains("review"));
+    }
+
+    #[test]
+    fn request_access_maps_401_and_http_errors() {
+        assert!(parse_request_access_response(StatusCode::UNAUTHORIZED, "")
+            .unwrap_err()
+            .contains("sign in"));
+        assert!(parse_request_access_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
+            .unwrap_err()
+            .contains("500"));
+    }
+
+    #[test]
+    fn publish_result_serde_is_camel_case() {
+        let r = PublishResult {
+            listing_id: "lst_1".into(),
+            status: "pending_review".into(),
+            notice: "Published x@1 — listing lst_1 (pending_review).".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"listingId\":\"lst_1\""));
+        assert!(json.contains("\"status\":\"pending_review\""));
     }
 }

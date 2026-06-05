@@ -13,8 +13,14 @@ import {
   filterListings,
   highlightInstruction,
   isAdminGate,
+  isPublishError,
   listingHaystack,
   loadModerationQueue,
+  looksNotVerified,
+  pickPackDirectory,
+  publishMarketplacePack,
+  requestCreatorAccess,
+  toPublishError,
   yankMarketplaceListing,
   type InjectionFlag,
   type InstructionDoc,
@@ -291,5 +297,112 @@ describe('loadModerationQueue / decideModerationListing — invoke shapes', () =
     await expect(decideModerationListing('lst_p1', 'approve')).rejects.toThrow(
       /already decided/i,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// US-013 — desktop Submit tab (publish + request-access).
+// ---------------------------------------------------------------------------
+
+describe('US-013 publish — looksNotVerified classifier', () => {
+  it('flags the verified-creator gate message variants', () => {
+    expect(looksNotVerified('NOT_VERIFIED_CREATOR')).toBe(true);
+    expect(
+      looksNotVerified(
+        'Not authorized to publish — run `hq login` and ensure your creator account is verified.',
+      ),
+    ).toBe(true);
+    expect(looksNotVerified('Only verified creators can publish right now.')).toBe(true);
+  });
+
+  it('does NOT flag ordinary validation / network errors', () => {
+    expect(looksNotVerified('package.yaml is invalid: missing field `name`')).toBe(false);
+    expect(looksNotVerified('Network error: connection reset')).toBe(false);
+    // "verified" alone, unrelated to publishing, must not false-positive.
+    expect(looksNotVerified('email not verified')).toBe(false);
+  });
+});
+
+describe('US-013 publish — toPublishError / isPublishError', () => {
+  it('passes a structured PublishError through unchanged', () => {
+    const pe = { message: 'nope', notVerified: true };
+    expect(isPublishError(pe)).toBe(true);
+    expect(toPublishError(pe)).toEqual(pe);
+  });
+
+  it('wraps a bare Error, classifying not-verified from its text (AC3)', () => {
+    const wrapped = toPublishError(
+      new Error('Not authorized to publish — ensure your creator account is verified.'),
+    );
+    expect(wrapped.notVerified).toBe(true);
+    expect(wrapped.message).toMatch(/creator account is verified/);
+  });
+
+  it('wraps a validation Error as inline (notVerified=false) (AC2)', () => {
+    const wrapped = toPublishError(new Error('package.yaml is invalid'));
+    expect(wrapped.notVerified).toBe(false);
+    expect(wrapped.message).toBe('package.yaml is invalid');
+  });
+
+  it('coerces a non-Error rejection to a safe default', () => {
+    expect(toPublishError(undefined)).toEqual({ message: 'Publish failed.', notVerified: false });
+  });
+});
+
+describe('US-013 publish — invoke wiring', () => {
+  beforeEach(() => vi.mocked(invoke).mockReset());
+
+  it('publishMarketplacePack forwards the path and returns the pending_review result (AC2)', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      listingId: 'lst_new',
+      status: 'pending_review',
+      notice: 'Published x@1 — listing lst_new (pending_review).',
+    });
+    const res = await publishMarketplacePack('/Users/me/skills/foo');
+    expect(invoke).toHaveBeenCalledWith('publish_marketplace_pack', {
+      path: '/Users/me/skills/foo',
+    });
+    expect(res.listingId).toBe('lst_new');
+    expect(res.status).toBe('pending_review');
+  });
+
+  it('publish rejection surfaces a structured PublishError (request-access path, AC3)', async () => {
+    // Tauri rejects with the serialized error value (a plain object, not an
+    // Error). Simulate that the invoke caller receives that object and assert
+    // the panel's normaliser preserves notVerified so it shows request-access.
+    vi.mocked(invoke).mockImplementationOnce(() =>
+      Promise.reject({
+        message: 'Only verified creators can publish to the marketplace right now.',
+        notVerified: true,
+      }),
+    );
+    let caught: unknown;
+    try {
+      await publishMarketplacePack('/x');
+    } catch (e) {
+      caught = e;
+    }
+    expect(isPublishError(caught)).toBe(true);
+    expect(toPublishError(caught).notVerified).toBe(true);
+  });
+
+  it('requestCreatorAccess trims the reason and returns the server message (AC3)', async () => {
+    vi.mocked(invoke).mockResolvedValue('We got your request.');
+    const msg = await requestCreatorAccess('  please  ');
+    expect(invoke).toHaveBeenCalledWith('request_creator_access', { reason: 'please' });
+    expect(msg).toBe('We got your request.');
+  });
+
+  it('requestCreatorAccess sends null for an empty reason', async () => {
+    vi.mocked(invoke).mockResolvedValue('ok');
+    await requestCreatorAccess('   ');
+    expect(invoke).toHaveBeenCalledWith('request_creator_access', { reason: null });
+  });
+
+  it('pickPackDirectory returns the chosen path (or null on cancel)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce('/Users/me/skills/foo');
+    expect(await pickPackDirectory()).toBe('/Users/me/skills/foo');
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    expect(await pickPackDirectory()).toBeNull();
   });
 });

@@ -388,3 +388,103 @@ export async function installMarketplacePack(
     scope,
   });
 }
+
+// ---------------------------------------------------------------------------
+// US-013 — desktop Submit tab (publish a local pack via `hq publish`).
+// ---------------------------------------------------------------------------
+
+/** Successful publish outcome (mirrors Rust `PublishResult` 1:1, camelCase). */
+export interface PublishResult {
+  /** The created listing id (parsed from the CLI success notice). */
+  listingId: string;
+  /** Listing status — `pending_review` for a new submission. */
+  status: string;
+  /** Raw CLI success notice (shown as confirmation prose). */
+  notice: string;
+}
+
+/**
+ * Classified publish FAILURE (mirrors Rust `PublishError`). `notVerified`
+ * distinguishes the verified-creator gate (→ request-access prompt) from an
+ * ordinary validation / network error (shown inline as-is). The Rust command
+ * rejects the IPC promise with this object as its payload.
+ */
+export interface PublishError {
+  message: string;
+  notVerified: boolean;
+}
+
+/**
+ * Type-guard: was an `invoke('publish_marketplace_pack')` rejection a structured
+ * `PublishError`? Tauri rejects with the serialized error value, so a typed
+ * error arrives as a plain object — not an `Error` instance. Anything else
+ * (string, Error, undefined) is coerced by `toPublishError`.
+ */
+export function isPublishError(value: unknown): value is PublishError {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { message?: unknown }).message === 'string' &&
+    typeof (value as { notVerified?: unknown }).notVerified === 'boolean'
+  );
+}
+
+/**
+ * Pure classifier mirroring Rust `is_not_verified_error`: does this error text
+ * describe the verified-creator gate (US-011)? Case-insensitive.
+ */
+export function looksNotVerified(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes('not_verified_creator') ||
+    m.includes('verified creator') ||
+    m.includes('creator account is verified') ||
+    m.includes('not authorized to publish') ||
+    (m.includes('verified') && m.includes('publish'))
+  );
+}
+
+/**
+ * Normalise ANY publish rejection into a `PublishError`. A structured rejection
+ * passes through; a bare string / Error is wrapped (notVerified=false) unless its
+ * text matches the verified-creator gate, in which case it's classified so the
+ * UI still shows the request-access prompt.
+ */
+export function toPublishError(value: unknown): PublishError {
+  if (isPublishError(value)) return value;
+  const message =
+    value instanceof Error
+      ? value.message
+      : typeof value === 'string'
+        ? value
+        : 'Publish failed.';
+  return { message, notVerified: looksNotVerified(message) };
+}
+
+/**
+ * Publish a local skill/worker directory to the marketplace via the `hq publish`
+ * flow (US-004). Resolves with the listing id + `pending_review` status; rejects
+ * with a structured `PublishError` (use `toPublishError` to normalise). Progress
+ * lines stream via the `marketplace:publish-progress` event.
+ */
+export async function publishMarketplacePack(path: string): Promise<PublishResult> {
+  return invoke<PublishResult>('publish_marketplace_pack', { path });
+}
+
+/**
+ * Open the native folder picker for the Submit flow. Resolves to the chosen
+ * directory path, or `null` if the user cancelled.
+ */
+export async function pickPackDirectory(): Promise<string | null> {
+  return invoke<string | null>('pick_pack_directory');
+}
+
+/**
+ * Request verified-creator access (the unverified Submit affordance, US-011).
+ * Returns the server's human guidance message.
+ */
+export async function requestCreatorAccess(reason?: string | null): Promise<string> {
+  return invoke<string>('request_creator_access', {
+    reason: reason?.trim() ? reason.trim() : null,
+  });
+}
