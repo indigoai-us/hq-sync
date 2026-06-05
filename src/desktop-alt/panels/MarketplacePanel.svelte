@@ -15,17 +15,110 @@
    * applied client-side over the fetched set for instant feedback while the
    * round-trip is in flight.
    */
+  import { invoke } from '@tauri-apps/api/core';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { onMount } from 'svelte';
   import {
+    companyInstallTargets,
     filterListings,
+    installMarketplacePack,
     loadMarketplaceListings,
+    type InstallScope,
+    type InstallTarget,
     type MarketplaceListing,
   } from '../lib/marketplace';
+  import type { WorkspacesResult } from '../../lib/workspaces';
 
   let listings = $state<MarketplaceListing[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
   let query = $state('');
   let selected = $state<MarketplaceListing | null>(null);
+
+  // ── Install scope picker (US-009) ──────────────────────────────────────────
+  //
+  // The detail slide-over offers an Install action with a scope picker: Personal
+  // plus each company the user can ADMIN. Companies the user can't admin render
+  // DISABLED with a reason (default-deny — see `companyInstallTargets`). The Rust
+  // command re-verifies admin against vault truth and confines a company install
+  // to companies/{co}/, so this UI gate is convenience, not the security boundary.
+  let installTargets = $state<InstallTarget[]>([{ scope: { kind: 'personal' }, label: 'Personal', enabled: true }]);
+  let chosenScope = $state<InstallScope>({ kind: 'personal' });
+  let installing = $state(false);
+  let installLog = $state<string[]>([]);
+  let installResult = $state<{ ok: boolean; message: string } | null>(null);
+
+  // The picker maps option index → target (so disabled options can't be chosen).
+  let scopeIndex = $state(0);
+  const chosenTarget = $derived(installTargets[scopeIndex] ?? installTargets[0]);
+
+  $effect(() => {
+    // Keep the canonical scope in sync with the selected (enabled) option.
+    const t = chosenTarget;
+    if (t && t.enabled) chosenScope = t.scope;
+  });
+
+  // Load the user's workspaces once to compute admin-eligible company targets.
+  onMount(() => {
+    let unlistenProgress: UnlistenFn | undefined;
+    let unlistenComplete: UnlistenFn | undefined;
+    let unlistenError: UnlistenFn | undefined;
+
+    void (async () => {
+      try {
+        const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
+        installTargets = companyInstallTargets(result.workspaces ?? []);
+        // Default to the first enabled target (Personal is always first + enabled).
+        scopeIndex = installTargets.findIndex((t) => t.enabled);
+        if (scopeIndex < 0) scopeIndex = 0;
+      } catch (err) {
+        console.error('list_syncable_workspaces (marketplace install targets) failed:', err);
+        // Fall back to Personal-only — never block a personal install on a
+        // company-list outage, and never silently enable a company install.
+        installTargets = [{ scope: { kind: 'personal' }, label: 'Personal', enabled: true }];
+        scopeIndex = 0;
+      }
+    })();
+
+    // Stream install progress + terminal result from the Rust command. Hook-
+    // consent prompts the CLI prints flow through as progress lines.
+    void (async () => {
+      unlistenProgress = await listen<{ line: string }>('marketplace:install-progress', (e) => {
+        if (e.payload?.line) installLog = [...installLog, e.payload.line];
+      });
+      unlistenComplete = await listen('marketplace:install-complete', () => {
+        installResult = { ok: true, message: 'Installed.' };
+      });
+      unlistenError = await listen<{ message: string }>('marketplace:install-error', (e) => {
+        installResult = { ok: false, message: e.payload?.message ?? 'Install failed.' };
+      });
+    })();
+
+    return () => {
+      unlistenProgress?.();
+      unlistenComplete?.();
+      unlistenError?.();
+    };
+  });
+
+  async function runInstall(): Promise<void> {
+    if (!selected || installing) return;
+    const target = chosenTarget;
+    if (!target || !target.enabled) return; // default-deny: never install a disabled scope
+    installing = true;
+    installResult = null;
+    installLog = [];
+    try {
+      await installMarketplacePack(selected.slug, selected.version, target.scope);
+      // The success event also sets installResult; set here too in case the
+      // command resolves before the event lands.
+      if (!installResult) installResult = { ok: true, message: 'Installed.' };
+    } catch (err) {
+      installResult = { ok: false, message: err instanceof Error ? err.message : String(err) };
+    } finally {
+      installing = false;
+    }
+  }
 
   // Debounced server query: re-fetch with `?q=` shortly after the user stops
   // typing, so the approved set narrows server-side too (not just client-side).
@@ -75,12 +168,25 @@
     return listing.author ? `@${listing.author}` : 'unknown';
   }
 
+  function resetInstallState(): void {
+    installLog = [];
+    installResult = null;
+  }
+
   function select(listing: MarketplaceListing): void {
     selected = listing;
+    resetInstallState();
   }
   function closeDetail(): void {
     selected = null;
+    resetInstallState();
   }
+
+  const selectedScopeLabel = $derived(
+    chosenTarget?.scope.kind === 'company'
+      ? `${chosenTarget.label} (shared with your team)`
+      : 'Personal (only you)',
+  );
 
   function handleKeydown(event: KeyboardEvent, listing: MarketplaceListing): void {
     if (event.key === 'Enter' || event.key === ' ') {
@@ -221,6 +327,76 @@
         <p class="section-body" data-testid="marketplace-detail-contributes">
           {selected.contributes ?? 'Not specified.'}
         </p>
+      </section>
+
+      <!-- Install action + scope picker (US-009) -->
+      <section class="detail-section" data-testid="marketplace-install-section">
+        <h3 class="section-title">Install</h3>
+
+        <label class="scope-label" for="marketplace-scope">Scope</label>
+        <select
+          id="marketplace-scope"
+          class="scope-select"
+          data-testid="marketplace-scope-select"
+          bind:value={scopeIndex}
+          disabled={installing}
+        >
+          {#each installTargets as target, i (i)}
+            <option
+              value={i}
+              disabled={!target.enabled}
+              data-testid="marketplace-scope-option"
+              data-enabled={target.enabled}
+              data-slug={target.scope.kind === 'company' ? target.scope.slug : 'personal'}
+            >
+              {target.label}{target.enabled ? '' : ` — ${target.reason ?? 'unavailable'}`}
+            </option>
+          {/each}
+        </select>
+
+        <p class="scope-hint" data-testid="marketplace-scope-hint">
+          {selectedScopeLabel}
+        </p>
+
+        {#if chosenTarget?.scope.kind === 'company'}
+          <p class="consent-note" data-testid="marketplace-consent-note">
+            This pack will sync to everyone on this team. Any hooks or scripts it
+            contains stay scoped to this company and ask each teammate for consent
+            on their machine before running — nothing is wired silently.
+          </p>
+        {/if}
+
+        <button
+          type="button"
+          class="install-button"
+          data-testid="marketplace-install-button"
+          disabled={installing || !chosenTarget?.enabled}
+          onclick={runInstall}
+        >
+          {#if installing}
+            Installing…
+          {:else if chosenTarget?.scope.kind === 'company'}
+            Install to {chosenTarget.label}
+          {:else}
+            Install for me
+          {/if}
+        </button>
+
+        {#if installResult}
+          <p
+            class="install-result"
+            class:ok={installResult.ok}
+            class:fail={!installResult.ok}
+            role="status"
+            data-testid="marketplace-install-result"
+          >
+            {installResult.ok ? '✓ Installed.' : `✗ ${installResult.message}`}
+          </p>
+        {/if}
+
+        {#if installLog.length > 0}
+          <pre class="install-log" data-testid="marketplace-install-log">{installLog.join('\n')}</pre>
+        {/if}
       </section>
     </div>
   </div>
@@ -587,6 +763,118 @@
     color: var(--muted-2);
     font-size: var(--text-base);
     line-height: 19px;
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- install action + scope picker (US-009) --------------------------- */
+  .scope-label {
+    display: block;
+    margin-bottom: var(--space-1);
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .scope-select {
+    width: 100%;
+    height: 32px;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-base);
+  }
+
+  .scope-select:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+  }
+
+  .scope-select:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .scope-hint {
+    margin: var(--space-2) 0 0;
+    color: var(--muted);
+    font-size: var(--text-micro);
+  }
+
+  .consent-note {
+    margin: var(--space-2) 0 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--amber) 8%, transparent);
+    color: var(--muted-2);
+    font-size: var(--text-micro);
+    line-height: 16px;
+  }
+
+  .install-button {
+    margin-top: var(--space-3);
+    width: 100%;
+    height: 34px;
+    border: 1px solid var(--blue);
+    border-radius: 4px;
+    background: var(--blue);
+    color: #fff;
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 650;
+    cursor: pointer;
+    transition:
+      opacity 140ms ease,
+      filter 140ms ease;
+  }
+
+  .install-button:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+
+  .install-button:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+
+  .install-button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .install-result {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  .install-result.ok {
+    color: var(--green, #2faf6a);
+  }
+
+  .install-result.fail {
+    color: var(--amber);
+    overflow-wrap: anywhere;
+  }
+
+  .install-log {
+    margin: var(--space-2) 0 0;
+    max-height: 160px;
+    padding: var(--space-2) var(--space-3);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--row-active);
+    color: var(--muted-2);
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: var(--text-micro);
+    line-height: 15px;
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
 

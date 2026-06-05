@@ -10,6 +10,8 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
+import type { Workspace } from '../../lib/workspaces';
+
 /** One approved listing row (`MarketplaceListing` wire shape, US-005 public). */
 export interface MarketplaceListing {
   /** Stable listing id — the detail key. */
@@ -78,4 +80,101 @@ export function filterListings(
   const q = query.trim().toLowerCase();
   if (q === '') return listings;
   return listings.filter((l) => listingHaystack(l).includes(q));
+}
+
+// ---------------------------------------------------------------------------
+// US-009 — install scope (personal vs. company), tenant-isolated.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an install lands. Mirrors the Rust `InstallScope` tagged enum 1:1 —
+ * `{ kind: 'personal' }` or `{ kind: 'company', slug }`.
+ */
+export type InstallScope = { kind: 'personal' } | { kind: 'company'; slug: string };
+
+/**
+ * A selectable Install target for the scope picker. `enabled === false` carries
+ * a human `reason` (e.g. "requires company-admin") and renders disabled.
+ *
+ * IMPORTANT (default-deny): a company option is only enabled when the user is
+ * positively known to be admin/owner of that company. Anything else — member,
+ * viewer, pending, or an unknown/absent role — yields a DISABLED option. This is
+ * convenience only; the Rust `install_marketplace_pack` command re-verifies
+ * admin against vault membership truth before any install.
+ */
+export interface InstallTarget {
+  scope: InstallScope;
+  /** Picker label (e.g. "Personal", company display name). */
+  label: string;
+  enabled: boolean;
+  /** When disabled, why (shown as a hint / tooltip). */
+  reason?: string;
+}
+
+/** Roles that grant company-admin authority. Kept in lockstep with Rust. */
+function roleIsAdmin(role: string | null | undefined): boolean {
+  const r = (role ?? '').trim().toLowerCase();
+  return r === 'admin' || r === 'owner';
+}
+
+/**
+ * Build the scope-picker targets from the user's workspaces.
+ *
+ * Always includes a Personal target (always enabled). Then one target per
+ * COMPANY workspace (the `personal` pseudo-company is excluded — it's the
+ * Personal target). A company is ENABLED only when the membership is active AND
+ * the role is admin/owner; otherwise it's disabled with a reason. Default-deny:
+ * a company whose role is null/unknown is disabled ("requires company-admin").
+ */
+export function companyInstallTargets(workspaces: Workspace[]): InstallTarget[] {
+  const personal: InstallTarget = {
+    scope: { kind: 'personal' },
+    label: 'Personal',
+    enabled: true,
+  };
+
+  const companies = workspaces
+    .filter((w) => w.kind === 'company' && w.slug !== 'personal')
+    .map((w): InstallTarget => {
+      const label = w.displayName?.trim() || w.slug;
+      const active = (w.membershipStatus ?? '').toLowerCase() === 'active';
+      const admin = roleIsAdmin(w.role);
+      if (admin && active) {
+        return { scope: { kind: 'company', slug: w.slug }, label, enabled: true };
+      }
+      let reason = 'Requires company-admin';
+      if (!active && w.membershipStatus) {
+        reason = `Requires company-admin (membership ${w.membershipStatus.toLowerCase()})`;
+      } else if (!w.role) {
+        // Unknown role → default-deny.
+        reason = 'Requires company-admin (your role is unknown)';
+      }
+      return { scope: { kind: 'company', slug: w.slug }, label, enabled: false, reason };
+    })
+    // Stable order: enabled (admin) companies first, then alphabetical.
+    .sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      return a.label.localeCompare(b.label);
+    });
+
+  return [personal, ...companies];
+}
+
+/**
+ * Install a marketplace pack into the chosen scope. Streams progress via the
+ * `marketplace:install-progress` event and resolves/rejects on the terminal
+ * `marketplace:install-complete` / `marketplace:install-error` (surfaced as the
+ * promise outcome here). The Rust side enforces admin + path containment and
+ * never bypasses the hook-consent gate.
+ */
+export async function installMarketplacePack(
+  slug: string,
+  version: string | null | undefined,
+  scope: InstallScope,
+): Promise<void> {
+  return invoke<void>('install_marketplace_pack', {
+    slug,
+    version: version?.trim() ? version.trim() : null,
+    scope,
+  });
 }

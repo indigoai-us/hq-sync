@@ -272,6 +272,7 @@ fn main() {
             commands::library_local::get_library_skill_detail,
             commands::marketplace::list_marketplace_listings,
             commands::marketplace::get_marketplace_listing,
+            commands::marketplace::install_marketplace_pack,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,
