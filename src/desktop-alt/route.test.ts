@@ -4,6 +4,7 @@ import {
   getDesktopCompanies,
   getDesktopHotkeyRoute,
   getDesktopSidebarRows,
+  isDesktopRouteActive,
   type DesktopRoute,
 } from './route';
 
@@ -51,57 +52,58 @@ describe('desktop-alt routes', () => {
     expect(visible.map((workspace) => workspace.slug)).toEqual(['synced', 'personal']);
   });
 
-  it('maps the five library hotkeys (⌘3–⌘7) to their tabs', () => {
+  it('maps the five library hotkeys (⌘4–⌘8) to their tabs', () => {
     const companies = getDesktopCompanies([
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    // Sync ⌘1 / Meetings ⌘2, then the broken-out library destinations at ⌘3–⌘7.
-    expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    // Sync ⌘1 / Meetings ⌘2 / Messages ⌘3, then the broken-out library
+    // destinations at ⌘4–⌘8.
+    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
       tab: 'skills',
     });
-    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    expect(getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
       tab: 'workers',
     });
-    expect(getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    expect(getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
       tab: 'installed',
     });
-    expect(getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
       tab: 'marketplace',
     });
-    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
       tab: 'profile',
     });
   });
 
-  it('maps company hotkeys at ⌘8+ over the filtered synced company list', () => {
+  it('maps company hotkeys at ⌘9 over the filtered synced company list', () => {
     const companies = getDesktopCompanies([
       company({ slug: 'unsynced', displayName: 'Unsynced', state: 'local-only' }),
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    // Seven primary destinations (Sync, Meetings, Skills, Workers, Installed,
-    // Marketplace, Profile) consume ⌘1–⌘7, so companies start at ⌘8.
-    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    // Eight primary destinations (Sync, Meetings, Messages, Skills, Workers,
+    // Installed, Marketplace, Profile) consume ⌘1–⌘8, so companies start at ⌘9.
+    expect(getDesktopHotkeyRoute({ key: '9', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'company',
       slug: 'synced',
     });
   });
 
-  it('exposes the five library tabs as top-level sidebar rows with ⌘3–⌘7', () => {
+  it('exposes the five library tabs as top-level sidebar rows with ⌘4–⌘8', () => {
     const rows = getDesktopSidebarRows({ kind: 'sync' }, []);
     const library = rows.filter((row) => row.route.kind === 'library');
     expect(library.map((row) => [row.label, row.shortcut, row.route.tab])).toEqual([
-      ['Skills', '⌘3', 'skills'],
-      ['Workers', '⌘4', 'workers'],
-      ['Installed', '⌘5', 'installed'],
-      ['Marketplace', '⌘6', 'marketplace'],
-      ['Profile', '⌘7', 'profile'],
+      ['Skills', '⌘4', 'skills'],
+      ['Workers', '⌘5', 'workers'],
+      ['Installed', '⌘6', 'installed'],
+      ['Marketplace', '⌘7', 'marketplace'],
+      ['Profile', '⌘8', 'profile'],
     ]);
     // The old single "Library" row is gone.
     expect(rows.map((row) => row.label)).not.toContain('Library');
@@ -144,10 +146,51 @@ describe('desktop-alt sidebar rows — admin-only Moderation entry', () => {
     expect(moderationRow.shortcut).toBeUndefined();
   });
 
-  it('keeps company hotkeys at ⌘8 whether or not the admin row is present', () => {
+  it('keeps company hotkeys at ⌘9 whether or not the admin row is present', () => {
     const withAdmin = getDesktopSidebarRows(route, synced, { isAdmin: true });
     const companyRow = withAdmin.find((row) => row.route.kind === 'company');
-    // The admin Moderation row carries no hotkey, so the company keeps ⌘8.
-    expect(companyRow?.shortcut).toBe('⌘8');
+    // The admin Moderation row carries no hotkey, so the company keeps ⌘9.
+    expect(companyRow?.shortcut).toBe('⌘9');
+  });
+});
+
+describe('desktop-alt routes — Messages (US-019)', () => {
+  it('resolves the Messages route via ⌘3 and marks it active', () => {
+    expect(
+      getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, []),
+    ).toEqual({ kind: 'messages' });
+    expect(
+      getDesktopHotkeyRoute({ key: '3', metaKey: false, ctrlKey: true }, []),
+    ).toEqual({ kind: 'messages' });
+
+    expect(isDesktopRouteActive({ kind: 'messages' }, { kind: 'messages' })).toBe(true);
+    expect(isDesktopRouteActive({ kind: 'library' }, { kind: 'messages' })).toBe(false);
+  });
+
+  it('includes a Messages sidebar row at ⌘3 ahead of the library tabs and companies', () => {
+    const companies = getDesktopCompanies([
+      company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+    ]);
+    const rows = getDesktopSidebarRows({ kind: 'messages' }, companies);
+
+    const labelsAndShortcuts = rows.map((row) => ({
+      label: row.label,
+      shortcut: row.shortcut,
+    }));
+    expect(labelsAndShortcuts).toEqual([
+      { label: 'Sync', shortcut: '⌘1' },
+      { label: 'Meetings', shortcut: '⌘2' },
+      { label: 'Messages', shortcut: '⌘3' },
+      { label: 'Skills', shortcut: '⌘4' },
+      { label: 'Workers', shortcut: '⌘5' },
+      { label: 'Installed', shortcut: '⌘6' },
+      { label: 'Marketplace', shortcut: '⌘7' },
+      { label: 'Profile', shortcut: '⌘8' },
+      { label: 'Synced', shortcut: '⌘9' },
+    ]);
+
+    const messagesRow = rows.find((row) => row.label === 'Messages');
+    expect(messagesRow?.route).toEqual({ kind: 'messages' });
+    expect(messagesRow?.active).toBe(true);
   });
 });

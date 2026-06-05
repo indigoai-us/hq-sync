@@ -15,10 +15,10 @@
   let { route, companies, onnavigate, onsearch, onsettings, isAdmin = false }: Props = $props();
 
   const rows = $derived(getDesktopSidebarRows(route, companies, { isAdmin }));
-  // Top-level destinations (Sync / Meetings / Library / admin-only Moderation)
-  // vs. per-company rows. Split on route kind so an optional primary row (e.g.
-  // Moderation) can't shift a fixed-index slice and leak a company into the
-  // primary nav.
+  // Top-level destinations (Sync / Meetings / Messages / Library tabs /
+  // admin-only Moderation) vs. per-company rows. Split on route kind so an
+  // optional primary row (e.g. Moderation) can't shift a fixed-index slice and
+  // leak a company into the primary nav.
   const primaryRows = $derived(rows.filter((row) => row.route.kind !== 'company'));
   const companyRows = $derived(rows.filter((row) => row.route.kind === 'company'));
 </script>
