@@ -21,6 +21,13 @@
   import { listen } from '@tauri-apps/api/event';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
+  import DmRequestCard from './DmRequestCard.svelte';
+  import {
+    type DmRequest,
+    type RequestAction,
+    addRequest,
+    removeRequest,
+  } from '../../lib/dmRequests';
 
   type Segment = 'dms' | 'requests' | 'channels';
 
@@ -52,13 +59,25 @@
     pendingRequests: number;
   }
 
+  interface RequestsResponse {
+    requests: DmRequest[];
+    nextCursor?: string | null;
+  }
+
   let segment = $state<Segment>('dms');
 
   let contacts = $state<Contact[]>([]);
   let loadingContacts = $state(false);
   let contactsError = $state<string | null>(null);
 
-  let pendingRequests = $state(0);
+  // Pending incoming connection requests (US-011). The count drives the Requests
+  // segment badge; the list renders one DmRequestCard each. `list_dm_requests`
+  // is the source of truth; `dm:request-new` / `dm:request-update` keep it live.
+  let requests = $state<DmRequest[]>([]);
+  let loadingRequests = $state(false);
+  let requestsError = $state<string | null>(null);
+  // Derived count — the segment badge stays in lockstep with the rendered list.
+  let pendingRequests = $derived(requests.length);
 
   // Selected peer + its loaded thread.
   let selected = $state<Contact | null>(null);
@@ -171,11 +190,51 @@
 
   async function loadUnreadSummary(): Promise<void> {
     try {
-      const s = await invoke<UnreadSummary>('get_unread_summary');
-      pendingRequests = s.pendingRequests ?? 0;
+      // Kept for parity with the popover summary; the authoritative request
+      // count now comes from `loadRequests` (the rendered list). We still read
+      // the summary so any future unread surface stays wired.
+      await invoke<UnreadSummary>('get_unread_summary');
     } catch (err) {
-      // Non-fatal — the rail still renders; the request count just stays 0.
+      // Non-fatal — the rail still renders.
       console.error('messages: get_unread_summary failed', err);
+    }
+  }
+
+  async function loadRequests(): Promise<void> {
+    loadingRequests = true;
+    requestsError = null;
+    try {
+      const resp = await invoke<RequestsResponse>('list_dm_requests');
+      requests = resp.requests ?? [];
+    } catch (err) {
+      requestsError =
+        typeof err === 'string' ? err : 'Could not load connection requests';
+      requests = [];
+      console.error('messages: list_dm_requests failed', err);
+    } finally {
+      loadingRequests = false;
+    }
+  }
+
+  // A request card resolved (Accept / Decline / Block succeeded). Prune it from
+  // the list (the count badge follows via the derived `pendingRequests`). On
+  // Accept, the held first message becomes a live thread — swap to the DMs
+  // segment and open the standard <Conversation> with the requester so the card
+  // is replaced by the thread, satisfying "the held message becomes a thread".
+  function handleRequestResolved(req: DmRequest, action: RequestAction): void {
+    requests = removeRequest(requests, req.pairKey);
+    if (action === 'accept') {
+      const peer: Contact = {
+        personUid: req.fromPersonUid,
+        email: req.fromEmail,
+        displayName: req.fromDisplayName,
+        companyUid: null,
+        source: 'request',
+      };
+      segment = 'dms';
+      void selectContact(peer);
+      // The new connection now appears as a contact — refresh the rail.
+      void loadContacts();
     }
   }
 
@@ -231,7 +290,7 @@
   }
 
   $effect(() => {
-    let unlisten: (() => void) | undefined;
+    const unlisteners: Array<() => void> = [];
 
     // A new DM may arrive while this window is open — refresh the contact list
     // (so a brand-new conversation appears) and the request count. The badge
@@ -239,18 +298,30 @@
     listen('dm:new-events', () => {
       void loadContacts();
       void loadUnreadSummary();
-    }).then((fn) => {
-      unlisten = fn;
-    });
+    }).then((fn) => unlisteners.push(fn));
+
+    // A brand-new incoming connection request landed (US-011) — append it to the
+    // Requests list (the segment badge follows via the derived count). Dedupe by
+    // pairKey so a re-emit doesn't double-add.
+    listen<DmRequest>('dm:request-new', (e) => {
+      requests = addRequest(requests, e.payload);
+    }).then((fn) => unlisteners.push(fn));
+
+    // A pending request resolved elsewhere (accepted/declined/blocked, or pruned
+    // by the poll diff). Drop it from the Requests list; the count badge follows.
+    listen<{ pairKey: string; state?: string }>('dm:request-update', (e) => {
+      requests = removeRequest(requests, e.payload.pairKey);
+    }).then((fn) => unlisteners.push(fn));
 
     // Ready-handshake: tell Rust the listeners are mounted so it shows + focuses
     // the window and resets the unread badge (mirrors DmDetail).
     void loadContacts();
+    void loadRequests();
     void loadUnreadSummary();
     invoke('messages_window_ready');
 
     return () => {
-      unlisten?.();
+      for (const fn of unlisteners) fn();
     };
   });
 </script>
@@ -331,14 +402,27 @@
           </ul>
         {/if}
       {:else if segment === 'requests'}
-        <!-- Scaffold: request handling is a later story. Render an empty list. -->
-        <div class="segment-empty">
-          <p class="segment-empty-title">No pending requests</p>
-          <p class="segment-empty-sub">
-            Connection requests will appear here once someone outside your team
-            asks to message you.
-          </p>
-        </div>
+        {#if loadingRequests}
+          <p class="rail-status">Loading requests…</p>
+        {:else if requestsError}
+          <p class="rail-status rail-error" role="alert">{requestsError}</p>
+        {:else if requests.length === 0}
+          <div class="segment-empty">
+            <p class="segment-empty-title">No pending requests</p>
+            <p class="segment-empty-sub">
+              Connection requests will appear here once someone outside your team
+              asks to message you.
+            </p>
+          </div>
+        {:else}
+          <ul class="request-list">
+            {#each requests as req (req.pairKey)}
+              <li>
+                <DmRequestCard request={req} onresolved={handleRequestResolved} />
+              </li>
+            {/each}
+          </ul>
+        {/if}
       {:else}
         <!-- Scaffold: channels are a later story. -->
         <div class="segment-empty">
@@ -354,7 +438,7 @@
       <div class="pane-empty">
         <p>
           {segment === 'requests'
-            ? 'Select a request to review it.'
+            ? 'Review connection requests on the left — accept, decline, or block each one.'
             : 'Channels are coming soon.'}
         </p>
       </div>
@@ -603,6 +687,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .request-list {
+    list-style: none;
+    margin: 0;
+    padding: 0.25rem 0.125rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.625rem;
   }
 
   .segment-empty {

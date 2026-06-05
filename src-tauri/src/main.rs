@@ -178,6 +178,7 @@ fn main() {
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
+        .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         .manage(commands::packages::PendingPackages(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
@@ -303,6 +304,8 @@ fn main() {
             commands::dm_notify::send_dm,
             commands::dm_notify::send_dm_to_email,
             commands::dm_notify::fetch_dm_thread,
+            commands::dm_notify::list_dm_requests,
+            commands::dm_notify::respond_dm_request,
             commands::messages::open_messages_window,
             commands::messages::messages_window_ready,
             commands::messages::list_contacts,
