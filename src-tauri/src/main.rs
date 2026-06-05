@@ -274,6 +274,8 @@ fn main() {
             commands::marketplace::get_marketplace_listing,
             commands::marketplace::install_marketplace_pack,
             commands::marketplace::yank_marketplace_listing,
+            commands::marketplace::list_moderation_queue,
+            commands::marketplace::decide_moderation_listing,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,
