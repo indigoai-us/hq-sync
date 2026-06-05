@@ -107,6 +107,16 @@
   // no signal (the default in this app), we always show the calm empty state.
   const activityLive = $derived(activity?.active === true);
 
+  // Status pill derived from the story-level `passes` flag (same model as the
+  // AC progress). Completed → "Complete"; an active run → "In progress"; else
+  // "To do". Kept deliberately simple — the Story type carries no richer state.
+  const statusLabel = $derived(
+    story?.passes ? 'Complete' : activityLive ? 'In progress' : 'To do',
+  );
+  const statusTone = $derived(
+    story?.passes ? 'complete' : activityLive ? 'active' : 'todo',
+  );
+
   function handleKeydown(event: KeyboardEvent): void {
     if (event.key === 'Escape') {
       event.stopPropagation();
@@ -141,12 +151,23 @@
       <div class="header-text">
         <span class="story-id">{story.id}</span>
         <h2 class="story-title">{story.title}</h2>
-        <div class="badges">
-          {#if story.passes}
-            <span class="state-badge is-complete">Complete</span>
-          {/if}
+
+        <!-- Status line: status pill + inline agent-activity + priority. -->
+        <div class="status-line">
+          <span class="state-badge tone-{statusTone}">{statusLabel}</span>
           {#if priorityLabel}
             <span class="priority-badge" data-priority={priorityLabel}>{priorityLabel}</span>
+          {/if}
+          {#if activityLive}
+            <span class="activity-inline is-active" data-testid="agent-activity-live">
+              <span class="activity-dot"></span>
+              <span>running{activity?.phase ? ` ${activity.phase}` : ''}</span>
+            </span>
+          {:else}
+            <span class="activity-inline" data-testid="agent-activity-empty">
+              <span aria-hidden="true">·</span>
+              <span>no active run</span>
+            </span>
           {/if}
         </div>
       </div>
@@ -162,28 +183,36 @@
     </header>
 
     <div class="detail-body">
-      <!-- Agent activity — degrades gracefully (no orchestrator signal wired). -->
-      <section class="detail-section" aria-label="Agent activity">
-        <h3 class="section-title">Agent Activity</h3>
-        {#if activityLive}
-          <div class="activity-live" data-testid="agent-activity-live">
-            <span class="activity-dot"></span>
-            <span class="activity-text"
-              >Running{activity?.phase ? ` · ${activity.phase}` : ''}</span
-            >
-          </div>
-        {:else}
-          <div class="activity-empty" data-testid="agent-activity-empty">
-            <span class="activity-dot is-idle"></span>
-            <span class="activity-text">No active run</span>
-          </div>
-        {/if}
-      </section>
-
       {#if story.description}
         <section class="detail-section">
           <h3 class="section-title">Description</h3>
           <p class="section-body">{story.description}</p>
+        </section>
+      {/if}
+
+      <!-- Inspector metadata — only rows whose data exists are rendered. -->
+      {#if priorityLabel || deps.length > 0 || labels.length > 0}
+        <section class="detail-section" aria-label="Details">
+          <dl class="meta-grid">
+            {#if priorityLabel}
+              <div class="meta-row">
+                <dt class="meta-key">Priority</dt>
+                <dd class="meta-val">{priorityLabel}</dd>
+              </div>
+            {/if}
+            {#if deps.length > 0}
+              <div class="meta-row">
+                <dt class="meta-key">Dependencies</dt>
+                <dd class="meta-val">{deps.length}</dd>
+              </div>
+            {/if}
+            {#if labels.length > 0}
+              <div class="meta-row">
+                <dt class="meta-key">Labels</dt>
+                <dd class="meta-val">{labels.length}</dd>
+              </div>
+            {/if}
+          </dl>
         </section>
       {/if}
 
@@ -211,9 +240,30 @@
           <ul class="ac-list" data-testid="ac-checklist">
             {#each acItems as criterion, index (index)}
               <li class="ac-item" class:is-done={story.passes}>
-                <span class="ac-mark" aria-hidden="true"
-                  >{story.passes ? '✓' : '○'}</span
-                >
+                <span class="ac-mark" aria-hidden="true">
+                  {#if story.passes}
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
+                      <circle cx="8" cy="8" r="7" fill="currentColor" opacity="0.16" />
+                      <path
+                        d="M4.5 8.2 7 10.5l4.5-5"
+                        stroke="currentColor"
+                        stroke-width="1.6"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  {:else}
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none">
+                      <circle
+                        cx="8"
+                        cy="8"
+                        r="6.5"
+                        stroke="currentColor"
+                        stroke-width="1.4"
+                      />
+                    </svg>
+                  {/if}
+                </span>
                 <span class="ac-text">{criterion}</span>
               </li>
             {/each}
@@ -291,7 +341,7 @@
     z-index: 50;
     display: flex;
     flex-direction: column;
-    width: 460px;
+    width: 520px;
     max-width: 92vw;
     border-left: 1px solid var(--border);
     background: var(--bg);
@@ -314,43 +364,68 @@
   }
 
   .story-id {
-    color: var(--muted);
-    font-family:
-      ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-base);
-    font-weight: 600;
+    color: var(--muted-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    letter-spacing: 0.02em;
   }
 
   .story-title {
-    margin: var(--space-1) 0 0;
+    margin: var(--space-2) 0 0;
     color: var(--fg);
-    font-size: var(--text-base);
+    font-family: var(--font-display);
+    font-size: 19px;
     font-weight: 600;
-    line-height: 20px;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
   }
 
-  .badges {
+  /* Status line — pill + inline activity + priority on one row. */
+  .status-line {
     display: flex;
     flex-wrap: wrap;
-    gap: var(--space-1);
-    margin-top: var(--space-2);
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
   }
 
   .state-badge,
   .priority-badge {
     display: inline-flex;
     align-items: center;
-    padding: 1px 7px;
+    padding: 2px 9px;
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--row-active);
+    border-radius: 999px;
+    background: var(--surface-raise);
     color: var(--muted-2);
-    font-size: var(--text-base);
-    font-weight: 600;
+    font-size: var(--text-sm);
+    font-weight: 500;
     line-height: 16px;
   }
 
-  .state-badge.is-complete {
+  .state-badge.tone-complete {
+    color: var(--emerald);
+  }
+
+  .state-badge.tone-active {
+    color: var(--amber);
+  }
+
+  .state-badge.tone-todo {
+    color: var(--muted-2);
+  }
+
+  /* Inline agent-activity — quiet text folded into the status line. */
+  .activity-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .activity-inline.is-active {
     color: var(--emerald);
   }
 
@@ -423,50 +498,60 @@
     color: var(--muted-3);
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
   }
 
   .section-body {
     margin: 0;
     color: var(--muted-2);
-    font-size: var(--text-base);
-    line-height: 19px;
+    font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
-  /* Agent-activity calm states. */
-  .activity-empty,
-  .activity-live {
+  /* Inspector metadata grid — label → value rows. */
+  .meta-grid {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: var(--space-2);
-    padding: var(--space-3);
+    margin: 0;
+    padding: var(--space-3) var(--space-4);
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
-    background: var(--row-hover);
+    background: var(--surface-raise);
   }
 
-  .activity-text {
-    color: var(--muted);
-    font-size: var(--text-base);
+  .meta-row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+
+  .meta-key {
+    flex-shrink: 0;
+    width: 96px;
+    color: var(--muted-3);
+    font-size: var(--text-micro);
     font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
-  .activity-live .activity-text {
-    color: var(--emerald);
+  .meta-val {
+    margin: 0;
+    color: var(--fg-data);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
+  /* Agent-activity dot — only the live inline render uses it now. */
   .activity-dot {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 999px;
     background: var(--emerald);
     animation: pulse 1.6s ease-in-out infinite;
-  }
-
-  .activity-dot.is-idle {
-    background: var(--muted-3);
-    animation: none;
   }
 
   /* AC progress — mirrors the StoryCard progress-bar visual language. */
@@ -498,9 +583,10 @@
   .ac-count {
     flex-shrink: 0;
     color: var(--muted-3);
-    font-size: var(--text-base);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .ac-list {
@@ -519,10 +605,12 @@
   }
 
   .ac-mark {
+    display: inline-flex;
     flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    height: 21px;
     color: var(--muted-3);
-    font-size: var(--text-base);
-    line-height: 18px;
   }
 
   .ac-item.is-done .ac-mark {
@@ -531,8 +619,8 @@
 
   .ac-text {
     color: var(--muted-2);
-    font-size: var(--text-base);
-    line-height: 18px;
+    font-size: var(--text-sm);
+    line-height: 1.5;
   }
 
   .ac-item.is-done .ac-text {
@@ -551,12 +639,11 @@
     padding: 2px 8px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--row-active);
-    color: var(--muted-2);
-    font-family:
-      ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-base);
-    font-weight: 600;
+    background: var(--surface-raise);
+    color: var(--fg-data);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -602,10 +689,9 @@
     flex: 1 1 auto;
     min-width: 0;
     color: var(--muted);
-    font-family:
-      ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-base);
-    line-height: 16px;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.45;
     word-break: break-all;
   }
 
