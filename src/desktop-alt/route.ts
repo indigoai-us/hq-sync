@@ -15,7 +15,8 @@ export interface DesktopSidebarRow {
 
 export const DESKTOP_SHELL_LAYOUT = {
   sidebarWidthPx: 216,
-  statusBarHeightPx: 26,
+  titleBarHeightPx: 42,
+  statusBarHeightPx: 32,
 } as const;
 
 export const initialDesktopRoute: DesktopRoute = { kind: 'sync' };

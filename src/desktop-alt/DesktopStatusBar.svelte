@@ -7,6 +7,8 @@
     progress?: SyncProgress | null;
     filesProgressed?: number;
     totalFiles?: number;
+    workspaceCount?: number;
+    observedBytes?: number;
     nextMeetingLabel?: string | null;
   }
 
@@ -16,219 +18,193 @@
     progress = null,
     filesProgressed = 0,
     totalFiles = 0,
+    workspaceCount = 0,
+    observedBytes = 0,
     nextMeetingLabel = null,
   }: Props = $props();
 
-  const connectionTone = $derived.by(() => {
+  const tone = $derived.by(() => {
     if (state === 'syncing') return 'syncing';
     if (state === 'error' || state === 'auth-error') return 'error';
     if (state === 'conflict' || state === 'setup-needed') return 'conflict';
     return 'idle';
   });
+
   const syncPercent = $derived(
     totalFiles > 0 ? Math.min(100, Math.max(0, Math.round((filesProgressed / totalFiles) * 100))) : 0,
   );
-  const syncLabel = $derived(
-    state === 'syncing'
-      ? `Syncing ${progress?.company ?? 'workspace'} · ${syncPercent}%`
-      : state === 'error' || state === 'auth-error'
-        ? 'Sync error'
-        : state === 'conflict'
-          ? 'Conflict'
-          : 'Sync idle',
+
+  const stateLabel = $derived(
+    state === 'error' || state === 'auth-error'
+      ? 'Sync error'
+      : state === 'conflict'
+        ? 'Conflict'
+        : state === 'setup-needed'
+          ? 'Setup needed'
+          : 'Idle · all safe',
   );
-  const sparkBars = [6, 11, 8, 14, 5, 9, 13, 7, 15, 10, 6, 12, 8, 14];
+
+  function formatMb(bytes: number): string {
+    if (bytes <= 0) return '0 MB';
+    const mb = bytes / (1024 * 1024);
+    if (mb < 1) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    if (mb < 1000) return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
+    return `${(mb / 1024).toFixed(1)} GB`;
+  }
+
+  const bytesLabel = $derived(formatMb(observedBytes));
 </script>
 
-<footer class="desktop-status-bar" aria-label="Status">
-  <div class="status-left">
-    <span class={`connected-pill ${connectionTone}`}>
-      <span class="status-dot" aria-hidden="true"></span>
-      Connected
-    </span>
-    <span class="status-group" aria-label="Sync status">
-      <span class="status-icon" aria-hidden="true">↻</span>
-      <span>{syncLabel}</span>
-    </span>
-    {#if nextMeetingLabel}
-      <span class="status-group" aria-label="Next meeting">
-        <span class="status-icon" aria-hidden="true">□</span>
-        <span>{nextMeetingLabel}</span>
-      </span>
+<footer class="desktop-status-bar live-strip" aria-label="Status">
+  <div class="ls-left">
+    {#if state === 'syncing' && progress}
+      <svg class="ls-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 5v14" />
+        <path d="m19 12-7 7-7-7" />
+      </svg>
+      <span class="ls-path mono">{progress.path}</span>
+      <span class="ls-progress" aria-hidden="true"><span style={`width:${syncPercent}%`}></span></span>
+      <span class="ls-count mono">{filesProgressed}/{totalFiles} files</span>
+    {:else}
+      <span class={`ls-dot ${tone}`} aria-hidden="true"></span>
+      <span class="ls-state">{stateLabel}</span>
+      {#if observedBytes > 0}
+        <span class="ls-count mono">{bytesLabel} synced</span>
+      {/if}
     {/if}
   </div>
 
-  <div class="status-right">
-    <span class="status-group net-group" aria-label="Network activity">
-      <span>net</span>
-      <span class="sparkbars" aria-hidden="true">
-        {#each sparkBars as bar, index (`bar-${index}`)}
-          <span style={`height: ${bar}px`}></span>
-        {/each}
-      </span>
-    </span>
-    <span class="status-group" aria-label="VPN status">
-      <span class="status-icon" aria-hidden="true">◒</span>
-      <span>indigo-vpn</span>
-    </span>
-    <span class="version">v{version}</span>
+  <div class="ls-right">
+    {#if nextMeetingLabel}
+      <span class="ls-meta">next <span class="mono">{nextMeetingLabel}</span></span>
+      <span class="ls-div" aria-hidden="true"></span>
+    {/if}
+    <span class="ls-meta">watching <span class="mono">{workspaceCount}</span> workspace{workspaceCount === 1 ? '' : 's'}</span>
+    <span class="ls-div" aria-hidden="true"></span>
+    <span class="ls-version mono">v{version}</span>
   </div>
 </footer>
 
 <style>
-  .desktop-status-bar,
-  .status-left,
-  .status-right,
-  .status-group,
-  .connected-pill {
+  .ls-left,
+  .ls-right {
     display: flex;
     align-items: center;
     min-width: 0;
+    gap: 12px;
   }
 
-  .desktop-status-bar {
-    justify-content: space-between;
-    gap: 16px;
-  }
-
-  .status-left,
-  .status-right {
-    gap: 14px;
-  }
-
-  .status-left {
+  .ls-left {
     overflow: hidden;
   }
 
-  .status-right {
+  .ls-right {
     flex: 0 0 auto;
   }
 
-  .status-group,
-  .connected-pill {
-    flex: 0 1 auto;
-    gap: 6px;
+  .mono {
+    font-family: var(--font-mono);
+    color: var(--fg-data);
+  }
+
+  .ls-glyph {
+    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+    color: var(--muted);
+  }
+
+  .ls-path {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fg-data);
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .status-group {
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .connected-pill {
+  .ls-progress {
     flex: 0 0 auto;
-    font-weight: 600;
-    transition: color 160ms ease;
+    width: 80px;
+    height: 3px;
+    border-radius: 2px;
+    background: var(--row-active);
+    overflow: hidden;
   }
 
-  .connected-pill.idle {
-    color: var(--emerald);
+  .ls-progress span {
+    display: block;
+    height: 100%;
+    background: var(--fg);
+    border-radius: 2px;
+    transition: width 240ms cubic-bezier(.2, .7, .2, 1);
   }
 
-  .connected-pill.syncing {
-    color: var(--blue);
+  .ls-count {
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
-  .connected-pill.error {
-    color: var(--red);
-  }
-
-  .connected-pill.conflict {
-    color: var(--amber);
-  }
-
-  .status-dot {
+  .ls-dot {
+    flex: 0 0 auto;
     width: 6px;
     height: 6px;
-    border-radius: 999px;
-    background: currentColor;
-    box-shadow: 0 0 6px currentColor;
-    transition:
-      box-shadow 160ms ease,
-      transform 160ms ease;
+    border-radius: 50%;
+    background: var(--muted-2);
   }
 
-  .status-icon {
+  .ls-dot.idle {
+    background: var(--emerald);
+  }
+  .ls-dot.syncing {
+    background: var(--blue);
+  }
+  .ls-dot.error {
+    background: var(--red);
+  }
+  .ls-dot.conflict {
+    background: var(--amber);
+  }
+
+  .ls-state {
     flex: 0 0 auto;
     color: var(--muted);
-    font-size: var(--text-base);
-    line-height: 1;
-    transition: color 160ms ease;
+    white-space: nowrap;
   }
 
-  .sparkbars {
-    display: flex;
-    align-items: flex-end;
-    gap: 2px;
-    height: 16px;
+  .ls-meta {
+    flex: 0 0 auto;
+    color: var(--muted);
+    white-space: nowrap;
   }
 
-  .sparkbars span {
-    display: block;
-    width: 3px;
-    background: var(--muted-3);
-    opacity: 0.78;
-    transform-origin: bottom;
+  .ls-div {
+    width: 1px;
+    height: 12px;
+    background: var(--border-strong);
   }
 
-  .version {
-    font-family: var(--font-mono);
+  .ls-version {
+    flex: 0 0 auto;
   }
 
   @media (prefers-reduced-motion: no-preference) {
-    .connected-pill.syncing .status-dot {
+    .ls-dot.syncing {
       animation: status-breathe 1.2s ease-in-out infinite;
-    }
-
-    .connected-pill.error .status-dot,
-    .connected-pill.conflict .status-dot {
-      box-shadow: 0 0 8px currentColor;
-      transform: scale(1.18);
-    }
-
-    .sparkbars span {
-      animation: spark-lift 2.8s ease-in-out infinite;
-    }
-
-    .sparkbars span:nth-child(2n) {
-      animation-delay: -0.8s;
-    }
-
-    .sparkbars span:nth-child(3n) {
-      animation-delay: -1.5s;
     }
   }
 
   @keyframes status-breathe {
     0%,
     100% {
-      box-shadow: 0 0 4px currentColor;
-      transform: scale(1);
+      opacity: 0.7;
     }
-
     50% {
-      box-shadow: 0 0 10px currentColor;
-      transform: scale(1.25);
+      opacity: 1;
     }
   }
 
-  @keyframes spark-lift {
-    0%,
-    100% {
-      transform: scaleY(0.82);
-      opacity: 0.62;
-    }
-
-    50% {
-      transform: scaleY(1);
-      opacity: 0.9;
-    }
-  }
-
-  @media (max-width: 760px) {
-    .net-group,
-    .status-right .status-group:nth-child(2) {
+  @media (max-width: 720px) {
+    .ls-meta:first-child {
       display: none;
     }
   }
