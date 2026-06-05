@@ -719,6 +719,33 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 ---
 
+## Conflict resolution (S3-versioned, no mirror files)
+
+**Goal:** Verify the menubar surfaces two-sided conflicts and resolves them in place, with **no `.conflict-*` files ever written into the HQ folder** — S3 object versioning is the safety net that preserves both sides. Pairs with the hq-cloud e2e proof `test/conflict-versioning.e2e.test.ts` (US-006).
+
+**Stories involved:** US-006 (verification of hq-cloud US-001 — both conflict-mirror writers removed)
+
+**Background:** A conflict fires only when the **same file changed on both sides** since this machine's last sync (local edit **and** a newer cloud version). The engine records each conflict to `<HQ folder>/.hq-conflicts/index.json` and renders it as a `ConflictRow` in the popover (`ConflictModal` / `commands/conflicts.rs`). It no longer writes a sibling `<file>.conflict-<ts>-<machine>.<ext>` mirror of the cloud bytes.
+
+**Prerequisites:**
+- Two machines (or one machine + a second simulated remote) signed into the same company, both synced clean to a common baseline first.
+- A known shared file you can edit on both sides, e.g. `companies/<slug>/knowledge/contended.md`.
+- Tray state and popover both visible.
+
+**Steps:**
+
+- [ ] 1. **Trigger a two-sided conflict.** On machine B, edit `contended.md` and let it sync (or push) so the cloud now holds a newer version. On machine A — **without syncing first** — edit the same `contended.md` to different content.
+- [ ] 2. On machine A, click **Sync Now** (or wait for auto-sync). Verify the sync completes (does not hang or hard-error) and the tray icon switches to the **conflict** state.
+- [ ] 3. **Confirm NO mirror file appears in the HQ folder.** In Finder (or `ls`) inspect the directory containing `contended.md` — verify there is **no** `contended.conflict-*` (or any `*.conflict-*`) sibling file. Spot-check the broader HQ tree too: `find "<HQ folder>" -name '*.conflict-*'` returns nothing.
+- [ ] 4. **See the conflict row in the popover.** Open the menubar popover — verify a `ConflictRow` for `contended.md` is listed (one row per conflicting path), sourced from `.hq-conflicts/index.json`.
+- [ ] 5. **Resolve with `Use cloud version`.** Click **Use cloud version** on the row. Verify: (a) the local `contended.md` is **replaced with the cloud bytes** (machine B's content); (b) the conflict row clears from the popover and the tray leaves the conflict state; (c) still **no** `*.conflict-*` file was created during the resolution.
+- [ ] 6. **Set up a second conflict for the keep-local path.** Re-diverge the same file: on machine B edit + sync `contended.md` again (new cloud version), and on machine A edit it locally to a distinct value. Sync machine A → a fresh conflict row appears.
+- [ ] 7. **Resolve with `Keep local`.** Click **Keep local** on the new row. Verify: (a) the local file is **unchanged** (your machine-A edit is preserved — local wins); (b) the conflict row clears and the tray leaves the conflict state; (c) again **no** `*.conflict-*` file appears.
+- [ ] 8. **Next sync uploads local as a new S3 version.** Trigger another sync on machine A (Sync Now). Verify it pushes the kept-local `contended.md` (Recent Changes shows it as updated) with no error.
+- [ ] 9. **Confirm the prior version is still retrievable in S3.** In the AWS S3 console (or `aws s3api list-object-versions --bucket <company bucket> --prefix companies/<slug>/knowledge/contended.md`), verify the key has **≥2 versions**: the just-pushed local bytes as the **current** version, and the prior (machine-B / cloud) bytes as an **older, still-downloadable** version. Fetching the older `VersionId` returns the previous content — both sides of the conflict survived without any mirror file on disk.
+
+---
+
 ## Release Checklist
 
 Before each release (v1.0.0 and every subsequent minor/patch):
