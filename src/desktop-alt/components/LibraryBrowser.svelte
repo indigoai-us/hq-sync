@@ -19,6 +19,7 @@
   import LibraryDetailPanel from './LibraryDetailPanel.svelte';
   import MarketplacePanel from '../panels/MarketplacePanel.svelte';
   import SubmitPanel from '../panels/SubmitPanel.svelte';
+  import ProfilePanel from '../panels/ProfilePanel.svelte';
 
   interface Props {
     /** The loaded library payload (workers + skills) for this scope. */
@@ -31,15 +32,16 @@
 
   let { items, loading = false, error = null }: Props = $props();
 
-  type Filter = 'all' | 'workers' | 'skills' | 'marketplace' | 'submit';
+  type Filter = 'all' | 'workers' | 'skills' | 'marketplace' | 'submit' | 'profile';
   let filter = $state<Filter>('all');
-  // The Marketplace and Submit tabs are self-contained surfaces (their own
-  // fetch / forms / detail slide-overs), so the library toolbar's scope filter
-  // and text search don't apply while either is active.
+  // The Marketplace, Submit, and Profile tabs are self-contained surfaces (their
+  // own fetch / forms / detail slide-overs), so the library toolbar's scope
+  // filter and text search don't apply while any is active.
   const isMarketplace = $derived(filter === 'marketplace');
   const isSubmit = $derived(filter === 'submit');
+  const isProfile = $derived(filter === 'profile');
   // Tabs that own their full body (no shared toolbar search / scope filter).
-  const isStandaloneTab = $derived(isMarketplace || isSubmit);
+  const isStandaloneTab = $derived(isMarketplace || isSubmit || isProfile);
   let query = $state('');
   let selected = $state<LibraryItem | null>(null);
 
@@ -98,6 +100,7 @@
     { id: 'skills', label: 'Skills' },
     { id: 'marketplace', label: 'Marketplace' },
     { id: 'submit', label: 'Submit' },
+    { id: 'profile', label: 'Profile' },
   ];
 
   function toggleFacet(facet: string): void {
@@ -210,6 +213,8 @@
     <MarketplacePanel />
   {:else if isSubmit}
     <SubmitPanel />
+  {:else if isProfile}
+    <ProfilePanel />
   {:else}
     {#if error}
       <div class="browser-error" role="alert">{error}</div>

@@ -1381,6 +1381,489 @@ fn parse_request_access_response(status: StatusCode, text: &str) -> Result<Strin
         .unwrap_or(default))
 }
 
+// =============================================================================
+// US-016 — desktop Profile tab (claim handle, edit profile, upload avatar)
+// =============================================================================
+//
+// Backs the desktop-alt ProfilePanel. Wraps the creator-marketplace
+// US-014/US-015 hq-pro routes, forwarding the caller's bearer token to the
+// JWT-authed write paths and hitting the public route for the preview:
+//
+//   * POST /v1/creators/claim        (JWT)  → claim a handle. Format-validated,
+//     reserved/confusable-screened SERVER-SIDE. Duplicate → 409; reserved/
+//     confusable → 403; malformed → 400. We map each to a typed, inline-able
+//     error that carries the server's `code` + human reason so the panel can
+//     surface "unavailable" / the format reason.
+//   * PUT  /v1/creators/me/profile   (JWT)  → set bio/socialLinks/tipUrl. Every
+//     URL is http(s)-validated SERVER-SIDE (we add a client hint too, never the
+//     authority). Returns the merged profile (incl. a presigned avatarUrl).
+//   * POST /v1/creators/me/avatar    (JWT)  → upload an avatar. Image-only,
+//     ≤2 MiB, sent as `{ contentType, data(base64) }`. Returns a presigned URL.
+//   * GET  /v1/creators/{handle}     (NONE) → public profile + approved listings
+//     for the preview (redacted through the server allowlist — no internal ids).
+//
+// As with every other authed marketplace command, the SERVER is the sole
+// authority: validation (handle format/uniqueness, URL scheme, avatar type/size,
+// own-profile ownership) is enforced there; this layer is a thin, token-passing
+// wrapper that surfaces the server's outcome. We DO add cheap client-side
+// guards (empty path, image extension, size cap) so the panel can fail fast, but
+// they never replace the server check.
+
+/// Avatar size cap mirrored from the server (`MAX_AVATAR_BYTES` = 2 MiB). We
+/// reject oversize uploads locally so the user gets instant feedback without a
+/// round-trip; the server enforces the same cap authoritatively.
+const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
+
+/// Result of a successful handle claim — the linked creator handle + ids the
+/// server echoes. Mirrors the TS `ClaimResult` 1:1.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimResult {
+    /// The claimed handle (the creator entity slug).
+    pub handle: String,
+    /// The created creator entity's internal uid (`crt_…`) — opaque to the UI.
+    #[serde(default)]
+    pub uid: String,
+    /// ISO-8601 claim timestamp.
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// A classified handle-claim FAILURE. `code` is the server's stable reason code
+/// (`HANDLE_FORMAT_INVALID` | `HANDLE_RESERVED` | `HANDLE_CONFUSABLE` |
+/// `HANDLE_ALREADY_CLAIMED` | …); `taken` is true for the duplicate (409) case
+/// so the panel can show a focused "unavailable" affordance. Mirrors TS
+/// `ClaimError`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaimError {
+    /// Human-readable reason (the server's `error` text) — surfaced inline.
+    pub message: String,
+    /// The server's stable reason code, when present.
+    #[serde(default)]
+    pub code: String,
+    /// True when the handle is already claimed (HTTP 409) — "unavailable".
+    pub taken: bool,
+}
+
+impl std::fmt::Display for ClaimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for ClaimError {}
+
+/// One social link on a creator profile (mirrors the server `SocialLink`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SocialLink {
+    pub label: String,
+    pub url: String,
+}
+
+/// The merged creator profile the server echoes after a profile update or that
+/// the public route returns (the public route nests it under `creator`). Mirrors
+/// the TS `CreatorProfile`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatorProfile {
+    /// The creator handle this profile belongs to.
+    #[serde(default)]
+    pub handle: String,
+    /// Display name (public route only; the authed echo omits it).
+    #[serde(default)]
+    pub display_name: String,
+    /// Short bio, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
+    /// Sponsor/tip link, when set (plain link — no checkout).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_url: Option<String>,
+    /// Validated social links (always an array; possibly empty).
+    #[serde(default)]
+    pub social_links: Vec<SocialLink>,
+    /// Presigned avatar GET URL, when an avatar is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
+/// The public profile preview payload — the redacted creator profile plus that
+/// creator's approved listings. Mirrors the TS `PublicCreatorPreview`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicCreatorPreview {
+    /// The public creator profile (handle, displayName, bio, socials, tip, avatar).
+    pub creator: CreatorProfile,
+    /// The creator's approved listings (public projection).
+    #[serde(default)]
+    pub listings: Vec<MarketplaceListing>,
+}
+
+/// Claim a creator handle. Authed (JWT). On success returns the linked handle;
+/// on failure returns a typed `ClaimError` that classifies the duplicate (409 →
+/// `taken`), reserved/confusable (403), and malformed (400) cases so the panel
+/// surfaces the right inline feedback.
+#[tauri::command]
+pub async fn claim_creator_handle(handle: String) -> Result<ClaimResult, ClaimError> {
+    let trimmed = handle.trim();
+    if trimmed.is_empty() {
+        return Err(ClaimError {
+            message: "enter a handle to claim".to_string(),
+            code: "HANDLE_FORMAT_INVALID".to_string(),
+            taken: false,
+        });
+    }
+
+    let base = api_base().map_err(|message| ClaimError {
+        message,
+        code: String::new(),
+        taken: false,
+    })?;
+    let url = format!("{base}/v1/creators/claim");
+    let jwt = resolve_jwt().await.map_err(|message| ClaimError {
+        message,
+        code: String::new(),
+        taken: false,
+    })?;
+
+    let res = build_client()
+        .post(&url)
+        .bearer_auth(&jwt)
+        .json(&serde_json::json!({ "handle": trimmed }))
+        .send()
+        .await
+        .map_err(|e| ClaimError {
+            message: format!("claim request: {e}"),
+            code: String::new(),
+            taken: false,
+        })?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| ClaimError {
+        message: format!("claim read: {e}"),
+        code: String::new(),
+        taken: false,
+    })?;
+
+    parse_claim_response(status, &text)
+}
+
+/// Pure parser for the claim endpoint. 201 → the new handle; 409 → taken
+/// (`taken=true`); 400/403 → the server's format/reserved/confusable reason
+/// (surfaced inline); 401 → sign-in required. Pure so it's unit-tested without a
+/// network round-trip.
+fn parse_claim_response(status: StatusCode, text: &str) -> Result<ClaimResult, ClaimError> {
+    let body = text.trim();
+    let json: Option<serde_json::Value> = if body.is_empty() {
+        None
+    } else {
+        serde_json::from_str(body).ok()
+    };
+    let field = |key: &str| -> String {
+        json.as_ref()
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    if status.is_success() {
+        let handle = field("handle");
+        if handle.is_empty() {
+            return Err(ClaimError {
+                message: "claim succeeded but the server returned no handle".to_string(),
+                code: String::new(),
+                taken: false,
+            });
+        }
+        return Ok(ClaimResult {
+            handle,
+            uid: field("uid"),
+            created_at: field("createdAt"),
+        });
+    }
+
+    if status == StatusCode::UNAUTHORIZED {
+        return Err(ClaimError {
+            message: "sign in required to claim a handle".to_string(),
+            code: "UNAUTHORIZED".to_string(),
+            taken: false,
+        });
+    }
+
+    let code = field("code");
+    let server_msg = field("error");
+    let taken = status == StatusCode::CONFLICT || code == "HANDLE_ALREADY_CLAIMED";
+    let message = if !server_msg.is_empty() {
+        server_msg
+    } else if taken {
+        "That handle is already taken — try another.".to_string()
+    } else {
+        format!("claim failed (HTTP {status})")
+    };
+    Err(ClaimError {
+        message,
+        code,
+        taken,
+    })
+}
+
+/// Update the caller's OWN creator profile (bio, socialLinks, tipUrl). Authed
+/// (JWT). Only the fields the panel sends are forwarded — an absent field leaves
+/// the stored value unchanged; an explicit empty string/array clears it (the
+/// server's partial-merge semantics). Every URL is http(s)-validated SERVER-SIDE
+/// (a 400 with the reason is surfaced inline). Returns the merged profile.
+#[tauri::command]
+pub async fn update_creator_profile(
+    bio: Option<String>,
+    social_links: Option<Vec<SocialLink>>,
+    tip_url: Option<String>,
+) -> Result<CreatorProfile, String> {
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/me/profile");
+    let jwt = resolve_jwt().await?;
+
+    // Build a partial body: only include keys the caller actually supplied so
+    // the server's "absent = leave unchanged" merge works as intended.
+    let mut body = serde_json::Map::new();
+    if let Some(b) = bio {
+        body.insert("bio".to_string(), serde_json::Value::String(b));
+    }
+    if let Some(t) = tip_url {
+        body.insert("tipUrl".to_string(), serde_json::Value::String(t));
+    }
+    if let Some(links) = social_links {
+        body.insert(
+            "socialLinks".to_string(),
+            serde_json::to_value(links).map_err(|e| format!("encode social links: {e}"))?,
+        );
+    }
+
+    let res = build_client()
+        .put(&url)
+        .bearer_auth(&jwt)
+        .json(&serde_json::Value::Object(body))
+        .send()
+        .await
+        .map_err(|e| format!("profile update request: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("profile update read: {e}"))?;
+
+    parse_profile_update_response(status, &text)
+}
+
+/// Pure parser for the profile-update endpoint. 200 → the merged profile (nested
+/// under `profile`); 400 → the server's validation reason (inline); 403 → a
+/// clear "claim a handle first" message; 401 → sign-in required.
+fn parse_profile_update_response(status: StatusCode, text: &str) -> Result<CreatorProfile, String> {
+    if status == StatusCode::UNAUTHORIZED {
+        return Err("sign in required to edit your profile".to_string());
+    }
+    if status == StatusCode::FORBIDDEN {
+        // The caller doesn't own a creator handle yet — guide them to claim.
+        let msg = serde_json::from_str::<serde_json::Value>(text.trim())
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| "claim a handle before editing your profile".to_string());
+        return Err(msg);
+    }
+    if status == StatusCode::BAD_REQUEST {
+        // URL-scheme / length / shape rejection — surface the server reason.
+        let msg = serde_json::from_str::<serde_json::Value>(text.trim())
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| "profile update rejected (invalid input)".to_string());
+        return Err(msg);
+    }
+    if !status.is_success() {
+        return Err(format!("profile update HTTP {status}: {text}"));
+    }
+
+    let json: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("profile update response is not valid JSON: {e}"))?;
+    // The authed echo nests the merged profile under `profile` and the handle at
+    // the top level. Stitch them together into one CreatorProfile.
+    let handle = json
+        .get("handle")
+        .and_then(|h| h.as_str())
+        .unwrap_or("")
+        .to_string();
+    let profile_node = json.get("profile").cloned().unwrap_or(json.clone());
+    let mut profile: CreatorProfile = serde_json::from_value(profile_node)
+        .map_err(|e| format!("profile update response shape: {e}"))?;
+    if profile.handle.is_empty() {
+        profile.handle = handle;
+    }
+    Ok(profile)
+}
+
+/// Validate a user-picked avatar path: non-empty, existing file, image-looking
+/// extension, ≤2 MiB. The server re-validates type + size authoritatively; these
+/// cheap local checks give instant feedback. Returns the read bytes + content
+/// type on success.
+fn read_avatar_file(raw: &str) -> Result<(Vec<u8>, String), String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("no avatar selected".to_string());
+    }
+    let path = Path::new(trimmed);
+    if !path.exists() || !path.is_file() {
+        return Err(format!("avatar file not found: {trimmed}"));
+    }
+    let content_type = avatar_content_type(trimmed)
+        .ok_or_else(|| "avatar must be a PNG, JPEG, WebP, or GIF image".to_string())?;
+    let bytes = std::fs::read(path).map_err(|e| format!("read avatar: {e}"))?;
+    if bytes.is_empty() {
+        return Err("avatar file is empty".to_string());
+    }
+    if bytes.len() > MAX_AVATAR_BYTES {
+        return Err(format!(
+            "avatar is {:.1} MiB — the limit is 2 MiB",
+            bytes.len() as f64 / (1024.0 * 1024.0)
+        ));
+    }
+    Ok((bytes, content_type))
+}
+
+/// Map a file extension to an allowed image content type (mirrors the server
+/// allowlist). Returns `None` for anything not an accepted image.
+fn avatar_content_type(path: &str) -> Option<String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())?;
+    let ct = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => return None,
+    };
+    Some(ct.to_string())
+}
+
+/// Upload the caller's OWN avatar. Authed (JWT). Reads the picked file, base64-
+/// encodes it, and POSTs `{ contentType, data }`. The server enforces image-only
+/// + ≤2 MiB; we pre-check both locally for fast feedback. Returns the presigned
+/// avatar URL so the panel can render it immediately.
+#[tauri::command]
+pub async fn upload_creator_avatar(file_path: String) -> Result<String, String> {
+    let (bytes, content_type) = read_avatar_file(&file_path)?;
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/me/avatar");
+    let jwt = resolve_jwt().await?;
+
+    use base64::Engine as _;
+    let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+
+    let res = build_client()
+        .post(&url)
+        .bearer_auth(&jwt)
+        .json(&serde_json::json!({ "contentType": content_type, "data": data }))
+        .send()
+        .await
+        .map_err(|e| format!("avatar upload request: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("avatar upload read: {e}"))?;
+
+    parse_avatar_upload_response(status, &text)
+}
+
+/// Pure parser for the avatar-upload endpoint. 200 → the presigned `avatarUrl`;
+/// 400 → the server's type/size reason (inline); 403 → claim-a-handle guidance;
+/// 401 → sign-in required.
+fn parse_avatar_upload_response(status: StatusCode, text: &str) -> Result<String, String> {
+    if status == StatusCode::UNAUTHORIZED {
+        return Err("sign in required to upload an avatar".to_string());
+    }
+    if status == StatusCode::FORBIDDEN {
+        return Err("claim a handle before uploading an avatar".to_string());
+    }
+    if status == StatusCode::BAD_REQUEST {
+        let msg = serde_json::from_str::<serde_json::Value>(text.trim())
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .unwrap_or_else(|| "avatar rejected (invalid type or too large)".to_string());
+        return Err(msg);
+    }
+    if !status.is_success() {
+        return Err(format!("avatar upload HTTP {status}: {text}"));
+    }
+    let json: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("avatar upload response is not valid JSON: {e}"))?;
+    json.get("avatarUrl")
+        .and_then(|u| u.as_str())
+        .filter(|u| !u.is_empty())
+        .map(String::from)
+        .ok_or_else(|| "avatar upload succeeded but no URL was returned".to_string())
+}
+
+/// Open a native file picker for an avatar image and return the chosen path (or
+/// `None` if cancelled). Holds a `ModalGuard` for the dialog's lifetime so the
+/// popover/window doesn't steal key-window focus and dismiss the panel.
+#[tauri::command]
+pub async fn pick_avatar_file() -> Result<Option<String>, String> {
+    let _guard = crate::tray::ModalGuard::new();
+    let result = rfd::AsyncFileDialog::new()
+        .set_title("Choose an avatar image")
+        .add_filter("Images", &["png", "jpg", "jpeg", "webp", "gif"])
+        .pick_file()
+        .await;
+    Ok(result.map(|handle| handle.path().to_string_lossy().to_string()))
+}
+
+/// Fetch a creator's PUBLIC profile + approved listings for the preview. Public
+/// route — NO auth token attached. A non-existent handle is a clean 404.
+#[tauri::command]
+pub async fn get_creator_profile(handle: String) -> Result<PublicCreatorPreview, String> {
+    let handle = handle.trim();
+    if handle.is_empty() {
+        return Err("no handle to preview".to_string());
+    }
+    // The handle is a single path segment; reject anything that could escape it.
+    if !handle
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+        || handle.len() > 64
+    {
+        return Err(format!("invalid handle: {handle:?}"));
+    }
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/{handle}");
+
+    let res = build_client()
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("profile fetch: {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| format!("profile read: {e}"))?;
+
+    parse_public_profile_response(status, &text)
+}
+
+/// Pure parser for the public profile endpoint. 200 → the profile + listings;
+/// 404 → a clear "no public profile yet" message (so the preview renders an
+/// informative empty state rather than an error).
+fn parse_public_profile_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<PublicCreatorPreview, String> {
+    if status == StatusCode::NOT_FOUND {
+        return Err("no public profile yet".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("profile HTTP {status}: {text}"));
+    }
+    serde_json::from_str(text.trim())
+        .map_err(|e| format!("profile response is not valid JSON: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1952,5 +2435,178 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         assert!(json.contains("\"listingId\":\"lst_1\""));
         assert!(json.contains("\"status\":\"pending_review\""));
+    }
+
+    // ---- US-016: desktop Profile (claim / profile / avatar) parser tests ----
+
+    #[test]
+    fn claim_success_parses_handle_and_ids() {
+        let body = r#"{"uid":"crt_1","handle":"corey","linkedPersonUid":"prs_1",
+            "createdAt":"2026-06-04T00:00:00Z"}"#;
+        let res = parse_claim_response(StatusCode::CREATED, body).expect("claimed");
+        assert_eq!(res.handle, "corey");
+        assert_eq!(res.uid, "crt_1");
+        assert_eq!(res.created_at, "2026-06-04T00:00:00Z");
+    }
+
+    #[test]
+    fn claim_409_is_taken_with_inline_message() {
+        // AC3: a taken handle must surface as "unavailable" inline. The 409 path
+        // sets `taken` so the panel can show a focused affordance.
+        let body = r#"{"error":"That handle is already claimed.","code":"HANDLE_ALREADY_CLAIMED"}"#;
+        let err = parse_claim_response(StatusCode::CONFLICT, body).unwrap_err();
+        assert!(err.taken, "409 must classify as taken");
+        assert_eq!(err.code, "HANDLE_ALREADY_CLAIMED");
+        assert!(err.message.contains("already claimed"));
+    }
+
+    #[test]
+    fn claim_409_without_body_still_taken() {
+        let err = parse_claim_response(StatusCode::CONFLICT, "").unwrap_err();
+        assert!(err.taken);
+        assert!(err.message.to_lowercase().contains("taken"));
+    }
+
+    #[test]
+    fn claim_400_surfaces_format_reason_and_is_not_taken() {
+        // AC3: a malformed handle (400) surfaces the server's format reason
+        // inline; it is NOT the taken case.
+        let body = r#"{"error":"Handle must be 3-30 characters.","code":"HANDLE_FORMAT_INVALID"}"#;
+        let err = parse_claim_response(StatusCode::BAD_REQUEST, body).unwrap_err();
+        assert!(!err.taken);
+        assert_eq!(err.code, "HANDLE_FORMAT_INVALID");
+        assert_eq!(err.message, "Handle must be 3-30 characters.");
+    }
+
+    #[test]
+    fn claim_403_reserved_surfaces_reason() {
+        let body = r#"{"error":"That handle is reserved.","code":"HANDLE_RESERVED"}"#;
+        let err = parse_claim_response(StatusCode::FORBIDDEN, body).unwrap_err();
+        assert!(!err.taken);
+        assert_eq!(err.code, "HANDLE_RESERVED");
+        assert!(err.message.contains("reserved"));
+    }
+
+    #[test]
+    fn claim_401_requires_sign_in() {
+        let err = parse_claim_response(StatusCode::UNAUTHORIZED, "").unwrap_err();
+        assert!(err.message.to_lowercase().contains("sign in"));
+    }
+
+    #[test]
+    fn profile_update_parses_nested_profile_and_handle() {
+        let body = r#"{"handle":"corey","profile":{"bio":"I build UIs",
+            "tipUrl":"https://ko-fi.com/corey",
+            "socialLinks":[{"label":"GitHub","url":"https://github.com/corey"}],
+            "avatarUrl":"https://example.com/a.png?sig=x"}}"#;
+        let p = parse_profile_update_response(StatusCode::OK, body).expect("parsed");
+        assert_eq!(p.handle, "corey");
+        assert_eq!(p.bio.as_deref(), Some("I build UIs"));
+        assert_eq!(p.tip_url.as_deref(), Some("https://ko-fi.com/corey"));
+        assert_eq!(p.social_links.len(), 1);
+        assert_eq!(p.social_links[0].label, "GitHub");
+        assert_eq!(p.avatar_url.as_deref(), Some("https://example.com/a.png?sig=x"));
+    }
+
+    #[test]
+    fn profile_update_400_surfaces_url_scheme_reason() {
+        // The server rejects a javascript: tipUrl with a 400 + reason; the panel
+        // must show that reason inline, never a generic 500.
+        let body = r#"{"error":"tipUrl: url scheme must be http or https","code":"INVALID_PROFILE"}"#;
+        let err = parse_profile_update_response(StatusCode::BAD_REQUEST, body).unwrap_err();
+        assert_eq!(err, "tipUrl: url scheme must be http or https");
+    }
+
+    #[test]
+    fn profile_update_403_guides_to_claim() {
+        let body = r#"{"error":"caller does not own a creator handle","code":"NO_CREATOR_ENTITY"}"#;
+        let err = parse_profile_update_response(StatusCode::FORBIDDEN, body).unwrap_err();
+        assert!(err.contains("creator handle"));
+    }
+
+    #[test]
+    fn avatar_upload_parses_presigned_url() {
+        let body = r#"{"handle":"corey","avatarUrl":"https://example.com/avatar.png?sig=abc"}"#;
+        let url = parse_avatar_upload_response(StatusCode::OK, body).expect("ok");
+        assert_eq!(url, "https://example.com/avatar.png?sig=abc");
+    }
+
+    #[test]
+    fn avatar_upload_400_surfaces_type_or_size_reason() {
+        let too_big = r#"{"error":"Avatar exceeds the 2097152-byte cap","code":"AVATAR_TOO_LARGE"}"#;
+        let err = parse_avatar_upload_response(StatusCode::BAD_REQUEST, too_big).unwrap_err();
+        assert!(err.contains("2097152") || err.to_lowercase().contains("cap"));
+    }
+
+    #[test]
+    fn avatar_content_type_allowlist() {
+        assert_eq!(avatar_content_type("a.png").as_deref(), Some("image/png"));
+        assert_eq!(avatar_content_type("A.JPG").as_deref(), Some("image/jpeg"));
+        assert_eq!(avatar_content_type("a.jpeg").as_deref(), Some("image/jpeg"));
+        assert_eq!(avatar_content_type("a.webp").as_deref(), Some("image/webp"));
+        assert_eq!(avatar_content_type("a.gif").as_deref(), Some("image/gif"));
+        // Non-image / no-extension → rejected.
+        assert!(avatar_content_type("a.txt").is_none());
+        assert!(avatar_content_type("a.svg").is_none());
+        assert!(avatar_content_type("noext").is_none());
+    }
+
+    #[test]
+    fn read_avatar_file_rejects_missing_and_non_image() {
+        assert!(read_avatar_file("   ").is_err());
+        assert!(read_avatar_file("/definitely/not/real/x.png").is_err());
+
+        // A real but non-image file is rejected on extension before any read.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("notes.txt");
+        std::fs::write(&p, b"hello").unwrap();
+        let err = read_avatar_file(&p.to_string_lossy()).unwrap_err();
+        assert!(err.to_lowercase().contains("image"));
+    }
+
+    #[test]
+    fn read_avatar_file_accepts_small_image() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let p = tmp.path().join("avatar.png");
+        std::fs::write(&p, b"\x89PNG\r\n\x1a\n fake but small").unwrap();
+        let (bytes, ct) = read_avatar_file(&p.to_string_lossy()).expect("ok");
+        assert_eq!(ct, "image/png");
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn public_profile_parses_creator_and_listings() {
+        let body = r#"{"creator":{"handle":"corey","displayName":"Corey",
+            "bio":"I build UIs","tipUrl":"https://ko-fi.com/corey",
+            "socialLinks":[{"label":"GitHub","url":"https://github.com/corey"}],
+            "avatarUrl":"https://example.com/a.png?sig=x","listingCount":2},
+            "listings":[
+              {"id":"lst_1","type":"skill","name":"Impeccable","slug":"impeccable",
+               "version":"1.2.0","author":"corey","createdAt":"2026-06-01T00:00:00Z"}
+            ]}"#;
+        let preview = parse_public_profile_response(StatusCode::OK, body).expect("parsed");
+        assert_eq!(preview.creator.handle, "corey");
+        assert_eq!(preview.creator.display_name, "Corey");
+        assert_eq!(preview.creator.bio.as_deref(), Some("I build UIs"));
+        assert_eq!(preview.creator.social_links.len(), 1);
+        assert_eq!(preview.listings.len(), 1);
+        assert_eq!(preview.listings[0].slug, "impeccable");
+    }
+
+    #[test]
+    fn public_profile_404_is_clear_empty_state() {
+        let err = parse_public_profile_response(StatusCode::NOT_FOUND, "").unwrap_err();
+        assert!(err.to_lowercase().contains("no public profile"));
+    }
+
+    #[test]
+    fn claim_result_serde_is_camel_case() {
+        let r = ClaimResult {
+            handle: "corey".into(),
+            uid: "crt_1".into(),
+            created_at: "2026-06-04T00:00:00Z".into(),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"createdAt\":\"2026-06-04T00:00:00Z\""));
     }
 }

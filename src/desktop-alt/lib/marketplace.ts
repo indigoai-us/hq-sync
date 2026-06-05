@@ -488,3 +488,183 @@ export async function requestCreatorAccess(reason?: string | null): Promise<stri
     reason: reason?.trim() ? reason.trim() : null,
   });
 }
+
+// ---------------------------------------------------------------------------
+// US-016 — desktop Profile tab (claim handle, edit profile, upload avatar).
+// ---------------------------------------------------------------------------
+
+/** Successful handle claim (mirrors Rust `ClaimResult` 1:1, camelCase). */
+export interface ClaimResult {
+  /** The claimed handle (the creator entity slug). */
+  handle: string;
+  /** The created creator entity's internal uid — opaque to the UI. */
+  uid: string;
+  /** ISO-8601 claim timestamp. */
+  createdAt: string;
+}
+
+/**
+ * Classified handle-claim FAILURE (mirrors Rust `ClaimError`). `taken` is true
+ * for the duplicate (409) case so the panel shows a focused "unavailable"
+ * affordance; `code` carries the server's stable reason code
+ * (`HANDLE_FORMAT_INVALID` | `HANDLE_RESERVED` | `HANDLE_CONFUSABLE` |
+ * `HANDLE_ALREADY_CLAIMED` | …). The Rust command rejects the IPC promise with
+ * this object as its payload.
+ */
+export interface ClaimError {
+  message: string;
+  code: string;
+  taken: boolean;
+}
+
+/** One social link on a creator profile (mirrors the server `SocialLink`). */
+export interface SocialLink {
+  label: string;
+  url: string;
+}
+
+/** The merged creator profile echoed after an update / nested in the preview. */
+export interface CreatorProfile {
+  handle: string;
+  /** Display name (public preview only; the authed echo omits it). */
+  displayName?: string;
+  bio?: string | null;
+  tipUrl?: string | null;
+  socialLinks: SocialLink[];
+  avatarUrl?: string | null;
+}
+
+/** The public profile preview — the redacted profile + approved listings. */
+export interface PublicCreatorPreview {
+  creator: CreatorProfile;
+  listings: MarketplaceListing[];
+}
+
+/**
+ * Type-guard: was an `invoke('claim_creator_handle')` rejection a structured
+ * `ClaimError`? Tauri rejects with the serialized error value, so a typed error
+ * arrives as a plain object — not an `Error` instance.
+ */
+export function isClaimError(value: unknown): value is ClaimError {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { message?: unknown }).message === 'string' &&
+    typeof (value as { taken?: unknown }).taken === 'boolean'
+  );
+}
+
+/**
+ * Normalise ANY claim rejection into a `ClaimError`. A structured rejection
+ * passes through; a bare string / Error is wrapped (taken=false). Used so the
+ * panel always has a `taken` flag + message to render, even on a transport error.
+ */
+export function toClaimError(value: unknown): ClaimError {
+  if (isClaimError(value)) return value;
+  const message =
+    value instanceof Error
+      ? value.message
+      : typeof value === 'string'
+        ? value
+        : 'Claim failed.';
+  return { message, code: '', taken: false };
+}
+
+/**
+ * Pure client-side handle FORMAT check, mirroring the server's
+ * `validateHandleFormat` (3–30 chars, lowercase alnum + `-`/`_`, no leading/
+ * trailing/consecutive separators). Returns the normalised (trimmed,
+ * lowercased) handle on success, else a human reason. This is a FAST-FEEDBACK
+ * hint only — the authoritative check is the server claim (which also screens
+ * reserved/confusable + uniqueness). Pure so it's unit-tested without a DOM.
+ */
+export function checkHandleFormat(
+  raw: string,
+): { ok: true; handle: string } | { ok: false; reason: string } {
+  const handle = raw.trim().toLowerCase();
+  if (handle.length === 0) {
+    return { ok: false, reason: 'Enter a handle.' };
+  }
+  if (handle.length < 3 || handle.length > 30) {
+    return { ok: false, reason: 'Handle must be 3–30 characters.' };
+  }
+  if (!/^[a-z0-9_-]+$/.test(handle)) {
+    return {
+      ok: false,
+      reason: 'Only lowercase letters, numbers, hyphens, and underscores.',
+    };
+  }
+  if (/^[-_]|[-_]$/.test(handle)) {
+    return { ok: false, reason: 'Cannot start or end with a hyphen or underscore.' };
+  }
+  if (/[-_]{2,}/.test(handle)) {
+    return { ok: false, reason: 'No consecutive hyphens or underscores.' };
+  }
+  return { ok: true, handle };
+}
+
+/**
+ * Pure client-side URL hint, mirroring the server's `validateProfileUrl`
+ * allowlist (absolute http(s) only). FAST-FEEDBACK only — the server is the
+ * authority. An empty string is treated as "no URL" (valid) so an optional
+ * field isn't flagged while blank.
+ */
+export function checkHttpUrl(raw: string): { ok: true } | { ok: false; reason: string } {
+  const url = raw.trim();
+  if (url.length === 0) return { ok: true };
+  let protocol: string;
+  try {
+    protocol = new URL(url).protocol;
+  } catch {
+    return { ok: false, reason: 'Must be an absolute http(s) URL.' };
+  }
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    return { ok: false, reason: 'Only http(s) links are allowed.' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Claim a creator handle. Resolves with the claimed handle; rejects with a
+ * structured `ClaimError` (use `toClaimError` to normalise) whose `taken`/`code`
+ * fields let the panel surface "unavailable" vs. the format/reserved reason.
+ */
+export async function claimCreatorHandle(handle: string): Promise<ClaimResult> {
+  return invoke<ClaimResult>('claim_creator_handle', { handle: handle.trim() });
+}
+
+/**
+ * Update the caller's OWN creator profile. Only the supplied fields are sent
+ * (the server does a partial merge: absent = unchanged, empty string/array =
+ * clear). Every URL is http(s)-validated server-side. Returns the merged profile.
+ */
+export async function updateCreatorProfile(patch: {
+  bio?: string;
+  socialLinks?: SocialLink[];
+  tipUrl?: string;
+}): Promise<CreatorProfile> {
+  return invoke<CreatorProfile>('update_creator_profile', {
+    bio: patch.bio ?? null,
+    socialLinks: patch.socialLinks ?? null,
+    tipUrl: patch.tipUrl ?? null,
+  });
+}
+
+/**
+ * Upload the caller's OWN avatar from a local file path (image-only, ≤2 MiB —
+ * enforced server-side and pre-checked in Rust). Resolves with the presigned
+ * avatar URL.
+ */
+export async function uploadCreatorAvatar(filePath: string): Promise<string> {
+  return invoke<string>('upload_creator_avatar', { filePath });
+}
+
+/** Open the native image picker for an avatar. Resolves to the path or `null`. */
+export async function pickAvatarFile(): Promise<string | null> {
+  return invoke<string | null>('pick_avatar_file');
+}
+
+/** Fetch a creator's PUBLIC profile + approved listings for the preview. */
+export async function getCreatorProfile(handle: string): Promise<PublicCreatorPreview> {
+  return invoke<PublicCreatorPreview>('get_creator_profile', { handle: handle.trim() });
+}

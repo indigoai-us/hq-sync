@@ -8,20 +8,30 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 import {
   canApprove,
+  checkHandleFormat,
+  checkHttpUrl,
+  claimCreatorHandle,
   companyInstallTargets,
   decideModerationListing,
   filterListings,
+  getCreatorProfile,
   highlightInstruction,
   isAdminGate,
+  isClaimError,
   isPublishError,
   listingHaystack,
   loadModerationQueue,
   looksNotVerified,
+  pickAvatarFile,
   pickPackDirectory,
   publishMarketplacePack,
   requestCreatorAccess,
+  toClaimError,
   toPublishError,
+  updateCreatorProfile,
+  uploadCreatorAvatar,
   yankMarketplaceListing,
+  type ClaimError,
   type InjectionFlag,
   type InstructionDoc,
   type MarketplaceListing,
@@ -404,5 +414,152 @@ describe('US-013 publish — invoke wiring', () => {
     expect(await pickPackDirectory()).toBe('/Users/me/skills/foo');
     vi.mocked(invoke).mockResolvedValueOnce(null);
     expect(await pickPackDirectory()).toBeNull();
+  });
+});
+
+describe('US-016 — desktop Profile tab', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  // ---- handle format hint (AC3 client-side fast feedback) ----------------
+
+  it('checkHandleFormat accepts a well-formed handle and normalises case/space', () => {
+    expect(checkHandleFormat('  Corey  ')).toEqual({ ok: true, handle: 'corey' });
+    expect(checkHandleFormat('my-handle_1')).toEqual({ ok: true, handle: 'my-handle_1' });
+  });
+
+  it('checkHandleFormat rejects malformed handles with a reason (AC3)', () => {
+    expect(checkHandleFormat('')).toMatchObject({ ok: false });
+    expect(checkHandleFormat('ab')).toMatchObject({ ok: false }); // too short
+    expect(checkHandleFormat('a'.repeat(31))).toMatchObject({ ok: false }); // too long
+    expect(checkHandleFormat('has space')).toMatchObject({ ok: false });
+    expect(checkHandleFormat('Bad!Chars')).toMatchObject({ ok: false });
+    expect(checkHandleFormat('-leading')).toMatchObject({ ok: false });
+    expect(checkHandleFormat('trailing_')).toMatchObject({ ok: false });
+    expect(checkHandleFormat('double--sep')).toMatchObject({ ok: false });
+  });
+
+  // ---- url hint (http(s)-only client hint; server is authoritative) ------
+
+  it('checkHttpUrl treats empty as valid (optional field) and allows http(s)', () => {
+    expect(checkHttpUrl('')).toEqual({ ok: true });
+    expect(checkHttpUrl('  ')).toEqual({ ok: true });
+    expect(checkHttpUrl('https://ko-fi.com/me')).toEqual({ ok: true });
+    expect(checkHttpUrl('http://example.com')).toEqual({ ok: true });
+  });
+
+  it('checkHttpUrl rejects non-http(s) and malformed URLs', () => {
+    // eslint-disable-next-line no-script-url
+    expect(checkHttpUrl('javascript:alert(1)')).toMatchObject({ ok: false });
+    expect(checkHttpUrl('data:text/html,x')).toMatchObject({ ok: false });
+    expect(checkHttpUrl('mailto:me@x.com')).toMatchObject({ ok: false });
+    expect(checkHttpUrl('not a url')).toMatchObject({ ok: false });
+  });
+
+  // ---- claim: taken handle inline feedback (AC3) -------------------------
+
+  it('isClaimError / toClaimError classify a structured taken rejection', () => {
+    const taken: ClaimError = { message: 'taken', code: 'HANDLE_ALREADY_CLAIMED', taken: true };
+    expect(isClaimError(taken)).toBe(true);
+    expect(toClaimError(taken)).toBe(taken);
+    // A bare string / Error is wrapped with taken=false.
+    expect(toClaimError('boom')).toEqual({ message: 'boom', code: '', taken: false });
+    expect(toClaimError(new Error('net'))).toEqual({ message: 'net', code: '', taken: false });
+  });
+
+  it('claimCreatorHandle surfaces a taken handle as an "unavailable" ClaimError (AC3)', async () => {
+    // The Rust command rejects with a structured ClaimError on a 409; the panel
+    // reads `taken` to show "unavailable". Assert the rejection round-trips.
+    vi.mocked(invoke).mockRejectedValueOnce({
+      message: 'That handle is already claimed.',
+      code: 'HANDLE_ALREADY_CLAIMED',
+      taken: true,
+    });
+    await expect(claimCreatorHandle('corey')).rejects.toMatchObject({ taken: true });
+    expect(invoke).toHaveBeenCalledWith('claim_creator_handle', { handle: 'corey' });
+  });
+
+  it('claimCreatorHandle returns the claimed handle on success (claim → edit step)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      handle: 'corey',
+      uid: 'crt_1',
+      createdAt: '2026-06-04T00:00:00Z',
+    });
+    const result = await claimCreatorHandle('  Corey  ');
+    // The handle is trimmed before the call (lowercasing is the server's job).
+    expect(invoke).toHaveBeenCalledWith('claim_creator_handle', { handle: 'Corey' });
+    expect(result.handle).toBe('corey');
+  });
+
+  // ---- profile update: partial body (absent = leave unchanged) -----------
+
+  it('updateCreatorProfile sends only the provided fields, null-padding the rest', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ handle: 'corey', socialLinks: [] });
+    await updateCreatorProfile({ bio: 'I build UIs' });
+    expect(invoke).toHaveBeenCalledWith('update_creator_profile', {
+      bio: 'I build UIs',
+      socialLinks: null,
+      tipUrl: null,
+    });
+  });
+
+  it('updateCreatorProfile forwards socials + tipUrl and returns the merged profile', async () => {
+    const merged = {
+      handle: 'corey',
+      bio: 'hi',
+      tipUrl: 'https://ko-fi.com/corey',
+      socialLinks: [{ label: 'GitHub', url: 'https://github.com/corey' }],
+      avatarUrl: 'https://example.com/a.png',
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(merged);
+    const result = await updateCreatorProfile({
+      bio: 'hi',
+      tipUrl: 'https://ko-fi.com/corey',
+      socialLinks: [{ label: 'GitHub', url: 'https://github.com/corey' }],
+    });
+    expect(invoke).toHaveBeenCalledWith('update_creator_profile', {
+      bio: 'hi',
+      socialLinks: [{ label: 'GitHub', url: 'https://github.com/corey' }],
+      tipUrl: 'https://ko-fi.com/corey',
+    });
+    expect(result.socialLinks).toHaveLength(1);
+    expect(result.avatarUrl).toBe('https://example.com/a.png');
+  });
+
+  // ---- avatar + preview --------------------------------------------------
+
+  it('uploadCreatorAvatar forwards the file path and returns the presigned URL', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce('https://example.com/a.png?sig=x');
+    const url = await uploadCreatorAvatar('/Users/me/face.png');
+    expect(invoke).toHaveBeenCalledWith('upload_creator_avatar', {
+      filePath: '/Users/me/face.png',
+    });
+    expect(url).toBe('https://example.com/a.png?sig=x');
+  });
+
+  it('pickAvatarFile returns the chosen path or null on cancel', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce('/Users/me/face.png');
+    expect(await pickAvatarFile()).toBe('/Users/me/face.png');
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    expect(await pickAvatarFile()).toBeNull();
+  });
+
+  it('getCreatorProfile trims the handle and returns the public preview (AC2)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      creator: {
+        handle: 'corey',
+        displayName: 'Corey',
+        bio: 'I build UIs',
+        socialLinks: [],
+        tipUrl: 'https://ko-fi.com/corey',
+      },
+      listings: [{ id: 'lst_1', name: 'Impeccable', slug: 'impeccable' }],
+    });
+    const preview = await getCreatorProfile('  corey  ');
+    expect(invoke).toHaveBeenCalledWith('get_creator_profile', { handle: 'corey' });
+    expect(preview.creator.handle).toBe('corey');
+    expect(preview.creator.tipUrl).toBe('https://ko-fi.com/corey');
+    expect(preview.listings).toHaveLength(1);
   });
 });
