@@ -114,6 +114,52 @@ struct NotificationDmActionEvent {
 /// Mirrors `PendingShareEvents` in share_notify.rs.
 pub struct PendingDmEvents(pub Mutex<Vec<DmEvent>>);
 
+/// Tauri event emitted when the live unread/request counts change so the
+/// popover Messages badge stays current without its own poller. Payload is
+/// `UnreadSummary` (see messages.rs). Listened for in App.svelte.
+pub const EVENT_DM_UNREAD_SUMMARY: &str = "dm:unread-summary";
+
+/// Managed state: running count of unread DMs since the user last opened the
+/// Messages window. Incremented by the SINGLE `do_poll` path as new DMs land
+/// (no parallel poller) and reset to 0 by `mark_messages_read`. The popover
+/// badge reads this via `get_unread_summary` and stays live off the
+/// `dm:unread-summary` event emitted on every change.
+pub struct UnreadDmState(pub Mutex<u32>);
+
+/// Add `delta` to the running unread-DM count and emit `dm:unread-summary` so
+/// the popover badge updates immediately. Called from `do_poll` (the one
+/// poller). Best-effort: if the request count can't be fetched here we emit the
+/// DM count alone — `get_unread_summary` reconciles requests on next read.
+fn bump_unread(app: &AppHandle, delta: u32) {
+    let Some(state) = app.try_state::<UnreadDmState>() else {
+        return;
+    };
+    let total = {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = guard.saturating_add(delta);
+        *guard
+    };
+    // Emit DM count immediately; pendingRequests is filled in on the next
+    // explicit get_unread_summary (which does a network read). Keeping the
+    // poll path network-free for requests avoids a second fetch per poll.
+    let payload = serde_json::json!({ "unreadDms": total, "pendingRequests": 0u32 });
+    let _ = app.emit(EVENT_DM_UNREAD_SUMMARY, &payload);
+}
+
+/// Read the current unread-DM count from managed state (0 if unset).
+pub fn current_unread_dms(app: &AppHandle) -> u32 {
+    app.try_state::<UnreadDmState>()
+        .map(|s| *s.0.lock().unwrap_or_else(|p| p.into_inner()))
+        .unwrap_or(0)
+}
+
+/// Reset the unread-DM count to 0. Called when the Messages window opens.
+pub fn reset_unread_dms(app: &AppHandle) {
+    if let Some(state) = app.try_state::<UnreadDmState>() {
+        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = 0;
+    }
+}
+
 // ── In-flight guard (separate from share-notify's so they never contend) ────────
 
 static POLL_IN_FLIGHT: OnceLock<Mutex<bool>> = OnceLock::new();
@@ -495,6 +541,12 @@ async fn do_poll(app: &AppHandle) {
         LOG_TAG,
         &format!("DM_NOTIFY_POLL_OK {} DM(s), cursor→{}", body.events.len(), newest),
     );
+
+    // Extend the SINGLE poll path with unread accounting (US-009) — NOT a
+    // parallel poller. Every freshly-polled DM increments the running unread
+    // count and emits `dm:unread-summary` so the popover Messages badge stays
+    // live. The count is reset when the Messages window opens.
+    bump_unread(app, body.events.len() as u32);
 
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
