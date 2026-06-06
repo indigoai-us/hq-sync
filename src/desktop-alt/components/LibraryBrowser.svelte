@@ -18,6 +18,7 @@
   import LibraryList from './LibraryList.svelte';
   import LibraryDetailPanel from './LibraryDetailPanel.svelte';
   import MarketplacePanel from '../panels/MarketplacePanel.svelte';
+  import InstalledPacksPanel from '../panels/InstalledPacksPanel.svelte';
   import SubmitPanel from '../panels/SubmitPanel.svelte';
   import ProfilePanel from '../panels/ProfilePanel.svelte';
 
@@ -32,16 +33,17 @@
 
   let { items, loading = false, error = null }: Props = $props();
 
-  type Filter = 'all' | 'workers' | 'skills' | 'marketplace' | 'submit' | 'profile';
+  type Filter = 'all' | 'workers' | 'skills' | 'installed' | 'marketplace' | 'submit' | 'profile';
   let filter = $state<Filter>('all');
-  // The Marketplace, Submit, and Profile tabs are self-contained surfaces (their
-  // own fetch / forms / detail slide-overs), so the library toolbar's scope
-  // filter and text search don't apply while any is active.
+  // The Installed, Marketplace, Submit, and Profile tabs are self-contained
+  // surfaces (their own fetch / forms / detail slide-overs), so the library
+  // toolbar's scope filter and text search don't apply while any is active.
+  const isInstalled = $derived(filter === 'installed');
   const isMarketplace = $derived(filter === 'marketplace');
   const isSubmit = $derived(filter === 'submit');
   const isProfile = $derived(filter === 'profile');
   // Tabs that own their full body (no shared toolbar search / scope filter).
-  const isStandaloneTab = $derived(isMarketplace || isSubmit || isProfile);
+  const isStandaloneTab = $derived(isInstalled || isMarketplace || isSubmit || isProfile);
   let query = $state('');
   let selected = $state<LibraryItem | null>(null);
 
@@ -98,6 +100,7 @@
     { id: 'all', label: 'All' },
     { id: 'workers', label: 'Workers' },
     { id: 'skills', label: 'Skills' },
+    { id: 'installed', label: 'Installed' },
     { id: 'marketplace', label: 'Marketplace' },
     { id: 'submit', label: 'Submit' },
     { id: 'profile', label: 'Profile' },
@@ -209,7 +212,9 @@
     </div>
   </div>
 
-  {#if isMarketplace}
+  {#if isInstalled}
+    <InstalledPacksPanel />
+  {:else if isMarketplace}
     <MarketplacePanel />
   {:else if isSubmit}
     <SubmitPanel />
