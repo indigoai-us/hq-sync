@@ -214,6 +214,50 @@ pub async fn meetings_list_active_detections() -> Result<Vec<MeetingDetectedEven
     Ok(active_detections_snapshot())
 }
 
+/// One in-flight recording from the on-disk recordings ledger, surfaced to the
+/// renderer (serde camelCase). Lets a window opened *after* `recording:started`
+/// fired — the on-demand desktop-alt window — seed the `recording` state it
+/// missed by never having a listener attached when the live event went out.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveRecording {
+    pub window_id: String,
+    pub recording_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    pub started_at: String,
+}
+
+/// Pure mapping: recordings ledger (`windowId` → entry) → renderer rows. Split
+/// out so the command stays a thin I/O wrapper and the shape is unit-testable.
+fn active_recordings_from_ledger(
+    ledger: recordings_ledger::RecordingsLedger,
+) -> Vec<ActiveRecording> {
+    ledger
+        .into_iter()
+        .map(|(window_id, entry)| ActiveRecording {
+            window_id,
+            recording_id: entry.recording_id,
+            company_uid: entry.company_uid,
+            started_at: entry.started_at,
+        })
+        .collect()
+}
+
+/// List the recordings currently in flight, read from the on-disk recordings
+/// ledger (`~/.hq/recordings-ledger.json`). Complements
+/// `meetings_list_active_detections`: detections seed *detected* rows, this
+/// seeds *recording* rows so a window opened after a recording began (e.g. the
+/// on-demand desktop-alt window, which missed the live `recording:started`)
+/// shows it as Recording rather than a stale Detected. Fail-soft to empty — a
+/// missing or corrupt ledger must never blank the Meetings UX.
+#[tauri::command]
+pub async fn meetings_list_active_recordings() -> Result<Vec<ActiveRecording>, String> {
+    Ok(active_recordings_from_ledger(
+        recordings_ledger::read_ledger().unwrap_or_default(),
+    ))
+}
+
 /// Look up the retained detection for `window_id` and return its meeting URL +
 /// source event id — the two inputs to the notify-ledger stable key.
 ///
@@ -1396,6 +1440,67 @@ mod tests {
         assert!(
             env.contains_key("PATH"),
             "spawn env should still set PATH for the launchd minimal-PATH context"
+        );
+    }
+
+    #[test]
+    fn active_recordings_from_ledger_maps_every_entry() {
+        // Regression for the desktop-alt "stuck on Detected" bug: the on-demand
+        // window seeds recording state from this mapping (via
+        // `meetings_list_active_recordings`), so a recording started *before* the
+        // window opened — which missed the live `recording:started` event — shows
+        // as Recording, not a stale Detected.
+        use crate::util::recordings_ledger::{RecordingEntry, RecordingsLedger};
+        let mut ledger: RecordingsLedger = std::collections::HashMap::new();
+        ledger.insert(
+            "win-1".to_string(),
+            RecordingEntry {
+                recording_id: "rec_1".to_string(),
+                company_uid: Some("cmp_1".to_string()),
+                started_at: "2026-06-06T14:57:05Z".to_string(),
+            },
+        );
+        ledger.insert(
+            "win-2".to_string(),
+            RecordingEntry {
+                recording_id: "rec_2".to_string(),
+                company_uid: None,
+                started_at: "2026-06-06T15:00:00Z".to_string(),
+            },
+        );
+        let mut rows = active_recordings_from_ledger(ledger);
+        rows.sort_by(|a, b| a.window_id.cmp(&b.window_id));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].window_id, "win-1");
+        assert_eq!(rows[0].recording_id, "rec_1");
+        assert_eq!(rows[0].company_uid.as_deref(), Some("cmp_1"));
+        assert_eq!(rows[1].window_id, "win-2");
+        assert_eq!(rows[1].company_uid, None);
+    }
+
+    #[test]
+    fn active_recordings_from_empty_ledger_is_empty() {
+        let rows = active_recordings_from_ledger(std::collections::HashMap::new());
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn active_recording_serializes_camelcase() {
+        // The renderer (activeMeetings.ts `BackendActiveRecording`) reads
+        // camelCase keys: windowId / recordingId / companyUid / startedAt.
+        let row = ActiveRecording {
+            window_id: "win-1".to_string(),
+            recording_id: "rec_1".to_string(),
+            company_uid: Some("cmp_1".to_string()),
+            started_at: "2026-06-06T14:57:05Z".to_string(),
+        };
+        let json = serde_json::to_string(&row).expect("serialize");
+        assert!(json.contains("\"windowId\":\"win-1\""), "json: {json}");
+        assert!(json.contains("\"recordingId\":\"rec_1\""), "json: {json}");
+        assert!(json.contains("\"companyUid\":\"cmp_1\""), "json: {json}");
+        assert!(
+            json.contains("\"startedAt\":\"2026-06-06T14:57:05Z\""),
+            "json: {json}"
         );
     }
 

@@ -305,6 +305,7 @@ fn main() {
             commands::recall_sdk::start_recording,
             commands::recall_sdk::stop_recording,
             commands::recall_sdk::meetings_list_active_detections,
+            commands::recall_sdk::meetings_list_active_recordings,
             tray::meetings_set_prompt_badge,
             commands::desktop_alt::open_desktop_alt_window,
             commands::desktop_alt::desktop_alt_consume_pending_route,
