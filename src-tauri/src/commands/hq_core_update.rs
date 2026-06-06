@@ -42,7 +42,6 @@
 use std::time::Duration;
 
 use serde::Deserialize;
-use tauri::AppHandle;
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::logfile::log;
@@ -219,10 +218,10 @@ pub fn get_hq_version() -> Option<String> {
 /// release feed (`RELEASES_URL` above) is already pinned.
 const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 
-/// Tauri command — prod-user "Update" action. Spawns the bundled
-/// `replace-rescue.sh` against `indigoai-us/hq-core` at the latest
-/// release tag (`v{latest}`), replacing the old "open Claude Code with
-/// /update-hq" CTA.
+/// Tauri command — prod-user "Update" action. Runs hq-cloud's `hq-rescue`
+/// bin (via npx, pinned to `HQ_CLOUD_VERSION`) against `indigoai-us/hq-core`
+/// at the latest release tag (`v{latest}`), replacing the old "open Claude
+/// Code with /update-hq" CTA.
 ///
 /// Shape mirrors `hq_core_staging::run_replace_from_staging`:
 ///   1. Resolve the HQ folder via the standard 4-tier resolver. Bail if it
@@ -230,17 +229,16 @@ const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 ///      rescue script depends on `personal/` as the drift override target,
 ///      so failing fast here gives a clean error instead of an opaque
 ///      bash exit-3.
-///   2. Resolve the bundled rescue script via Tauri's resource API.
-///   3. Refetch the latest release tag from GitHub. We don't trust the
+///   2. Refetch the latest release tag from GitHub. We don't trust the
 ///      frontend-supplied value — it may be stale (last background check
 ///      ran 6h ago) and the operation is heavyweight enough that the
 ///      extra round-trip is negligible.
-///   4. Spawn `bash <script> --hq-root <folder> --source indigoai-us/hq-core
-///      --ref v{latest} --yes`. GH token is forwarded via `GH_TOKEN` env
-///      when available — public repo doesn't strictly need it, but having
-///      one dodges the 60/h anonymous-clone rate limit during the
-///      history-index walk.
-///   5. Return the same `RescueRunResult` shape (exit code + 40-line log
+///   3. Spawn `npx -y --package=@indigoai-us/hq-cloud@<pin> hq-rescue
+///      --hq-root <folder> --source indigoai-us/hq-core --ref v{latest}
+///      --yes`. GH token is forwarded via `GH_TOKEN` env when available —
+///      public repo doesn't strictly need it, but having one dodges the
+///      60/h anonymous-clone rate limit during the history-index walk.
+///   4. Return the same `RescueRunResult` shape (exit code + 40-line log
 ///      tail + log path) so the frontend can reuse the staging pill's
 ///      result-chip UI verbatim.
 ///
@@ -249,7 +247,6 @@ const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 /// future is pending.
 #[tauri::command]
 pub async fn install_hq_core_update(
-    app: AppHandle,
 ) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
     let hq_folder = crate::commands::hq_core_staging::resolve_hq_folder();
     if !hq_folder.join("companies").is_dir() || !hq_folder.join("personal").is_dir() {
@@ -258,7 +255,6 @@ pub async fn install_hq_core_update(
             hq_folder.display()
         ));
     }
-    let script = crate::commands::hq_core_staging::resolve_rescue_script(&app).await?;
 
     let latest = fetch_latest()
         .await
@@ -333,8 +329,8 @@ pub async fn install_hq_core_update(
     log(
         "hq-core-update",
         &format!(
-            "spawning rescue (prod): script={} hq_root={} repo={} ref={} floor_sha={} log={}",
-            script.display(),
+            "spawning rescue (prod): hq-cloud@{} hq_root={} repo={} ref={} floor_sha={} log={}",
+            crate::commands::sync::HQ_CLOUD_VERSION,
             hq_folder.display(),
             PROD_HQ_CORE_REPO,
             git_ref,
@@ -343,10 +339,8 @@ pub async fn install_hq_core_update(
         ),
     );
 
-    let bash = paths::resolve_bin("bash");
-    let mut cmd = tokio::process::Command::new(&bash);
-    cmd.arg(script.as_os_str())
-        .arg("--hq-root")
+    let mut cmd = crate::commands::hq_core_staging::rescue_command();
+    cmd.arg("--hq-root")
         .arg(hq_folder.as_os_str())
         .arg("--source")
         .arg(PROD_HQ_CORE_REPO)

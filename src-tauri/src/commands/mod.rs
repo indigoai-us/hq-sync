@@ -35,7 +35,6 @@ pub mod process;
 pub mod projects_local;
 pub mod provision;
 pub mod recall_sdk;
-pub mod rescue_script_cache;
 pub mod run_cli_provision;
 pub mod settings;
 pub mod share_notify;
