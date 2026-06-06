@@ -37,6 +37,7 @@
   } from './lib/meetings-model';
   import {
     emptyWorkspaceStats,
+    friendlySyncError,
     type ActivityEntry,
     type DaemonStatus,
     type SyncCompanyRef,
@@ -194,7 +195,13 @@
       };
     }
     if (syncState === 'error' || syncState === 'auth-error') {
-      return { tone: 'error', word: 'Sync error', counts: syncErrorMessage || 'check your connection' };
+      return {
+        tone: 'error',
+        word: 'Sync error',
+        counts: syncErrorMessage
+          ? friendlySyncError(syncErrorMessage).summary
+          : 'check your connection',
+      };
     }
     if (syncState === 'conflict') {
       return { tone: 'conflict', word: 'Needs attention', counts: 'resolve conflicts to continue' };

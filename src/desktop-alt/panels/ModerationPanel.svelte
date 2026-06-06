@@ -57,6 +57,21 @@
 
   const selected = $derived(queue.find((q) => q.id === selectedId) ?? null);
 
+  // An admin who isn't a designated server-side moderator gets an EXPECTED 403
+  // from the queue endpoint. That's an authorization state, not a crash — render
+  // it calmly rather than in alarming `.result.fail` styling. Genuine errors
+  // (network, parse, etc.) keep the loud treatment.
+  const queueAuthError = $derived.by(() => {
+    if (!queueError) return false;
+    const msg = queueError.toLowerCase();
+    return (
+      msg.includes('not authorized') ||
+      msg.includes('admin only') ||
+      msg.includes('forbidden') ||
+      msg.includes('403')
+    );
+  });
+
   // Per-item review state, keyed by listing id, so switching selection doesn't
   // leak one item's ack/note onto another.
   let acknowledged = $state(false);
@@ -261,6 +276,11 @@
 
       {#if queueLoading}
         <p class="muted-line" data-testid="moderation-queue-loading">Loading queue…</p>
+      {:else if queueError && queueAuthError}
+        <p class="queue-note" data-testid="moderation-queue-error">
+          You can open Moderation, but reviewing the queue needs server-side
+          moderator access.
+        </p>
       {:else if queueError}
         <p class="result fail" role="alert" data-testid="moderation-queue-error">
           ✗ {queueError}
@@ -618,6 +638,19 @@
     font-size: var(--text-base);
   }
 
+  /* Calm informational note for the EXPECTED admin-without-moderator-access
+     state — muted, subtle bordered box, not the loud `.result.fail` red. */
+  .queue-note {
+    margin: var(--space-1) 0 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--muted-2);
+    font-size: var(--text-base);
+    line-height: 18px;
+  }
+
   .decided {
     margin: 0;
     color: var(--green, #2faf6a);
@@ -939,25 +972,38 @@
     color: var(--muted-2);
     font-size: var(--text-micro);
     line-height: 16px;
+    /* Wrap long text instead of clipping it on the right (GA polish). */
+    min-width: 0;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   .yank-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     margin-top: var(--space-2);
     width: 100%;
-    height: 34px;
+    min-height: 32px;
+    padding: 0 var(--space-3);
     border: 1px solid var(--amber);
     border-radius: 4px;
-    background: var(--amber);
-    color: #1a1205;
-    font: inherit;
+    background: color-mix(in srgb, var(--amber) 16%, transparent);
+    color: var(--amber);
+    font-family: var(--font-display);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
+    line-height: 1;
     cursor: pointer;
-    transition: filter 140ms ease;
+    transition:
+      background 140ms ease,
+      filter 140ms ease;
   }
 
   .yank-button:hover:not(:disabled) {
-    filter: brightness(1.06);
+    background: color-mix(in srgb, var(--amber) 24%, transparent);
   }
 
   .yank-button:focus-visible {
