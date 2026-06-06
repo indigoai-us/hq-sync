@@ -599,7 +599,6 @@
   style={`--desktop-sidebar-width: ${DESKTOP_SHELL_LAYOUT.sidebarWidthPx}px; --desktop-titlebar-height: ${DESKTOP_SHELL_LAYOUT.titleBarHeightPx}px; --desktop-status-bar-height: ${DESKTOP_SHELL_LAYOUT.statusBarHeightPx}px;`}
 >
   <header class="desktop-titlebar" data-tauri-drag-region aria-label="Sync status">
-    <div class="titlebar-traffic" aria-hidden="true"><span></span><span></span><span></span></div>
     <div class="titlebar-verdict">
       <span class={`verdict-dot ${verdict.tone}`} aria-hidden="true"></span>
       <span class="verdict-word">{verdict.word}</span>

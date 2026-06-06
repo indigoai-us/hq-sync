@@ -511,18 +511,19 @@ html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
 }
 
 /* ---- Title bar verdict (always-visible sync status). ------------------- */
-.titlebar-traffic {
-  display: flex;
-  gap: 8px;
-  margin-left: -62px;
-  padding-right: 8px;
+/* The whole title bar is a drag handle (data-tauri-drag-region on the header).
+   Child elements would otherwise swallow the drag, so every non-interactive
+   element falls through; only the Sync Now button opts back in. The real macOS
+   traffic lights (TitleBarStyle::Overlay) live in the 78px left inset — we draw
+   no fake dots, which previously clashed with them as offset "shadow" circles. */
+.desktop-titlebar > *,
+.desktop-titlebar .titlebar-verdict > *,
+.desktop-titlebar .titlebar-meta > * {
+  pointer-events: none;
 }
 
-.titlebar-traffic span {
-  width: 11px;
-  height: 11px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.14);
+.desktop-titlebar .titlebar-sync-now {
+  pointer-events: auto;
 }
 
 .titlebar-verdict {
