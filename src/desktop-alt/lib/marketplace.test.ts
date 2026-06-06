@@ -12,6 +12,7 @@ import {
   checkHttpUrl,
   claimCreatorHandle,
   companyInstallTargets,
+  decideCreatorApplication,
   decideModerationListing,
   filterListings,
   getCreatorProfile,
@@ -20,7 +21,10 @@ import {
   isClaimError,
   isPublishError,
   listingHaystack,
+  loadCreatorApplications,
   loadModerationQueue,
+  loadMyCreator,
+  looksApplicationPending,
   looksNotVerified,
   pickAvatarFile,
   pickPackDirectory,
@@ -311,6 +315,90 @@ describe('loadModerationQueue / decideModerationListing — invoke shapes', () =
   });
 });
 
+// ===========================================================================
+// Creator-application review funnel — admin queue + approve/deny.
+// ===========================================================================
+
+describe('loadCreatorApplications / decideCreatorApplication — invoke shapes', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('loads the applications queue via the authed command', async () => {
+    vi.mocked(invoke).mockResolvedValue([]);
+    await loadCreatorApplications();
+    expect(invoke).toHaveBeenCalledWith('list_creator_applications');
+  });
+
+  it('forwards a non-admin server rejection so the Requests view can lock', async () => {
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('not authorized to view creator applications (admin only)'),
+    );
+    await expect(loadCreatorApplications()).rejects.toThrow(/admin only/i);
+  });
+
+  it('approve forwards the decision with a null note', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      applicationId: 'app_1',
+      status: 'approved',
+      reviewedBy: 'corey@getindigo.ai',
+      reviewedAt: '2026-06-05T00:00:00Z',
+    });
+    const res = await decideCreatorApplication('app_1', 'approve');
+    expect(invoke).toHaveBeenCalledWith('decide_creator_application', {
+      id: 'app_1',
+      decision: 'approve',
+      note: null,
+    });
+    expect(res.status).toBe('approved');
+  });
+
+  it('deny forwards the trimmed note', async () => {
+    vi.mocked(invoke).mockResolvedValue({
+      applicationId: 'app_1',
+      status: 'denied',
+      reviewedBy: '',
+      reviewedAt: '',
+    });
+    await decideCreatorApplication('app_1', 'deny', '  spammy pitch  ');
+    expect(invoke).toHaveBeenCalledWith('decide_creator_application', {
+      id: 'app_1',
+      decision: 'deny',
+      note: 'spammy pitch',
+    });
+  });
+
+  it('surfaces a 404 (no entity row to approve) from the server', async () => {
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('applicant has no entity record to approve (they may need to sign in first)'),
+    );
+    await expect(decideCreatorApplication('app_1', 'approve')).rejects.toThrow(
+      /entity record/i,
+    );
+  });
+
+  it('surfaces a 409 (already decided) from the server', async () => {
+    vi.mocked(invoke).mockRejectedValue(
+      new Error('this application was already decided (refresh the queue)'),
+    );
+    await expect(decideCreatorApplication('app_1', 'deny', 'no')).rejects.toThrow(
+      /already decided/i,
+    );
+  });
+});
+
+describe('looksApplicationPending — 409 duplicate classifier', () => {
+  it('flags the APPLICATION_PENDING / pending-application messages', () => {
+    expect(looksApplicationPending('APPLICATION_PENDING')).toBe(true);
+    expect(looksApplicationPending('You already have a pending application.')).toBe(true);
+  });
+
+  it('does NOT flag ordinary errors', () => {
+    expect(looksApplicationPending('Network error: connection reset')).toBe(false);
+    expect(looksApplicationPending('sign in required to request creator access')).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // US-013 — desktop Submit tab (publish + request-access).
 // ---------------------------------------------------------------------------
@@ -397,17 +485,23 @@ describe('US-013 publish — invoke wiring', () => {
     expect(toPublishError(caught).notVerified).toBe(true);
   });
 
-  it('requestCreatorAccess trims the reason and returns the server message (AC3)', async () => {
+  it('requestCreatorAccess trims the reason + handle and returns the server message (AC3)', async () => {
     vi.mocked(invoke).mockResolvedValue('We got your request.');
-    const msg = await requestCreatorAccess('  please  ');
-    expect(invoke).toHaveBeenCalledWith('request_creator_access', { reason: 'please' });
+    const msg = await requestCreatorAccess('  please  ', '  corey  ');
+    expect(invoke).toHaveBeenCalledWith('request_creator_access', {
+      reason: 'please',
+      handle: 'corey',
+    });
     expect(msg).toBe('We got your request.');
   });
 
-  it('requestCreatorAccess sends null for an empty reason', async () => {
+  it('requestCreatorAccess sends null for an empty reason + omitted handle', async () => {
     vi.mocked(invoke).mockResolvedValue('ok');
     await requestCreatorAccess('   ');
-    expect(invoke).toHaveBeenCalledWith('request_creator_access', { reason: null });
+    expect(invoke).toHaveBeenCalledWith('request_creator_access', {
+      reason: null,
+      handle: null,
+    });
   });
 
   it('pickPackDirectory returns the chosen path (or null on cancel)', async () => {
@@ -596,5 +690,51 @@ describe('US-016 — desktop Profile tab', () => {
     expect(preview.creator.handle).toBe('corey');
     expect(preview.creator.tipUrl).toBe('https://ko-fi.com/corey');
     expect(preview.listings).toHaveLength(1);
+  });
+});
+
+describe('loadMyCreator — prefill the Profile tab from GET /v1/creators/me', () => {
+  beforeEach(() => vi.mocked(invoke).mockReset());
+
+  it('invokes get_my_creator and returns the creator on success', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      handle: 'corey',
+      displayName: 'Corey',
+      bio: 'I build UIs',
+      socialLinks: [{ label: 'GitHub', url: 'https://github.com/corey' }],
+      tipUrl: 'https://ko-fi.com/corey',
+      avatarUrl: 'https://example.com/a.png?sig=x',
+    });
+    const me = await loadMyCreator();
+    expect(invoke).toHaveBeenCalledWith('get_my_creator');
+    expect(me).not.toBeNull();
+    expect(me?.handle).toBe('corey');
+    expect(me?.displayName).toBe('Corey');
+    expect(me?.socialLinks).toHaveLength(1);
+    expect(me?.avatarUrl).toBe('https://example.com/a.png?sig=x');
+  });
+
+  it('returns null when the command yields null (no claimed handle)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    expect(await loadMyCreator()).toBeNull();
+  });
+
+  it('returns null when the command yields undefined', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    expect(await loadMyCreator()).toBeNull();
+  });
+
+  it('treats a NO_CREATOR-coded body as null (degrades gracefully)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 'NO_CREATOR' });
+    expect(await loadMyCreator()).toBeNull();
+  });
+
+  it('propagates a real error so the caller can decide (panel falls back)', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(
+      'signed out — sign in to manage your creator profile',
+    );
+    await expect(loadMyCreator()).rejects.toBe(
+      'signed out — sign in to manage your creator profile',
+    );
   });
 });

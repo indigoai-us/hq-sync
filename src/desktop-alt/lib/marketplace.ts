@@ -499,11 +499,92 @@ export async function pickPackDirectory(): Promise<string | null> {
 
 /**
  * Request verified-creator access (the unverified Submit affordance, US-011).
- * Returns the server's human guidance message.
+ * Forwards the applicant's pitch (`reason`) and an optional `handle` to the
+ * authed Rust `request_creator_access` command, which POSTs
+ * `/v1/creators/request-access` (`{ reason, handle? }`). Returns the server's
+ * human guidance message on success.
+ *
+ * A 409 `APPLICATION_PENDING` (the applicant already has a pending application)
+ * is surfaced by the Rust command as a rejection whose message matches
+ * `looksApplicationPending` — the panel reads that to render the duplicate state.
  */
-export async function requestCreatorAccess(reason?: string | null): Promise<string> {
+export async function requestCreatorAccess(
+  reason?: string | null,
+  handle?: string | null,
+): Promise<string> {
   return invoke<string>('request_creator_access', {
     reason: reason?.trim() ? reason.trim() : null,
+    handle: handle?.trim() ? handle.trim() : null,
+  });
+}
+
+/**
+ * Pure classifier: does this error text describe the "already have a pending
+ * application" (409 `APPLICATION_PENDING`) state? Lets the Submit panel render a
+ * calm duplicate notice instead of an alarming error. Case-insensitive.
+ */
+export function looksApplicationPending(message: string): boolean {
+  const m = message.toLowerCase();
+  return m.includes('application_pending') || m.includes('pending application');
+}
+
+// ---------------------------------------------------------------------------
+// Creator-application review funnel — admin queue + approve/deny.
+// ---------------------------------------------------------------------------
+
+/** One pending creator-access application (mirrors Rust `CreatorApplication`). */
+export interface CreatorApplication {
+  /** Stable application id — the decide key. */
+  applicationId: string;
+  /** The applicant's internal person uid (opaque to the UI). */
+  applicantUid: string;
+  /** The applicant's email (the primary display key in the queue row). */
+  applicantEmail: string;
+  /** The handle the applicant wants, when supplied. */
+  handle: string;
+  /** The applicant's pitch (why they want creator access). */
+  reason: string;
+  /** Application status — `pending` for everything in this queue. */
+  status: string;
+  /** ISO-8601 submission timestamp (queue order, oldest-first). */
+  submittedAt: string;
+}
+
+/** Outcome of an application decision (mirrors Rust `ApplicationDecisionResult`). */
+export interface ApplicationDecisionResult {
+  applicationId: string;
+  /** `"approved"` | `"denied"` on success (server-reported). */
+  status: string;
+  reviewedBy: string;
+  reviewedAt: string;
+}
+
+/** The reviewer's application decision verb. */
+export type ApplicationDecision = 'approve' | 'deny';
+
+/**
+ * Load pending creator-access applications (admin-gated SERVER-SIDE; a non-admin
+ * gets a clear "admin only" error so the panel locks its Requests view). The UI
+ * admin gate (`isAdminGate`) is UX only — this is not the authorization boundary.
+ */
+export async function loadCreatorApplications(): Promise<CreatorApplication[]> {
+  return invoke<CreatorApplication[]>('list_creator_applications');
+}
+
+/**
+ * Approve or deny a pending application. `note` is optional (recorded for audit;
+ * conventionally required by the UI for a deny). On success the row is dropped
+ * from the local queue.
+ */
+export async function decideCreatorApplication(
+  id: string,
+  decision: ApplicationDecision,
+  note?: string | null,
+): Promise<ApplicationDecisionResult> {
+  return invoke<ApplicationDecisionResult>('decide_creator_application', {
+    id,
+    decision,
+    note: note?.trim() ? note.trim() : null,
   });
 }
 
@@ -685,4 +766,46 @@ export async function pickAvatarFile(): Promise<string | null> {
 /** Fetch a creator's PUBLIC profile + approved listings for the preview. */
 export async function getCreatorProfile(handle: string): Promise<PublicCreatorPreview> {
   return invoke<PublicCreatorPreview>('get_creator_profile', { handle: handle.trim() });
+}
+
+/**
+ * The signed-in caller's OWN claimed creator profile (the `creator` object the
+ * authed `GET /v1/creators/me` returns). Mirrors the Rust `MyCreator` 1:1 — used
+ * to PREFILL the Profile tab's edit step so a creator who already claimed a
+ * handle never sees the "Claim your creator handle" step again.
+ */
+export interface MyCreator {
+  /** The caller's claimed handle (always present). */
+  handle: string;
+  /** Display name, when set (nullable per the contract). */
+  displayName?: string | null;
+  /** Short bio, when set. */
+  bio?: string | null;
+  /** Validated social links (always an array; possibly empty). */
+  socialLinks: SocialLink[];
+  /** Sponsor/tip link, when set. */
+  tipUrl?: string | null;
+  /** Presigned avatar GET URL, when set. */
+  avatarUrl?: string | null;
+}
+
+/**
+ * Read the signed-in caller's own claimed creator profile, if any. The Rust
+ * `get_my_creator` command returns `null` (not an error) when the caller has not
+ * claimed a handle — either a 404 or a `{code:"NO_CREATOR"}` body — so this
+ * resolves to `null` in that case and to the `MyCreator` otherwise.
+ *
+ * Built to DEGRADE GRACEFULLY: the Profile tab treats both `null` AND any thrown
+ * error as "show the claim step", so an error never blocks the panel (and this
+ * is safe to ship before the backend endpoint exists). This helper itself does
+ * NOT swallow errors — it only maps the explicit no-creator signal to `null` —
+ * so the caller decides how to handle a real failure.
+ */
+export async function loadMyCreator(): Promise<MyCreator | null> {
+  const me = await invoke<MyCreator | null>('get_my_creator');
+  // Defense-in-depth: the Rust side maps NO_CREATOR/404 to null, but if a future
+  // server echoes the code through a 200 body, still treat it as "not claimed".
+  if (me === null || me === undefined) return null;
+  if ((me as { code?: unknown }).code === 'NO_CREATOR') return null;
+  return me;
 }

@@ -1413,20 +1413,34 @@ pub async fn pick_pack_directory() -> Result<Option<String>, String> {
 }
 
 /// Request verified-creator access (the unverified Submit affordance, US-011).
-/// POSTs `/v1/creators/request-access` with the caller's bearer token and an
-/// optional reason; returns the server's human guidance message. The server
-/// records the request and an Indigo admin reviews it out-of-band.
+/// POSTs `/v1/creators/request-access` with the caller's bearer token, a required
+/// `reason` (the applicant's pitch), and an optional `handle`; returns the
+/// server's human guidance message. The server records the application and an
+/// Indigo admin reviews it out-of-band (the creator-application review funnel).
+///
+/// The wire contract is `{ reason: string, handle?: string }`. The server replies
+/// 202 `{ status, code, applicationId, requestAccessPath }` on first submission,
+/// or 409 `{ code: "APPLICATION_PENDING", error, applicationId }` when the caller
+/// already has a pending application — the parser surfaces that as a clear
+/// "already pending" message so the panel can render the duplicate state.
 #[tauri::command]
-pub async fn request_creator_access(reason: Option<String>) -> Result<String, String> {
+pub async fn request_creator_access(
+    reason: Option<String>,
+    handle: Option<String>,
+) -> Result<String, String> {
     let base = api_base()?;
     let url = format!("{base}/v1/creators/request-access");
     let jwt = resolve_jwt().await?;
 
     let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
-    let body = match &reason {
+    let handle = handle.map(|h| h.trim().to_string()).filter(|h| !h.is_empty());
+    let mut body = match &reason {
         Some(r) => serde_json::json!({ "reason": r }),
         None => serde_json::json!({}),
     };
+    if let Some(h) = &handle {
+        body["handle"] = serde_json::Value::String(h.clone());
+    }
 
     let res = build_client()
         .post(&url)
@@ -1445,10 +1459,23 @@ pub async fn request_creator_access(reason: Option<String>) -> Result<String, St
 }
 
 /// Pure parser for the request-access endpoint. The server returns 202 with a
-/// `{ message }` on success; surface that message (or a sensible default).
+/// `{ status, code, applicationId, requestAccessPath }` on success — we surface a
+/// human confirmation. A 409 `{ code: "APPLICATION_PENDING", error, … }` means an
+/// application is already pending; surface a clear "already pending" message so
+/// the panel renders the duplicate state instead of an alarming error.
 fn parse_request_access_response(status: StatusCode, text: &str) -> Result<String, String> {
     if status == StatusCode::UNAUTHORIZED {
         return Err("sign in required to request creator access".to_string());
+    }
+    if status == StatusCode::CONFLICT {
+        // Prefer the server's `error` message; else a stable default the panel
+        // can match on (`looksApplicationPending` / case-insensitive "pending").
+        let msg = serde_json::from_str::<serde_json::Value>(text.trim())
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| "You already have a pending application.".to_string());
+        return Err(msg);
     }
     if !status.is_success() {
         return Err(format!("request-access HTTP {status}: {text}"));
@@ -1467,6 +1494,253 @@ fn parse_request_access_response(status: StatusCode, text: &str) -> Result<Strin
         .filter(|m| !m.is_empty())
         .map(String::from)
         .unwrap_or(default))
+}
+
+// =============================================================================
+// Creator-application review funnel — admin queue + approve/deny
+// =============================================================================
+//
+// Backs the desktop-alt ModerationPanel's "Requests" sub-view. Calls the
+// JWT-authed, admin-gated hq-pro creator-application routes:
+//
+//   * `GET  /v1/creators/applications`        → pending applications, oldest-first,
+//     each carrying the applicant's email + handle + pitch (reason) + submittedAt.
+//   * `POST /v1/creators/applications/{id}`   → approve | deny (+ optional note).
+//     200 `{ applicationId, status, reviewedBy, reviewedAt }`; 404 when an approve
+//     has no entity row to flip; 409 when the application isn't pending anymore.
+//
+// As with the moderation queue the SERVER is the sole authorization boundary: we
+// attach the caller's bearer token and relay the outcome. A non-admin token gets
+// a 403 (surfaced as a clear "admin only" error so the panel can lock its
+// Requests view). This command never makes its own admin decision.
+
+/// One pending creator-access application as returned by the admin list route.
+/// Mirrors the hq-pro wire shape 1:1 (camelCase).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatorApplication {
+    /// Stable application id — the key the decide command takes.
+    pub application_id: String,
+    /// The applicant's internal person uid (opaque to the UI).
+    #[serde(default)]
+    pub applicant_uid: String,
+    /// The applicant's email (the primary display key in the queue row).
+    #[serde(default)]
+    pub applicant_email: String,
+    /// The handle the applicant wants, when they supplied one.
+    #[serde(default)]
+    pub handle: String,
+    /// The applicant's pitch (why they want creator access).
+    #[serde(default)]
+    pub reason: String,
+    /// Application status — `pending` for everything in this queue.
+    #[serde(default)]
+    pub status: String,
+    /// ISO-8601 submission timestamp (queue is ordered oldest-first by this).
+    #[serde(default)]
+    pub submitted_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplicationsEnvelope {
+    #[serde(default)]
+    applications: Vec<CreatorApplication>,
+}
+
+/// Outcome of an application decision — the new status as the server reports it,
+/// plus the reviewer + review timestamp echoed back. Mirrors the TS type 1:1.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationDecisionResult {
+    pub application_id: String,
+    /// `"approved"` | `"denied"` on success (server-reported).
+    pub status: String,
+    #[serde(default)]
+    pub reviewed_by: String,
+    #[serde(default)]
+    pub reviewed_at: String,
+}
+
+/// The reviewer's application decision. Mirrored 1:1 by the TS union.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplicationDecision {
+    Approve,
+    Deny,
+}
+
+impl ApplicationDecision {
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "approve" | "approved" => Ok(ApplicationDecision::Approve),
+            "deny" | "denied" => Ok(ApplicationDecision::Deny),
+            other => Err(format!("invalid application decision: {other:?}")),
+        }
+    }
+
+    fn wire(self) -> &'static str {
+        match self {
+            ApplicationDecision::Approve => "approve",
+            ApplicationDecision::Deny => "deny",
+        }
+    }
+}
+
+/// List pending creator-access applications (admin-gated SERVER-SIDE). We attach
+/// the caller's bearer token and relay the outcome; a non-admin gets a 403
+/// (surfaced as a clear "admin only" error so the panel locks its Requests view).
+#[tauri::command]
+pub async fn list_creator_applications() -> Result<Vec<CreatorApplication>, String> {
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/applications");
+    let jwt = resolve_jwt().await?;
+
+    let res = build_client()
+        .get(&url)
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .map_err(|e| format!("creator applications fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("creator applications read: {e}"))?;
+
+    parse_creator_applications_response(status, &text)
+}
+
+/// Approve or deny a pending creator-access application (admin-gated server-side).
+/// `note` is optional (recorded for the audit trail). On approve the applicant
+/// becomes a verified creator; on deny the application is closed. Maps the server
+/// statuses: 401 → sign-in required, 403 → admin only, 404 → applicant has no
+/// entity row (approve), 409 → the application is no longer pending.
+#[tauri::command]
+pub async fn decide_creator_application(
+    id: String,
+    decision: String,
+    note: Option<String>,
+) -> Result<ApplicationDecisionResult, String> {
+    let id = id.trim();
+    if !is_safe_id(id) {
+        return Err(format!("invalid application id: {id:?}"));
+    }
+    let decision = ApplicationDecision::from_str(&decision)?;
+    let note = note.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/applications/{id}");
+    let jwt = resolve_jwt().await?;
+
+    let mut body = serde_json::json!({ "decision": decision.wire() });
+    if let Some(n) = &note {
+        body["note"] = serde_json::Value::String(n.clone());
+    }
+
+    let res = build_client()
+        .post(&url)
+        .bearer_auth(&jwt)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("creator application decide request: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("creator application decide read: {e}"))?;
+
+    parse_application_decision_response(id, decision, status, &text)
+}
+
+/// Pure parser for the applications list endpoint. 403 → a clear admin-only
+/// message (so the panel's Requests view locks); 401 → sign-in required.
+/// Accepts `{ applications: [...] }`, tolerating empty / no-content bodies.
+fn parse_creator_applications_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<Vec<CreatorApplication>, String> {
+    if status == StatusCode::FORBIDDEN {
+        return Err("not authorized to view creator applications (admin only)".to_string());
+    }
+    if status == StatusCode::UNAUTHORIZED {
+        return Err("sign in required to view creator applications".to_string());
+    }
+    if status == StatusCode::NO_CONTENT {
+        return Ok(Vec::new());
+    }
+    if !status.is_success() {
+        return Err(format!("creator applications HTTP {status}: {text}"));
+    }
+    let body = text.trim();
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+    let env: ApplicationsEnvelope = serde_json::from_str(body)
+        .map_err(|e| format!("creator applications response is not valid JSON: {e}"))?;
+    Ok(env.applications)
+}
+
+/// Pure parser for the application-decide endpoint. 403 → admin-only; 404 → the
+/// applicant has no entity row to flip (approve); 409 → the application is no
+/// longer pending (surface the server message). Falls back to the decision's
+/// implied status when the server doesn't echo one.
+fn parse_application_decision_response(
+    id: &str,
+    decision: ApplicationDecision,
+    status: StatusCode,
+    text: &str,
+) -> Result<ApplicationDecisionResult, String> {
+    if status == StatusCode::FORBIDDEN {
+        return Err("not authorized to review creator applications (admin only)".to_string());
+    }
+    if status == StatusCode::UNAUTHORIZED {
+        return Err("sign in required to review creator applications".to_string());
+    }
+    if status == StatusCode::NOT_FOUND {
+        return Err(
+            "applicant has no entity record to approve (they may need to sign in first)".to_string(),
+        );
+    }
+    if status == StatusCode::CONFLICT {
+        let msg = serde_json::from_str::<serde_json::Value>(text.trim())
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| {
+                "this application was already decided (refresh the queue)".to_string()
+            });
+        return Err(msg);
+    }
+    if !status.is_success() {
+        return Err(format!("creator application decide HTTP {status}: {text}"));
+    }
+
+    let body: serde_json::Value = serde_json::from_str(text.trim())
+        .map_err(|e| format!("creator application decide response is not valid JSON: {e}"))?;
+    let new_status = body
+        .get("status")
+        .and_then(|s| s.as_str())
+        .map(String::from)
+        .unwrap_or_else(|| match decision {
+            ApplicationDecision::Approve => "approved".to_string(),
+            ApplicationDecision::Deny => "denied".to_string(),
+        });
+    let reviewed_by = body
+        .get("reviewedBy")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let reviewed_at = body
+        .get("reviewedAt")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(ApplicationDecisionResult {
+        application_id: id.to_string(),
+        status: new_status,
+        reviewed_by,
+        reviewed_at,
+    })
 }
 
 // =============================================================================
@@ -1952,6 +2226,106 @@ fn parse_public_profile_response(
         .map_err(|e| format!("profile response is not valid JSON: {e}"))
 }
 
+// =============================================================================
+// Read the SIGNED-IN caller's own claimed creator profile (Profile-tab prefill).
+// =============================================================================
+//
+// `GET /v1/creators/me` (authed, JWT bearer):
+//   * 200 → `{ "creator": { handle, displayName, bio, socialLinks, tipUrl,
+//     avatarUrl } }` — the caller has a claimed handle; the Profile tab prefills
+//     its edit step from this.
+//   * 404 (or body `{ "code": "NO_CREATOR" }`) → the caller has NOT claimed a
+//     handle → `Ok(None)`, so the Profile tab falls back to the claim step.
+//   * 401 → a clear "signed out" error (the caller's token is missing/expired).
+//
+// Built to DEGRADE GRACEFULLY so the desktop side is safe to merge before the
+// backend endpoint exists: any non-2xx that isn't 404/401 (e.g. a 405/501 from a
+// server that doesn't yet implement the route) is surfaced as an error the panel
+// treats as "fall back to the claim step", never a hard block.
+
+/// The caller's OWN claimed creator profile (the `creator` object the authed
+/// `GET /v1/creators/me` returns). Mirrors the contract field-for-field;
+/// `displayName` is nullable per the contract (the others are already optional).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MyCreator {
+    /// The caller's claimed handle (always present on a 200).
+    pub handle: String,
+    /// Display name, when set (nullable per the contract).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Short bio, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
+    /// Validated social links (always an array; possibly empty).
+    #[serde(default)]
+    pub social_links: Vec<SocialLink>,
+    /// Sponsor/tip link, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_url: Option<String>,
+    /// Presigned avatar GET URL, when an avatar is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MyCreatorEnvelope {
+    creator: MyCreator,
+}
+
+/// Read the signed-in caller's own claimed creator profile, if any. Authed (JWT).
+/// `Ok(Some(..))` → the caller has a handle (Profile tab prefills the edit step);
+/// `Ok(None)` → the caller has not claimed one (Profile tab shows the claim
+/// step); `Err(..)` → signed out / transport / not-yet-implemented (the panel
+/// degrades to the claim step on any error — see the panel's `$effect`).
+#[tauri::command]
+pub async fn get_my_creator() -> Result<Option<MyCreator>, String> {
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/me");
+    let jwt = resolve_jwt().await?;
+
+    let res = build_client()
+        .get(&url)
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .map_err(|e| format!("my-creator fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("my-creator read: {e}"))?;
+
+    parse_my_creator_response(status, &text)
+}
+
+/// Pure parser for `GET /v1/creators/me`. 200 → `Some(creator)`; 404 OR a body
+/// carrying `{code:"NO_CREATOR"}` → `None` (no claimed handle); 401 → a clear
+/// "signed out" error; any other non-2xx → the raw server error (the panel
+/// degrades to the claim step on any `Err`).
+fn parse_my_creator_response(status: StatusCode, text: &str) -> Result<Option<MyCreator>, String> {
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if status == StatusCode::UNAUTHORIZED {
+        return Err("signed out — sign in to manage your creator profile".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("my-creator HTTP {status}: {text}"));
+    }
+    let body = text.trim();
+    // A success body that explicitly says NO_CREATOR (some servers answer 200 with
+    // a code instead of a 404) → treat as "not claimed".
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if v.get("code").and_then(|c| c.as_str()) == Some("NO_CREATOR") {
+            return Ok(None);
+        }
+    }
+    let env: MyCreatorEnvelope = serde_json::from_str(body)
+        .map_err(|e| format!("my-creator response is not valid JSON: {e}"))?;
+    Ok(Some(env.creator))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2257,6 +2631,161 @@ mod tests {
         assert!(Decision::from_str("").is_err());
         assert_eq!(Decision::Approve.wire(), "approve");
         assert_eq!(Decision::Reject.wire(), "reject");
+    }
+
+    // ---- creator-application review funnel ---------------------------------
+
+    #[test]
+    fn applications_parse_pending_oldest_first() {
+        let body = r#"{"applications":[
+            {"applicationId":"app_1","applicantUid":"prs_a","applicantEmail":"mallory@example.com",
+             "handle":"mallory","reason":"I want to publish my skills.","status":"pending",
+             "submittedAt":"2026-06-03T10:00:00Z"},
+            {"applicationId":"app_2","applicantEmail":"alice@example.com","status":"pending",
+             "submittedAt":"2026-06-04T11:00:00Z"}
+        ]}"#;
+        let apps = parse_creator_applications_response(StatusCode::OK, body).expect("parsed");
+        assert_eq!(apps.len(), 2);
+
+        let first = &apps[0];
+        assert_eq!(first.application_id, "app_1");
+        assert_eq!(first.applicant_uid, "prs_a");
+        assert_eq!(first.applicant_email, "mallory@example.com");
+        assert_eq!(first.handle, "mallory");
+        assert_eq!(first.reason, "I want to publish my skills.");
+        assert_eq!(first.status, "pending");
+
+        // Sparse item: optional handle/uid absent → empty strings, still parses.
+        let second = &apps[1];
+        assert_eq!(second.application_id, "app_2");
+        assert_eq!(second.applicant_email, "alice@example.com");
+        assert!(second.handle.is_empty());
+        assert!(second.applicant_uid.is_empty());
+    }
+
+    #[test]
+    fn applications_handle_empty_and_no_content() {
+        assert!(parse_creator_applications_response(StatusCode::NO_CONTENT, "")
+            .unwrap()
+            .is_empty());
+        assert!(parse_creator_applications_response(StatusCode::OK, "  \n ")
+            .unwrap()
+            .is_empty());
+        assert!(parse_creator_applications_response(StatusCode::OK, r#"{"applications":[]}"#)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn applications_403_maps_to_admin_only_so_panel_locks() {
+        let err = parse_creator_applications_response(StatusCode::FORBIDDEN, r#"{"code":"FORBIDDEN"}"#)
+            .unwrap_err();
+        assert!(err.contains("admin"), "got: {err}");
+        // 401 → sign-in; other HTTP errors surface the status; bad JSON errors.
+        assert!(parse_creator_applications_response(StatusCode::UNAUTHORIZED, "")
+            .unwrap_err()
+            .contains("sign in"));
+        assert!(
+            parse_creator_applications_response(StatusCode::INTERNAL_SERVER_ERROR, "boom")
+                .unwrap_err()
+                .contains("500")
+        );
+        assert!(parse_creator_applications_response(StatusCode::OK, "{not json").is_err());
+    }
+
+    #[test]
+    fn application_decision_parses_and_falls_back() {
+        let body = r#"{"applicationId":"app_1","status":"approved","reviewedBy":"corey@getindigo.ai","reviewedAt":"2026-06-05T00:00:00Z"}"#;
+        let res =
+            parse_application_decision_response("app_1", ApplicationDecision::Approve, StatusCode::OK, body)
+                .expect("parsed");
+        assert_eq!(res.application_id, "app_1");
+        assert_eq!(res.status, "approved");
+        assert_eq!(res.reviewed_by, "corey@getindigo.ai");
+        assert_eq!(res.reviewed_at, "2026-06-05T00:00:00Z");
+
+        // No status echoed → derived from the decision.
+        let res2 =
+            parse_application_decision_response("app_1", ApplicationDecision::Deny, StatusCode::OK, "{}")
+                .unwrap();
+        assert_eq!(res2.status, "denied");
+    }
+
+    #[test]
+    fn application_decision_maps_404_403_409() {
+        // 404 (approve with no entity row) → a clear applicant-record message.
+        assert!(
+            parse_application_decision_response("app_1", ApplicationDecision::Approve, StatusCode::NOT_FOUND, "")
+                .unwrap_err()
+                .contains("entity record")
+        );
+        // 403 → admin only.
+        assert!(
+            parse_application_decision_response("app_1", ApplicationDecision::Approve, StatusCode::FORBIDDEN, "{}")
+                .unwrap_err()
+                .contains("admin")
+        );
+        // 409 (not pending) surfaces the server message.
+        let err = parse_application_decision_response(
+            "app_1",
+            ApplicationDecision::Deny,
+            StatusCode::CONFLICT,
+            r#"{"error":"application is not pending"}"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, "application is not pending");
+        // 409 with no body → a clear already-decided default.
+        assert!(parse_application_decision_response(
+            "app_1",
+            ApplicationDecision::Deny,
+            StatusCode::CONFLICT,
+            ""
+        )
+        .unwrap_err()
+        .contains("already decided"));
+    }
+
+    #[test]
+    fn application_decision_from_str_is_strict() {
+        assert_eq!(
+            ApplicationDecision::from_str("approve").unwrap(),
+            ApplicationDecision::Approve
+        );
+        assert_eq!(
+            ApplicationDecision::from_str("approved").unwrap(),
+            ApplicationDecision::Approve
+        );
+        assert_eq!(
+            ApplicationDecision::from_str(" Deny ").unwrap(),
+            ApplicationDecision::Deny
+        );
+        assert_eq!(
+            ApplicationDecision::from_str("DENIED").unwrap(),
+            ApplicationDecision::Deny
+        );
+        assert!(ApplicationDecision::from_str("reject").is_err());
+        assert!(ApplicationDecision::from_str("").is_err());
+        assert_eq!(ApplicationDecision::Approve.wire(), "approve");
+        assert_eq!(ApplicationDecision::Deny.wire(), "deny");
+    }
+
+    #[test]
+    fn request_access_409_is_application_pending() {
+        // 409 APPLICATION_PENDING → a clear "already pending" message (not an
+        // alarming raw HTTP error) so the panel can render the duplicate state.
+        let err = parse_request_access_response(
+            StatusCode::CONFLICT,
+            r#"{"code":"APPLICATION_PENDING","error":"You already have a pending application.","applicationId":"app_1"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_lowercase().contains("pending"), "got: {err}");
+        // 409 with no body → a stable default the panel matches on "pending".
+        assert!(parse_request_access_response(StatusCode::CONFLICT, "")
+            .unwrap_err()
+            .to_lowercase()
+            .contains("pending"));
+        // 202 success still surfaces a human confirmation.
+        assert!(parse_request_access_response(StatusCode::ACCEPTED, r#"{"status":"request_received","code":"NOT_VERIFIED_CREATOR","applicationId":"app_1"}"#).is_ok());
     }
 
     #[test]
@@ -2738,6 +3267,69 @@ mod tests {
     fn public_profile_404_is_clear_empty_state() {
         let err = parse_public_profile_response(StatusCode::NOT_FOUND, "").unwrap_err();
         assert!(err.to_lowercase().contains("no public profile"));
+    }
+
+    #[test]
+    fn my_creator_parses_200_into_some() {
+        let body = r#"{"creator":{"handle":"corey","displayName":"Corey",
+            "bio":"I build UIs","tipUrl":"https://ko-fi.com/corey",
+            "socialLinks":[{"label":"GitHub","url":"https://github.com/corey"}],
+            "avatarUrl":"https://example.com/a.png?sig=x"}}"#;
+        let me = parse_my_creator_response(StatusCode::OK, body)
+            .expect("parsed")
+            .expect("some");
+        assert_eq!(me.handle, "corey");
+        assert_eq!(me.display_name.as_deref(), Some("Corey"));
+        assert_eq!(me.bio.as_deref(), Some("I build UIs"));
+        assert_eq!(me.tip_url.as_deref(), Some("https://ko-fi.com/corey"));
+        assert_eq!(me.social_links.len(), 1);
+        assert_eq!(me.avatar_url.as_deref(), Some("https://example.com/a.png?sig=x"));
+    }
+
+    #[test]
+    fn my_creator_404_is_none() {
+        assert!(parse_my_creator_response(StatusCode::NOT_FOUND, "")
+            .expect("ok")
+            .is_none());
+    }
+
+    #[test]
+    fn my_creator_no_creator_code_body_is_none() {
+        // A server that answers 200 with a NO_CREATOR code (instead of a 404) is
+        // still "not claimed".
+        assert!(parse_my_creator_response(StatusCode::OK, r#"{"code":"NO_CREATOR"}"#)
+            .expect("ok")
+            .is_none());
+    }
+
+    #[test]
+    fn my_creator_minimal_200_defaults_optionals() {
+        // Only a handle present — displayName/bio/tipUrl/avatarUrl absent → None,
+        // socialLinks defaults to empty. Mirrors the graceful contract.
+        let me = parse_my_creator_response(StatusCode::OK, r#"{"creator":{"handle":"jane"}}"#)
+            .expect("parsed")
+            .expect("some");
+        assert_eq!(me.handle, "jane");
+        assert!(me.display_name.is_none());
+        assert!(me.bio.is_none());
+        assert!(me.tip_url.is_none());
+        assert!(me.avatar_url.is_none());
+        assert!(me.social_links.is_empty());
+    }
+
+    #[test]
+    fn my_creator_401_is_signed_out_error() {
+        let err = parse_my_creator_response(StatusCode::UNAUTHORIZED, "").unwrap_err();
+        assert!(err.to_lowercase().contains("signed out"));
+    }
+
+    #[test]
+    fn my_creator_other_error_surfaces() {
+        // A not-yet-implemented backend (e.g. 501) surfaces as an Err the panel
+        // degrades to the claim step on.
+        let err =
+            parse_my_creator_response(StatusCode::NOT_IMPLEMENTED, "nope").unwrap_err();
+        assert!(err.contains("501"));
     }
 
     #[test]
