@@ -27,6 +27,7 @@
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
   import {
+    looksApplicationPending,
     pickPackDirectory,
     publishMarketplacePack,
     requestCreatorAccess,
@@ -45,17 +46,31 @@
   /** True when the failure is the verified-creator gate → show request-access. */
   let notVerified = $state(false);
 
-  // Request-access sub-flow state (AC3).
+  // Creator-application sub-flow state (AC3). The 403 NOT_VERIFIED_CREATOR
+  // affordance is a small application form: a required pitch + an optional handle.
   let requesting = $state(false);
-  let requestNote = $state<string | null>(null);
+  /** Server confirmation message after a successful application submit. */
+  let requestSuccess = $state<string | null>(null);
+  /** Inline error for the application submit (non-409 failures). */
+  let requestError = $state<string | null>(null);
+  /** True when the applicant already has a pending application (409). */
+  let alreadyPending = $state(false);
+  /** The applicant's pitch (required) + optional desired handle. */
+  let applicationReason = $state('');
+  let applicationHandle = $state('');
 
   const canSubmit = $derived(!!selectedPath && !submitting);
+  const canSubmitApplication = $derived(
+    applicationReason.trim().length > 0 && !requesting,
+  );
 
   function resetOutcome(): void {
     result = null;
     errorMessage = null;
     notVerified = false;
-    requestNote = null;
+    requestSuccess = null;
+    requestError = null;
+    alreadyPending = false;
     progress = [];
   }
 
@@ -91,13 +106,25 @@
     }
   }
 
-  async function requestAccess(): Promise<void> {
-    if (requesting) return;
+  async function submitApplication(): Promise<void> {
+    if (!canSubmitApplication) return;
     requesting = true;
+    requestError = null;
+    requestSuccess = null;
+    alreadyPending = false;
     try {
-      requestNote = await requestCreatorAccess(null);
+      requestSuccess = await requestCreatorAccess(
+        applicationReason.trim(),
+        applicationHandle.trim() || null,
+      );
     } catch (err) {
-      requestNote = err instanceof Error ? err.message : String(err);
+      const msg = err instanceof Error ? err.message : String(err);
+      if (looksApplicationPending(msg)) {
+        // 409 duplicate — render the calm "already pending" state, not an error.
+        alreadyPending = true;
+      } else {
+        requestError = msg;
+      }
     } finally {
       requesting = false;
     }
@@ -194,25 +221,67 @@
     </section>
   {/if}
 
-  <!-- Request-access prompt for unverified users (AC3) -->
+  <!-- Creator-application form for unverified users (AC3) -->
   {#if notVerified}
     <section class="request-access" data-testid="submit-request-access" role="alert">
       <h3 class="ra-title">Verified creators only</h3>
       <p class="ra-body">
         Publishing to the marketplace is limited to verified creators right now.
-        Request access and an Indigo admin will review it.
+        Tell us why you'd like access — an Indigo admin will review your
+        application.
       </p>
-      {#if requestNote}
-        <p class="ra-note" data-testid="submit-request-note">{requestNote}</p>
+
+      {#if requestSuccess}
+        <p class="ra-note" data-testid="submit-request-note" role="status">
+          Application submitted — an Indigo admin will review it.
+        </p>
+      {:else if alreadyPending}
+        <p class="ra-pending" data-testid="submit-request-pending" role="status">
+          You already have a pending application.
+        </p>
       {:else}
+        <label class="ra-label" for="submit-application-reason">
+          Why do you want creator access?
+        </label>
+        <textarea
+          id="submit-application-reason"
+          class="ra-textarea"
+          rows="3"
+          placeholder="Tell us about the skills or workers you'd like to publish…"
+          data-testid="submit-application-reason"
+          bind:value={applicationReason}
+          disabled={requesting}
+        ></textarea>
+
+        <label class="ra-label" for="submit-application-handle">
+          Desired handle (optional)
+        </label>
+        <input
+          id="submit-application-handle"
+          class="ra-input"
+          type="text"
+          placeholder="e.g. corey"
+          autocomplete="off"
+          spellcheck="false"
+          data-testid="submit-application-handle"
+          bind:value={applicationHandle}
+          disabled={requesting}
+        />
+
+        {#if requestError}
+          <p class="ra-error" data-testid="submit-request-error" role="alert">
+            {requestError}
+          </p>
+        {/if}
+
         <button
           type="button"
           class="btn btn-primary"
           data-testid="submit-request-access-button"
-          onclick={requestAccess}
-          disabled={requesting}
+          onclick={submitApplication}
+          disabled={!canSubmitApplication}
         >
-          {requesting ? 'Requesting…' : 'Request access'}
+          {requesting ? 'Submitting…' : 'Submit application'}
         </button>
       {/if}
     </section>
@@ -427,11 +496,15 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    align-items: flex-start;
+    align-items: stretch;
     padding: var(--space-4);
     border: 1px solid var(--border-strong);
     border-radius: 4px;
     background: var(--row-active);
+  }
+
+  .request-access .btn-primary {
+    align-self: flex-start;
   }
 
   .ra-title {
@@ -453,6 +526,68 @@
     color: var(--emerald);
     font-size: var(--text-base);
     font-weight: 600;
+  }
+
+  .ra-pending {
+    margin: 0;
+    color: var(--amber);
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  .ra-label {
+    margin-top: var(--space-1);
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .ra-textarea,
+  .ra-input {
+    width: 100%;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-base);
+  }
+
+  .ra-textarea {
+    min-height: 64px;
+    resize: vertical;
+    line-height: 1.5;
+  }
+
+  .ra-input {
+    height: 32px;
+  }
+
+  .ra-textarea::placeholder,
+  .ra-input::placeholder {
+    color: var(--muted-3);
+  }
+
+  .ra-textarea:focus-visible,
+  .ra-input:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+  }
+
+  .ra-textarea:disabled,
+  .ra-input:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .ra-error {
+    margin: 0;
+    color: var(--red, #e5484d);
+    font-size: var(--text-base);
+    overflow-wrap: anywhere;
   }
 
   @media (prefers-reduced-motion: reduce) {

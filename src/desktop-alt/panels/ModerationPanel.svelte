@@ -36,10 +36,13 @@
   import { onMount } from 'svelte';
   import {
     canApprove,
+    decideCreatorApplication,
     decideModerationListing,
     highlightInstruction,
+    loadCreatorApplications,
     loadModerationQueue,
     yankMarketplaceListing,
+    type CreatorApplication,
     type ModerationQueueItem,
     type YankResult,
   } from '../lib/marketplace';
@@ -48,6 +51,9 @@
   // `null` = unknown (still checking) → treated as LOCKED. Only an explicit
   // `true` unlocks the surface. Any error → false (locked).
   let isAdmin = $state<boolean | null>(null);
+
+  // ── Sub-view toggle (packs review queue vs. creator-access requests) ────────
+  let subView = $state<'packs' | 'requests'>('packs');
 
   // ── Queue state ────────────────────────────────────────────────────────────
   let queue = $state<ModerationQueueItem[]>([]);
@@ -155,6 +161,80 @@
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
 
+  // ── Creator-access requests (review funnel) ────────────────────────────────
+  let applications = $state<CreatorApplication[]>([]);
+  let appsLoading = $state(false);
+  let appsLoaded = $state(false);
+  let appsError = $state<string | null>(null);
+  /** Per-row deny-note state, keyed by application id (mirrors the reject note). */
+  let denyNotes = $state<Record<string, string>>({});
+  /** The application id currently mid-decision (disables its row buttons). */
+  let appDeciding = $state<string | null>(null);
+  let appLastDecision = $state<{ id: string; status: string } | null>(null);
+
+  // Same calm-vs-loud distinction as the pack queue: an EXPECTED 403 (admin
+  // without server-side reviewer access) renders calmly, not in alarming styling.
+  const appsAuthError = $derived.by(() => {
+    if (!appsError) return false;
+    const msg = appsError.toLowerCase();
+    return (
+      msg.includes('not authorized') ||
+      msg.includes('admin only') ||
+      msg.includes('forbidden') ||
+      msg.includes('403')
+    );
+  });
+
+  async function loadApplications(): Promise<void> {
+    appsLoading = true;
+    appsError = null;
+    try {
+      applications = await loadCreatorApplications();
+      appsLoaded = true;
+    } catch (err) {
+      appsError = err instanceof Error ? err.message : String(err);
+      applications = [];
+    } finally {
+      appsLoading = false;
+    }
+  }
+
+  async function decideApplication(
+    item: CreatorApplication,
+    decision: 'approve' | 'deny',
+  ): Promise<void> {
+    if (appDeciding) return;
+    const note = (denyNotes[item.applicationId] ?? '').trim();
+    if (decision === 'deny' && note.length === 0) {
+      appsError = 'A note is required to deny an application.';
+      return;
+    }
+    appDeciding = item.applicationId;
+    appsError = null;
+    try {
+      const res = await decideCreatorApplication(
+        item.applicationId,
+        decision,
+        decision === 'deny' ? note : null,
+      );
+      // On success the application is no longer pending — drop it from the list.
+      applications = applications.filter((a) => a.applicationId !== item.applicationId);
+      appLastDecision = { id: item.applicationId, status: res.status };
+    } catch (err) {
+      appsError = err instanceof Error ? err.message : String(err);
+    } finally {
+      appDeciding = null;
+    }
+  }
+
+  function showRequests(): void {
+    subView = 'requests';
+    // Lazy-load the first time the Requests view is opened.
+    if (!appsLoaded && !appsLoading) {
+      void loadApplications();
+    }
+  }
+
   onMount(async () => {
     try {
       // Default-deny: only an explicit true unlocks. Any error → locked.
@@ -253,6 +333,33 @@
       </p>
     </section>
   {:else}
+    <!-- ── Sub-view toggle: pack review queue vs. creator-access requests ──── -->
+    <div class="subnav" data-testid="moderation-subnav" role="tablist">
+      <button
+        type="button"
+        class="subnav-tab"
+        class:active={subView === 'packs'}
+        role="tab"
+        aria-selected={subView === 'packs'}
+        data-testid="moderation-subnav-packs"
+        onclick={() => (subView = 'packs')}
+      >
+        Packs
+      </button>
+      <button
+        type="button"
+        class="subnav-tab"
+        class:active={subView === 'requests'}
+        role="tab"
+        aria-selected={subView === 'requests'}
+        data-testid="moderation-subnav-requests"
+        onclick={showRequests}
+      >
+        Requests
+      </button>
+    </div>
+
+    {#if subView === 'packs'}
     <!-- ── Review queue (US-012) ─────────────────────────────────────────── -->
     <section class="section" data-testid="moderation-queue-section">
       <div class="queue-head">
@@ -549,6 +656,108 @@
         </div>
       {/if}
     </section>
+    {:else}
+    <!-- ── Creator-access requests (review funnel) ────────────────────────── -->
+    <section class="section" data-testid="moderation-requests-section">
+      <div class="queue-head">
+        <h3 class="section-title">Creator-access requests</h3>
+        <button
+          type="button"
+          class="refresh"
+          data-testid="moderation-requests-refresh"
+          onclick={loadApplications}
+          disabled={appsLoading}
+        >
+          {appsLoading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+
+      {#if appLastDecision}
+        <p class="decided" role="status" data-testid="moderation-app-last-decision">
+          ✓ Application {appLastDecision.id} {appLastDecision.status}.
+        </p>
+      {/if}
+
+      {#if appsLoading}
+        <p class="muted-line" data-testid="moderation-requests-loading">Loading requests…</p>
+      {:else if appsError && appsAuthError}
+        <p class="queue-note" data-testid="moderation-requests-error">
+          You can open Moderation, but reviewing creator applications needs
+          server-side moderator access.
+        </p>
+      {:else if appsError}
+        <p class="result fail" role="alert" data-testid="moderation-requests-error">
+          ✗ {appsError}
+        </p>
+      {:else if applications.length === 0}
+        <p class="muted-line" data-testid="moderation-requests-empty">
+          No pending creator-access requests.
+        </p>
+      {:else}
+        <ul class="queue-list" data-testid="moderation-requests-list">
+          {#each applications as app (app.applicationId)}
+            <li class="request-card" data-testid="moderation-request-row">
+              <div class="request-head">
+                <span class="request-email" data-testid="moderation-request-email">
+                  {app.applicantEmail || 'unknown'}
+                </span>
+                {#if app.handle}
+                  <span class="request-handle" data-testid="moderation-request-handle">@{app.handle}</span>
+                {/if}
+                <span class="request-date">{fmtDate(app.submittedAt)}</span>
+              </div>
+              {#if app.reason}
+                <p class="request-pitch" data-testid="moderation-request-pitch">{app.reason}</p>
+              {:else}
+                <p class="request-pitch muted">No pitch provided.</p>
+              {/if}
+
+              <label class="field-label" for={`app-deny-note-${app.applicationId}`}>
+                Deny note (required to deny)
+              </label>
+              <input
+                id={`app-deny-note-${app.applicationId}`}
+                class="text-input"
+                type="text"
+                placeholder="Why is this being denied?"
+                autocomplete="off"
+                data-testid="moderation-request-deny-note"
+                value={denyNotes[app.applicationId] ?? ''}
+                oninput={(e) =>
+                  (denyNotes = {
+                    ...denyNotes,
+                    [app.applicationId]: e.currentTarget.value,
+                  })}
+                disabled={appDeciding === app.applicationId}
+              />
+
+              <div class="request-actions">
+                <button
+                  type="button"
+                  class="approve"
+                  data-testid="moderation-request-approve"
+                  disabled={appDeciding === app.applicationId}
+                  onclick={() => decideApplication(app, 'approve')}
+                >
+                  {appDeciding === app.applicationId ? 'Working…' : 'Approve'}
+                </button>
+                <button
+                  type="button"
+                  class="reject"
+                  data-testid="moderation-request-deny"
+                  disabled={appDeciding === app.applicationId ||
+                    (denyNotes[app.applicationId] ?? '').trim().length === 0}
+                  onclick={() => decideApplication(app, 'deny')}
+                >
+                  {appDeciding === app.applicationId ? 'Working…' : 'Deny'}
+                </button>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+    {/if}
   {/if}
 </div>
 
@@ -591,6 +800,104 @@
 
   .section.locked {
     border-style: dashed;
+  }
+
+  /* Sub-view toggle (Packs | Requests) */
+  .subnav {
+    display: flex;
+    gap: var(--space-1);
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    align-self: flex-start;
+  }
+
+  .subnav-tab {
+    height: 26px;
+    padding: 0 var(--space-3);
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted-2);
+    font: inherit;
+    font-size: var(--text-micro);
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background 140ms ease,
+      color 140ms ease;
+  }
+
+  .subnav-tab:hover:not(.active) {
+    color: var(--fg);
+  }
+
+  .subnav-tab.active {
+    background: var(--row-active);
+    color: var(--fg);
+  }
+
+  .subnav-tab:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+  }
+
+  /* Creator-access request cards */
+  .request-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg);
+  }
+
+  .request-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+
+  .request-email {
+    color: var(--fg);
+    font-size: var(--text-base);
+    font-weight: 640;
+    overflow-wrap: anywhere;
+  }
+
+  .request-handle {
+    color: var(--blue);
+    font-size: var(--text-micro);
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  }
+
+  .request-date {
+    margin-left: auto;
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+  }
+
+  .request-pitch {
+    margin: 0;
+    color: var(--muted-2);
+    font-size: var(--text-base);
+    line-height: 18px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .request-pitch.muted {
+    color: var(--muted-3);
+    font-style: italic;
+  }
+
+  .request-actions {
+    display: flex;
+    gap: var(--space-2);
+    margin-top: var(--space-1);
   }
 
   .locked-text {

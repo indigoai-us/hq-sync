@@ -499,11 +499,92 @@ export async function pickPackDirectory(): Promise<string | null> {
 
 /**
  * Request verified-creator access (the unverified Submit affordance, US-011).
- * Returns the server's human guidance message.
+ * Forwards the applicant's pitch (`reason`) and an optional `handle` to the
+ * authed Rust `request_creator_access` command, which POSTs
+ * `/v1/creators/request-access` (`{ reason, handle? }`). Returns the server's
+ * human guidance message on success.
+ *
+ * A 409 `APPLICATION_PENDING` (the applicant already has a pending application)
+ * is surfaced by the Rust command as a rejection whose message matches
+ * `looksApplicationPending` — the panel reads that to render the duplicate state.
  */
-export async function requestCreatorAccess(reason?: string | null): Promise<string> {
+export async function requestCreatorAccess(
+  reason?: string | null,
+  handle?: string | null,
+): Promise<string> {
   return invoke<string>('request_creator_access', {
     reason: reason?.trim() ? reason.trim() : null,
+    handle: handle?.trim() ? handle.trim() : null,
+  });
+}
+
+/**
+ * Pure classifier: does this error text describe the "already have a pending
+ * application" (409 `APPLICATION_PENDING`) state? Lets the Submit panel render a
+ * calm duplicate notice instead of an alarming error. Case-insensitive.
+ */
+export function looksApplicationPending(message: string): boolean {
+  const m = message.toLowerCase();
+  return m.includes('application_pending') || m.includes('pending application');
+}
+
+// ---------------------------------------------------------------------------
+// Creator-application review funnel — admin queue + approve/deny.
+// ---------------------------------------------------------------------------
+
+/** One pending creator-access application (mirrors Rust `CreatorApplication`). */
+export interface CreatorApplication {
+  /** Stable application id — the decide key. */
+  applicationId: string;
+  /** The applicant's internal person uid (opaque to the UI). */
+  applicantUid: string;
+  /** The applicant's email (the primary display key in the queue row). */
+  applicantEmail: string;
+  /** The handle the applicant wants, when supplied. */
+  handle: string;
+  /** The applicant's pitch (why they want creator access). */
+  reason: string;
+  /** Application status — `pending` for everything in this queue. */
+  status: string;
+  /** ISO-8601 submission timestamp (queue order, oldest-first). */
+  submittedAt: string;
+}
+
+/** Outcome of an application decision (mirrors Rust `ApplicationDecisionResult`). */
+export interface ApplicationDecisionResult {
+  applicationId: string;
+  /** `"approved"` | `"denied"` on success (server-reported). */
+  status: string;
+  reviewedBy: string;
+  reviewedAt: string;
+}
+
+/** The reviewer's application decision verb. */
+export type ApplicationDecision = 'approve' | 'deny';
+
+/**
+ * Load pending creator-access applications (admin-gated SERVER-SIDE; a non-admin
+ * gets a clear "admin only" error so the panel locks its Requests view). The UI
+ * admin gate (`isAdminGate`) is UX only — this is not the authorization boundary.
+ */
+export async function loadCreatorApplications(): Promise<CreatorApplication[]> {
+  return invoke<CreatorApplication[]>('list_creator_applications');
+}
+
+/**
+ * Approve or deny a pending application. `note` is optional (recorded for audit;
+ * conventionally required by the UI for a deny). On success the row is dropped
+ * from the local queue.
+ */
+export async function decideCreatorApplication(
+  id: string,
+  decision: ApplicationDecision,
+  note?: string | null,
+): Promise<ApplicationDecisionResult> {
+  return invoke<ApplicationDecisionResult>('decide_creator_application', {
+    id,
+    decision,
+    note: note?.trim() ? note.trim() : null,
   });
 }
 
