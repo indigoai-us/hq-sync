@@ -44,7 +44,8 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     "*.pid", ".hq-*",
     "modules.lock",
     // hq-root identity marker — discovered locally per-machine, never synced.
-    "core.yaml",
+    // Root-anchored so the real scaffold manifest at core/core.yaml syncs.
+    "/core.yaml",
     // hq modules manifest — local module-resolution state, never synced.
     "modules/modules.yaml",
     // per-company identity file — written locally on first sync, never round-tripped.
@@ -222,6 +223,7 @@ mod tests {
         let root = tmp.path();
         let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("core.yaml")));
+        assert!(filter.should_sync(&root.join("core/core.yaml")));
     }
 
     #[test]

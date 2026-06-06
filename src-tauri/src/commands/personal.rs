@@ -922,6 +922,7 @@ mod tests {
         // contents under `core/` include policies/, settings/, skills/,
         // workers/, plus the scaffold rules at core/core.yaml.
         write_file(&root.join("core/policies/auto-deploy.md"), b"core-policy");
+        write_file(&root.join("core/core.yaml"), b"version: 1\nhqVersion: 15.0.7\n");
         // `data/` and `personal/` are now also part of the personal vault
         // (user directive 2026-05-13). They were previously local-only.
         write_file(&root.join("data/repos.yaml"), b"data-content");
@@ -942,7 +943,7 @@ mod tests {
         let captured = calls.lock().unwrap();
 
         // Included prefixes must appear.
-        for included in [".claude/", "knowledge/", "policies/", "projects/", "docs/", "modules/somepkg/", "packages/", ".codex/", "core/policies/", "data/", "personal/", "README.md"] {
+        for included in [".claude/", "knowledge/", "policies/", "projects/", "docs/", "modules/somepkg/", "packages/", ".codex/", "core/policies/", "core/core.yaml", "data/", "personal/", "README.md"] {
             assert!(
                 captured.iter().any(|k| k.starts_with(included) || k.as_str() == included),
                 "{included} must be uploaded; got: {captured:?}",
