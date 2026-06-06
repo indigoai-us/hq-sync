@@ -50,6 +50,17 @@ interface BackendDetection {
   sourceEventId?: string;
 }
 
+/** Shape of `ActiveRecording` returned by `meetings_list_active_recordings`
+ *  (serde camelCase) — one in-flight recording from the backend recordings
+ *  ledger. Used by the seed to overlay live `recording` state onto rows a
+ *  late-opened window seeded as `detected`. */
+interface BackendActiveRecording {
+  windowId?: string;
+  recordingId?: string;
+  companyUid?: string | null;
+  startedAt?: string;
+}
+
 export const activeMeetings = writable<ActiveMeeting[]>([]);
 
 // Recording-company context, mirrored from the classic popover. The picker in
@@ -376,5 +387,50 @@ export async function seedActiveMeetingsFromBackend(): Promise<void> {
       summary: existing?.summary,
       sourceEventId: d.sourceEventId ?? existing?.sourceEventId,
     });
+  }
+
+  // Overlay live recording state from the backend ledger. The detection seed
+  // above marks every row `detected`; a recording that began before this window
+  // opened (the on-demand desktop-alt window) already fired `recording:started`,
+  // which this window's listener never heard — so without this, an in-flight
+  // recording shows a stale `detected`. The recordings ledger is the backend's
+  // source of truth for what's actually recording; overlay it. Fail-soft: a
+  // hiccup here must never undo the detection seed above.
+  let recordings: BackendActiveRecording[];
+  try {
+    recordings = await invoke<BackendActiveRecording[]>('meetings_list_active_recordings');
+  } catch (err) {
+    console.warn('meetings_list_active_recordings failed; skipping recording seed:', err);
+    return;
+  }
+  for (const r of recordings ?? []) {
+    if (!r.windowId) continue;
+    const existing = get(activeMeetings).find((meeting) => meeting.windowId === r.windowId);
+    if (existing) {
+      // Only lift a still-pending row (detected/starting) to recording; never
+      // clobber a state the live listener already advanced (stopping/error).
+      const lift = existing.state === 'detected' || existing.state === 'starting';
+      updateActiveMeeting(r.windowId, {
+        ...(lift ? { state: 'recording' as const, error: undefined } : {}),
+        recordingId: existing.recordingId ?? r.recordingId,
+        // The ledger's company is what the recording is actually attributed to;
+        // adopt it unless the user has made an explicit per-row choice.
+        companyUid: existing.companyUserSet
+          ? (existing.companyUid ?? null)
+          : (r.companyUid ?? existing.companyUid ?? null),
+      });
+    } else {
+      // Recording with no retained detection (its detection aged out of the
+      // in-process registry). Create a minimal row so it still shows Recording.
+      upsertActiveMeeting({
+        windowId: r.windowId,
+        platform: 'other',
+        meetingUrl: '',
+        detectedAt: r.startedAt || new Date().toISOString(),
+        state: 'recording',
+        recordingId: r.recordingId,
+        companyUid: r.companyUid ?? null,
+      });
+    }
   }
 }
