@@ -28,11 +28,12 @@
  *                  calendar to mark "sdk-calendar" is a future enhancement
  *   sourceEventId — omitted; same future-enhancement note
  *
- * --- API key ---
+ * --- Keyless ---
  *
- *   Read from env RECALL_API_KEY. The launching Rust sidecar (recall_sdk.rs)
- *   fetches the key from hq-pro GET /v1/recall/credentials and passes it
- *   via env on spawn.
+ *   The Recall Desktop SDK is keyless: init() takes only the region apiUrl
+ *   below, and each recording is authorized by a per-recording, company-scoped
+ *   upload token (passed on the start-recording command). No account-wide
+ *   Recall API key is read from the environment or required to boot.
  *
  * --- Lifecycle ---
  *
@@ -92,13 +93,11 @@ function emitLog(level, message) {
 
 // --- Boot ---
 
-const apiKey = process.env.RECALL_API_KEY;
-if (!apiKey) {
-  emitLog("error", "RECALL_API_KEY env var is required");
-  process.exit(3);
-}
+// Keyless: the Recall Desktop SDK needs no account-wide API key to start.
+// init() below takes only the region apiUrl; recording is authorized later by
+// the per-recording upload token on the start-recording command.
 
-// Region must match the API key's region. The Indigo Recall account is
+// Region must match the Recall account's region. The Indigo Recall account is
 // in us-west-2 (the bot path under hq-pro hits us-west-2 too); a deploy
 // briefly targeted us-east-1 on 2026-05-26 and Recall rejected with
 // HTTP 401 + "Invalid API token … might be for another Recall region".
