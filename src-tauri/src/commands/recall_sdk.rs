@@ -18,13 +18,17 @@
 //! `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the app continues
 //! normally. The rest of the MeetingsWindow is unaffected.
 //!
-//! ## Credentials
+//! ## Keyless by design
 //!
-//! On startup, the module calls `GET /v1/recall/credentials` on hq-pro to
-//! obtain the user's Recall API key. If the endpoint returns 404 (not yet
-//! provisioned) or any network error, the SDK is skipped (same
-//! `RECALL_SDK_UNAVAILABLE` log). This keeps the credential handshake
-//! entirely server-side — no Recall key is ever stored locally in plaintext.
+//! The Recall Desktop SDK is **keyless** — `init()` takes only the region
+//! `apiUrl`, and each recording is authorized solely by a per-recording,
+//! company-scoped **upload token** (`POST /v1/recall/upload-token`; see
+//! `fetch_sdk_upload_token`). No account-wide Recall API key is fetched or
+//! injected into the sidecar. An account-wide key would be a security
+//! exposure: it controls every bot + every recording/transcript across the
+//! whole Recall account, and Recall has no scoped keys. hq-pro PR #300 stopped
+//! `GET /v1/recall/credentials` from returning the real key; this client no
+//! longer reads it at all (`build_sdk_spawn_env` is regression-tested keyless).
 //!
 //! ## Protocol
 //!
@@ -334,67 +338,18 @@ pub async fn meeting_detect_feature_enabled() -> Result<bool, String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Credentials
+// Keyless: no account-wide Recall API key
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Response shape for `GET /v1/recall/credentials`.
-///
-/// hq-pro returns this when the user has an active Recall integration.
-/// The `api_key` is a short-lived token or a long-lived key depending on
-/// the Recall tier — the SDK handles refresh internally once it has the
-/// initial key.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RecallCredentials {
-    api_key: String,
-}
-
-/// Fetch the user's Recall API key from hq-pro.
-///
-/// Returns `Ok(Some(key))` when the credentials endpoint responds 200 with
-/// a valid `apiKey`. Returns `Ok(None)` when the endpoint responds 404 (the
-/// user has no Recall integration yet) or when the credentials are empty.
-/// Returns `Err` only on hard network / auth failures.
-async fn fetch_recall_credentials() -> Result<Option<String>, String> {
-    let base = resolve_vault_api_url()
-        .map(|u| u.trim_end_matches('/').to_string())
-        .map_err(|e| format!("vault url: {e}"))?;
-
-    let token = cognito::get_valid_access_token()
-        .await
-        .map_err(|e| format!("auth: {e}"))?;
-
-    let res = build_client()
-        .get(format!("{base}/v1/recall/credentials"))
-        .header("authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| format!("recall/credentials fetch: {e}"))?;
-
-    if res.status().as_u16() == 404 {
-        return Ok(None);
-    }
-
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("recall/credentials HTTP {status}: {body}"));
-    }
-
-    let text = res
-        .text()
-        .await
-        .map_err(|e| format!("recall/credentials read: {e}"))?;
-
-    let creds: RecallCredentials = serde_json::from_str(&text)
-        .map_err(|e| format!("recall/credentials parse: {e}"))?;
-
-    if creds.api_key.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(creds.api_key))
-}
+// The Recall Desktop SDK is keyless: `init()` takes only the region `apiUrl`
+// (set in the sidecar) and each recording is authorized by a per-recording,
+// company-scoped upload token from `POST /v1/recall/upload-token` (see
+// `fetch_sdk_upload_token` below). No account-wide Recall API key is fetched or
+// injected into the sidecar's environment — `build_sdk_spawn_env` is the single
+// place the spawn env is built, and it is regression-tested to stay keyless
+// (`sdk_spawn_env_is_keyless`). hq-pro PR #300 already stopped
+// `GET /v1/recall/credentials` from returning the real key; this client no
+// longer reads that endpoint at all.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Binary discovery
@@ -494,12 +449,30 @@ fn parse_sdk_line(line: &str) -> Option<RecallSdkEvent> {
 // Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Build the environment for the Recall SDK sidecar spawn.
+///
+/// **Keyless by design.** The Recall Desktop SDK authorizes recording solely
+/// via the per-recording, company-scoped upload token
+/// (`POST /v1/recall/upload-token`), never an account-wide Recall API key — so
+/// this env intentionally carries NO `RECALL_API_KEY`. A leaked account key
+/// would control every bot + every recording/transcript across the whole
+/// Recall account (Recall has no scoped keys), which is why hq-pro PR #300
+/// stopped `GET /v1/recall/credentials` returning the real key and this client
+/// stopped fetching it. The only var set is a sane `PATH` so the SDK binary can
+/// resolve its Node/dylib dependencies in a Dock-launched (launchd minimal-PATH)
+/// context, mirroring the sync runner spawn. Regression: `sdk_spawn_env_is_keyless`.
+fn build_sdk_spawn_env() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("PATH".to_string(), paths::child_path());
+    env
+}
+
 /// Start the Recall Desktop SDK sidecar.
 ///
 /// Called once from `main.rs` setup inside a `tauri::async_runtime::spawn`.
-/// On any failure (binary missing, credentials unavailable, spawn error) the
-/// function logs `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the menubar
-/// app continues running normally.
+/// On any failure (binary missing, spawn error) the function logs
+/// `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the menubar app continues
+/// running normally.
 pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     log(LOG_TAG, "start_recall_sdk: initialising");
 
@@ -542,50 +515,22 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
         }
     };
 
-    // ── 3. Fetch Recall credentials from hq-pro ──────────────────────────────
-    let api_key = match fetch_recall_credentials().await {
-        Ok(Some(key)) => {
-            log(LOG_TAG, "start_recall_sdk: credentials obtained");
-            key
-        }
-        Ok(None) => {
-            log(
-                LOG_TAG,
-                "RECALL_SDK_UNAVAILABLE: no Recall credentials configured",
-            );
-            crate::commands::process::deregister_process(SDK_HANDLE);
-            return Ok(());
-        }
-        Err(e) => {
-            log(
-                LOG_TAG,
-                &format!("RECALL_SDK_UNAVAILABLE: credentials fetch failed: {e}"),
-            );
-            crate::commands::process::deregister_process(SDK_HANDLE);
-            return Ok(());
-        }
-    };
-
-    // ── 4. Build SpawnArgs ───────────────────────────────────────────────────
-    let mut env = HashMap::new();
-    // Pass the API key via environment variable. The SDK reads RECALL_API_KEY
-    // on startup and uses it to authenticate with the Recall cloud service.
-    env.insert("RECALL_API_KEY".to_string(), api_key);
-    // Include a sane PATH so the SDK binary can find its own dependencies
-    // (Node modules, dylibs, etc.) in a Dock-launched context where launchd
-    // provides a minimal PATH. Mirrors the sync runner spawn.
-    env.insert("PATH".to_string(), paths::child_path());
-
+    // ── 3. Build SpawnArgs (keyless — no Recall API key) ─────────────────────
+    // The Recall Desktop SDK is keyless: no account-wide API key is fetched or
+    // injected (see the "Keyless" note above). The SDK initialises with only
+    // the region apiUrl, and recording is authorized per-recording by the
+    // upload token (`fetch_sdk_upload_token`). `build_sdk_spawn_env` is the
+    // single, regression-tested place the spawn env is assembled.
     let spawn_args = SpawnArgs {
         cmd: bin_path,
         // `--json` tells the SDK to emit ndjson on stdout (Recall SDK CLI
         // convention; the flag name mirrors how hq-sync-runner works).
         args: vec!["--json".to_string()],
         cwd: None,
-        env: Some(env),
+        env: Some(build_sdk_spawn_env()),
     };
 
-    // ── 5. Spawn in background ───────────────────────────────────────────────
+    // ── 4. Spawn in background ───────────────────────────────────────────────
     log(LOG_TAG, "start_recall_sdk: spawning SDK process");
 
     let app_bg = app.clone();
@@ -1428,6 +1373,30 @@ mod tests {
         // We can't assert None always (a dev may have installed the SDK), but we
         // can assert the function doesn't panic.
         let _ = find_sdk_binary(); // must not panic
+    }
+
+    #[test]
+    fn sdk_spawn_env_is_keyless() {
+        // Regression: the Recall Desktop SDK is keyless by design. Recording is
+        // authorized per-recording by the company-scoped upload token
+        // (`/v1/recall/upload-token`), NOT an account-wide Recall API key, so the
+        // sidecar spawn env must never carry RECALL_API_KEY. A leaked account key
+        // controls every bot + every recording/transcript across the whole Recall
+        // account (Recall has no scoped keys) — the exposure hq-pro PR #300 closed
+        // by no longer returning the real key from `/v1/recall/credentials`. This
+        // client stopped fetching it entirely; `build_sdk_spawn_env` is the single
+        // place the env is assembled, so pinning it here keeps the SDK keyless.
+        let env = build_sdk_spawn_env();
+        assert!(
+            !env.contains_key("RECALL_API_KEY"),
+            "Recall SDK spawn must stay keyless — found RECALL_API_KEY in the spawn env"
+        );
+        // PATH is still required so the SDK binary resolves its Node/dylib deps
+        // under launchd's minimal PATH (Dock-launched context).
+        assert!(
+            env.contains_key("PATH"),
+            "spawn env should still set PATH for the launchd minimal-PATH context"
+        );
     }
 
     // ── Eligibility gate (GA — signed-in feature flag) ────────────────────────
