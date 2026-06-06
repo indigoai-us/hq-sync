@@ -27,6 +27,7 @@
     checkHttpUrl,
     claimCreatorHandle,
     getCreatorProfile,
+    loadMyCreator,
     pickAvatarFile,
     toClaimError,
     updateCreatorProfile,
@@ -39,6 +40,14 @@
   // ── Step state ───────────────────────────────────────────────────────────
   /** The claimed handle, once known (claim success OR a prior session). null = claim step. */
   let handle = $state<string | null>(null);
+
+  /**
+   * True while we ask the server "what's my handle?" on mount. We render a small
+   * loading state (NOT the claim form) until it resolves, so an already-claimed
+   * creator never sees a flash of the "Claim your creator handle" step. The query
+   * degrades gracefully: a null result OR any error falls back to the claim step.
+   */
+  let resolving = $state(true);
 
   // ── Claim step state ───────────────────────────────────────────────────────
   let handleInput = $state('');
@@ -196,10 +205,46 @@
       previewLoading = false;
     }
   }
+
+  // ── Mount: resolve the caller's existing handle ──────────────────────────────
+  // Ask the server "what's my handle?" once on mount. If the caller already
+  // claimed one, prefill the EDIT step (so they never see the claim form again);
+  // if they haven't (null) OR the call errors (incl. the backend route not yet
+  // existing), fall back to the existing CLAIM step. An error never blocks the
+  // panel — `resolving` always clears in `finally`.
+  let resolvedOnce = false;
+  $effect(() => {
+    if (resolvedOnce) return;
+    resolvedOnce = true;
+    void (async () => {
+      try {
+        const me = await loadMyCreator();
+        if (me) {
+          handle = me.handle;
+          bio = me.bio ?? '';
+          tipUrl = me.tipUrl ?? '';
+          socialLinks = me.socialLinks ?? [];
+          avatarUrl = me.avatarUrl ?? null;
+        }
+        // me === null → leave handle null → claim step (graceful).
+      } catch {
+        // Any error (signed out, transport, route not implemented yet) → fall
+        // back to the claim step. Never surface as a blocking error.
+      } finally {
+        resolving = false;
+      }
+    })();
+  });
 </script>
 
 <div class="profile" data-testid="profile-panel">
-  {#if handle === null}
+  {#if resolving}
+    <!-- ── Resolving: ask the server for the caller's existing handle ──────── -->
+    <section class="resolving" data-testid="profile-resolving" aria-busy="true">
+      <span class="resolving-spinner" aria-hidden="true"></span>
+      <span class="resolving-text">Loading your profile…</span>
+    </section>
+  {:else if handle === null}
     <!-- ── Claim step (AC1) ──────────────────────────────────────────────── -->
     <header class="profile-head">
       <h2 class="profile-title">Claim your creator handle</h2>
@@ -485,6 +530,35 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+
+  /* ---- resolving (mount handle lookup) ---------------------------------- */
+  .resolving {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-4);
+    border: 1px dashed var(--border-strong);
+    border-radius: 4px;
+    background: var(--row-active);
+    color: var(--muted);
+    font-size: var(--text-base);
+  }
+
+  .resolving-spinner {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    border: 2px solid var(--border-strong);
+    border-top-color: var(--blue);
+    border-radius: 999px;
+    animation: profile-spin 700ms linear infinite;
+  }
+
+  @keyframes profile-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .profile-title {
@@ -901,6 +975,9 @@
   @media (prefers-reduced-motion: reduce) {
     .btn {
       transition: none;
+    }
+    .resolving-spinner {
+      animation: none;
     }
   }
 </style>

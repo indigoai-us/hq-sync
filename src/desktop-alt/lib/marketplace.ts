@@ -767,3 +767,45 @@ export async function pickAvatarFile(): Promise<string | null> {
 export async function getCreatorProfile(handle: string): Promise<PublicCreatorPreview> {
   return invoke<PublicCreatorPreview>('get_creator_profile', { handle: handle.trim() });
 }
+
+/**
+ * The signed-in caller's OWN claimed creator profile (the `creator` object the
+ * authed `GET /v1/creators/me` returns). Mirrors the Rust `MyCreator` 1:1 — used
+ * to PREFILL the Profile tab's edit step so a creator who already claimed a
+ * handle never sees the "Claim your creator handle" step again.
+ */
+export interface MyCreator {
+  /** The caller's claimed handle (always present). */
+  handle: string;
+  /** Display name, when set (nullable per the contract). */
+  displayName?: string | null;
+  /** Short bio, when set. */
+  bio?: string | null;
+  /** Validated social links (always an array; possibly empty). */
+  socialLinks: SocialLink[];
+  /** Sponsor/tip link, when set. */
+  tipUrl?: string | null;
+  /** Presigned avatar GET URL, when set. */
+  avatarUrl?: string | null;
+}
+
+/**
+ * Read the signed-in caller's own claimed creator profile, if any. The Rust
+ * `get_my_creator` command returns `null` (not an error) when the caller has not
+ * claimed a handle — either a 404 or a `{code:"NO_CREATOR"}` body — so this
+ * resolves to `null` in that case and to the `MyCreator` otherwise.
+ *
+ * Built to DEGRADE GRACEFULLY: the Profile tab treats both `null` AND any thrown
+ * error as "show the claim step", so an error never blocks the panel (and this
+ * is safe to ship before the backend endpoint exists). This helper itself does
+ * NOT swallow errors — it only maps the explicit no-creator signal to `null` —
+ * so the caller decides how to handle a real failure.
+ */
+export async function loadMyCreator(): Promise<MyCreator | null> {
+  const me = await invoke<MyCreator | null>('get_my_creator');
+  // Defense-in-depth: the Rust side maps NO_CREATOR/404 to null, but if a future
+  // server echoes the code through a 200 body, still treat it as "not claimed".
+  if (me === null || me === undefined) return null;
+  if ((me as { code?: unknown }).code === 'NO_CREATOR') return null;
+  return me;
+}

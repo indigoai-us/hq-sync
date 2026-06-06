@@ -23,6 +23,7 @@ import {
   listingHaystack,
   loadCreatorApplications,
   loadModerationQueue,
+  loadMyCreator,
   looksApplicationPending,
   looksNotVerified,
   pickAvatarFile,
@@ -689,5 +690,51 @@ describe('US-016 — desktop Profile tab', () => {
     expect(preview.creator.handle).toBe('corey');
     expect(preview.creator.tipUrl).toBe('https://ko-fi.com/corey');
     expect(preview.listings).toHaveLength(1);
+  });
+});
+
+describe('loadMyCreator — prefill the Profile tab from GET /v1/creators/me', () => {
+  beforeEach(() => vi.mocked(invoke).mockReset());
+
+  it('invokes get_my_creator and returns the creator on success', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      handle: 'corey',
+      displayName: 'Corey',
+      bio: 'I build UIs',
+      socialLinks: [{ label: 'GitHub', url: 'https://github.com/corey' }],
+      tipUrl: 'https://ko-fi.com/corey',
+      avatarUrl: 'https://example.com/a.png?sig=x',
+    });
+    const me = await loadMyCreator();
+    expect(invoke).toHaveBeenCalledWith('get_my_creator');
+    expect(me).not.toBeNull();
+    expect(me?.handle).toBe('corey');
+    expect(me?.displayName).toBe('Corey');
+    expect(me?.socialLinks).toHaveLength(1);
+    expect(me?.avatarUrl).toBe('https://example.com/a.png?sig=x');
+  });
+
+  it('returns null when the command yields null (no claimed handle)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    expect(await loadMyCreator()).toBeNull();
+  });
+
+  it('returns null when the command yields undefined', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+    expect(await loadMyCreator()).toBeNull();
+  });
+
+  it('treats a NO_CREATOR-coded body as null (degrades gracefully)', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 'NO_CREATOR' });
+    expect(await loadMyCreator()).toBeNull();
+  });
+
+  it('propagates a real error so the caller can decide (panel falls back)', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(
+      'signed out — sign in to manage your creator profile',
+    );
+    await expect(loadMyCreator()).rejects.toBe(
+      'signed out — sign in to manage your creator profile',
+    );
   });
 });

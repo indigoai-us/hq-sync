@@ -287,6 +287,7 @@ fn main() {
             commands::marketplace::upload_creator_avatar,
             commands::marketplace::pick_avatar_file,
             commands::marketplace::get_creator_profile,
+            commands::marketplace::get_my_creator,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,

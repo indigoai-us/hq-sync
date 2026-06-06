@@ -2226,6 +2226,106 @@ fn parse_public_profile_response(
         .map_err(|e| format!("profile response is not valid JSON: {e}"))
 }
 
+// =============================================================================
+// Read the SIGNED-IN caller's own claimed creator profile (Profile-tab prefill).
+// =============================================================================
+//
+// `GET /v1/creators/me` (authed, JWT bearer):
+//   * 200 → `{ "creator": { handle, displayName, bio, socialLinks, tipUrl,
+//     avatarUrl } }` — the caller has a claimed handle; the Profile tab prefills
+//     its edit step from this.
+//   * 404 (or body `{ "code": "NO_CREATOR" }`) → the caller has NOT claimed a
+//     handle → `Ok(None)`, so the Profile tab falls back to the claim step.
+//   * 401 → a clear "signed out" error (the caller's token is missing/expired).
+//
+// Built to DEGRADE GRACEFULLY so the desktop side is safe to merge before the
+// backend endpoint exists: any non-2xx that isn't 404/401 (e.g. a 405/501 from a
+// server that doesn't yet implement the route) is surfaced as an error the panel
+// treats as "fall back to the claim step", never a hard block.
+
+/// The caller's OWN claimed creator profile (the `creator` object the authed
+/// `GET /v1/creators/me` returns). Mirrors the contract field-for-field;
+/// `displayName` is nullable per the contract (the others are already optional).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MyCreator {
+    /// The caller's claimed handle (always present on a 200).
+    pub handle: String,
+    /// Display name, when set (nullable per the contract).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Short bio, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
+    /// Validated social links (always an array; possibly empty).
+    #[serde(default)]
+    pub social_links: Vec<SocialLink>,
+    /// Sponsor/tip link, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_url: Option<String>,
+    /// Presigned avatar GET URL, when an avatar is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MyCreatorEnvelope {
+    creator: MyCreator,
+}
+
+/// Read the signed-in caller's own claimed creator profile, if any. Authed (JWT).
+/// `Ok(Some(..))` → the caller has a handle (Profile tab prefills the edit step);
+/// `Ok(None)` → the caller has not claimed one (Profile tab shows the claim
+/// step); `Err(..)` → signed out / transport / not-yet-implemented (the panel
+/// degrades to the claim step on any error — see the panel's `$effect`).
+#[tauri::command]
+pub async fn get_my_creator() -> Result<Option<MyCreator>, String> {
+    let base = api_base()?;
+    let url = format!("{base}/v1/creators/me");
+    let jwt = resolve_jwt().await?;
+
+    let res = build_client()
+        .get(&url)
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .map_err(|e| format!("my-creator fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("my-creator read: {e}"))?;
+
+    parse_my_creator_response(status, &text)
+}
+
+/// Pure parser for `GET /v1/creators/me`. 200 → `Some(creator)`; 404 OR a body
+/// carrying `{code:"NO_CREATOR"}` → `None` (no claimed handle); 401 → a clear
+/// "signed out" error; any other non-2xx → the raw server error (the panel
+/// degrades to the claim step on any `Err`).
+fn parse_my_creator_response(status: StatusCode, text: &str) -> Result<Option<MyCreator>, String> {
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if status == StatusCode::UNAUTHORIZED {
+        return Err("signed out — sign in to manage your creator profile".to_string());
+    }
+    if !status.is_success() {
+        return Err(format!("my-creator HTTP {status}: {text}"));
+    }
+    let body = text.trim();
+    // A success body that explicitly says NO_CREATOR (some servers answer 200 with
+    // a code instead of a 404) → treat as "not claimed".
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if v.get("code").and_then(|c| c.as_str()) == Some("NO_CREATOR") {
+            return Ok(None);
+        }
+    }
+    let env: MyCreatorEnvelope = serde_json::from_str(body)
+        .map_err(|e| format!("my-creator response is not valid JSON: {e}"))?;
+    Ok(Some(env.creator))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3167,6 +3267,69 @@ mod tests {
     fn public_profile_404_is_clear_empty_state() {
         let err = parse_public_profile_response(StatusCode::NOT_FOUND, "").unwrap_err();
         assert!(err.to_lowercase().contains("no public profile"));
+    }
+
+    #[test]
+    fn my_creator_parses_200_into_some() {
+        let body = r#"{"creator":{"handle":"corey","displayName":"Corey",
+            "bio":"I build UIs","tipUrl":"https://ko-fi.com/corey",
+            "socialLinks":[{"label":"GitHub","url":"https://github.com/corey"}],
+            "avatarUrl":"https://example.com/a.png?sig=x"}}"#;
+        let me = parse_my_creator_response(StatusCode::OK, body)
+            .expect("parsed")
+            .expect("some");
+        assert_eq!(me.handle, "corey");
+        assert_eq!(me.display_name.as_deref(), Some("Corey"));
+        assert_eq!(me.bio.as_deref(), Some("I build UIs"));
+        assert_eq!(me.tip_url.as_deref(), Some("https://ko-fi.com/corey"));
+        assert_eq!(me.social_links.len(), 1);
+        assert_eq!(me.avatar_url.as_deref(), Some("https://example.com/a.png?sig=x"));
+    }
+
+    #[test]
+    fn my_creator_404_is_none() {
+        assert!(parse_my_creator_response(StatusCode::NOT_FOUND, "")
+            .expect("ok")
+            .is_none());
+    }
+
+    #[test]
+    fn my_creator_no_creator_code_body_is_none() {
+        // A server that answers 200 with a NO_CREATOR code (instead of a 404) is
+        // still "not claimed".
+        assert!(parse_my_creator_response(StatusCode::OK, r#"{"code":"NO_CREATOR"}"#)
+            .expect("ok")
+            .is_none());
+    }
+
+    #[test]
+    fn my_creator_minimal_200_defaults_optionals() {
+        // Only a handle present — displayName/bio/tipUrl/avatarUrl absent → None,
+        // socialLinks defaults to empty. Mirrors the graceful contract.
+        let me = parse_my_creator_response(StatusCode::OK, r#"{"creator":{"handle":"jane"}}"#)
+            .expect("parsed")
+            .expect("some");
+        assert_eq!(me.handle, "jane");
+        assert!(me.display_name.is_none());
+        assert!(me.bio.is_none());
+        assert!(me.tip_url.is_none());
+        assert!(me.avatar_url.is_none());
+        assert!(me.social_links.is_empty());
+    }
+
+    #[test]
+    fn my_creator_401_is_signed_out_error() {
+        let err = parse_my_creator_response(StatusCode::UNAUTHORIZED, "").unwrap_err();
+        assert!(err.to_lowercase().contains("signed out"));
+    }
+
+    #[test]
+    fn my_creator_other_error_surfaces() {
+        // A not-yet-implemented backend (e.g. 501) surfaces as an Err the panel
+        // degrades to the claim step on.
+        let err =
+            parse_my_creator_response(StatusCode::NOT_IMPLEMENTED, "nope").unwrap_err();
+        assert!(err.contains("501"));
     }
 
     #[test]
