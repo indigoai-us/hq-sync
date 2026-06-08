@@ -422,14 +422,6 @@
     }
   }
 
-  async function handleManagePackages() {
-    try {
-      await invoke('open_packages_window');
-    } catch (err) {
-      console.error('open_packages_window failed:', err);
-    }
-  }
-
   async function handleChangeDefaultRecordingCompany(next: string | null) {
     // The `<select>` binds via `bind:value`; this is just the persistence
     // hook so the change lands in menubar.json on selection (no save
@@ -980,14 +972,10 @@
             </button>
           </div>
 
-          <!-- Manage packages — opens the dedicated Packages window -->
-          <div class="setting-row">
-            <div class="setting-info">
-              <span class="setting-label">Packages</span>
-              <span class="setting-desc">Install, update, or remove HQ packs</span>
-            </div>
-            <button class="change-button" onclick={handleManagePackages}>Manage...</button>
-          </div>
+          <!-- Packages are managed in the unified Library → Installed surface
+               (US-009 — the standalone Packages window was removed). The desktop
+               window's Library tab now hosts installed + marketplace packs in one
+               place, so there is no separate Settings destination here. -->
 
           <!-- Version — read-only; sourced from tauri.conf.json via getVersion() -->
           <div class="setting-row">

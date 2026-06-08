@@ -4,9 +4,14 @@
 //!
 //! Design: the CLI owns all the real logic (symlink wiring, archive, update
 //! probing). This module just resolves the `hq` binary + the user's HQ folder,
-//! shells out, and relays results/progress to the Packages window. Mirrors the
-//! resolution pattern in `hq_core_update.rs` and the secondary-window +
-//! ready-handshake pattern in `new_files.rs` / `desktop_alt.rs`.
+//! shells out, and relays results/progress to the caller. Mirrors the
+//! resolution pattern in `hq_core_update.rs`.
+//!
+//! These commands back the unified desktop-alt **Library → Installed** surface
+//! (`src/desktop-alt/panels/InstalledPacksPanel.svelte`). US-009 removed the old
+//! standalone Packages window (and its `open_packages_window` /
+//! `packages_window_ready` lifecycle commands + `PendingPackages` handshake
+//! state); the data commands below are unchanged and now feed the in-Library tab.
 //!
 //! Commands:
 //!   * `list_packages`          — read-only snapshot (content packs + registry)
@@ -14,26 +19,18 @@
 //!   * `install_package`        — stream `hq install <source>` progress
 //!   * `update_package`         — stream `hq packs update <name>`
 //!   * `uninstall_package`      — `hq packs uninstall <name> --yes --json`
-//!   * `open_packages_window` / `packages_window_ready` — window lifecycle
 
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::logfile::log;
 use crate::util::paths;
-
-const WINDOW_LABEL: &str = "packages";
-
-/// Initial packages snapshot stashed for the window's ready handshake, so the
-/// frontend renders instantly on mount instead of waiting on a cold CLI call.
-pub struct PendingPackages(pub Mutex<Option<Value>>);
 
 /// Resolve the user's HQ folder using the standard 4-tier resolver, the same
 /// way every other CLI-spawning command in this app does.
@@ -244,53 +241,4 @@ pub async fn update_package(app: AppHandle, name: String) -> Result<(), String> 
 #[tauri::command]
 pub async fn uninstall_package(name: String) -> Result<Value, String> {
     run_hq_json(&["packs", "uninstall", &name, "--yes", "--json"]).await
-}
-
-// ---------------------------------------------------------------------------
-// Window lifecycle (secondary window + ready handshake)
-// ---------------------------------------------------------------------------
-
-/// Open (or focus) the Packages window. On a fresh build we stash an initial
-/// snapshot for the ready handshake so the window paints immediately.
-#[tauri::command]
-pub async fn open_packages_window(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    // Pre-fetch the snapshot so the window renders without a cold round-trip.
-    let view = gather_packages(false).await;
-    if let Ok(value) = serde_json::to_value(&view) {
-        if let Some(state) = app.try_state::<PendingPackages>() {
-            *state.0.lock().unwrap() = Some(value);
-        }
-    }
-
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        WINDOW_LABEL,
-        tauri::WebviewUrl::App("packages.html".into()),
-    )
-    .title("HQ Packages")
-    .inner_size(720.0, 600.0)
-    .min_inner_size(520.0, 420.0)
-    .resizable(true)
-    .decorations(true)
-    .title_bar_style(tauri::TitleBarStyle::Overlay)
-    .transparent(false)
-    .visible(true)
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-/// Called by the window after it mounts its listeners. Returns the stashed
-/// initial snapshot (consumed once) so the first paint has data.
-#[tauri::command]
-pub fn packages_window_ready(app: AppHandle) -> Option<Value> {
-    app.try_state::<PendingPackages>()
-        .and_then(|state| state.0.lock().unwrap().take())
 }
