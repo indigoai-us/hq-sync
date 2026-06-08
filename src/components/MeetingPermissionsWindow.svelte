@@ -77,6 +77,24 @@
   const snapshot = $derived(permissionState.meetingPermissions);
   const allGranted = $derived(snapshot?.allRequiredGranted ?? false);
 
+  // The app no longer requests permissions or starts the Recall SDK on
+  // launch — that only happens once everything is granted. So the moment
+  // this wizard observes all required permissions granted (whether via the
+  // quick-prompt button or after the user flips a System Settings toggle and
+  // refocuses this window), kick the SDK so meeting-detect starts working
+  // immediately, without waiting for the next app launch. `start_recall_sdk`
+  // is idempotent on the backend; the local flag keeps us from re-invoking on
+  // every reactive tick.
+  let sdkStartAttempted = $state(false);
+  $effect(() => {
+    if (allGranted && !sdkStartAttempted) {
+      sdkStartAttempted = true;
+      invoke('start_recall_sdk').catch((err) => {
+        console.error('start_recall_sdk failed:', err);
+      });
+    }
+  });
+
   function statusOf(key: PermissionId): PermStatus {
     if (!snapshot) return 'unknown';
     switch (key) {

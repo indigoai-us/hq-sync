@@ -455,10 +455,10 @@
   $effect(() => {
     loadSettings();
     loadNotifPermission();
-    // Read the meeting-permissions snapshot whether or not the user is
-    // currently eligible — the response is non-prompting and cheap. The
-    // row below only renders when `permissionState.meetingDetectEligible`
-    // is true, so non-Indigo users still see nothing.
+    // Read the meeting-permissions snapshot so the Meeting permissions row
+    // can show the current grant state. The response is non-prompting and
+    // cheap. The Meetings section is shown to all users now (no eligibility
+    // gate), so this always populates the row's status line.
     loadMeetingPermissions();
     getVersion()
       .then((v) => {
@@ -732,133 +732,132 @@
 
       <!-- ===== Group: Meetings ========================================
            Detect upcoming meetings + per-recording attribution +
-           permissions wizard. Gated on
-           `permissionState.meetingDetectEligible` so users outside the
-           allowlist don't see toggles for an SDK that won't spawn. The
-           Rust side (`commands::recall_sdk::meeting_detect_eligible`) is
-           the authoritative gate; this is UX-only. macOS permissions are
-           handled by native first-use prompts — no parallel UI here. -->
-      {#if permissionState.meetingDetectEligible}
-        <section class="settings-group-wrap">
-          <h2 class="settings-group-title">Meetings</h2>
-          <div class="settings-group">
-            <div class="setting-row">
-              <div class="setting-info">
-                <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
-                <span class="setting-desc">Notify when a new meeting is detected</span>
-              </div>
-              <button
-                id="toggle-meeting-detect"
-                class="toggle"
-                class:active={meetingDetectEnabled}
-                onclick={handleToggleMeetingDetect}
-                role="switch"
-                aria-checked={meetingDetectEnabled}
-                aria-label="Detect upcoming meetings"
-              >
-                <span class="toggle-knob"></span>
-              </button>
+           permissions wizard. Shown to ALL users — no eligibility gate —
+           so anyone can reach the "Meeting permissions" → Manage area and
+           grant the macOS TCC permissions the SDK needs. Permissions are
+           never requested on launch; this section is the only place they're
+           asked for. The Rust side
+           (`commands::recall_sdk::meeting_detect_eligible`) still gates
+           whether the SDK actually spawns / records — this section is UX. -->
+      <section class="settings-group-wrap">
+        <h2 class="settings-group-title">Meetings</h2>
+        <div class="settings-group">
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-meeting-detect">Detect upcoming meetings</label>
+              <span class="setting-desc">Notify when a new meeting is detected</span>
             </div>
-
-            {#if meetingDetectEnabled}
-              <div class="platform-rows">
-                {#each ALL_PLATFORMS as platform}
-                  {@const checked = meetingDetectPlatforms.includes(platform)}
-                  <div class="platform-row">
-                    <label class="platform-label" for="platform-{platform}">{platform}</label>
-                    <button
-                      id="platform-{platform}"
-                      class="platform-check"
-                      class:checked
-                      onclick={() => handleTogglePlatform(platform)}
-                      role="checkbox"
-                      aria-checked={checked}
-                      aria-label="Enable {platform} meeting detection"
-                    >
-                      {#if checked}
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                          <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                      {/if}
-                    </button>
-                  </div>
-                {/each}
-                <div class="ledger-path-row">
-                  <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
-                </div>
-              </div>
-            {/if}
-
-            <!-- Default recording company — preselects the company-attribution
-                 dropdown in the popover's active-meetings row. The user can
-                 still override per-recording via that dropdown. Empty / no
-                 selection = Personal vault (no company tag on the Recall
-                 metadata). Memberships come from `meetings_list_memberships`
-                 — same source as MeetingsWindow's URL-invite picker, so the
-                 two surfaces stay in lockstep when a membership is added or
-                 revoked.
-
-                 Layout deviates from the other `.setting-row` entries: the
-                 label sits above a full-width select instead of sharing a row
-                 with it. The default-company description is awkward to
-                 compress and the constrained `max-width: 140px` pill on the
-                 right read as cramped + ugly when the company name was long.
-                 Stacking keeps the select wide enough to show full names and
-                 gives the row visual room to breathe. -->
-            <div class="setting-row setting-row-stacked">
-              <div class="setting-info">
-                <label class="setting-label" for="default-recording-company">Default recording</label>
-                <span class="setting-desc">
-                  Attribution for new recordings. Changeable per-recording.
-                </span>
-              </div>
-              <select
-                id="default-recording-company"
-                class="default-recording-company"
-                aria-label="Default recording company"
-                value={defaultRecordingCompanyUid}
-                onchange={(e) => {
-                  const v = (e.currentTarget as HTMLSelectElement).value;
-                  void handleChangeDefaultRecordingCompany(v === '' ? null : v);
-                }}
-              >
-                <option value="">Personal</option>
-                {#each memberships as m (m.companyUid)}
-                  <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
-                {/each}
-              </select>
-            </div>
-
-            <!-- Meeting permissions monitor — opens the wizard window where
-                 the user can grant (or revoke) each macOS TCC permission
-                 the SDK needs. The button label stays "Manage" regardless
-                 of current state, since the wizard handles both directions:
-                 - all granted  → user may want to audit / revoke
-                 - some missing → user grants the missing ones
-
-                 The descriptive text below the label still reflects the
-                 current state so the Settings overview reads correctly at a
-                 glance without opening the wizard. -->
-            <div class="setting-row">
-              <div class="setting-info">
-                <span class="setting-label">Meeting permissions</span>
-                <span class="setting-desc">
-                  {#if !permissionState.meetingPermissions}
-                    Checking macOS privacy grants…
-                  {:else if permissionState.meetingPermissions.allRequiredGranted}
-                    Accessibility, screen recording &amp; microphone all granted
-                  {:else}
-                    One or more macOS permissions need attention
-                  {/if}
-                </span>
-              </div>
-              <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
-                Manage
-              </button>
-            </div>
+            <button
+              id="toggle-meeting-detect"
+              class="toggle"
+              class:active={meetingDetectEnabled}
+              onclick={handleToggleMeetingDetect}
+              role="switch"
+              aria-checked={meetingDetectEnabled}
+              aria-label="Detect upcoming meetings"
+            >
+              <span class="toggle-knob"></span>
+            </button>
           </div>
-        </section>
-      {/if}
+
+          {#if meetingDetectEnabled}
+            <div class="platform-rows">
+              {#each ALL_PLATFORMS as platform}
+                {@const checked = meetingDetectPlatforms.includes(platform)}
+                <div class="platform-row">
+                  <label class="platform-label" for="platform-{platform}">{platform}</label>
+                  <button
+                    id="platform-{platform}"
+                    class="platform-check"
+                    class:checked
+                    onclick={() => handleTogglePlatform(platform)}
+                    role="checkbox"
+                    aria-checked={checked}
+                    aria-label="Enable {platform} meeting detection"
+                  >
+                    {#if checked}
+                      <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                        <path d="M2 5l2.5 2.5L8 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {/if}
+                  </button>
+                </div>
+              {/each}
+              <div class="ledger-path-row">
+                <span class="setting-desc">Ledger: ~/.hq/meeting-notify-ledger.json</span>
+              </div>
+            </div>
+          {/if}
+
+          <!-- Default recording company — preselects the company-attribution
+               dropdown in the popover's active-meetings row. The user can
+               still override per-recording via that dropdown. Empty / no
+               selection = Personal vault (no company tag on the Recall
+               metadata). Memberships come from `meetings_list_memberships`
+               — same source as MeetingsWindow's URL-invite picker, so the
+               two surfaces stay in lockstep when a membership is added or
+               revoked.
+
+               Layout deviates from the other `.setting-row` entries: the
+               label sits above a full-width select instead of sharing a row
+               with it. The default-company description is awkward to
+               compress and the constrained `max-width: 140px` pill on the
+               right read as cramped + ugly when the company name was long.
+               Stacking keeps the select wide enough to show full names and
+               gives the row visual room to breathe. -->
+          <div class="setting-row setting-row-stacked">
+            <div class="setting-info">
+              <label class="setting-label" for="default-recording-company">Default recording</label>
+              <span class="setting-desc">
+                Attribution for new recordings. Changeable per-recording.
+              </span>
+            </div>
+            <select
+              id="default-recording-company"
+              class="default-recording-company"
+              aria-label="Default recording company"
+              value={defaultRecordingCompanyUid}
+              onchange={(e) => {
+                const v = (e.currentTarget as HTMLSelectElement).value;
+                void handleChangeDefaultRecordingCompany(v === '' ? null : v);
+              }}
+            >
+              <option value="">Personal</option>
+              {#each memberships as m (m.companyUid)}
+                <option value={m.companyUid}>{m.companyName ?? m.companyUid}</option>
+              {/each}
+            </select>
+          </div>
+
+          <!-- Meeting permissions monitor — opens the wizard window where
+               the user can grant (or revoke) each macOS TCC permission
+               the SDK needs. The button label stays "Manage" regardless
+               of current state, since the wizard handles both directions:
+               - all granted  → user may want to audit / revoke
+               - some missing → user grants the missing ones
+
+               The descriptive text below the label still reflects the
+               current state so the Settings overview reads correctly at a
+               glance without opening the wizard. -->
+          <div class="setting-row">
+            <div class="setting-info">
+              <span class="setting-label">Meeting permissions</span>
+              <span class="setting-desc">
+                {#if !permissionState.meetingPermissions}
+                  Checking macOS privacy grants…
+                {:else if permissionState.meetingPermissions.allRequiredGranted}
+                  Accessibility, screen recording &amp; microphone all granted
+                {:else}
+                  One or more macOS permissions need attention
+                {/if}
+              </span>
+            </div>
+            <button class="change-button" onclick={handleOpenMeetingPermissionsWizard}>
+              Manage
+            </button>
+          </div>
+        </div>
+      </section>
 
       <!-- ===== Group: Updates =========================================
            Everything that controls what the Update pill targets and which

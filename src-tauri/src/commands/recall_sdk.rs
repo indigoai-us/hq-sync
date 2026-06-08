@@ -513,10 +513,19 @@ fn build_sdk_spawn_env() -> HashMap<String, String> {
 
 /// Start the Recall Desktop SDK sidecar.
 ///
-/// Called once from `main.rs` setup inside a `tauri::async_runtime::spawn`.
+/// Called from `main.rs` setup inside a `tauri::async_runtime::spawn` (only
+/// once the required macOS permissions are already granted), and also as a
+/// Tauri command from the Settings → Meeting permissions wizard right after
+/// the user grants those permissions — so meeting-detect starts working
+/// immediately without waiting for the next app launch.
+///
+/// Idempotent: the singleton handle check (`try_register_handle`) makes a
+/// second call a no-op while the SDK is already running.
+///
 /// On any failure (binary missing, spawn error) the function logs
 /// `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the menubar app continues
 /// running normally.
+#[tauri::command]
 pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     log(LOG_TAG, "start_recall_sdk: initialising");
 
