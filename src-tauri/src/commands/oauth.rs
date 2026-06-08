@@ -92,6 +92,33 @@ pub struct OAuthFlowInit {
     pub state: String,
 }
 
+fn cognito_identity_provider(provider: &str) -> Result<&'static str, String> {
+    match provider {
+        "Google" => Ok("Google"),
+        "Microsoft" => Ok("MicrosoftPersonal"),
+        _ => Err(format!("Unsupported sign-in provider: {provider}")),
+    }
+}
+
+fn build_authorize_url(state: &str, challenge: &str, identity_provider: &str) -> String {
+    format!(
+        "{base}?response_type=code\
+         &client_id={client_id}\
+         &redirect_uri={redirect_uri}\
+         &scope=openid+email+profile\
+         &identity_provider={identity_provider}\
+         &state={state}\
+         &code_challenge={challenge}\
+         &code_challenge_method=S256",
+        base = cognito_authorize_url(),
+        client_id = COGNITO_CLIENT_ID,
+        redirect_uri = REDIRECT_URI,
+        identity_provider = identity_provider,
+        state = state,
+        challenge = challenge,
+    )
+}
+
 // ── Cognito token exchange response ────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
@@ -255,7 +282,8 @@ fn urldecode(input: &str) -> String {
 /// Start the OAuth login flow: generate PKCE verifier/challenge, build the
 /// Cognito authorize URL, store the verifier for later exchange.
 #[tauri::command]
-pub async fn start_oauth_login() -> Result<OAuthFlowInit, String> {
+pub async fn start_oauth_login(provider: String) -> Result<OAuthFlowInit, String> {
+    let identity_provider = cognito_identity_provider(&provider)?;
     let state = uuid::Uuid::new_v4().to_string();
     let verifier = generate_code_verifier();
     let challenge = compute_code_challenge(&verifier);
@@ -268,27 +296,9 @@ pub async fn start_oauth_login() -> Result<OAuthFlowInit, String> {
         *guard = Some(verifier);
     }
 
-    // `identity_provider=Google` tells Cognito Hosted UI to skip its own
-    // username/password form and redirect straight to Google's OAuth consent
-    // screen. The browser almost always has an active Google session, so the
-    // user sees a one-click "Continue as …" at most — matching the hq-installer
-    // sign-in flow. Dropping this parameter reverts to the unbranded Cognito
-    // login page.
-    let authorize_url = format!(
-        "{base}?response_type=code\
-         &client_id={client_id}\
-         &redirect_uri={redirect_uri}\
-         &scope=openid+email+profile\
-         &identity_provider=Google\
-         &state={state}\
-         &code_challenge={challenge}\
-         &code_challenge_method=S256",
-        base = cognito_authorize_url(),
-        client_id = COGNITO_CLIENT_ID,
-        redirect_uri = REDIRECT_URI,
-        state = state,
-        challenge = challenge,
-    );
+    // Explicit identity_provider tells Cognito Hosted UI to skip its own
+    // username/password form and redirect straight to the selected provider.
+    let authorize_url = build_authorize_url(&state, &challenge, identity_provider);
 
     Ok(OAuthFlowInit {
         authorize_url,
@@ -543,33 +553,35 @@ mod tests {
         let verifier = generate_code_verifier();
         let challenge = compute_code_challenge(&verifier);
 
-        let url = format!(
-            "{base}?response_type=code\
-             &client_id={client_id}\
-             &redirect_uri={redirect_uri}\
-             &scope=openid+email+profile\
-             &identity_provider=Google\
-             &state={state}\
-             &code_challenge={challenge}\
-             &code_challenge_method=S256",
-            base = cognito_authorize_url(),
-            client_id = COGNITO_CLIENT_ID,
-            redirect_uri = REDIRECT_URI,
-            state = state,
-            challenge = challenge,
-        );
+        let url = build_authorize_url(state, &challenge, "Google");
 
         assert!(url.starts_with(&format!("{}?", cognito_authorize_url())));
         assert!(url.contains("response_type=code"));
         assert!(url.contains("client_id=7acei2c8v870enheptb1j5foln"));
         assert!(url.contains("redirect_uri=http%3A%2F%2Flocalhost%3A53682%2Fcallback") || url.contains("redirect_uri=http://localhost:53682/callback"));
         assert!(url.contains("scope=openid+email+profile"));
-        // identity_provider=Google is what makes Cognito skip its Hosted UI
-        // login form and route straight to Google OAuth — matches hq-installer.
         assert!(url.contains("identity_provider=Google"));
         assert!(url.contains(&format!("state={state}")));
         assert!(url.contains(&format!("code_challenge={challenge}")));
         assert!(url.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn maps_microsoft_to_personal_cognito_provider() {
+        assert_eq!(cognito_identity_provider("Google").unwrap(), "Google");
+        assert_eq!(
+            cognito_identity_provider("Microsoft").unwrap(),
+            "MicrosoftPersonal"
+        );
+        assert!(cognito_identity_provider("MicrosoftWork").is_err());
+    }
+
+    #[test]
+    fn authorize_url_supports_microsoft_provider() {
+        let url = build_authorize_url("state-123", "challenge-123", "MicrosoftPersonal");
+        assert!(url.contains("identity_provider=MicrosoftPersonal"));
+        assert!(url.contains("state=state-123"));
+        assert!(url.contains("code_challenge=challenge-123"));
     }
 
     #[test]
