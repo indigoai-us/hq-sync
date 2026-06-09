@@ -22,6 +22,13 @@
   const view = params.get('view') ?? 'settings';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
+  // ?state=error renders the "Sync initialized" notice banner (otherwise the
+  // popover mounts in its idle fixture state).
+  const stateOverride = params.get('state');
+  const previewPopoverProps =
+    stateOverride === 'error'
+      ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
+      : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture
@@ -56,7 +63,7 @@
        viewport to ~366x104 to see it at real proportions. -->
   <BannerNotification />
 {:else if view === 'popover'}
-  <Popover {...popoverProps} />
+  <Popover {...previewPopoverProps} />
 {:else if view === 'company'}
   <!-- The desktop window's company page (default Board tab). Sized to the
        real desktop content area; data-window='desktop-alt' activates the

@@ -6,7 +6,6 @@
   import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
-  import NewFilesBadge from './NewFilesBadge.svelte';
   import MeetingIcon from './MeetingIcon.svelte';
   import type { Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
@@ -92,12 +91,6 @@
      *  path. Empty string when the failure isn't company-scoped (auth,
      *  discovery-phase, local catch-block). */
     errorCompany?: string;
-    /** Number of new files detected in the last sync run (accumulated from
-     *  one or more `sync:new-files` events). 0 = no badge shown. */
-    newFilesCount?: number;
-    /** Flat list of new files across all companies — passed through to the
-     *  NewFilesBadge component for future detail-view use (US-006). */
-    newFilesList?: Array<{ path: string; bytes: number; addedBy: string | null }>;
     conflicts?: ConflictFile[];
     showConflictModal?: boolean;
     /** Non-null when the Tauri updater has found a newer release. */
@@ -280,8 +273,6 @@
     lastSummary = null,
     errorMessage = '',
     errorCompany = '',
-    newFilesCount = 0,
-    newFilesList = [],
     conflicts = [],
     showConflictModal = false,
     updateAvailable = null,
@@ -844,20 +835,20 @@
              the OpenInClaudeCodeButton template (lib/copy-prompts.ts
              'sync-failed') still includes it in the prefilled prompt, so
              Claude Code sees the full stderr the moment the user clicks. -->
-        <div class="banner banner-notice">
+        <div class="banner banner-notice banner-notice-inline">
           <div class="banner-update-text">
             <p class="banner-title">Sync initialized</p>
-            <p class="banner-body">Click the button to finish sync in Claude Code.</p>
+            <p class="banner-body">Finish in Claude Code to complete sync.</p>
           </div>
           <div class="banner-actions">
             <OpenInClaudeCodeButton
-              variant="inline"
+              variant="compact"
               label="Finish sync in Claude Code"
               folder={config?.hqFolderPath ?? ''}
               issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
             />
             <CopyPromptButton
-              variant="inline"
+              variant="compact"
               label="Copy prompt"
               issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
             />
@@ -911,9 +902,6 @@
         </div>
       {:else}
         <SyncStats bind:this={statsEl} onhistory={() => invoke('open_activity_log')} />
-        {#if newFilesCount > 0}
-          <NewFilesBadge count={newFilesCount} files={newFilesList} onclick={() => invoke('open_new_files_detail', { files: newFilesList })} />
-        {/if}
       {/if}
 
       <!-- Workspaces (Personal + companies) — the steady-state list.
@@ -1734,6 +1722,23 @@
     background: var(--popover-notice-bg, rgba(255, 255, 255, 0.05));
     border-color: var(--popover-notice-border, rgba(255, 255, 255, 0.16));
     gap: 0.5rem;
+  }
+
+  /* Inline notice — text and actions share a single horizontal row instead
+     of stacking. Used for the "Sync initialized" callout, whose actions are
+     compact icon buttons (tooltip-labelled) that comfortably fit beside the
+     text on the 320px popover. min-width:0 on the text column lets the body
+     truncate rather than push the buttons off the row. */
+  .banner-notice-inline {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.625rem;
+  }
+
+  .banner-notice-inline .banner-actions {
+    flex-wrap: nowrap;
+    flex-shrink: 0;
   }
 
   .banner-title {

@@ -110,12 +110,6 @@
   // local catch-block failures where the slug isn't known.
   let syncErrorCompany = $state('');
 
-  // New-files state — accumulated from `sync:new-files` events (one per
-  // company). Cleared when a new sync starts. The badge in Popover renders
-  // when the list is non-empty.
-  let newFilesList = $state<Array<{ path: string; bytes: number; addedBy: string | null }>>([]);
-  let newFilesCount = $derived(newFilesList.length);
-
   // Effective progress denominator. When the runner is new enough to emit
   // Stage-1 plan events (hq-cloud@5.5.0+), `syncPlanTotalFiles` accumulates
   // a more accurate count that includes both push and pull work; otherwise
@@ -646,7 +640,6 @@
     syncLastSummary = null;
     syncErrorMessage = '';
     syncErrorCompany = '';
-    newFilesList = [];
     await invoke('set_tray_state', { state: 'syncing' });
     try {
       await invoke('start_sync');
@@ -1132,24 +1125,6 @@
       await listen('tray:check-for-updates', () => {
         handleCheckForUpdates();
       })
-    );
-
-    // --- New-files event listener (US-004) ---
-    // The Rust backend emits one `sync:new-files` event per company that has
-    // new files (detected by diffing the journal). Multiple events can fire
-    // per sync run — we accumulate them into a single flat list.
-    unlisteners.push(
-      await listen<{ company: string; files: Array<{ path: string; bytes: number; addedBy?: string }> }>(
-        'sync:new-files',
-        (event) => {
-          const incoming = event.payload.files.map((f) => ({
-            path: f.path,
-            bytes: f.bytes,
-            addedBy: f.addedBy ?? null,
-          }));
-          newFilesList = [...newFilesList, ...incoming];
-        }
-      )
     );
 
     // --- Meeting-detection listener ---
@@ -1835,8 +1810,6 @@
       lastSummary={syncLastSummary}
       errorMessage={syncErrorMessage}
       errorCompany={syncErrorCompany}
-      {newFilesCount}
-      {newFilesList}
       {conflicts}
       {showConflictModal}
       {updateAvailable}
