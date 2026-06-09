@@ -162,6 +162,13 @@
 </div>
 
 <style>
+  /* Desktop "Company OS" language: monochrome glass sheet, hairline borders,
+     one 13px size + 11px monospace caps for the field label, accent reserved
+     for the primary Send CTA + focus ring. The "not connected" / "blocked"
+     notes mark state via copy + a neutral (or restrained --red) surface — no
+     side-stripe border, no amber/orange decoration. Tokens come from the
+     shared desktop alias layer (desktop-alt.css). */
+
   .compose-backdrop {
     position: fixed;
     inset: 0;
@@ -169,10 +176,8 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    padding: 3.5rem 1.5rem 1.5rem;
-    background: rgba(0, 0, 0, 0.42);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    padding: 3.5rem var(--space-5) var(--space-5);
+    background: rgba(0, 0, 0, 0.5);
   }
 
   .compose-sheet {
@@ -180,15 +185,15 @@
     max-width: 460px;
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
-    padding: 1.125rem 1.25rem 1.25rem;
-    border-radius: 14px;
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.1));
-    background: var(--popover-bg, #1a1a22);
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5) var(--space-5);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-strong);
+    background: var(--bg);
     box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    color: var(--fg);
+    font-family: var(--font-sans);
+    letter-spacing: -0.006em;
   }
 
   .compose-header {
@@ -199,76 +204,79 @@
 
   .compose-header h2 {
     margin: 0;
-    font-size: 0.9375rem;
+    font-family: var(--font-display);
+    font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    letter-spacing: -0.01em;
+    color: var(--fg);
   }
 
   .compose-close {
     border: none;
     background: transparent;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--muted);
     font-size: 1.25rem;
     line-height: 1;
     cursor: pointer;
-    padding: 0 0.25rem;
-    border-radius: 6px;
+    padding: 0 var(--space-1);
+    border-radius: var(--radius-sm);
   }
 
   .compose-close:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--popover-text, #e8e8ee);
+    background: var(--row-hover);
+    color: var(--fg);
   }
 
   .compose-field {
     display: flex;
     flex-direction: column;
-    gap: 0.3125rem;
+    gap: var(--space-1);
   }
 
   .compose-label {
-    font-size: 0.625rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--muted);
   }
 
   .compose-note {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     line-height: 1.5;
-    color: var(--popover-text-muted, #b8b8c4);
-    background: rgba(255, 176, 102, 0.12);
-    border-left: 2px solid rgba(255, 176, 102, 0.45);
-    padding: 0.5rem 0.625rem;
-    border-radius: 0 6px 6px 0;
+    color: var(--muted-2);
+    background: var(--surface-raise);
+    border: 1px solid var(--border);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
   }
 
   .compose-note-blocked {
-    background: rgba(255, 120, 120, 0.12);
-    border-left-color: rgba(255, 120, 120, 0.5);
-    color: #ffbdbd;
+    background: var(--surface-raise);
+    border-color: var(--border-strong);
+    color: var(--red);
   }
 
   .compose-body {
     width: 100%;
     box-sizing: border-box;
     resize: none;
-    padding: 0.5rem 0.625rem;
-    border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--popover-text, #e0e0e0);
-    font-family: inherit;
-    font-size: 0.8125rem;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-raise);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
     line-height: 1.45;
   }
 
   .compose-body:focus {
     outline: none;
-    border-color: rgba(255, 255, 255, 0.28);
-    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
   }
 
   .compose-body:disabled {
@@ -278,41 +286,49 @@
   .compose-footer {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 
   .compose-hint {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
   }
 
   .compose-error {
-    font-size: 0.75rem;
-    color: #ff9b9b;
+    font-size: var(--text-sm);
+    color: var(--red);
     word-break: break-word;
   }
 
   .btn {
     display: inline-flex;
     align-items: center;
-    padding: 0.4375rem 0.875rem;
-    border-radius: 7px;
-    font-size: 0.75rem;
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     border: none;
-    font-family: inherit;
-    transition: background-color 0.12s ease;
+    transition: background-color 0.12s ease, filter 0.12s ease;
+  }
+
+  .btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   .btn-send {
     margin-left: auto;
-    background: rgba(120, 170, 255, 0.26);
-    color: #dce8ff;
+    background: var(--accent);
+    color: #fff;
   }
 
   .btn-send:hover:not(:disabled) {
-    background: rgba(120, 170, 255, 0.38);
+    filter: brightness(1.1);
   }
 
   .btn-send:disabled {

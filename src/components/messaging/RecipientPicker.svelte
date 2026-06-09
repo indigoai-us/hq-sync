@@ -217,28 +217,36 @@
 </div>
 
 <style>
+  /* Desktop "Company OS" language: hairline-bordered input + dropdown over a
+     low-fill surface, one 13px size with 11px monospace caps for group headings
+     and the not-connected tag, accent reserved for the active/hovered option +
+     focus ring. Tokens come from the shared desktop alias layer
+     (desktop-alt.css). */
+
   .recipient-picker {
     position: relative;
     width: 100%;
+    font-family: var(--font-sans);
   }
 
   .recipient-input {
     width: 100%;
     box-sizing: border-box;
-    padding: 0.5rem 0.625rem;
-    border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--popover-text, #e0e0e0);
-    font-family: inherit;
-    font-size: 0.8125rem;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-raise);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
     line-height: 1.4;
+    letter-spacing: -0.006em;
   }
 
   .recipient-input:focus {
     outline: none;
-    border-color: rgba(255, 255, 255, 0.28);
-    background: rgba(255, 255, 255, 0.06);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
   }
 
   .recipient-input:disabled {
@@ -252,70 +260,75 @@
     left: 0;
     right: 0;
     margin: 0;
-    padding: 0.25rem;
+    padding: var(--space-1);
     list-style: none;
     max-height: 248px;
     overflow-y: auto;
-    border-radius: 10px;
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.1));
-    background: var(--popover-bg, #1a1a22);
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-strong);
+    background: var(--bg);
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 
   .group-heading {
-    padding: 0.4375rem 0.5rem 0.1875rem;
-    font-size: 0.625rem;
+    padding: var(--space-2) var(--space-2) var(--space-1);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--muted);
   }
 
   .suggestion {
     display: flex;
     align-items: baseline;
-    gap: 0.5rem;
+    gap: var(--space-2);
     width: 100%;
     text-align: left;
-    padding: 0.4375rem 0.5rem;
+    padding: var(--space-2);
     border: none;
-    border-radius: 7px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: inherit;
-    font-family: inherit;
+    font-family: var(--font-sans);
     cursor: pointer;
   }
 
   .suggestion:hover,
   .suggestion.active {
-    background: rgba(120, 170, 255, 0.16);
+    background: var(--accent-soft);
+  }
+
+  .suggestion:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
   }
 
   .suggestion.freetext {
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--muted);
   }
 
   .suggestion-primary {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--popover-text, #e8e8ee);
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--fg);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .suggestion.freetext .suggestion-primary {
-    color: var(--popover-text-muted, #b0b0bc);
+    color: var(--muted-2);
     font-weight: 400;
   }
 
   .suggestion-secondary {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #8a8a98);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    color: var(--muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -324,13 +337,14 @@
   .suggestion-tag {
     margin-left: auto;
     flex-shrink: 0;
-    font-size: 0.5625rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    padding: 0.0625rem 0.3125rem;
-    border-radius: 999px;
-    background: rgba(255, 176, 102, 0.22);
-    color: #ffd9b0;
+    padding: 2px var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raise);
+    color: var(--muted-2);
   }
 </style>

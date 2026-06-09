@@ -385,4 +385,159 @@
     opacity: 0.45;
     cursor: default;
   }
+
+  /* ──────────────────────────────────────────────────────────────────────
+   * Messages-window override layer (desktop "Company OS" language).
+   *
+   * Conversation is shared: the classic popover DmDetail window renders it as
+   * the monochrome light-glass surface defined ABOVE (those rules are the
+   * default and stay untouched), while the standalone Messages window adopts
+   * the desktop token system. These overrides are gated under
+   * `[data-window='messages']` so DmDetail's appearance is unaffected.
+   *
+   * Outbound vs inbound is distinguished by SURFACE LAYERING + alignment, not
+   * a saturated blue fill: inbound left on a subtle raise surface, outbound
+   * right on a restrained --accent-soft "self/primary" tint. Tokens resolve
+   * from the shared desktop alias layer (desktop-alt.css).
+   * ────────────────────────────────────────────────────────────────────── */
+
+  :global([data-window='messages']) .dm-thread {
+    padding: var(--space-4) var(--space-5);
+    gap: var(--space-2);
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+
+  :global([data-window='messages']) .dm-thread-status {
+    font-size: var(--text-base);
+    color: var(--muted);
+  }
+
+  :global([data-window='messages']) .dm-thread-error {
+    color: var(--red);
+  }
+
+  :global([data-window='messages']) .dm-msg-author {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+
+  :global([data-window='messages']) .dm-bubble {
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+  }
+
+  :global([data-window='messages']) .dm-msg-in .dm-bubble {
+    background: var(--surface-raise);
+    border-bottom-left-radius: var(--radius-sm);
+  }
+
+  :global([data-window='messages']) .dm-msg-out .dm-bubble {
+    background: var(--accent-soft);
+    border-color: var(--border-strong);
+    border-bottom-right-radius: var(--radius-sm);
+  }
+
+  :global([data-window='messages']) .dm-bubble-body {
+    font-size: var(--text-base);
+    line-height: 1.5;
+    color: var(--fg);
+  }
+
+  :global([data-window='messages']) .dm-bubble-details {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    color: var(--fg-data);
+    background: var(--surface-panel);
+    border-left: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  :global([data-window='messages']) .dm-msg-time {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    color: var(--muted-3);
+    margin: var(--space-1) var(--space-1) 0;
+  }
+
+  :global([data-window='messages']) .dm-msg-pending {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted-2);
+    background: var(--surface-raise);
+    border-radius: var(--radius-sm);
+    padding: 2px var(--space-2);
+    margin: var(--space-1) var(--space-1) 0;
+  }
+
+  :global([data-window='messages']) .btn-copy {
+    background: var(--surface-raise);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+  }
+
+  :global([data-window='messages']) .btn-copy:hover {
+    background: var(--row-hover);
+  }
+
+  :global([data-window='messages']) .dm-reply {
+    padding: var(--space-3) var(--space-5) var(--space-4);
+    border-top: 1px solid var(--border);
+    background: var(--surface-panel);
+  }
+
+  :global([data-window='messages']) .dm-reply-input {
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-raise);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.45;
+  }
+
+  :global([data-window='messages']) .dm-reply-input:focus {
+    border-color: var(--accent);
+    outline: 1px solid var(--accent);
+    outline-offset: -1px;
+    background: var(--surface-raise);
+  }
+
+  :global([data-window='messages']) .dm-reply-hint {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+  }
+
+  :global([data-window='messages']) .dm-reply-error {
+    font-size: var(--text-sm);
+    color: var(--red);
+  }
+
+  :global([data-window='messages']) .btn-send {
+    background: var(--accent);
+    color: #fff;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-weight: 600;
+  }
+
+  :global([data-window='messages']) .btn-send:hover:not(:disabled) {
+    background: var(--accent);
+    filter: brightness(1.1);
+  }
 </style>
