@@ -51,9 +51,9 @@
   let route = $state<DesktopRoute>(initialDesktopRoute);
   // Admin gate for the Moderation nav entry (UX only; the server is the sole
   // authorization boundary). DEFAULT-DENY: starts false and only flips true on an
-  // explicit `desktop_alt_enabled === true`, so the row never flashes for a
-  // non-admin and stays hidden on any check error. Reuses the same signal
-  // ModerationPanel itself gates on (@getindigo.ai).
+  // explicit `desktop_alt_is_admin === true` (@getindigo.ai), so the row never
+  // flashes for a non-admin and stays hidden on any check error. Reuses the same
+  // signal ModerationPanel itself gates on.
   let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>([]);
   let workspacesCloudReachable = $state(true);
@@ -153,17 +153,47 @@
       action: () => navigate({ kind: 'meetings' }),
     },
     {
-      id: 'command-go-library',
-      label: 'Go to Library',
-      detail: 'Browse skills and workers',
+      id: 'command-go-skills',
+      label: 'Go to Skills',
+      detail: 'Browse skills',
       shortcut: '⌘3',
-      action: () => navigate({ kind: 'library' }),
+      action: () => navigate({ kind: 'library', tab: 'skills' }),
+    },
+    {
+      id: 'command-go-workers',
+      label: 'Go to Workers',
+      detail: 'Browse workers',
+      shortcut: '⌘4',
+      action: () => navigate({ kind: 'library', tab: 'workers' }),
+    },
+    {
+      id: 'command-go-installed',
+      label: 'Go to Installed',
+      detail: 'Marketplace packs installed in your HQ',
+      shortcut: '⌘5',
+      action: () => navigate({ kind: 'library', tab: 'installed' }),
+    },
+    {
+      id: 'command-go-marketplace',
+      label: 'Go to Marketplace',
+      detail: 'Discover and install skills and workers',
+      shortcut: '⌘6',
+      action: () => navigate({ kind: 'library', tab: 'marketplace' }),
+    },
+    {
+      id: 'command-go-profile',
+      label: 'Go to Profile',
+      detail: 'Your HQ profile and published work',
+      shortcut: '⌘7',
+      action: () => navigate({ kind: 'library', tab: 'profile' }),
     },
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
       label: `Go to ${company.displayName}`,
       detail: 'Show company workspace',
-      shortcut: index < 4 ? `⌘${index + 4}` : undefined,
+      // Companies start at ⌘8 (after the 7 primary destinations); only ⌘8–⌘9
+      // are single-digit addressable.
+      shortcut: index < 2 ? `⌘${index + 8}` : undefined,
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);
@@ -358,10 +388,13 @@
       if (mounted) ready = true;
     });
     // Resolve the admin gate for the Moderation nav entry (default-deny: only an
-    // explicit `true` unlocks it; any error leaves it hidden).
-    void invoke<boolean>('desktop_alt_enabled')
-      .then((enabled) => {
-        if (mounted) isAdmin = enabled === true;
+    // explicit `true` unlocks it; any error leaves it hidden). This MUST use the
+    // admin gate (`desktop_alt_is_admin` → @getindigo.ai), NOT `desktop_alt_enabled`
+    // (the GA gate, true for every signed-in user) — otherwise the Moderation row
+    // shows for normal HQ users.
+    void invoke<boolean>('desktop_alt_is_admin')
+      .then((admin) => {
+        if (mounted) isAdmin = admin === true;
       })
       .catch(() => {
         if (mounted) isAdmin = false;
@@ -599,7 +632,6 @@
   style={`--desktop-sidebar-width: ${DESKTOP_SHELL_LAYOUT.sidebarWidthPx}px; --desktop-titlebar-height: ${DESKTOP_SHELL_LAYOUT.titleBarHeightPx}px; --desktop-status-bar-height: ${DESKTOP_SHELL_LAYOUT.statusBarHeightPx}px;`}
 >
   <header class="desktop-titlebar" data-tauri-drag-region aria-label="Sync status">
-    <div class="titlebar-traffic" aria-hidden="true"><span></span><span></span><span></span></div>
     <div class="titlebar-verdict">
       <span class={`verdict-dot ${verdict.tone}`} aria-hidden="true"></span>
       <span class="verdict-word">{verdict.word}</span>
@@ -671,7 +703,7 @@
             </div>
           {:else if route.kind === 'library'}
             <div class="page">
-              <LibraryPage />
+              <LibraryPage tab={route.tab} />
             </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied

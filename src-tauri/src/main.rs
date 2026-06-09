@@ -252,6 +252,7 @@ fn main() {
             commands::activity::get_activity_log,
             commands::meetings::meetings_feature_enabled,
             commands::desktop_alt::desktop_alt_enabled,
+            commands::desktop_alt::desktop_alt_is_admin,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
             commands::desktop_alt::get_company_activity,

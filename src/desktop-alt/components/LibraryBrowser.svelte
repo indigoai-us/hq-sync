@@ -22,6 +22,8 @@
   import SubmitPanel from '../panels/SubmitPanel.svelte';
   import ProfilePanel from '../panels/ProfilePanel.svelte';
 
+  type Filter = 'all' | 'workers' | 'skills' | 'installed' | 'marketplace' | 'submit' | 'profile';
+
   interface Props {
     /** The loaded library payload (workers + skills) for this scope. */
     items: LibraryItems;
@@ -29,12 +31,27 @@
     loading?: boolean;
     /** Error string if the load failed. */
     error?: string | null;
+    /**
+     * Force a specific tab and hide the in-body segmented control. Used by the
+     * root LibraryPage, where the four library tabs are promoted to top-level
+     * sidebar links (Skills / Workers / Marketplace / Profile) — the sidebar
+     * owns the switching, so the redundant toolbar tabs are suppressed. When
+     * omitted (e.g. the per-company panel), the segmented control is shown and
+     * the user switches tabs in-place as before.
+     */
+    forcedFilter?: Filter;
   }
 
-  let { items, loading = false, error = null }: Props = $props();
+  let { items, loading = false, error = null, forcedFilter }: Props = $props();
 
-  type Filter = 'all' | 'workers' | 'skills' | 'installed' | 'marketplace' | 'submit' | 'profile';
+  // Internal tab state. When the caller drives the tab (sidebar links), the
+  // effect below keeps it in sync as the route changes and the segmented
+  // control is hidden; otherwise the user switches tabs in-place.
   let filter = $state<Filter>('all');
+  const tabsHidden = $derived(forcedFilter !== undefined);
+  $effect(() => {
+    if (forcedFilter !== undefined) filter = forcedFilter;
+  });
   // The Installed, Marketplace, Submit, and Profile tabs are self-contained
   // surfaces (their own fetch / forms / detail slide-overs), so the library
   // toolbar's scope filter and text search don't apply while any is active.
@@ -139,7 +156,9 @@
 </script>
 
 <div class="library-browser">
+  {#if !(tabsHidden && isStandaloneTab)}
   <div class="toolbar">
+    {#if !tabsHidden}
     <div class="segmented" role="tablist" aria-label="Filter library">
       {#each tabs as tab (tab.id)}
         <button
@@ -158,6 +177,7 @@
         </button>
       {/each}
     </div>
+    {/if}
 
     <div class="toolbar-right">
       {#if showScopeFilter && !isStandaloneTab}
@@ -211,6 +231,7 @@
       {/if}
     </div>
   </div>
+  {/if}
 
   {#if isInstalled}
     <InstalledPacksPanel />

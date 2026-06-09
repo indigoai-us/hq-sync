@@ -242,6 +242,19 @@ pub async fn desktop_alt_enabled() -> Result<bool, String> {
     Ok(crate::util::feature_gate::desktop_features_enabled().await)
 }
 
+/// Admin gate for the desktop-alt Moderation surface (UX only — the server is
+/// the sole authorization boundary). True iff the signed-in email ends in
+/// `@getindigo.ai`.
+///
+/// Distinct from [`desktop_alt_enabled`], which is the GA gate (true for any
+/// signed-in user) controlling access to the window itself. The Moderation nav
+/// row + panel must use THIS gate so normal HQ users never see the reviewer
+/// surface — a non-admin who reaches the underlying commands still gets a 403.
+#[tauri::command]
+pub async fn desktop_alt_is_admin() -> Result<bool, String> {
+    Ok(crate::util::feature_gate::is_indigo_user().await)
+}
+
 #[tauri::command]
 pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String> {
     if slug.trim().is_empty() {
@@ -494,7 +507,10 @@ pub async fn open_desktop_alt_window_inner(
         WINDOW_LABEL,
         tauri::WebviewUrl::App("desktop-alt.html".into()),
     )
-    .title("HQ")
+    // Empty native title: the Overlay title bar would otherwise paint "HQ"
+    // over the custom titlebar's sync-status text (the verdict). The window's
+    // own UI provides the heading, so the macOS title is intentionally blank.
+    .title("")
     .inner_size(1180.0, 760.0)
     .min_inner_size(960.0, 600.0)
     .resizable(true)

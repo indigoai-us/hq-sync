@@ -51,22 +51,66 @@ describe('desktop-alt routes', () => {
     expect(visible.map((workspace) => workspace.slug)).toEqual(['synced', 'personal']);
   });
 
-  it('maps company hotkeys over the filtered synced company list', () => {
+  it('maps the five library hotkeys (⌘3–⌘7) to their tabs', () => {
+    const companies = getDesktopCompanies([
+      company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+    ]);
+
+    // Sync ⌘1 / Meetings ⌘2, then the broken-out library destinations at ⌘3–⌘7.
+    expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'library',
+      tab: 'skills',
+    });
+    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'library',
+      tab: 'workers',
+    });
+    expect(getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'library',
+      tab: 'installed',
+    });
+    expect(getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'library',
+      tab: 'marketplace',
+    });
+    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'library',
+      tab: 'profile',
+    });
+  });
+
+  it('maps company hotkeys at ⌘8+ over the filtered synced company list', () => {
     const companies = getDesktopCompanies([
       company({ slug: 'unsynced', displayName: 'Unsynced', state: 'local-only' }),
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    // Sync ⌘1 / Meetings ⌘2 / Library ⌘3 are the three top-level destinations
-    // (the board lives per-company on the company page), so company hotkeys start
-    // at ⌘4.
-    expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'library',
-    });
-    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    // Seven primary destinations (Sync, Meetings, Skills, Workers, Installed,
+    // Marketplace, Profile) consume ⌘1–⌘7, so companies start at ⌘8.
+    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'company',
       slug: 'synced',
     });
+  });
+
+  it('exposes the five library tabs as top-level sidebar rows with ⌘3–⌘7', () => {
+    const rows = getDesktopSidebarRows({ kind: 'sync' }, []);
+    const library = rows.filter((row) => row.route.kind === 'library');
+    expect(library.map((row) => [row.label, row.shortcut, row.route.tab])).toEqual([
+      ['Skills', '⌘3', 'skills'],
+      ['Workers', '⌘4', 'workers'],
+      ['Installed', '⌘5', 'installed'],
+      ['Marketplace', '⌘6', 'marketplace'],
+      ['Profile', '⌘7', 'profile'],
+    ]);
+    // The old single "Library" row is gone.
+    expect(rows.map((row) => row.label)).not.toContain('Library');
+  });
+
+  it('marks only the active library tab as current', () => {
+    const rows = getDesktopSidebarRows({ kind: 'library', tab: 'workers' }, []);
+    const active = rows.filter((row) => row.active).map((row) => row.label);
+    expect(active).toEqual(['Workers']);
   });
 });
 
@@ -89,9 +133,9 @@ describe('desktop-alt sidebar rows — admin-only Moderation entry', () => {
     const rows = getDesktopSidebarRows(route, synced, { isAdmin: true });
     const labels = rows.map((row) => row.label);
     expect(labels).toContain('Moderation');
-    // Sits after Library and before any company row.
+    // Sits after the last primary library row (Profile) and before any company.
     const moderationIndex = labels.indexOf('Moderation');
-    expect(moderationIndex).toBe(labels.indexOf('Library') + 1);
+    expect(moderationIndex).toBe(labels.indexOf('Profile') + 1);
     expect(moderationIndex).toBeLessThan(labels.indexOf('Synced'));
     // The Moderation row routes to the moderation kind and carries no hotkey
     // (so company ⌘-hotkeys are unaffected by the admin gate).
@@ -100,10 +144,10 @@ describe('desktop-alt sidebar rows — admin-only Moderation entry', () => {
     expect(moderationRow.shortcut).toBeUndefined();
   });
 
-  it('keeps company hotkeys at ⌘4 whether or not the admin row is present', () => {
+  it('keeps company hotkeys at ⌘8 whether or not the admin row is present', () => {
     const withAdmin = getDesktopSidebarRows(route, synced, { isAdmin: true });
     const companyRow = withAdmin.find((row) => row.route.kind === 'company');
-    // The admin Moderation row does not consume ⌘4 — the company keeps it.
-    expect(companyRow?.shortcut).toBe('⌘4');
+    // The admin Moderation row carries no hotkey, so the company keeps ⌘8.
+    expect(companyRow?.shortcut).toBe('⌘8');
   });
 });
