@@ -192,7 +192,7 @@ State files: `.hq-sync.pid`, `.hq-sync-daemon.json` in the HQ folder.
 
 ## Tray Icon
 
-4 embedded PNG icons (`src-tauri/icons/tray-*.png`), cached via `OnceLock` after first decode. `icon_as_template(true)` for macOS dark/light mode adaptation.
+4 embedded PNG icons (`src-tauri/icons/tray-*.png`), cached via `OnceLock` after first decode. `icon_as_template(true)` for macOS dark/light mode adaptation. State swaps go through the `set_state_icon()` helper, which calls `set_icon()` then re-asserts `set_icon_as_template(true)` — macOS drops `isTemplate` on every `set_icon()`, so without the re-assert the white-on-alpha glyph would render as raw white pixels (invisible on a light menu bar) after the first state change.
 
 Left-click toggles popover window. Right-click shows context menu (Sync Now / Settings / Quit). Tray state auto-updates from sync event listeners.
 
@@ -221,7 +221,7 @@ Classic popover release testing still uses `tests/MANUAL_TESTING.md` plus Loom p
 - `tauri_plugin_updater::Update` is not `Clone` -- must call `updater.check()` again in `install_update`. This is a plugin constraint, not redundant.
 - OAuth uses loopback port **53682** -- must match Cognito app client redirect URIs exactly.
 - `hq sync --json` double-binds the HQ folder path (both `HQ_ROOT` env var and `--hq-path` CLI flag) for defense-in-depth.
-- Tray icons must be `@2x` PNGs for Retina. `icon_as_template(true)` is required for macOS menu bar dark/light adaptation.
+- Tray icons must be `@2x` PNGs for Retina. `icon_as_template(true)` is required for macOS menu bar dark/light adaptation, but it is **not sticky**: macOS resets `isTemplate` to NO on every `set_icon()`, so each runtime swap must re-assert `set_icon_as_template(true)`. Always swap through the `set_state_icon()` helper rather than calling `set_icon()` directly.
 - `nix::sys::signal::kill(pid, None)` (kill-0) can false-positive on PID reuse -- acceptable for V2 prep scope.
 - **Multi-window ready handshake:** Secondary windows (e.g. `new-files-detail`) use a managed-state + `detail_window_ready` command pattern instead of timed `emit_to` delays. The renderer calls `detail_window_ready` after mounting its `listen()` handler, which emits the data and shows the window. This avoids the race where `emit_to` fires before the webview's JS event listener is registered.
 - `on_window_event` in main.rs is scoped to the `main` window label -- the detail window can close independently without quitting the app.
