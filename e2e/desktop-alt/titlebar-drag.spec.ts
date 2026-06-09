@@ -18,8 +18,12 @@ import { describe, expect, it } from 'vitest';
 
 const appPath = fileURLToPath(new URL('../../src/desktop-alt/DesktopApp.svelte', import.meta.url));
 const cssPath = fileURLToPath(new URL('../../src/desktop-alt/styles/desktop-alt.css', import.meta.url));
+const capPath = fileURLToPath(new URL('../../src-tauri/capabilities/desktop-alt.json', import.meta.url));
+const builderPath = fileURLToPath(new URL('../../src-tauri/src/commands/desktop_alt.rs', import.meta.url));
 const app = readFileSync(appPath, 'utf8');
 const css = readFileSync(cssPath, 'utf8');
+const cap = JSON.parse(readFileSync(capPath, 'utf8'));
+const builder = readFileSync(builderPath, 'utf8');
 
 describe('desktop-alt title bar', () => {
   it('marks the title bar header as a Tauri drag region', () => {
@@ -43,5 +47,16 @@ describe('desktop-alt title bar', () => {
 
   it('reserves a left inset for the real macOS overlay traffic lights', () => {
     expect(css).toMatch(/\.desktop-titlebar\s*\{[\s\S]*?padding: 0 14px 0 78px;/);
+  });
+
+  it('grants the desktop-alt window the start-dragging permission (the web drag region is inert without it)', () => {
+    expect(cap.permissions).toContain('core:window:allow-start-dragging');
+  });
+
+  it('does not paint a native window title over the custom titlebar (Overlay style)', () => {
+    // The window title must be blank — a non-empty title renders in the Overlay
+    // title bar on top of the verdict text ("HQ" overlapping "All synced").
+    expect(builder).toMatch(/\.title\(""\)/);
+    expect(builder).not.toMatch(/\.title\("HQ"\)/);
   });
 });

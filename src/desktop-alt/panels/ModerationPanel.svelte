@@ -23,11 +23,13 @@
    *      already-approved listing — preserved below the queue.
    *
    * ADMIN GATE (UX only — the server is the sole authorization boundary). The
-   * panel calls `desktop_alt_enabled` (true iff the signed-in email ends in
+   * panel calls `desktop_alt_is_admin` (true iff the signed-in email ends in
    * `@getindigo.ai`) to decide whether to render the moderation surface at all.
-   * DEFAULT-DENY: until that check resolves, and on ANY error, the panel renders
-   * LOCKED. A non-admin who somehow reaches the commands still gets a 403 from
-   * the server (the queue/decide parsers map 403 → a clear "admin only" error).
+   * NOTE: this is deliberately NOT `desktop_alt_enabled`, which is the GA gate
+   * (true for every signed-in user) — using that would show the reviewer surface
+   * to normal HQ users. DEFAULT-DENY: until the check resolves, and on ANY error,
+   * the panel renders LOCKED. A non-admin who somehow reaches the commands still
+   * gets a 403 from the server (the queue/decide parsers map 403 → "admin only").
    *
    * Svelte 5 runes + the shared desktop-alt CSS variables, mirroring
    * MarketplacePanel (US-008) conventions.
@@ -238,7 +240,9 @@
   onMount(async () => {
     try {
       // Default-deny: only an explicit true unlocks. Any error → locked.
-      isAdmin = (await invoke<boolean>('desktop_alt_enabled')) === true;
+      // Must use the admin gate (`desktop_alt_is_admin` → @getindigo.ai), NOT
+      // the GA gate `desktop_alt_enabled` (true for every signed-in user).
+      isAdmin = (await invoke<boolean>('desktop_alt_is_admin')) === true;
     } catch {
       isAdmin = false;
     }

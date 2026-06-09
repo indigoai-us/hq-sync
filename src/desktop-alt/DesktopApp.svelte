@@ -51,9 +51,9 @@
   let route = $state<DesktopRoute>(initialDesktopRoute);
   // Admin gate for the Moderation nav entry (UX only; the server is the sole
   // authorization boundary). DEFAULT-DENY: starts false and only flips true on an
-  // explicit `desktop_alt_enabled === true`, so the row never flashes for a
-  // non-admin and stays hidden on any check error. Reuses the same signal
-  // ModerationPanel itself gates on (@getindigo.ai).
+  // explicit `desktop_alt_is_admin === true` (@getindigo.ai), so the row never
+  // flashes for a non-admin and stays hidden on any check error. Reuses the same
+  // signal ModerationPanel itself gates on.
   let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>([]);
   let workspacesCloudReachable = $state(true);
@@ -153,11 +153,32 @@
       action: () => navigate({ kind: 'meetings' }),
     },
     {
-      id: 'command-go-library',
-      label: 'Go to Library',
-      detail: 'Browse skills and workers',
+      id: 'command-go-skills',
+      label: 'Go to Skills',
+      detail: 'Browse skills',
       shortcut: '⌘3',
-      action: () => navigate({ kind: 'library' }),
+      action: () => navigate({ kind: 'library', tab: 'skills' }),
+    },
+    {
+      id: 'command-go-workers',
+      label: 'Go to Workers',
+      detail: 'Browse workers',
+      shortcut: '⌘4',
+      action: () => navigate({ kind: 'library', tab: 'workers' }),
+    },
+    {
+      id: 'command-go-marketplace',
+      label: 'Go to Marketplace',
+      detail: 'Discover and install skills and workers',
+      shortcut: '⌘5',
+      action: () => navigate({ kind: 'library', tab: 'marketplace' }),
+    },
+    {
+      id: 'command-go-profile',
+      label: 'Go to Profile',
+      detail: 'Your HQ profile and published work',
+      shortcut: '⌘6',
+      action: () => navigate({ kind: 'library', tab: 'profile' }),
     },
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
@@ -358,10 +379,13 @@
       if (mounted) ready = true;
     });
     // Resolve the admin gate for the Moderation nav entry (default-deny: only an
-    // explicit `true` unlocks it; any error leaves it hidden).
-    void invoke<boolean>('desktop_alt_enabled')
-      .then((enabled) => {
-        if (mounted) isAdmin = enabled === true;
+    // explicit `true` unlocks it; any error leaves it hidden). This MUST use the
+    // admin gate (`desktop_alt_is_admin` → @getindigo.ai), NOT `desktop_alt_enabled`
+    // (the GA gate, true for every signed-in user) — otherwise the Moderation row
+    // shows for normal HQ users.
+    void invoke<boolean>('desktop_alt_is_admin')
+      .then((admin) => {
+        if (mounted) isAdmin = admin === true;
       })
       .catch(() => {
         if (mounted) isAdmin = false;
@@ -670,7 +694,7 @@
             </div>
           {:else if route.kind === 'library'}
             <div class="page">
-              <LibraryPage />
+              <LibraryPage tab={route.tab} />
             </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
