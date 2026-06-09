@@ -505,7 +505,7 @@
   /* ── Left rail ──────────────────────────────────────────────────────── */
 
   .rail {
-    width: 264px;
+    width: 240px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -565,21 +565,25 @@
   }
 
   .segment {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--space-2);
     width: 100%;
+    height: 30px;
     text-align: left;
-    padding: var(--space-2) var(--space-3);
+    padding: 0 var(--space-2) 0 calc(var(--space-3) + 6px);
     border: none;
-    border-radius: var(--radius-sm);
+    border-radius: 6px;
     background: transparent;
     color: var(--muted);
     font-family: var(--font-sans);
     font-size: var(--text-base);
     font-weight: 400;
     cursor: pointer;
-    transition: background-color 0.12s ease, color 0.12s ease;
+    transition:
+      background-color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1),
+      color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
   .segment:hover {
@@ -587,14 +591,28 @@
     color: var(--fg);
   }
 
+  /* Active nav cue mirrors the desktop sidebar: a restrained row-active surface
+     plus a 4px Indigo dot in the left gutter — not a filled accent pill. */
   .segment.active {
-    background: var(--accent-soft);
+    background: var(--row-active);
     color: var(--fg);
-    font-weight: 600;
+    font-weight: 500;
+  }
+
+  .segment.active::before {
+    content: '';
+    position: absolute;
+    left: var(--space-2);
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 999px;
+    background: var(--accent);
   }
 
   .segment:focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--blue);
     outline-offset: -2px;
   }
 
@@ -646,40 +664,53 @@
   }
 
   .contact-row {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: var(--space-2);
     width: 100%;
     text-align: left;
-    padding: var(--space-2);
+    padding: var(--space-2) var(--space-2) var(--space-2) calc(var(--space-2) + 2px);
     border: none;
-    border-radius: var(--radius-sm);
+    border-radius: 6px;
     background: transparent;
     color: inherit;
     font-family: var(--font-sans);
     cursor: pointer;
-    transition: background-color 0.12s ease;
+    transition: background-color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
   .contact-row:hover {
     background: var(--row-hover);
   }
 
-  /* The one place the Indigo accent earns its <10%: the selected conversation. */
+  /* Selected conversation: restrained row-active surface + a 2px Indigo edge —
+     the desktop "active row" treatment, accent kept to a hairline. */
   .contact-row.active {
-    background: var(--accent-soft);
+    background: var(--row-active);
+  }
+
+  .contact-row.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: 999px;
+    background: var(--accent);
   }
 
   .contact-row:focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--blue);
     outline-offset: -2px;
   }
 
   .contact-avatar {
     flex-shrink: 0;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -689,6 +720,7 @@
     font-family: var(--font-mono);
     font-size: var(--text-micro);
     font-weight: 600;
+    letter-spacing: 0.02em;
   }
 
   .contact-meta {

@@ -179,6 +179,51 @@ const handlers: Record<string, Handler> = {
   }),
   permissions_open_settings: () => null,
   permissions_force_native_register: () => null,
+
+  // -------------------------------------------------------------------------
+  // Messaging window fixtures (US-008→011) — representative DMs, a thread, and
+  // pending requests so the Messages window renders populated in the harness.
+  // -------------------------------------------------------------------------
+  get_unread_summary: () => ({ unreadDms: 2, pendingRequests: 2 }),
+  list_contacts: () => ({
+    contacts: [
+      { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company' },
+      { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', source: 'company' },
+      { personUid: 'prs_alan', email: 'alan@example.com', displayName: 'Alan Turing', companyUid: null, source: 'connection' },
+      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company' },
+    ],
+  }),
+  list_company_members: () => ({
+    members: [
+      { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', companyName: 'Indigo' },
+      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', companyName: 'Indigo' },
+    ],
+  }),
+  fetch_dm_thread: (args) => {
+    const peer = String(args?.withPersonUid ?? 'prs_ada');
+    const name = peer === 'prs_grace' ? 'Grace Hopper' : peer === 'prs_alan' ? 'Alan Turing' : 'Ada Lovelace';
+    const email = peer === 'prs_grace' ? 'grace@getindigo.ai' : peer === 'prs_alan' ? 'alan@example.com' : 'ada@getindigo.ai';
+    return {
+      messages: [
+        { eventId: 'm1', fromPersonUid: peer, fromDisplayName: name, fromEmail: email, body: 'Hey — did the Phase 1 backend land in prod?', createdAt: '2026-06-09T19:40:00.000Z', direction: 'in' },
+        { eventId: 'm2', fromPersonUid: 'prs_me', fromDisplayName: 'You', fromEmail: 'me@coreyepstein.com', body: 'Yep, just went live. Connection routes are up and the send path is verified.', createdAt: '2026-06-09T19:41:00.000Z', direction: 'out' },
+        { eventId: 'm3', fromPersonUid: peer, fromDisplayName: name, fromEmail: email, body: 'Amazing. Want me to take the Messages window for a spin?', createdAt: '2026-06-09T19:42:30.000Z', direction: 'in' },
+        { eventId: 'm4', fromPersonUid: 'prs_me', fromDisplayName: 'You', fromEmail: 'me@coreyepstein.com', body: 'Please do — I’m restyling it to match the desktop view right now.', createdAt: '2026-06-09T19:43:10.000Z', direction: 'out' },
+      ],
+      nextCursor: null,
+    };
+  },
+  list_dm_requests: () => ({
+    requests: [
+      { pairKey: 'pk1', fromPersonUid: 'prs_lin', fromEmail: 'lin@northwind.co', fromDisplayName: 'Lin Manuel', message: 'Hi! We met at the HQ demo — would love to connect here.', sharedCompany: null, createdAt: '2026-06-09T18:10:00.000Z' },
+      { pairKey: 'pk2', fromPersonUid: 'prs_rao', fromEmail: 'rao@getindigo.ai', fromDisplayName: 'Rao Patel', message: 'Pinging you about the messaging rollout.', sharedCompany: 'Indigo', createdAt: '2026-06-09T17:05:00.000Z' },
+    ],
+  }),
+  send_dm: () => ({ eventId: 'sent-1', createdAt: '2026-06-09T19:44:00.000Z' }),
+  send_dm_to_email: () => ({ state: 'connection_requested' }),
+  respond_dm_request: () => null,
+  messages_window_ready: () => null,
+  open_messages_window: () => null,
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
