@@ -23,6 +23,6 @@
 <plist version="1.0">
 <dict>
     <key>NSMicrophoneUsageDescription</key>
-    <string>HQ Sync uses the microphone to detect when you join a meeting and (with your opt-in) to capture your audio for the transcript. Required by Recall.ai's Desktop SDK.</string>
+    <string>HQ Sync uses the microphone to detect when you join a meeting and (with your opt-in) to capture your audio for the transcript.</string>
 </dict>
 </plist>
