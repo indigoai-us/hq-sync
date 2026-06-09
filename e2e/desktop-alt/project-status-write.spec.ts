@@ -91,10 +91,10 @@ describe('desktop-alt status write — registration + capability (US-010)', () =
     expect(cap).toContain('set_local_story_passes');
   });
 
-  it('the Rust write command guards path + Indigo gate + atomic write', () => {
+  it('the Rust write command guards path + GA gate + atomic write', () => {
     const rust = readRepoFile('src-tauri/src/commands/projects_local.rs');
     expect(rust).toContain('pub async fn set_local_project_status');
-    expect(rust).toContain('is_indigo_user().await');
+    expect(rust).toContain('desktop_features_enabled().await');
     // Path-traversal guard + board.json-only target.
     expect(rust).toContain('is_within(hq_root, &abs)');
     expect(rust).toContain('Some("board.json")');

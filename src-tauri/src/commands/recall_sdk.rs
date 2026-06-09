@@ -18,13 +18,17 @@
 //! `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the app continues
 //! normally. The rest of the MeetingsWindow is unaffected.
 //!
-//! ## Credentials
+//! ## Keyless by design
 //!
-//! On startup, the module calls `GET /v1/recall/credentials` on hq-pro to
-//! obtain the user's Recall API key. If the endpoint returns 404 (not yet
-//! provisioned) or any network error, the SDK is skipped (same
-//! `RECALL_SDK_UNAVAILABLE` log). This keeps the credential handshake
-//! entirely server-side — no Recall key is ever stored locally in plaintext.
+//! The Recall Desktop SDK is **keyless** — `init()` takes only the region
+//! `apiUrl`, and each recording is authorized solely by a per-recording,
+//! company-scoped **upload token** (`POST /v1/recall/upload-token`; see
+//! `fetch_sdk_upload_token`). No account-wide Recall API key is fetched or
+//! injected into the sidecar. An account-wide key would be a security
+//! exposure: it controls every bot + every recording/transcript across the
+//! whole Recall account, and Recall has no scoped keys. hq-pro PR #300 stopped
+//! `GET /v1/recall/credentials` from returning the real key; this client no
+//! longer reads it at all (`build_sdk_spawn_env` is regression-tested keyless).
 //!
 //! ## Protocol
 //!
@@ -210,6 +214,50 @@ pub async fn meetings_list_active_detections() -> Result<Vec<MeetingDetectedEven
     Ok(active_detections_snapshot())
 }
 
+/// One in-flight recording from the on-disk recordings ledger, surfaced to the
+/// renderer (serde camelCase). Lets a window opened *after* `recording:started`
+/// fired — the on-demand desktop-alt window — seed the `recording` state it
+/// missed by never having a listener attached when the live event went out.
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveRecording {
+    pub window_id: String,
+    pub recording_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    pub started_at: String,
+}
+
+/// Pure mapping: recordings ledger (`windowId` → entry) → renderer rows. Split
+/// out so the command stays a thin I/O wrapper and the shape is unit-testable.
+fn active_recordings_from_ledger(
+    ledger: recordings_ledger::RecordingsLedger,
+) -> Vec<ActiveRecording> {
+    ledger
+        .into_iter()
+        .map(|(window_id, entry)| ActiveRecording {
+            window_id,
+            recording_id: entry.recording_id,
+            company_uid: entry.company_uid,
+            started_at: entry.started_at,
+        })
+        .collect()
+}
+
+/// List the recordings currently in flight, read from the on-disk recordings
+/// ledger (`~/.hq/recordings-ledger.json`). Complements
+/// `meetings_list_active_detections`: detections seed *detected* rows, this
+/// seeds *recording* rows so a window opened after a recording began (e.g. the
+/// on-demand desktop-alt window, which missed the live `recording:started`)
+/// shows it as Recording rather than a stale Detected. Fail-soft to empty — a
+/// missing or corrupt ledger must never blank the Meetings UX.
+#[tauri::command]
+pub async fn meetings_list_active_recordings() -> Result<Vec<ActiveRecording>, String> {
+    Ok(active_recordings_from_ledger(
+        recordings_ledger::read_ledger().unwrap_or_default(),
+    ))
+}
+
 /// Look up the retained detection for `window_id` and return its meeting URL +
 /// source event id — the two inputs to the notify-ledger stable key.
 ///
@@ -253,18 +301,15 @@ fn mark_recorded_for_window(window_id: &str) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Feature flag for the meeting-detect-notify + Desktop SDK recording
-/// feature. **`@getindigo.ai` only for v1** — matches the broader
+/// feature. **GA — any signed-in user.** Matches the broader
 /// `meetings_feature_enabled` gate so the full meeting-pipeline UX
-/// (calendar + bot + SDK recording) lights up together for Indigo
-/// teammates and stays dark for everyone else.
+/// (calendar + bot + SDK recording) lights up together for every signed-in
+/// user and stays dark only for the signed-out.
 ///
 /// Was a single-user allowlist (`stefan@getindigo.ai`) during the
-/// 2026-05-26 dogfood; widened once the end-to-end flow shipped (PRs
-/// indigoai-us/hq-pro#145, #147, #148, #149, and the menubar feature
-/// branch). Universal rollout happens after the SDK webhook handler
-/// lands a real transcript pipeline.
-const ALLOWED_DOMAIN: &str = "@getindigo.ai";
-
+/// 2026-05-26 dogfood, then widened to the `@getindigo.ai` domain; graduated
+/// to GA (present-email) alongside the rest of the expanded desktop window.
+///
 /// Env-var override for QA: when set to `1`, force-enable the feature
 /// regardless of the signed-in email. Lets a tester exercise the SDK on a
 /// machine signed in as someone outside the allowlist without flipping the
@@ -282,7 +327,7 @@ static CACHED_ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 ///
 /// Decision order:
 ///   1. `HQ_SYNC_MEETING_DETECT_FORCE=1` → true (QA override).
-///   2. Signed-in email ends in `@getindigo.ai` → true.
+///   2. A signed-in user (non-empty email claim) → true (GA).
 ///   3. Otherwise → false.
 ///
 /// Quiet on missing/malformed tokens (returns false rather than erroring) so a
@@ -319,15 +364,13 @@ async fn compute_meeting_detect_eligible() -> bool {
     is_meeting_detect_allowed_email(claims.email.as_deref())
 }
 
-/// Pure helper — public for unit testing. Case-insensitive suffix match
-/// on the `@getindigo.ai` domain. The leading `@` is what prevents
-/// look-alike domains like `forgetindigo.ai` from matching. Empty /
-/// `None` / malformed strings are rejected.
+/// Pure helper — public for unit testing. GA gate: true for any signed-in
+/// user (non-empty email claim), regardless of domain. Delegates to
+/// `feature_gate::email_present` so this gate stays in lockstep with the
+/// broader `meetings_feature_enabled` / `desktop_features_enabled` GA gate.
+/// Empty / `None` / whitespace-only strings are rejected (signed-out).
 pub fn is_meeting_detect_allowed_email(email: Option<&str>) -> bool {
-    match email {
-        Some(s) if !s.is_empty() => s.to_ascii_lowercase().ends_with(ALLOWED_DOMAIN),
-        _ => false,
-    }
+    crate::util::feature_gate::email_present(email)
 }
 
 /// Tauri command exposing `meeting_detect_eligible` to the renderer so the
@@ -339,67 +382,18 @@ pub async fn meeting_detect_feature_enabled() -> Result<bool, String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Credentials
+// Keyless: no account-wide Recall API key
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Response shape for `GET /v1/recall/credentials`.
-///
-/// hq-pro returns this when the user has an active Recall integration.
-/// The `api_key` is a short-lived token or a long-lived key depending on
-/// the Recall tier — the SDK handles refresh internally once it has the
-/// initial key.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RecallCredentials {
-    api_key: String,
-}
-
-/// Fetch the user's Recall API key from hq-pro.
-///
-/// Returns `Ok(Some(key))` when the credentials endpoint responds 200 with
-/// a valid `apiKey`. Returns `Ok(None)` when the endpoint responds 404 (the
-/// user has no Recall integration yet) or when the credentials are empty.
-/// Returns `Err` only on hard network / auth failures.
-async fn fetch_recall_credentials() -> Result<Option<String>, String> {
-    let base = resolve_vault_api_url()
-        .map(|u| u.trim_end_matches('/').to_string())
-        .map_err(|e| format!("vault url: {e}"))?;
-
-    let token = cognito::get_valid_access_token()
-        .await
-        .map_err(|e| format!("auth: {e}"))?;
-
-    let res = build_client()
-        .get(format!("{base}/v1/recall/credentials"))
-        .header("authorization", format!("Bearer {token}"))
-        .send()
-        .await
-        .map_err(|e| format!("recall/credentials fetch: {e}"))?;
-
-    if res.status().as_u16() == 404 {
-        return Ok(None);
-    }
-
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        return Err(format!("recall/credentials HTTP {status}: {body}"));
-    }
-
-    let text = res
-        .text()
-        .await
-        .map_err(|e| format!("recall/credentials read: {e}"))?;
-
-    let creds: RecallCredentials = serde_json::from_str(&text)
-        .map_err(|e| format!("recall/credentials parse: {e}"))?;
-
-    if creds.api_key.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(creds.api_key))
-}
+// The Recall Desktop SDK is keyless: `init()` takes only the region `apiUrl`
+// (set in the sidecar) and each recording is authorized by a per-recording,
+// company-scoped upload token from `POST /v1/recall/upload-token` (see
+// `fetch_sdk_upload_token` below). No account-wide Recall API key is fetched or
+// injected into the sidecar's environment — `build_sdk_spawn_env` is the single
+// place the spawn env is built, and it is regression-tested to stay keyless
+// (`sdk_spawn_env_is_keyless`). hq-pro PR #300 already stopped
+// `GET /v1/recall/credentials` from returning the real key; this client no
+// longer reads that endpoint at all.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Binary discovery
@@ -499,26 +493,53 @@ fn parse_sdk_line(line: &str) -> Option<RecallSdkEvent> {
 // Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Build the environment for the Recall SDK sidecar spawn.
+///
+/// **Keyless by design.** The Recall Desktop SDK authorizes recording solely
+/// via the per-recording, company-scoped upload token
+/// (`POST /v1/recall/upload-token`), never an account-wide Recall API key — so
+/// this env intentionally carries NO `RECALL_API_KEY`. A leaked account key
+/// would control every bot + every recording/transcript across the whole
+/// Recall account (Recall has no scoped keys), which is why hq-pro PR #300
+/// stopped `GET /v1/recall/credentials` returning the real key and this client
+/// stopped fetching it. The only var set is a sane `PATH` so the SDK binary can
+/// resolve its Node/dylib dependencies in a Dock-launched (launchd minimal-PATH)
+/// context, mirroring the sync runner spawn. Regression: `sdk_spawn_env_is_keyless`.
+fn build_sdk_spawn_env() -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("PATH".to_string(), paths::child_path());
+    env
+}
+
 /// Start the Recall Desktop SDK sidecar.
 ///
-/// Called once from `main.rs` setup inside a `tauri::async_runtime::spawn`.
-/// On any failure (binary missing, credentials unavailable, spawn error) the
-/// function logs `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the menubar
-/// app continues running normally.
+/// Called from `main.rs` setup inside a `tauri::async_runtime::spawn` (only
+/// once the required macOS permissions are already granted), and also as a
+/// Tauri command from the Settings → Meeting permissions wizard right after
+/// the user grants those permissions — so meeting-detect starts working
+/// immediately without waiting for the next app launch.
+///
+/// Idempotent: the singleton handle check (`try_register_handle`) makes a
+/// second call a no-op while the SDK is already running.
+///
+/// On any failure (binary missing, spawn error) the function logs
+/// `RECALL_SDK_UNAVAILABLE` and returns `Ok(())` — the menubar app continues
+/// running normally.
+#[tauri::command]
 pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
     log(LOG_TAG, "start_recall_sdk: initialising");
 
-    // ── 0. @getindigo.ai eligibility gate ─────────────────────────────────────
-    // Feature is gated to @getindigo.ai users — matches
+    // ── 0. Signed-in eligibility gate (GA) ────────────────────────────────────
+    // Feature is GA — gated to any signed-in user, matching
     // `meetings_feature_enabled` so the full meeting-pipeline UX lights up
-    // together. Skip silently for everyone else: no SDK process, no Recall
+    // together. Skip silently for the signed-out: no SDK process, no Recall
     // API call, no permission prompts. (Was a single-user Phase-0 allowlist
-    // during the 2026-05-26 dogfood; widened once the end-to-end flow
-    // landed on hq-prod.)
+    // during the 2026-05-26 dogfood, then `@getindigo.ai`-only; graduated to
+    // GA alongside the expanded desktop window.)
     if !meeting_detect_eligible().await {
         log(
             LOG_TAG,
-            "start_recall_sdk: user not in @getindigo.ai allowlist — skipping (set HQ_SYNC_MEETING_DETECT_FORCE=1 to override)",
+            "start_recall_sdk: no signed-in user — skipping (set HQ_SYNC_MEETING_DETECT_FORCE=1 to override)",
         );
         return Ok(());
     }
@@ -547,50 +568,22 @@ pub async fn start_recall_sdk(app: AppHandle) -> Result<(), String> {
         }
     };
 
-    // ── 3. Fetch Recall credentials from hq-pro ──────────────────────────────
-    let api_key = match fetch_recall_credentials().await {
-        Ok(Some(key)) => {
-            log(LOG_TAG, "start_recall_sdk: credentials obtained");
-            key
-        }
-        Ok(None) => {
-            log(
-                LOG_TAG,
-                "RECALL_SDK_UNAVAILABLE: no Recall credentials configured",
-            );
-            crate::commands::process::deregister_process(SDK_HANDLE);
-            return Ok(());
-        }
-        Err(e) => {
-            log(
-                LOG_TAG,
-                &format!("RECALL_SDK_UNAVAILABLE: credentials fetch failed: {e}"),
-            );
-            crate::commands::process::deregister_process(SDK_HANDLE);
-            return Ok(());
-        }
-    };
-
-    // ── 4. Build SpawnArgs ───────────────────────────────────────────────────
-    let mut env = HashMap::new();
-    // Pass the API key via environment variable. The SDK reads RECALL_API_KEY
-    // on startup and uses it to authenticate with the Recall cloud service.
-    env.insert("RECALL_API_KEY".to_string(), api_key);
-    // Include a sane PATH so the SDK binary can find its own dependencies
-    // (Node modules, dylibs, etc.) in a Dock-launched context where launchd
-    // provides a minimal PATH. Mirrors the sync runner spawn.
-    env.insert("PATH".to_string(), paths::child_path());
-
+    // ── 3. Build SpawnArgs (keyless — no Recall API key) ─────────────────────
+    // The Recall Desktop SDK is keyless: no account-wide API key is fetched or
+    // injected (see the "Keyless" note above). The SDK initialises with only
+    // the region apiUrl, and recording is authorized per-recording by the
+    // upload token (`fetch_sdk_upload_token`). `build_sdk_spawn_env` is the
+    // single, regression-tested place the spawn env is assembled.
     let spawn_args = SpawnArgs {
         cmd: bin_path,
         // `--json` tells the SDK to emit ndjson on stdout (Recall SDK CLI
         // convention; the flag name mirrors how hq-sync-runner works).
         args: vec!["--json".to_string()],
         cwd: None,
-        env: Some(env),
+        env: Some(build_sdk_spawn_env()),
     };
 
-    // ── 5. Spawn in background ───────────────────────────────────────────────
+    // ── 4. Spawn in background ───────────────────────────────────────────────
     log(LOG_TAG, "start_recall_sdk: spawning SDK process");
 
     let app_bg = app.clone();
@@ -1040,7 +1033,7 @@ async fn fetch_sdk_upload_token(
 /// Start a local recording for the given SDK window.
 ///
 /// Pre-conditions checked before the bridge command is sent:
-/// - The user is in the `@getindigo.ai` allowlist (same gate as detection)
+/// - The user is signed in (GA gate — same gate as detection)
 /// - The bridge is running (stdin handle present)
 ///
 /// Side effects on success:
@@ -1057,7 +1050,7 @@ pub async fn start_recording(
     company_uid: Option<String>,
 ) -> Result<String, String> {
     if !meeting_detect_eligible().await {
-        return Err("user not in @getindigo.ai allowlist".to_string());
+        return Err("recording requires a signed-in user".to_string());
     }
     if window_id.trim().is_empty() {
         return Err("window_id is required".to_string());
@@ -1149,7 +1142,7 @@ pub async fn start_recording(
 #[tauri::command]
 pub async fn stop_recording(window_id: String) -> Result<(), String> {
     if !meeting_detect_eligible().await {
-        return Err("user not in @getindigo.ai allowlist".to_string());
+        return Err("recording requires a signed-in user".to_string());
     }
     if window_id.trim().is_empty() {
         return Err("window_id is required".to_string());
@@ -1435,83 +1428,156 @@ mod tests {
         let _ = find_sdk_binary(); // must not panic
     }
 
-    // ── Eligibility gate (@getindigo.ai feature flag) ─────────────────────────
-    //
-    // Gate widened from `stefan@getindigo.ai` exact-match to the
-    // `@getindigo.ai` suffix on 2026-05-26 once the end-to-end SDK
-    // recording flow shipped to hq-prod. Tests below cover the suffix
-    // semantics + look-alike defence; the leading `@` in ALLOWED_DOMAIN
-    // is what blocks `forgetindigo.ai` and friends.
+    #[test]
+    fn sdk_spawn_env_is_keyless() {
+        // Regression: the Recall Desktop SDK is keyless by design. Recording is
+        // authorized per-recording by the company-scoped upload token
+        // (`/v1/recall/upload-token`), NOT an account-wide Recall API key, so the
+        // sidecar spawn env must never carry RECALL_API_KEY. A leaked account key
+        // controls every bot + every recording/transcript across the whole Recall
+        // account (Recall has no scoped keys) — the exposure hq-pro PR #300 closed
+        // by no longer returning the real key from `/v1/recall/credentials`. This
+        // client stopped fetching it entirely; `build_sdk_spawn_env` is the single
+        // place the env is assembled, so pinning it here keeps the SDK keyless.
+        let env = build_sdk_spawn_env();
+        assert!(
+            !env.contains_key("RECALL_API_KEY"),
+            "Recall SDK spawn must stay keyless — found RECALL_API_KEY in the spawn env"
+        );
+        // PATH is still required so the SDK binary resolves its Node/dylib deps
+        // under launchd's minimal PATH (Dock-launched context).
+        assert!(
+            env.contains_key("PATH"),
+            "spawn env should still set PATH for the launchd minimal-PATH context"
+        );
+    }
 
     #[test]
-    fn meeting_detect_allowlist_accepts_any_getindigo_user() {
+    fn active_recordings_from_ledger_maps_every_entry() {
+        // Regression for the desktop-alt "stuck on Detected" bug: the on-demand
+        // window seeds recording state from this mapping (via
+        // `meetings_list_active_recordings`), so a recording started *before* the
+        // window opened — which missed the live `recording:started` event — shows
+        // as Recording, not a stale Detected.
+        use crate::util::recordings_ledger::{RecordingEntry, RecordingsLedger};
+        let mut ledger: RecordingsLedger = std::collections::HashMap::new();
+        ledger.insert(
+            "win-1".to_string(),
+            RecordingEntry {
+                recording_id: "rec_1".to_string(),
+                company_uid: Some("cmp_1".to_string()),
+                started_at: "2026-06-06T14:57:05Z".to_string(),
+            },
+        );
+        ledger.insert(
+            "win-2".to_string(),
+            RecordingEntry {
+                recording_id: "rec_2".to_string(),
+                company_uid: None,
+                started_at: "2026-06-06T15:00:00Z".to_string(),
+            },
+        );
+        let mut rows = active_recordings_from_ledger(ledger);
+        rows.sort_by(|a, b| a.window_id.cmp(&b.window_id));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].window_id, "win-1");
+        assert_eq!(rows[0].recording_id, "rec_1");
+        assert_eq!(rows[0].company_uid.as_deref(), Some("cmp_1"));
+        assert_eq!(rows[1].window_id, "win-2");
+        assert_eq!(rows[1].company_uid, None);
+    }
+
+    #[test]
+    fn active_recordings_from_empty_ledger_is_empty() {
+        let rows = active_recordings_from_ledger(std::collections::HashMap::new());
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn active_recording_serializes_camelcase() {
+        // The renderer (activeMeetings.ts `BackendActiveRecording`) reads
+        // camelCase keys: windowId / recordingId / companyUid / startedAt.
+        let row = ActiveRecording {
+            window_id: "win-1".to_string(),
+            recording_id: "rec_1".to_string(),
+            company_uid: Some("cmp_1".to_string()),
+            started_at: "2026-06-06T14:57:05Z".to_string(),
+        };
+        let json = serde_json::to_string(&row).expect("serialize");
+        assert!(json.contains("\"windowId\":\"win-1\""), "json: {json}");
+        assert!(json.contains("\"recordingId\":\"rec_1\""), "json: {json}");
+        assert!(json.contains("\"companyUid\":\"cmp_1\""), "json: {json}");
+        assert!(
+            json.contains("\"startedAt\":\"2026-06-06T14:57:05Z\""),
+            "json: {json}"
+        );
+    }
+
+    // ── Eligibility gate (GA — signed-in feature flag) ────────────────────────
+    //
+    // The recording/detection gate graduated from the `@getindigo.ai`
+    // dogfood to GA: it now admits any signed-in user (non-empty email
+    // claim) and rejects only the signed-out, delegating to
+    // `feature_gate::email_present`. Tests below pin the GA presence
+    // semantics.
+
+    #[test]
+    fn meeting_detect_admits_any_getindigo_user() {
         assert!(is_meeting_detect_allowed_email(Some("stefan@getindigo.ai")));
         assert!(is_meeting_detect_allowed_email(Some("teammate@getindigo.ai")));
         assert!(is_meeting_detect_allowed_email(Some("anyone@getindigo.ai")));
     }
 
     #[test]
-    fn meeting_detect_allowlist_case_insensitive() {
-        // Cognito sometimes returns emails with non-canonical casing.
-        assert!(is_meeting_detect_allowed_email(Some("Stefan@GetIndigo.ai")));
-        assert!(is_meeting_detect_allowed_email(Some("STEFAN@GETINDIGO.AI")));
-        assert!(is_meeting_detect_allowed_email(Some("Teammate@GetIndigo.AI")));
+    fn meeting_detect_admits_non_indigo_users_under_ga() {
+        // GA: the gate no longer requires the `@getindigo.ai` domain.
+        assert!(is_meeting_detect_allowed_email(Some("stefan@example.com")));
+        assert!(is_meeting_detect_allowed_email(Some("stefan@gmail.com")));
+        assert!(is_meeting_detect_allowed_email(Some("admin@indigo.ai")));
+        // Former dogfood look-alikes — now admitted, GA only checks presence.
+        assert!(is_meeting_detect_allowed_email(Some("stefan@forgetindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some("stefan@notgetindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some("stefan@evil-getindigo.ai")));
     }
 
     #[test]
-    fn meeting_detect_allowlist_accepts_plus_addressing() {
-        // Common `+tag` pattern used for filtering — still a real
-        // `@getindigo.ai` mailbox, should be allowed.
+    fn meeting_detect_admits_plus_addressing() {
         assert!(is_meeting_detect_allowed_email(Some("stefan+test@getindigo.ai")));
+        assert!(is_meeting_detect_allowed_email(Some("qa+tag@example.com")));
     }
 
     #[test]
-    fn meeting_detect_allowlist_rejects_lookalike_domains() {
-        // The leading `@` in ALLOWED_DOMAIN is the load-bearing piece —
-        // it blocks any domain that ends in `getindigo.ai` without the
-        // explicit `@` boundary.
-        assert!(!is_meeting_detect_allowed_email(Some("stefan@forgetindigo.ai")));
-        assert!(!is_meeting_detect_allowed_email(Some("stefan@notgetindigo.ai")));
-        assert!(!is_meeting_detect_allowed_email(Some("stefan@evil-getindigo.ai")));
-    }
-
-    #[test]
-    fn meeting_detect_allowlist_rejects_missing_and_empty() {
+    fn meeting_detect_rejects_signed_out() {
+        // Only the signed-out (missing / empty / whitespace-only) is rejected.
         assert!(!is_meeting_detect_allowed_email(None));
         assert!(!is_meeting_detect_allowed_email(Some("")));
+        assert!(!is_meeting_detect_allowed_email(Some("   ")));
     }
 
     #[test]
-    fn meeting_detect_allowlist_rejects_other_domains() {
-        assert!(!is_meeting_detect_allowed_email(Some("stefan@example.com")));
-        assert!(!is_meeting_detect_allowed_email(Some("stefan@gmail.com")));
-        assert!(!is_meeting_detect_allowed_email(Some("admin@indigo.ai")));
-    }
-
-    #[test]
-    fn meeting_detect_allowlist_matches_meetings_feature_enabled() {
-        // The two gates should agree — they're parallel checks of the
-        // same `@getindigo.ai` flag, just from different sites in the
-        // codebase. If the broader `meetings_feature_enabled` ever
-        // diverges from this one, the menubar UI surfaces and the SDK
-        // boot will disagree about who's an Indigo user.
-        use crate::util::feature_gate::is_allowed_email;
+    fn meeting_detect_matches_meetings_feature_enabled() {
+        // The two gates should agree — they're parallel GA checks (present
+        // email) from different sites in the codebase. If the broader
+        // `meetings_feature_enabled` ever diverges from this one, the menubar
+        // UI surfaces and the SDK boot will disagree about who's signed in.
+        use crate::util::feature_gate::email_present;
         for email in [
             "stefan@getindigo.ai",
             "Anyone@GetIndigo.AI",
             "stefan@gmail.com",
             "stefan@forgetindigo.ai",
             "",
+            "   ",
         ] {
             assert_eq!(
                 is_meeting_detect_allowed_email(Some(email)),
-                is_allowed_email(Some(email)),
+                email_present(Some(email)),
                 "gate disagreement for {email}",
             );
         }
         assert_eq!(
             is_meeting_detect_allowed_email(None),
-            is_allowed_email(None),
+            email_present(None),
         );
     }
 

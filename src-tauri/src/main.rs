@@ -183,7 +183,6 @@ fn main() {
         .manage(commands::dm_notify::ActiveThreadState::new())
         .manage(commands::dm_notify::ActiveConversationState::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
-        .manage(commands::packages::PendingPackages(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
         // terminating the process. The app only truly exits via the tray
@@ -253,8 +252,6 @@ fn main() {
             commands::packages::install_package,
             commands::packages::update_package,
             commands::packages::uninstall_package,
-            commands::packages::open_packages_window,
-            commands::packages::packages_window_ready,
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
@@ -275,6 +272,24 @@ fn main() {
             commands::library_local::get_library_company,
             commands::library_local::get_library_worker_detail,
             commands::library_local::get_library_skill_detail,
+            commands::marketplace::list_marketplace_listings,
+            commands::marketplace::get_marketplace_listing,
+            commands::marketplace::install_marketplace_pack,
+            commands::marketplace::yank_marketplace_listing,
+            commands::marketplace::list_moderation_queue,
+            commands::marketplace::decide_moderation_listing,
+            commands::marketplace::list_creator_applications,
+            commands::marketplace::decide_creator_application,
+            commands::marketplace::record_marketplace_install,
+            commands::marketplace::publish_marketplace_pack,
+            commands::marketplace::request_creator_access,
+            commands::marketplace::pick_pack_directory,
+            commands::marketplace::claim_creator_handle,
+            commands::marketplace::update_creator_profile,
+            commands::marketplace::upload_creator_avatar,
+            commands::marketplace::pick_avatar_file,
+            commands::marketplace::get_creator_profile,
+            commands::marketplace::get_my_creator,
             commands::meetings::meetings_list_upcoming,
             commands::meetings::meetings_list_scheduled_bots,
             commands::meetings::meetings_list_memberships,
@@ -292,9 +307,11 @@ fn main() {
             commands::permissions::meetings_permissions_state,
             commands::permissions::open_meeting_permissions_window,
             commands::recall_sdk::meeting_detect_feature_enabled,
+            commands::recall_sdk::start_recall_sdk,
             commands::recall_sdk::start_recording,
             commands::recall_sdk::stop_recording,
             commands::recall_sdk::meetings_list_active_detections,
+            commands::recall_sdk::meetings_list_active_recordings,
             tray::meetings_set_prompt_badge,
             commands::desktop_alt::open_desktop_alt_window,
             commands::desktop_alt::desktop_alt_consume_pending_route,
@@ -517,11 +534,22 @@ fn main() {
                 });
             }
 
-            // Force-register the .app bundle with macOS TCC for Accessibility
-            // and Screen Recording, and start the Recall Desktop SDK sidecar.
-            // Both are gated on `meeting_detect_eligible()` so users outside
-            // the Phase-0 allowlist see no permission prompts, no SDK process,
-            // and no Recall API calls. Best-effort: failures logged + ignored.
+            // Start the Recall Desktop SDK sidecar — gated on
+            // `meeting_detect_eligible()` so users outside the @getindigo.ai
+            // allowlist see no SDK process and no Recall API calls.
+            //
+            // We DELIBERATELY request NO macOS permissions on launch. Asking
+            // for Accessibility / Screen Recording / Microphone now lives
+            // exclusively behind Settings → Meeting permissions (the wizard's
+            // "Trigger prompts" button → `permissions_force_native_register`).
+            // On launch we only READ the current TCC status (a prompt-less
+            // call) and start the SDK when every required permission is
+            // already granted. If they're not, we skip the SDK: starting it
+            // before then would make the SDK's own capture calls fire the very
+            // prompts we're keeping out of the launch path, and we don't pop
+            // the wizard either. Once the user grants the permissions from
+            // Settings the wizard starts the SDK itself, and it also comes up
+            // automatically on the next launch.
             // See `commands::recall_sdk` for the gate definition and the
             // graceful-degradation contract.
             {
@@ -530,69 +558,50 @@ fn main() {
                     if !commands::recall_sdk::meeting_detect_eligible().await {
                         util::logfile::log(
                             "recall-sdk",
-                            "setup: user not in Phase-0 allowlist — skipping TCC register + SDK spawn",
+                            "setup: user not in @getindigo.ai allowlist — skipping SDK spawn",
                         );
                         return;
                     }
 
+                    // Decide whether to start the SDK now. On macOS we hold it
+                    // back until the required permissions are already granted —
+                    // a prompt-less status read — so the SDK's own capture
+                    // calls never trigger the prompts we keep out of the launch
+                    // path. On platforms without TCC, start as before.
                     #[cfg(target_os = "macos")]
-                    {
-                        match commands::permissions::permissions_force_native_register() {
-                            Ok((ax, sc)) => util::logfile::log(
+                    let should_start_sdk = match commands::permissions::meetings_permissions_state() {
+                        Ok(state) if state.all_required_granted => {
+                            util::logfile::log(
                                 "permissions",
-                                &format!(
-                                    "native register: accessibility={ax} screen-capture={sc}"
-                                ),
-                            ),
-                            Err(e) => util::logfile::log(
-                                "permissions",
-                                &format!("native register failed: {e}"),
-                            ),
+                                "startup: required meeting permissions granted — starting SDK",
+                            );
+                            true
                         }
-
-                        // Guide the user when something the SDK needs is still
-                        // missing. Native prompts only fire once, and
-                        // Accessibility / Screen Recording never re-prompt
-                        // after a denial — so without this an eligible user
-                        // who dismissed or denied a prompt is left with
-                        // meeting-detect silently broken and no idea why.
-                        // Opening the wizard surfaces exactly which permissions
-                        // are outstanding and deep-links each to the right
-                        // System Settings pane. No-op once all are granted.
-                        match commands::permissions::meetings_permissions_state() {
-                            Ok(state) if !state.all_required_granted => {
-                                util::logfile::log(
-                                    "permissions",
-                                    "startup: required meeting permissions missing — opening wizard",
-                                );
-                                if let Err(e) =
-                                    commands::permissions::open_meeting_permissions_window(
-                                        handle.clone(),
-                                    )
-                                    .await
-                                {
-                                    util::logfile::log(
-                                        "permissions",
-                                        &format!("open_meeting_permissions_window failed: {e}"),
-                                    );
-                                }
-                            }
-                            Ok(_) => util::logfile::log(
+                        Ok(_) => {
+                            util::logfile::log(
                                 "permissions",
-                                "startup: all required meeting permissions granted",
-                            ),
-                            Err(e) => util::logfile::log(
-                                "permissions",
-                                &format!("meetings_permissions_state failed: {e}"),
-                            ),
+                                "startup: meeting permissions not yet granted — not starting SDK (enable via Settings -> Meeting permissions)",
+                            );
+                            false
                         }
-                    }
+                        Err(e) => {
+                            util::logfile::log(
+                                "permissions",
+                                &format!("startup: meetings_permissions_state failed ({e}) — not starting SDK"),
+                            );
+                            false
+                        }
+                    };
+                    #[cfg(not(target_os = "macos"))]
+                    let should_start_sdk = true;
 
-                    if let Err(e) = commands::recall_sdk::start_recall_sdk(handle.clone()).await {
-                        util::logfile::log(
-                            "recall-sdk",
-                            &format!("start_recall_sdk error (app continues): {e}"),
-                        );
+                    if should_start_sdk {
+                        if let Err(e) = commands::recall_sdk::start_recall_sdk(handle.clone()).await {
+                            util::logfile::log(
+                                "recall-sdk",
+                                &format!("start_recall_sdk error (app continues): {e}"),
+                            );
+                        }
                     }
 
                     // Recover any recording that was in flight when the app

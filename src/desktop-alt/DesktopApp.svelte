@@ -10,6 +10,7 @@
   import LibraryPage from './pages/LibraryPage.svelte';
   import MessagesPage from './pages/MessagesPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
+  import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
   import {
@@ -37,6 +38,7 @@
   } from './lib/meetings-model';
   import {
     emptyWorkspaceStats,
+    friendlySyncError,
     type ActivityEntry,
     type DaemonStatus,
     type SyncCompanyRef,
@@ -48,6 +50,12 @@
   import './styles/desktop-alt.css';
 
   let route = $state<DesktopRoute>(initialDesktopRoute);
+  // Admin gate for the Moderation nav entry (UX only; the server is the sole
+  // authorization boundary). DEFAULT-DENY: starts false and only flips true on an
+  // explicit `desktop_alt_enabled === true`, so the row never flashes for a
+  // non-admin and stays hidden on any check error. Reuses the same signal
+  // ModerationPanel itself gates on (@getindigo.ai).
+  let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>([]);
   let workspacesCloudReachable = $state(true);
   let workspaceError = $state<string | null>(null);
@@ -167,6 +175,57 @@
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);
+
+  function formatRelative(iso: string | null): string | null {
+    if (!iso) return null;
+    const then = new Date(iso).getTime();
+    if (Number.isNaN(then)) return null;
+    const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
+    if (secs < 60) return 'just now';
+    const mins = Math.round(secs / 60);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    return `${Math.round(hrs / 24)}d ago`;
+  }
+
+  // The always-visible sync verdict shown in the title bar: a tone (drives the
+  // status dot color), a one-word state, and a mono detail line.
+  const verdict = $derived.by(() => {
+    const total = companies.length;
+    if (syncState === 'syncing') {
+      const scope =
+        syncFanoutTotal > 0 ? `${syncFanoutDoneCount}/${syncFanoutTotal} companies` : 'workspaces';
+      return {
+        tone: 'syncing',
+        word: 'Syncing',
+        counts: syncProgress?.company ? `${syncProgress.company} · ${scope}` : scope,
+      };
+    }
+    if (syncState === 'error' || syncState === 'auth-error') {
+      return {
+        tone: 'error',
+        word: 'Sync error',
+        counts: syncErrorMessage
+          ? friendlySyncError(syncErrorMessage).summary
+          : 'check your connection',
+      };
+    }
+    if (syncState === 'conflict') {
+      return { tone: 'conflict', word: 'Needs attention', counts: 'resolve conflicts to continue' };
+    }
+    const pending = status?.pendingFiles ?? 0;
+    return {
+      tone: 'idle',
+      word: 'All synced',
+      counts:
+        pending > 0
+          ? `${pending} pending · ${total} watched`
+          : `${total} workspace${total === 1 ? '' : 's'} watched`,
+    };
+  });
+
+  const lastSyncLabel = $derived(formatRelative(status?.lastSyncAt ?? null));
 
   function navigate(nextRoute: DesktopRoute) {
     route = nextRoute;
@@ -306,6 +365,15 @@
     void refreshRealState().finally(() => {
       if (mounted) ready = true;
     });
+    // Resolve the admin gate for the Moderation nav entry (default-deny: only an
+    // explicit `true` unlocks it; any error leaves it hidden).
+    void invoke<boolean>('desktop_alt_enabled')
+      .then((enabled) => {
+        if (mounted) isAdmin = enabled === true;
+      })
+      .catch(() => {
+        if (mounted) isAdmin = false;
+      });
     hydrateMeetingStatus();
     // Warm the Meetings singleton at app launch so its data is ready before the
     // user ever navigates to Meetings — the page then reads the warm store on
@@ -536,13 +604,49 @@
 
 <div
   class="desktop-shell"
-  style={`--desktop-sidebar-width: ${DESKTOP_SHELL_LAYOUT.sidebarWidthPx}px; --desktop-status-bar-height: ${DESKTOP_SHELL_LAYOUT.statusBarHeightPx}px;`}
+  style={`--desktop-sidebar-width: ${DESKTOP_SHELL_LAYOUT.sidebarWidthPx}px; --desktop-titlebar-height: ${DESKTOP_SHELL_LAYOUT.titleBarHeightPx}px; --desktop-status-bar-height: ${DESKTOP_SHELL_LAYOUT.statusBarHeightPx}px;`}
 >
-  <DesktopSidebar {route} {companies} onnavigate={navigate} />
+  <header class="desktop-titlebar" data-tauri-drag-region aria-label="Sync status">
+    <div class="titlebar-traffic" aria-hidden="true"><span></span><span></span><span></span></div>
+    <div class="titlebar-verdict">
+      <span class={`verdict-dot ${verdict.tone}`} aria-hidden="true"></span>
+      <span class="verdict-word">{verdict.word}</span>
+      <span class="verdict-counts">{verdict.counts}</span>
+    </div>
+    <div class="titlebar-spacer"></div>
+    <div class="titlebar-meta">
+      {#if lastSyncLabel}
+        <span>last sync <span class="meta-mono">{lastSyncLabel}</span></span>
+        <span class="titlebar-divider" aria-hidden="true"></span>
+      {/if}
+      <button
+        class="titlebar-sync-now"
+        type="button"
+        onclick={handleSyncAll}
+        disabled={syncState === 'syncing'}
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+          <path d="M21 3v5h-5" />
+        </svg>
+        {syncState === 'syncing' ? 'Syncing…' : 'Sync Now'}
+      </button>
+    </div>
+  </header>
 
-  <div class="desktop-content">
-    <main class="desktop-main" aria-label="Desktop content">
-      <div class="desktop-main-scroll">
+  <div class="desktop-body">
+    <DesktopSidebar
+      {route}
+      {companies}
+      {isAdmin}
+      onnavigate={navigate}
+      onsearch={() => (commandPaletteOpen = true)}
+      onsettings={handleOpenSettings}
+    />
+
+    <div class="desktop-content">
+      <main class="desktop-main" aria-label="Desktop content">
+        <div class="desktop-main-scroll">
         {#key routeKey}
           {#if route.kind === 'sync'}
             <div class="page">
@@ -581,6 +685,25 @@
             <div class="messages-host">
               <MessagesPage />
             </div>
+          {:else if route.kind === 'moderation'}
+            <!-- Admin-only. Rendered only when the admin gate is satisfied
+                 (default-deny); ModerationPanel ALSO re-checks + locks itself, and
+                 the server is the real authorization boundary. A non-admin who
+                 somehow reaches this route falls through to the placeholder. -->
+            {#if isAdmin}
+              <div class="page">
+                <ModerationPanel />
+              </div>
+            {:else}
+              <section class="page" aria-labelledby="desktop-page-title">
+                <div class="page-header">
+                  <h1 id="desktop-page-title">Moderation</h1>
+                </div>
+                <div class="placeholder-panel">
+                  <p>Moderation is restricted to reviewers.</p>
+                </div>
+              </section>
+            {/if}
           {:else if activeCompany}
             <div class="page">
               <CompanyPage company={activeCompany} />
@@ -599,18 +722,21 @@
             </section>
           {/if}
         {/key}
-      </div>
-
-      <DesktopStatusBar
-        version={__APP_VERSION__}
-        state={syncState}
-        progress={syncProgress}
-        filesProgressed={syncFilesProgressed}
-        totalFiles={effectiveTotalFiles}
-        {nextMeetingLabel}
-      />
-    </main>
+        </div>
+      </main>
+    </div>
   </div>
+
+  <DesktopStatusBar
+    version={__APP_VERSION__}
+    state={syncState}
+    progress={syncProgress}
+    filesProgressed={syncFilesProgressed}
+    totalFiles={effectiveTotalFiles}
+    workspaceCount={companies.length}
+    observedBytes={observedVaultBytes}
+    {nextMeetingLabel}
+  />
 
   {#if commandPaletteOpen}
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />

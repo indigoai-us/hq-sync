@@ -17,6 +17,7 @@ import { get } from 'svelte/store';
 // timers never leak.
 
 const invokeMock = vi.fn();
+const eventEmitMock = vi.fn((..._args: unknown[]) => Promise.resolve());
 type Handler = (event: { payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
 
@@ -25,6 +26,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
+  emit: (...args: unknown[]) => eventEmitMock(...args),
   listen: vi.fn((name: string, handler: Handler) => {
     handlers.set(name, handler);
     // `listen` resolves to an unlisten fn.
@@ -35,6 +37,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 import {
   activeMeetings,
   ensureActiveMeetingListeners,
+  seedActiveMeetingsFromBackend,
   stopActiveMeetingListeners,
   stopRecording,
   upsertActiveMeeting,
@@ -127,6 +130,7 @@ describe('activeMeetings — Rust bridge-death terminal event resolves the row',
   beforeEach(async () => {
     vi.useFakeTimers();
     invokeMock.mockReset();
+    eventEmitMock.mockClear();
     invokeMock.mockResolvedValue(undefined);
     activeMeetings.set([]);
     handlers.clear();
@@ -144,6 +148,10 @@ describe('activeMeetings — Rust bridge-death terminal event resolves the row',
 
   it('registers a recording:error listener', () => {
     expect(handlers.has('recording:error')).toBe(true);
+  });
+
+  it('requests the popover meetings snapshot after listener install', () => {
+    expect(eventEmitMock).toHaveBeenCalledWith('meetings-window:request-snapshot');
   });
 
   it('transitions a hung `stopping` row to error and cancels the watchdog', async () => {
@@ -228,6 +236,7 @@ describe('activeMeetings meeting:closed listener', () => {
     // cleanup keep those 12s timers from leaking across tests.
     vi.useFakeTimers();
     invokeMock.mockReset();
+    eventEmitMock.mockClear();
     invokeMock.mockResolvedValue(undefined);
     activeMeetings.set([]);
     handlers.clear();
@@ -284,5 +293,95 @@ describe('activeMeetings meeting:closed listener', () => {
 
     expect(invokeMock).not.toHaveBeenCalledWith('stop_recording', expect.anything());
     expect(get(activeMeetings).find((m) => m.windowId === 'win-1')).toBeUndefined();
+  });
+});
+
+describe('seedActiveMeetingsFromBackend — overlays live recording state (desktop-alt late-open)', () => {
+  beforeEach(() => {
+    invokeMock.mockReset();
+    activeMeetings.set([]);
+  });
+
+  it('flips a seeded detection to recording when the ledger says it is recording', async () => {
+    // The disconnect this fixes: the on-demand desktop-alt window opens AFTER a
+    // recording started (user clicked Record on the notification first), so it
+    // missed the live `recording:started`. Detections seed `detected`; the
+    // recordings ledger says win-1 is recording → the row must show `recording`,
+    // carrying the ledger's recordingId + company, with detection metadata kept.
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'meetings_list_active_detections') {
+        return Promise.resolve([
+          {
+            windowId: 'win-1',
+            platform: 'zoom',
+            meetingUrl: 'https://zoom.us/j/1',
+            detectedAt: '2026-06-06T14:56:59Z',
+          },
+        ]);
+      }
+      if (cmd === 'meetings_list_active_recordings') {
+        return Promise.resolve([
+          {
+            windowId: 'win-1',
+            recordingId: 'rec_1',
+            companyUid: 'cmp_1',
+            startedAt: '2026-06-06T14:57:06Z',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await seedActiveMeetingsFromBackend();
+
+    const row = rowState('win-1');
+    expect(row?.state).toBe('recording');
+    expect(row?.recordingId).toBe('rec_1');
+    expect(row?.companyUid).toBe('cmp_1');
+    expect(row?.platform).toBe('zoom'); // detection metadata preserved
+  });
+
+  it('creates a recording row when the ledger has a recording with no retained detection', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'meetings_list_active_detections') return Promise.resolve([]);
+      if (cmd === 'meetings_list_active_recordings') {
+        return Promise.resolve([
+          {
+            windowId: 'win-9',
+            recordingId: 'rec_9',
+            companyUid: null,
+            startedAt: '2026-06-06T15:00:00Z',
+          },
+        ]);
+      }
+      return Promise.resolve([]);
+    });
+
+    await seedActiveMeetingsFromBackend();
+
+    const row = rowState('win-9');
+    expect(row?.state).toBe('recording');
+    expect(row?.recordingId).toBe('rec_9');
+  });
+
+  it('leaves a detection as detected when the ledger reports no active recordings', async () => {
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'meetings_list_active_detections') {
+        return Promise.resolve([
+          {
+            windowId: 'win-1',
+            platform: 'meet',
+            meetingUrl: 'https://meet.google.com/x',
+            detectedAt: '2026-06-06T14:00:00Z',
+          },
+        ]);
+      }
+      if (cmd === 'meetings_list_active_recordings') return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+
+    await seedActiveMeetingsFromBackend();
+
+    expect(rowState('win-1')?.state).toBe('detected');
   });
 });

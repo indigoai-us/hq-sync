@@ -63,7 +63,7 @@
     margin: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 29px;
   }
 

@@ -171,7 +171,7 @@
     background: transparent;
     color: var(--muted);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     cursor: pointer;
     transition:
       background 140ms ease,
@@ -259,7 +259,7 @@
   .column-label {
     color: var(--muted);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .count-badge {

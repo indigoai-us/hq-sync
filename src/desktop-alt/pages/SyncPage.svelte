@@ -1,9 +1,9 @@
 <script lang="ts">
   import type { Workspace } from '../../lib/workspaces';
-  import HeroStatus from '../components/HeroStatus.svelte';
   import SourcesList from '../components/SourcesList.svelte';
   import {
     formatBytes,
+    friendlySyncError,
     timeAgo,
     type ActivityEntry,
     type DaemonStatus,
@@ -38,28 +38,28 @@
     actionError?: string;
   }
 
+  // The sync verdict + Sync Now / Settings actions now live in the global title
+  // bar and sidebar, so this page is just the workspace ledger + activity feed.
+  // Remaining hero-only props (status, daemon, indexedFiles, onsettings, …) are
+  // still accepted by the parent but intentionally not consumed here.
   let {
     workspaces,
     syncState,
     ready = true,
     progress,
-    companies,
-    status,
-    daemon,
-    indexedFiles,
-    observedVaultBytes,
     statsBySlug,
     cloudReachable,
     activity,
-    onsync,
-    onsettings,
-    onaddsource,
-    actionMessage = '',
-    actionError = '',
+    syncErrorMessage = '',
   }: Props = $props();
 
   const recentActivity = $derived(
     [...activity].sort((a, b) => b.at - a.at).slice(0, 6),
+  );
+
+  // Plain-language headline + optional technical detail for the error banner.
+  const friendlyError = $derived(
+    syncErrorMessage ? friendlySyncError(syncErrorMessage) : null,
   );
 
   function activityVerb(entry: ActivityEntry): string {
@@ -67,25 +67,27 @@
     if (entry.direction === 'deleted') return 'Deleted';
     return entry.isNew ? 'Added' : 'Downloaded';
   }
+
+  // Show the trailing two path segments in mono — enough to recognize the file
+  // without overflowing the narrow feed column.
+  function shortPath(path: string): string {
+    const parts = path.split('/').filter(Boolean);
+    return parts.length <= 2 ? path : `…/${parts.slice(-2).join('/')}`;
+  }
 </script>
 
 <section class="sync-page" aria-label="Sync">
-  <HeroStatus
-    {syncState}
-    {progress}
-    {companies}
-    {workspaces}
-    {status}
-    {daemon}
-    {indexedFiles}
-    {observedVaultBytes}
-    loading={!ready}
-    {onsync}
-    {onsettings}
-    {onaddsource}
-    {actionMessage}
-    {actionError}
-  />
+  {#if friendlyError}
+    <div class="sync-error">
+      <p class="sync-error-summary" role="alert">{friendlyError.summary}</p>
+      {#if friendlyError.detail}
+        <details class="sync-error-details">
+          <summary>Technical details</summary>
+          <p class="sync-error-detail-text">{friendlyError.detail}</p>
+        </details>
+      {/if}
+    </div>
+  {/if}
 
   <div class="sync-grid">
     <SourcesList
@@ -127,8 +129,11 @@
               <li>
                 <span class="activity-dot {item.direction}"></span>
                 <div class="activity-copy">
-                  <strong>{activityVerb(item)} {item.path}</strong>
-                  <span>
+                  <span class="activity-line">
+                    <span class="activity-verb">{activityVerb(item)}</span>
+                    <span class="activity-path">{shortPath(item.path)}</span>
+                  </span>
+                  <span class="activity-meta">
                     {item.author ? `${item.author} · ` : ''}{item.company} · {formatBytes(item.bytes)} · {timeAgo(item.at)}
                   </span>
                 </div>
@@ -171,14 +176,56 @@
   .panel-header h2 {
     margin: 0;
     color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 680;
-    line-height: 22px;
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 20px;
+    letter-spacing: -0.01em;
   }
 
   .panel-header span {
+    color: var(--muted-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  .sync-error {
+    margin: 0;
+    padding: 9px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-raise);
+  }
+
+  .sync-error-summary {
+    margin: 0;
+    color: var(--amber);
+    font-size: var(--text-sm);
+    line-height: 17px;
+  }
+
+  .sync-error-details {
+    margin-top: 6px;
+  }
+
+  .sync-error-details summary {
     color: var(--muted);
-    font-size: var(--text-base);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .sync-error-details summary:hover {
+    color: var(--muted-2);
+  }
+
+  .sync-error-detail-text {
+    margin: 6px 0 0;
+    color: var(--muted-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 16px;
+    overflow-wrap: anywhere;
   }
 
   .activity-empty,
@@ -199,7 +246,7 @@
   .activity-empty strong {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
   }
 
   .activity-empty span {
@@ -220,7 +267,7 @@
     display: grid;
     grid-template-columns: 12px minmax(0, 1fr);
     gap: 8px;
-    padding: 8px 12px;
+    padding: 7px 12px;
     transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
   }
 
@@ -252,24 +299,42 @@
     min-width: 0;
   }
 
-  .activity-copy strong,
-  .activity-copy span {
-    display: block;
+  .activity-line,
+  .activity-meta {
+    display: flex;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .activity-copy strong {
-    color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 650;
+  .activity-line {
+    gap: 5px;
+    align-items: baseline;
     line-height: 17px;
   }
 
-  .activity-copy span {
+  .activity-verb {
+    flex: 0 0 auto;
+    color: var(--fg);
+    font-size: var(--text-sm);
+    font-weight: 500;
+  }
+
+  .activity-path {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--fg-data);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .activity-meta {
+    display: block;
     color: var(--muted);
-    font-size: var(--text-base);
+    font-size: var(--text-xs);
     line-height: 16px;
   }
 

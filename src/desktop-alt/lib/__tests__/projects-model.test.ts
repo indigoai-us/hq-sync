@@ -11,6 +11,8 @@ import {
   projectProgress,
   projectProgressFromStories,
   effectiveProjectStatus,
+  projectListStatus,
+  matchesStatusFilter,
   projectDisplayName,
   type Story,
   type Project,
@@ -292,5 +294,42 @@ describe('projectDisplayName', () => {
     expect(projectDisplayName(proj({ name: 'Name', title: 'Title' }))).toBe('Name');
     expect(projectDisplayName(proj({ title: 'Title' }))).toBe('Title');
     expect(projectDisplayName(proj({}))).toBe('proj-x');
+  });
+});
+
+describe('projectListStatus board-status mapping', () => {
+  const base = { storiesComplete: 0, storiesTotal: 0 };
+
+  it('treats HQ board status "in_progress" as In Progress even with no completed stories', () => {
+    // Regression: HQ board.json uses `in_progress`, which was previously absent
+    // from the recognized board statuses, so manually-started projects fell
+    // into "Planned" instead of "In Progress".
+    expect(projectListStatus({ ...base, status: 'in_progress' })).toBe('in-progress');
+    expect(projectListStatus({ ...base, status: 'in-progress' })).toBe('in-progress');
+  });
+
+  it('keeps live/active/running board statuses on the emphasised "live" state', () => {
+    expect(projectListStatus({ ...base, status: 'active' })).toBe('live');
+    expect(projectListStatus({ ...base, status: 'running' })).toBe('live');
+    expect(projectListStatus({ ...base, status: 'live' })).toBe('live');
+  });
+
+  it('leaves planned-style statuses as pending (Planned group)', () => {
+    expect(projectListStatus({ ...base, status: 'prd_created' })).toBe('pending');
+    expect(projectListStatus({ ...base, status: 'exploring' })).toBe('pending');
+    expect(projectListStatus({ ...base, status: '' })).toBe('pending');
+  });
+
+  it('an in_progress project surfaces under both the Active and In Progress filters', () => {
+    const status = projectListStatus({ ...base, status: 'in_progress' });
+    expect(matchesStatusFilter(status, 'active')).toBe(true);
+    expect(matchesStatusFilter(status, 'in-progress')).toBe(true);
+    expect(matchesStatusFilter(status, 'complete')).toBe(false);
+  });
+
+  it('archived stays terminal regardless of in-progress aliases', () => {
+    expect(projectListStatus({ status: 'archived', storiesComplete: 0, storiesTotal: 5 })).toBe(
+      'archived',
+    );
   });
 });

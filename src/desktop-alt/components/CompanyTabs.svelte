@@ -146,7 +146,7 @@
     background: var(--row-active);
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 18px;
     text-align: center;
     text-overflow: ellipsis;
@@ -170,7 +170,7 @@
     background: transparent;
     color: var(--muted-2);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 16px;
     text-transform: capitalize;
     transition: opacity 120ms cubic-bezier(0.33, 1, 0.68, 1),

@@ -5,6 +5,7 @@ import {
   getDesktopHotkeyRoute,
   getDesktopSidebarRows,
   isDesktopRouteActive,
+  type DesktopRoute,
 } from './route';
 
 const baseCompany: Workspace = {
@@ -105,5 +106,44 @@ describe('desktop-alt routes', () => {
     const messagesRow = rows.find((row) => row.label === 'Messages');
     expect(messagesRow?.route).toEqual({ kind: 'messages' });
     expect(messagesRow?.active).toBe(true);
+  });
+});
+
+describe('desktop-alt sidebar rows — admin-only Moderation entry', () => {
+  const route: DesktopRoute = { kind: 'sync' };
+  const synced = [company({ slug: 'synced', displayName: 'Synced', state: 'synced' })];
+
+  it('hides the Moderation row for a non-admin (default-deny)', () => {
+    const labelsDefault = getDesktopSidebarRows(route, synced).map((row) => row.label);
+    const labelsFalse = getDesktopSidebarRows(route, synced, { isAdmin: false }).map(
+      (row) => row.label,
+    );
+    // Default (no options) and explicit false both omit Moderation — the row
+    // only appears on an explicit true.
+    expect(labelsDefault).not.toContain('Moderation');
+    expect(labelsFalse).not.toContain('Moderation');
+  });
+
+  it('shows the Moderation row for an admin, after the standing primary rows', () => {
+    const rows = getDesktopSidebarRows(route, synced, { isAdmin: true });
+    const labels = rows.map((row) => row.label);
+    expect(labels).toContain('Moderation');
+    // Sits after the last standing primary row (Messages) and before companies.
+    const moderationIndex = labels.indexOf('Moderation');
+    expect(moderationIndex).toBe(labels.indexOf('Messages') + 1);
+    expect(moderationIndex).toBeLessThan(labels.indexOf('Synced'));
+    // The Moderation row routes to the moderation kind and carries no hotkey
+    // (so company ⌘-hotkeys are unaffected by the admin gate).
+    const moderationRow = rows[moderationIndex];
+    expect(moderationRow.route).toEqual({ kind: 'moderation' });
+    expect(moderationRow.shortcut).toBeUndefined();
+  });
+
+  it('keeps company hotkeys at ⌘5 whether or not the admin row is present', () => {
+    const withAdmin = getDesktopSidebarRows(route, synced, { isAdmin: true });
+    const companyRow = withAdmin.find((row) => row.route.kind === 'company');
+    // Four primary rows (Sync/Meetings/Library/Messages) → companies start at ⌘5;
+    // the admin Moderation row carries no hotkey, so the company keeps ⌘5.
+    expect(companyRow?.shortcut).toBe('⌘5');
   });
 });

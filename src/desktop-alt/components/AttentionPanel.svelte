@@ -54,7 +54,7 @@
     margin: 0;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     line-height: 22px;
   }
 
@@ -82,7 +82,7 @@
   .attention-item strong {
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     line-height: 18px;
   }
 
@@ -132,7 +132,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 650;
+    font-weight: 600;
     white-space: nowrap;
     transition: transform 140ms cubic-bezier(.2, .7, .2, 1);
   }

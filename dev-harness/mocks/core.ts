@@ -142,6 +142,16 @@ const handlers: Record<string, Handler> = {
     daemonRunning: true,
     source: 'menubar',
   }),
+  get_activity_log: () => {
+    const now = Date.now();
+    return [
+      { company: 'indigo', path: 'companies/indigo/knowledge/prd.json', bytes: 4096, direction: 'down', author: 'maya@getindigo.ai', isNew: true, at: now - 40 * 1000 },
+      { company: 'indigo', path: 'companies/indigo/projects/event-driven/notes.md', bytes: 2210, direction: 'down', author: 'corey@getindigo.ai', isNew: false, at: now - 3 * 60 * 1000 },
+      { company: 'liverecover', path: 'companies/liverecover/sources/meetings/2026-06-04.md', bytes: 18400, direction: 'down', author: 'sam@liverecover.com', isNew: true, at: now - 9 * 60 * 1000 },
+      { company: 'personal', path: 'personal/projects/redesign/sketch.md', bytes: 980, direction: 'up', author: undefined, isNew: false, at: now - 14 * 60 * 1000 },
+      { company: 'indigo', path: 'companies/indigo/policies/e2e-testing.md', bytes: 5120, direction: 'down', author: 'maya@getindigo.ai', isNew: false, at: now - 22 * 60 * 1000 },
+    ];
+  },
   get_autostart_enabled: () => true,
   set_autostart_enabled: () => null,
   meetings_feature_enabled: () => true,
@@ -157,6 +167,18 @@ const handlers: Record<string, Handler> = {
   open_meetings_window: () => null,
   open_drift_detail: () => null,
   quit_app: () => null,
+  // Meeting-permissions wizard (?view=permissions) — a representative
+  // not-yet-granted snapshot so the friendly "why we ask" notice is exercised.
+  meeting_detect_feature_enabled: () => true,
+  meetings_permissions_state: () => ({
+    accessibility: 'prompt',
+    screenCapture: 'denied',
+    microphone: 'prompt',
+    fullDiskAccess: 'prompt',
+    allRequiredGranted: false,
+  }),
+  permissions_open_settings: () => null,
+  permissions_force_native_register: () => null,
 };
 
 export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

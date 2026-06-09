@@ -141,8 +141,8 @@
   let onboardingHandled = false;
 
   // Meetings feature flag — driven by `meetings_feature_enabled` (Rust side
-  // decodes the cached Cognito id_token and checks @getindigo.ai). The icon
-  // doesn't render at all when this is false. Click opens the standalone
+  // decodes the cached Cognito id_token; GA — true for any signed-in user).
+  // The icon doesn't render at all when this is false. Click opens the standalone
   // `meetings-window` (mirrors the `new-files-detail` window pattern) — the
   // earlier modal-on-popover UX was too cramped.
   let meetingsEnabled = $state(false);
@@ -375,12 +375,12 @@
     }
   }
 
-  // Desktop-alt UX feature flag (US-001) — driven by `desktop_alt_enabled`
-  // (Rust side delegates to the same `@getindigo.ai` gate as
-  // `meetings_feature_enabled`; the OnceLock cache is shared). Defaults
-  // false so non-Indigo users never see the alt UX surface even if the
-  // gate command hasn't resolved yet. Subsequent stories (US-003/US-004)
-  // gate the toggle button + alt popover render path on this flag.
+  // Desktop window feature flag — driven by `desktop_alt_enabled` (Rust side
+  // delegates to the GA gate `desktop_features_enabled`, the same gate as
+  // `meetings_feature_enabled`; true for any signed-in user). Defaults false
+  // so a signed-out user never sees the desktop window surface even if the
+  // gate command hasn't resolved yet. The toggle button + desktop window
+  // render path are gated on this flag.
   let desktopAltEnabled = $state(false);
 
   // Workspaces — populated by `list_syncable_workspaces` (Rust). Replaces the
@@ -1687,11 +1687,11 @@
     // permissionState.svelte.ts for why; native macOS prompts are
     // sufficient.)
     loadMeetingDetectEligible();
-    // One-time OS notification permission prompt. macOS only shows the system
-    // dialog while status is `prompt` (not determined); once granted/denied it
-    // returns silently, so calling this every launch never re-nags. Fire-and-
-    // forget — errors are non-fatal (the Settings monitor lets the user retry).
-    requestNotificationPermissionOnce();
+    // NOTE: We intentionally do NOT request OS notification permission on
+    // launch. Like the meeting permissions, asking is now exclusively a
+    // user-initiated action from Settings (the "Enable notifications" button →
+    // `handleEnableNotifications`). Prompting on open is what this change
+    // removed — the app must open clean with no permission dialogs.
     // Fire-and-forget: gate is a process-lifetime cache on the Rust side,
     // so subsequent reads are O(1). Errors silently treated as not-enabled.
     invoke<boolean>('meetings_feature_enabled')
@@ -1708,9 +1708,9 @@
         meetingsEnabled = false;
       });
 
-    // Desktop-alt UX gate (US-001). Same @getindigo.ai check as
+    // Desktop window gate (GA). Same signed-in check as
     // `meetings_feature_enabled`; errors fall back to false so a misfiring
-    // gate command can never accidentally expose the alt UX.
+    // gate command can never expose the desktop window to a signed-out user.
     refreshDesktopAltEnabled();
 
     return () => {
@@ -1739,37 +1739,21 @@
     });
   });
 
-  // Ask macOS for notification authorization once on cold start.
+  // Notification authorization is no longer requested on launch — it is a
+  // user-initiated action from Settings ("Enable notifications" →
+  // `handleEnableNotifications` in Settings.svelte).
   //
-  // The call is GATED on `state === 'prompt'` because of an interaction
-  // discovered on macOS 26.4 (Sequoia) on 2026-05-30: calling
+  // macOS caveat that still applies wherever we DO request it: calling
   // `requestAuthorizationWithOptions` registers the process as a
-  // UNUserNotificationCenter "modern" client. After that, usernoted
-  // rejects any NSUserNotification deliveries from the same process
-  // with:
-  //   Error: Legacy client <bundle> connecting to modern client.
-  //   You can't mix modern clients with legacy clients.
-  //   Denying message N from connection <LegacyConnection ...>
-  // Our meeting-detect path goes through `mac-notification-sys` (0.6),
-  // which is still on NSUserNotification — calling `request_authorization`
-  // unconditionally bricks it. The conservative gate keeps the app on
-  // the legacy track unless the OS dialog is actually needed.
-  //
-  // Long-term fix: migrate `meetings_notify_detected` (and the
-  // share/dm-notify paths) to UNUserNotificationCenter via objc2 so the
-  // whole app is a modern client. Tracked as a follow-up. For now the
-  // meeting-detect handler falls back to `osascript display notification`
-  // when the legacy deliver gets denied (see commands/meetings.rs).
-  async function requestNotificationPermissionOnce() {
-    try {
-      const state = await invoke<string>('notification_permission_state');
-      if (state === 'prompt') {
-        await invoke<string>('notification_request_permission');
-      }
-    } catch (err) {
-      console.error('notification permission request failed', err);
-    }
-  }
+  // UNUserNotificationCenter "modern" client, after which usernoted rejects
+  // NSUserNotification deliveries from the same process ("Legacy client …
+  // connecting to modern client"). Our meeting-detect path goes through
+  // `mac-notification-sys` (0.6), still on NSUserNotification, so the
+  // Settings request should stay gated to the not-yet-determined state. The
+  // meeting-detect handler also falls back to `osascript display
+  // notification` when a legacy deliver is denied (see commands/meetings.rs).
+  // Long-term fix: migrate the notify paths to UNUserNotificationCenter via
+  // objc2 so the whole app is a modern client.
 
   async function checkAuth() {
     try {

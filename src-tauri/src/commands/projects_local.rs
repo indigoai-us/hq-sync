@@ -14,8 +14,9 @@
 //!     description, acceptanceCriteria[], passes, priority, labels[], dependsOn[],
 //!     notes`.
 //!
-//! Both commands are gated by `feature_gate::is_indigo_user()` like the other
-//! desktop-alt commands, and both must be allow-listed in
+//! Both commands are gated by `feature_gate::desktop_features_enabled()`
+//! (GA — any signed-in user) like the other desktop-alt commands, and both
+//! must be allow-listed in
 //! `capabilities/desktop-alt.json` + registered in `main.rs`.
 //!
 //! ## Vault fallback (AC #3)
@@ -420,8 +421,8 @@ fn resolve_hq_folder() -> PathBuf {
 /// malformed `board.json` / `prd.json` files are skipped, never fatal.
 #[tauri::command]
 pub async fn get_local_projects() -> Result<Vec<LocalProject>, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("projects reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     Ok(scan_local_projects(&hq))
@@ -542,8 +543,8 @@ fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
 /// traversal, no absolute escape) before reading — AC #2.
 #[tauri::command]
 pub async fn get_local_project_prd(prd_path: String) -> Result<LocalProjectPrd, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("projects reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     read_project_prd(&hq, &prd_path)
@@ -579,8 +580,8 @@ fn read_project_prd(hq_root: &Path, prd_path: &str) -> Result<LocalProjectPrd, S
 /// an unreadable-but-present file.
 #[tauri::command]
 pub async fn get_local_project_readme(prd_path: String) -> Result<Option<String>, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("projects reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     read_project_readme(&hq, &prd_path)
@@ -632,11 +633,11 @@ fn read_project_readme(hq_root: &Path, prd_path: &str) -> Result<Option<String>,
 /// rather than an error — a company without a board simply has no goals yet, and
 /// the caller can fall back to the vault. The only hard errors are a
 /// `company_slug` that escapes the HQ folder (path-traversal guard) or the gate
-/// rejecting a non-Indigo caller.
+/// rejecting a signed-out caller.
 #[tauri::command]
 pub async fn get_local_company_goals(company_slug: String) -> Result<CompanyGoals, String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("goals reader is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("goals reader requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     read_company_goals(&hq, &company_slug)
@@ -700,8 +701,8 @@ pub async fn set_local_project_status(
     project_id: String,
     status: String,
 ) -> Result<(), String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("projects writer is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects writer requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     write_project_status(&hq, &board_path, &project_id, &status)
@@ -770,8 +771,8 @@ pub async fn set_local_story_passes(
     story_id: String,
     passes: bool,
 ) -> Result<(), String> {
-    if !crate::util::feature_gate::is_indigo_user().await {
-        return Err("projects writer is Indigo-only".to_string());
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("projects writer requires a signed-in user".to_string());
     }
     let hq = resolve_hq_folder();
     write_story_passes(&hq, &prd_path, &story_id, passes)

@@ -62,7 +62,7 @@ export interface RegistryList {
   offline: boolean;
 }
 
-/** The merged payload `list_packages` / `packages_window_ready` return. */
+/** The merged payload `list_packages` returns (and the `packages:updates` event). */
 export interface PackagesView {
   packs: PacksList | null;
   registry: RegistryList | null;

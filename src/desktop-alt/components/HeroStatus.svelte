@@ -126,7 +126,7 @@
     margin: 1px 0 3px;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 680;
+    font-weight: 600;
     letter-spacing: 0.01em;
     line-height: 20px;
   }
@@ -232,7 +232,7 @@
     overflow-wrap: anywhere;
     color: var(--fg);
     font-size: var(--text-base);
-    font-weight: 700;
+    font-weight: 600;
     line-height: 18px;
   }
 
