@@ -37,7 +37,7 @@
 //!   `_NETWORK_FAIL` / `_ERROR` — mirror the `SHARE_NOTIFY_*` codes.
 //!   `DM_NOTIFY_SEND_OK` / `_SEND_FAIL` — outbound send result.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
@@ -99,6 +99,39 @@ struct InboxResponse {
     next_cursor: Option<String>,
 }
 
+/// One incoming connection request as returned by
+/// `GET /v1/notify/connections/requests` (US-011). The recipient sees these in
+/// the Messages "Requests" segment and acts on them (accept/decline/block). The
+/// held first message is quoted (muted) on the request card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DmRequest {
+    /// Symmetric pair key identifying the connection — the action POSTs carry it.
+    pub pair_key: String,
+    /// Canonical personUid of the requester (the person asking to connect).
+    pub from_person_uid: String,
+    pub from_email: String,
+    pub from_display_name: String,
+    /// The held first message the requester sent, if any (quoted on the card).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Optional trust hint surfaced on the card, e.g. a shared company name.
+    /// Present only when the server supplies it; the card omits the hint when
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_company: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestsListResponse {
+    #[serde(default)]
+    pub requests: Vec<DmRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
 /// Action dispatched to the frontend when the user actions a rich DM banner.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,6 +146,92 @@ struct NotificationDmActionEvent {
 /// Managed state: the DM event pending for the detail window's ready-handshake.
 /// Mirrors `PendingShareEvents` in share_notify.rs.
 pub struct PendingDmEvents(pub Mutex<Vec<DmEvent>>);
+
+/// Tauri event emitted when the live unread/request counts change so the
+/// popover Messages badge stays current without its own poller. Payload is
+/// `UnreadSummary` (see messages.rs). Listened for in App.svelte.
+pub const EVENT_DM_UNREAD_SUMMARY: &str = "dm:unread-summary";
+
+/// Tauri event emitted by the SINGLE poll path when a brand-new incoming
+/// connection request is observed (US-011). Payload is the `DmRequest`. Drives a
+/// DISTINCT native banner ("{name} wants to connect") + the popover
+/// request-count badge in App.svelte, and the Requests segment in MessagesShell.
+pub const EVENT_DM_REQUEST_NEW: &str = "dm:request-new";
+
+/// Tauri event emitted by the SINGLE poll path (and on a respond action) when a
+/// pending request changes state (US-011) — e.g. it was accepted and the held
+/// message converted to a live thread, or it was declined/blocked. Payload is
+/// `{ pairKey, withPersonUid?, state }`. Flips ComposeMessage Pending bubbles
+/// and prunes the Requests list. The MQTT `connection_update` wake routes here
+/// via the same poll path (the wake is ids-only; the client re-derives state by
+/// diffing the requests list it re-fetches).
+pub const EVENT_DM_REQUEST_UPDATE: &str = "dm:request-update";
+
+/// Managed state: running count of unread DMs since the user last opened the
+/// Messages window. Incremented by the SINGLE `do_poll` path as new DMs land
+/// (no parallel poller) and reset to 0 by `mark_messages_read`. The popover
+/// badge reads this via `get_unread_summary` and stays live off the
+/// `dm:unread-summary` event emitted on every change.
+pub struct UnreadDmState(pub Mutex<u32>);
+
+/// Managed state: the set of pending-request pairKeys the SINGLE poll path has
+/// already observed (US-011). The poll fetches the current requests list each
+/// cycle and diffs it against this set:
+///   * a pairKey present now but not before → a NEW request → emit
+///     `dm:request-new` + a distinct native banner.
+///   * a pairKey present before but gone now → the request left the pending set
+///     (accepted/declined/blocked) → emit `dm:request-update` so Pending bubbles
+///     flip and the Requests list prunes. The held message (on accept) arrives
+///     via the normal DM inbox poll, so no body is carried here.
+/// `initialized` guards the first poll: we seed the set without firing a banner
+/// for the backlog the user already had before the app launched.
+#[derive(Default)]
+pub struct SeenRequestsInner {
+    pub initialized: bool,
+    pub pair_keys: HashSet<String>,
+}
+
+pub struct SeenRequestState(pub Mutex<SeenRequestsInner>);
+
+impl SeenRequestState {
+    pub fn new() -> Self {
+        SeenRequestState(Mutex::new(SeenRequestsInner::default()))
+    }
+}
+
+/// Add `delta` to the running unread-DM count and emit `dm:unread-summary` so
+/// the popover badge updates immediately. Called from `do_poll` (the one
+/// poller). Best-effort: if the request count can't be fetched here we emit the
+/// DM count alone — `get_unread_summary` reconciles requests on next read.
+fn bump_unread(app: &AppHandle, delta: u32) {
+    let Some(state) = app.try_state::<UnreadDmState>() else {
+        return;
+    };
+    let total = {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = guard.saturating_add(delta);
+        *guard
+    };
+    // Emit DM count immediately; pendingRequests is filled in on the next
+    // explicit get_unread_summary (which does a network read). Keeping the
+    // poll path network-free for requests avoids a second fetch per poll.
+    let payload = serde_json::json!({ "unreadDms": total, "pendingRequests": 0u32 });
+    let _ = app.emit(EVENT_DM_UNREAD_SUMMARY, &payload);
+}
+
+/// Read the current unread-DM count from managed state (0 if unset).
+pub fn current_unread_dms(app: &AppHandle) -> u32 {
+    app.try_state::<UnreadDmState>()
+        .map(|s| *s.0.lock().unwrap_or_else(|p| p.into_inner()))
+        .unwrap_or(0)
+}
+
+/// Reset the unread-DM count to 0. Called when the Messages window opens.
+pub fn reset_unread_dms(app: &AppHandle) {
+    if let Some(state) = app.try_state::<UnreadDmState>() {
+        *state.0.lock().unwrap_or_else(|p| p.into_inner()) = 0;
+    }
+}
 
 // ── In-flight guard (separate from share-notify's so they never contend) ────────
 
@@ -278,6 +397,154 @@ pub async fn send_dm(to_person_uid: String, body: String) -> Result<(), String> 
     Err(server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16())))
 }
 
+// ── Compose: send a DM to an email or personUid (US-010) ─────────────────────────
+//
+// The New Message compose flow (RecipientPicker + ComposeMessage) lets the user
+// start a conversation with anyone — a known contact, a company teammate, or any
+// valid email. Unlike `send_dm` (which always replies to a known sender by
+// `toPersonUid`), this addresses the recipient by EITHER `toPersonUid` (when the
+// picker resolved one) OR `toEmail` (free-text email). The backend
+// `POST /v1/notify/dm` answers with one of two shapes:
+//
+//   200 { "delivered": true }                         — recipient is an active
+//                                                        connection; the message
+//                                                        was delivered.
+//   202 { "state": "connection_requested" }           — recipient is not yet
+//                                                        connected; the message
+//                                                        is held and a connect
+//                                                        request was sent.
+//
+// `send_dm_to_email` returns that discriminant to the frontend so the compose UI
+// can render an optimistic Pending bubble (202) or open the normal thread (200).
+
+/// The outcome of a compose send, surfaced to the frontend.
+///
+/// `delivered` → the message reached an active connection (HTTP 200).
+/// `connection_requested` → the recipient isn't connected; the message is held
+/// and a connect request was sent (HTTP 202). The compose UI renders a Pending
+/// bubble for this case until `dm:request-update` confirms (US-011).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", tag = "state")]
+pub enum SendDmOutcome {
+    /// HTTP 200 — delivered to an active connection.
+    Delivered,
+    /// HTTP 202 — held; a connection request was sent alongside the message.
+    ConnectionRequested,
+}
+
+/// Build the `POST /v1/notify/dm` body for a compose send. Exactly one recipient
+/// key is emitted: `toPersonUid` when present (preferred — the picker resolved a
+/// canonical id), otherwise `toEmail`. The server rejects a request with both
+/// keys, so this never emits both. Pure + side-effect-free so the wire shape is
+/// unit-testable.
+fn build_compose_payload(
+    to_person_uid: Option<&str>,
+    to_email: Option<&str>,
+    body: &str,
+) -> serde_json::Value {
+    match to_person_uid.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(uid) => serde_json::json!({ "toPersonUid": uid, "body": body }),
+        None => {
+            let email = to_email.map(str::trim).unwrap_or_default();
+            serde_json::json!({ "toEmail": email, "body": body })
+        }
+    }
+}
+
+/// Map a successful `POST /v1/notify/dm` response to a `SendDmOutcome`.
+/// A 202 (or an explicit `{"state":"connection_requested"}` body) means the
+/// recipient isn't connected yet; anything else 2xx means delivered. Pure so the
+/// status→discriminant mapping is unit-testable.
+fn classify_send_response(status: u16, body: &serde_json::Value) -> SendDmOutcome {
+    let body_says_requested = body
+        .get("state")
+        .and_then(|v| v.as_str())
+        .map(|s| s.eq_ignore_ascii_case("connection_requested"))
+        .unwrap_or(false);
+    if status == 202 || body_says_requested {
+        SendDmOutcome::ConnectionRequested
+    } else {
+        SendDmOutcome::Delivered
+    }
+}
+
+/// Tauri command: send a DM from the New Message compose flow (US-010).
+///
+/// Addresses the recipient by `toPersonUid` (preferred, when the picker resolved
+/// one) or `toEmail` (free-text email). Returns a `SendDmOutcome` discriminant so
+/// the compose UI can render a Pending bubble (connection requested) or open the
+/// normal thread (delivered). Surfaces failures to the caller for delivery
+/// feedback. Takes the same guarded blocking-send path as `send_dm`.
+#[tauri::command]
+pub async fn send_dm_to_email(
+    to_email: Option<String>,
+    to_person_uid: Option<String>,
+    body: String,
+) -> Result<SendDmOutcome, String> {
+    let body_text = body.trim();
+    if body_text.is_empty() {
+        return Err("Message body must not be empty".to_string());
+    }
+
+    let person_uid = to_person_uid.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let email = to_email.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if person_uid.is_none() && email.is_none() {
+        return Err("A recipient (email or personUid) is required".to_string());
+    }
+
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_COMPOSE_FAIL auth: {e}"));
+        format!("Not signed in: {e}")
+    })?;
+
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_COMPOSE_FAIL vault url: {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let url = format!("{}/v1/notify/dm", base_url);
+    let payload = build_compose_payload(person_uid, email, body_text);
+
+    let resp = build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_COMPOSE_FAIL network: {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_COMPOSE_FAIL status={status} msg={server_msg:?}"),
+        );
+        return Err(
+            server_msg.unwrap_or_else(|| format!("Send failed (status {})", status.as_u16())),
+        );
+    }
+
+    let status_code = status.as_u16();
+    // The body is optional (a bare 200 with no JSON is treated as delivered).
+    let parsed = resp.json::<serde_json::Value>().await.unwrap_or(serde_json::Value::Null);
+    let outcome = classify_send_response(status_code, &parsed);
+    log(
+        LOG_TAG,
+        &format!("DM_NOTIFY_COMPOSE_OK status={status_code} outcome={outcome:?}"),
+    );
+    Ok(outcome)
+}
+
 // ── Conversation thread (history) ───────────────────────────────────────────────
 //
 // The DM detail window renders a two-way thread, not just the single DM that
@@ -404,6 +671,271 @@ pub async fn fetch_dm_thread(
     Ok(thread)
 }
 
+// ── Connection requests: list + respond (US-011) ────────────────────────────────
+//
+// The recipient of an incoming connection request reviews it in the Messages
+// "Requests" segment and acts on it. `list_dm_requests` reads the pending set;
+// `respond_dm_request` accepts/declines/blocks it. On accept the backend promotes
+// the held first message into a live DM_EVENT, so the conversation pane can swap
+// the request card for the standard thread on the next thread load.
+
+/// Tauri command: list the caller's pending incoming connection requests.
+/// `GET /v1/notify/connections/requests`. Surfaces failures to the caller so the
+/// Requests segment can show a load error.
+#[tauri::command]
+pub async fn list_dm_requests() -> Result<RequestsListResponse, String> {
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_REQUESTS_FAIL auth: {e}"));
+        format!("Not signed in: {e}")
+    })?;
+
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_REQUESTS_FAIL vault url: {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let url = format!("{}/v1/notify/connections/requests", base_url);
+
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_REQUESTS_FAIL network: {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_REQUESTS_FAIL status={status} msg={server_msg:?}"),
+        );
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Failed to load requests (status {})", status.as_u16())));
+    }
+
+    let out = resp.json::<RequestsListResponse>().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_REQUESTS_FAIL parse: {e}"));
+        format!("Could not parse requests response: {e}")
+    })?;
+
+    log(
+        LOG_TAG,
+        &format!("DM_NOTIFY_REQUESTS_OK count={}", out.requests.len()),
+    );
+    Ok(out)
+}
+
+/// Map a respond action to the backend endpoint path segment. Only the three
+/// recipient-side actions are valid here (`unblock` is handled elsewhere). Pure
+/// so the action→path mapping is unit-testable. Returns `None` for an unknown
+/// action so the command can reject it without an unguarded request.
+fn respond_action_path(action: &str) -> Option<&'static str> {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "accept" => Some("accept"),
+        "decline" => Some("decline"),
+        "block" => Some("block"),
+        _ => None,
+    }
+}
+
+/// Map a respond action to the resulting connection state surfaced to the UI in
+/// the `dm:request-update` flip. Pure so the mapping is unit-testable.
+fn respond_action_state(action: &str) -> &'static str {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "accept" => "active",
+        "decline" => "declined",
+        "block" => "blocked",
+        _ => "unknown",
+    }
+}
+
+/// Tauri command: respond to a pending connection request (US-011).
+///
+/// `action` is one of `accept` | `decline` | `block`; it POSTs to the matching
+/// `/v1/notify/connections/{action}` endpoint with `{ pairKey }`. On success the
+/// caller emits `dm:request-update` so the request leaves the Requests segment
+/// and (on accept) the held message converts to a thread. Surfaces failures to
+/// the caller so the card can show an error and keep its actions.
+#[tauri::command]
+pub async fn respond_dm_request(
+    app: AppHandle,
+    pair_key: String,
+    action: String,
+) -> Result<(), String> {
+    let key = pair_key.trim();
+    if key.is_empty() {
+        return Err("pairKey must not be empty".to_string());
+    }
+    let path = respond_action_path(&action)
+        .ok_or_else(|| format!("Unsupported action: {action}"))?;
+
+    let access_token = cognito::get_valid_access_token().await.map_err(|e| {
+        log(LOG_TAG, &format!("DM_NOTIFY_RESPOND_FAIL auth: {e}"));
+        format!("Not signed in: {e}")
+    })?;
+
+    let base_url = resolve_vault_api_url()
+        .map(|u| u.trim_end_matches('/').to_string())
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_RESPOND_FAIL vault url: {e}"));
+            format!("Could not resolve server URL: {e}")
+        })?;
+
+    let url = format!("{}/v1/notify/connections/{}", base_url, path);
+    let payload = serde_json::json!({ "pairKey": key });
+
+    let resp = build_client()
+        .post(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("DM_NOTIFY_RESPOND_FAIL network: {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_RESPOND_FAIL status={status} action={path} msg={server_msg:?}"),
+        );
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Action failed (status {})", status.as_u16())));
+    }
+
+    // The request has left the pending set — drop it from the seen-set so a later
+    // poll doesn't treat its disappearance as a second state change.
+    if let Some(state) = app.try_state::<SeenRequestState>() {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        guard.pair_keys.remove(key);
+    }
+
+    let new_state = respond_action_state(&action);
+    let update = serde_json::json!({ "pairKey": key, "state": new_state });
+    let _ = app.emit(EVENT_DM_REQUEST_UPDATE, &update);
+
+    log(
+        LOG_TAG,
+        &format!("DM_NOTIFY_RESPOND_OK action={path} state={new_state}"),
+    );
+    Ok(())
+}
+
+/// Diff the freshly-polled request set against the previously-seen pairKeys.
+/// Returns `(new_requests, removed_pair_keys)`:
+///   * `new_requests` — requests whose pairKey wasn't seen before (fire
+///     `dm:request-new` + banner).
+///   * `removed_pair_keys` — pairKeys seen before but absent now (fire
+///     `dm:request-update`; the connection left the pending set).
+/// Pure (operates on the provided set + slice) so the diff is unit-testable.
+fn diff_requests(
+    seen: &HashSet<String>,
+    current: &[DmRequest],
+) -> (Vec<DmRequest>, Vec<String>) {
+    let current_keys: HashSet<&str> = current.iter().map(|r| r.pair_key.as_str()).collect();
+    let new_requests: Vec<DmRequest> = current
+        .iter()
+        .filter(|r| !seen.contains(&r.pair_key))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = seen
+        .iter()
+        .filter(|k| !current_keys.contains(k.as_str()))
+        .cloned()
+        .collect();
+    (new_requests, removed)
+}
+
+/// Poll the connection-requests list and emit request events off the diff.
+/// Folded into the SINGLE `do_poll` path (NOT a parallel poller). Best-effort:
+/// any failure logs and returns without disturbing the DM-inbox poll. The first
+/// poll seeds the seen-set silently (no banner for the pre-launch backlog).
+async fn poll_requests(app: &AppHandle, base_url: &str, access_token: &str) {
+    let url = format!("{}/v1/notify/connections/requests", base_url);
+    let resp = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {}", access_token))
+        .send()
+        .await;
+
+    let list = match resp {
+        Err(e) => {
+            log(LOG_TAG, &format!("DM_NOTIFY_REQ_POLL_NETWORK_FAIL {e}"));
+            return;
+        }
+        Ok(r) => {
+            let status = r.status();
+            if !status.is_success() {
+                log(LOG_TAG, &format!("DM_NOTIFY_REQ_POLL_ERROR status={status}"));
+                return;
+            }
+            match r.json::<RequestsListResponse>().await {
+                Ok(b) => b,
+                Err(e) => {
+                    log(LOG_TAG, &format!("DM_NOTIFY_REQ_POLL_ERROR parse: {e}"));
+                    return;
+                }
+            }
+        }
+    };
+
+    let Some(state) = app.try_state::<SeenRequestState>() else {
+        return;
+    };
+
+    let (new_requests, removed, first_run) = {
+        let mut guard = state.0.lock().unwrap_or_else(|p| p.into_inner());
+        let first_run = !guard.initialized;
+        let (new_requests, removed) = diff_requests(&guard.pair_keys, &list.requests);
+        // Reconcile the seen-set to exactly the current pending pairKeys.
+        guard.pair_keys = list.requests.iter().map(|r| r.pair_key.clone()).collect();
+        guard.initialized = true;
+        (new_requests, removed, first_run)
+    };
+
+    if first_run {
+        // Seed silently — the user already had these before launch.
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_REQ_POLL_SEED count={}", list.requests.len()),
+        );
+        return;
+    }
+
+    for req in &new_requests {
+        log(
+            LOG_TAG,
+            &format!("DM_NOTIFY_REQ_NEW from={} pair={}", req.from_email, req.pair_key),
+        );
+        let _ = app.emit(EVENT_DM_REQUEST_NEW, req);
+    }
+    for pair_key in &removed {
+        // The request left the pending set. We can't tell accept vs decline from
+        // its disappearance alone, so report a neutral "resolved" flip; on accept
+        // the held message arrives via the DM inbox poll and renders the thread.
+        let update = serde_json::json!({ "pairKey": pair_key, "state": "resolved" });
+        log(LOG_TAG, &format!("DM_NOTIFY_REQ_RESOLVED pair={pair_key}"));
+        let _ = app.emit(EVENT_DM_REQUEST_UPDATE, &update);
+    }
+}
+
 // ── Core poll logic (mirrors share_notify::do_poll) ─────────────────────────────
 
 async fn do_poll(app: &AppHandle) {
@@ -435,6 +967,13 @@ async fn do_poll(app: &AppHandle) {
             return;
         }
     };
+
+    // Fold connection-request polling into the SINGLE poll path (US-011) — NOT a
+    // parallel poller. Runs every cycle before the inbox fetch so request events
+    // fire even when the DM inbox is empty (the inbox path returns early on an
+    // empty body). Best-effort: any failure logs and returns without disturbing
+    // the DM-inbox poll below.
+    poll_requests(app, &base_url, &access_token).await;
 
     let since = read_cursor(&machine_id);
     let url = match since.as_deref() {
@@ -495,6 +1034,12 @@ async fn do_poll(app: &AppHandle) {
         LOG_TAG,
         &format!("DM_NOTIFY_POLL_OK {} DM(s), cursor→{}", body.events.len(), newest),
     );
+
+    // Extend the SINGLE poll path with unread accounting (US-009) — NOT a
+    // parallel poller. Every freshly-polled DM increments the running unread
+    // count and emits `dm:unread-summary` so the popover Messages badge stays
+    // live. The count is reset when the Messages window opens.
+    bump_unread(app, body.events.len() as u32);
 
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
@@ -755,6 +1300,68 @@ mod tests {
     }
 
     #[test]
+    fn compose_payload_prefers_person_uid_single_key() {
+        // When a personUid is resolved, address by it — never emit toEmail too
+        // (the server rejects both present).
+        let payload = build_compose_payload(Some("prs_x"), Some("a@b.com"), "hi");
+        let obj = payload.as_object().expect("object");
+        assert_eq!(obj.len(), 2);
+        assert_eq!(payload["toPersonUid"], "prs_x");
+        assert_eq!(payload["body"], "hi");
+        assert!(!obj.contains_key("toEmail"));
+    }
+
+    #[test]
+    fn compose_payload_falls_back_to_email_single_key() {
+        // Free-text email with no resolved personUid → address by toEmail only.
+        let payload = build_compose_payload(None, Some("new@person.com"), "hello");
+        let obj = payload.as_object().expect("object");
+        assert_eq!(obj.len(), 2);
+        assert_eq!(payload["toEmail"], "new@person.com");
+        assert!(!obj.contains_key("toPersonUid"));
+        // A blank personUid is treated as absent.
+        let blank = build_compose_payload(Some("   "), Some("x@y.com"), "h");
+        assert_eq!(blank["toEmail"], "x@y.com");
+        assert!(!blank.as_object().unwrap().contains_key("toPersonUid"));
+    }
+
+    #[test]
+    fn classify_send_response_maps_status_and_body() {
+        let null = serde_json::Value::Null;
+        // 200 → delivered.
+        assert_eq!(
+            classify_send_response(200, &null),
+            SendDmOutcome::Delivered
+        );
+        // 202 → connection requested even with an empty body.
+        assert_eq!(
+            classify_send_response(202, &null),
+            SendDmOutcome::ConnectionRequested
+        );
+        // An explicit body state wins even on a 200 (defensive).
+        let body = serde_json::json!({ "state": "connection_requested" });
+        assert_eq!(
+            classify_send_response(200, &body),
+            SendDmOutcome::ConnectionRequested
+        );
+        // A delivered body on 200 stays delivered.
+        let delivered = serde_json::json!({ "delivered": true });
+        assert_eq!(
+            classify_send_response(200, &delivered),
+            SendDmOutcome::Delivered
+        );
+    }
+
+    #[test]
+    fn send_dm_outcome_serializes_to_state_tag() {
+        // The frontend discriminates on `state` — lock the wire shape.
+        let requested = serde_json::to_value(SendDmOutcome::ConnectionRequested).unwrap();
+        assert_eq!(requested["state"], "connectionRequested");
+        let delivered = serde_json::to_value(SendDmOutcome::Delivered).unwrap();
+        assert_eq!(delivered["state"], "delivered");
+    }
+
+    #[test]
     fn dm_event_deserializes_camel_case_from_inbox() {
         // The reply target (`fromPersonUid`) must survive the wire round-trip so
         // the detail window can address a reply to the original sender.
@@ -790,6 +1397,102 @@ mod tests {
             build_thread_url("https://api.example.com", "prs_x", None, Some("")),
             "https://api.example.com/v1/notify/thread?withPersonUid=prs_x",
         );
+    }
+
+    fn mk_request(pair_key: &str) -> DmRequest {
+        DmRequest {
+            pair_key: pair_key.to_string(),
+            from_person_uid: "prs_x".to_string(),
+            from_email: "x@y.com".to_string(),
+            from_display_name: "Ex".to_string(),
+            message: None,
+            shared_company: None,
+            created_at: "2026-06-05T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn respond_action_path_maps_known_actions_only() {
+        assert_eq!(respond_action_path("accept"), Some("accept"));
+        assert_eq!(respond_action_path("Decline"), Some("decline"));
+        assert_eq!(respond_action_path("  BLOCK "), Some("block"));
+        // Unknown / unsupported actions are rejected (no unguarded request).
+        assert_eq!(respond_action_path("unblock"), None);
+        assert_eq!(respond_action_path(""), None);
+        assert_eq!(respond_action_path("delete"), None);
+    }
+
+    #[test]
+    fn respond_action_state_maps_to_ui_states() {
+        assert_eq!(respond_action_state("accept"), "active");
+        assert_eq!(respond_action_state("decline"), "declined");
+        assert_eq!(respond_action_state("block"), "blocked");
+        assert_eq!(respond_action_state("nope"), "unknown");
+    }
+
+    #[test]
+    fn diff_requests_detects_new_and_removed() {
+        // Seen had {a, b}; current has {b, c}. → new = [c], removed = [a].
+        let seen: HashSet<String> =
+            ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let current = vec![mk_request("b"), mk_request("c")];
+        let (new_requests, removed) = diff_requests(&seen, &current);
+        assert_eq!(new_requests.len(), 1);
+        assert_eq!(new_requests[0].pair_key, "c");
+        assert_eq!(removed, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn diff_requests_first_run_all_new_none_removed() {
+        // Empty seen-set (first poll before seeding) → every current request is
+        // "new" and nothing is removed. The seed guard in poll_requests is what
+        // suppresses the banner on the very first run; the diff itself is pure.
+        let seen: HashSet<String> = HashSet::new();
+        let current = vec![mk_request("a"), mk_request("b")];
+        let (new_requests, removed) = diff_requests(&seen, &current);
+        assert_eq!(new_requests.len(), 2);
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn diff_requests_stable_set_no_events() {
+        // Unchanged pending set → no new, no removed (no spurious events/banners).
+        let seen: HashSet<String> =
+            ["a", "b"].iter().map(|s| s.to_string()).collect();
+        let current = vec![mk_request("a"), mk_request("b")];
+        let (new_requests, removed) = diff_requests(&seen, &current);
+        assert!(new_requests.is_empty());
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn dm_request_deserializes_camel_case_from_requests_endpoint() {
+        // The card needs pairKey (for the action POST) + the held message to
+        // survive the wire round-trip; the trust hint is optional.
+        let json = r#"{
+            "pairKey": "pair_ab",
+            "fromPersonUid": "prs_req",
+            "fromEmail": "req@b.com",
+            "fromDisplayName": "Reqer",
+            "message": "hey, can we connect?",
+            "sharedCompany": "Indigo",
+            "createdAt": "2026-06-05T00:00:00Z"
+        }"#;
+        let req: DmRequest = serde_json::from_str(json).expect("DmRequest parses");
+        assert_eq!(req.pair_key, "pair_ab");
+        assert_eq!(req.from_person_uid, "prs_req");
+        assert_eq!(req.message.as_deref(), Some("hey, can we connect?"));
+        assert_eq!(req.shared_company.as_deref(), Some("Indigo"));
+    }
+
+    #[test]
+    fn requests_list_response_tolerates_missing_fields() {
+        // An empty/absent requests array and absent cursor must not break parsing
+        // (the Requests segment renders the empty state).
+        let empty: RequestsListResponse =
+            serde_json::from_str("{}").expect("empty requests parses");
+        assert!(empty.requests.is_empty());
+        assert!(empty.next_cursor.is_none());
     }
 
     #[test]

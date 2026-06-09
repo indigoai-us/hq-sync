@@ -177,6 +177,8 @@ fn main() {
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
+        .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
+        .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
@@ -318,7 +320,15 @@ fn main() {
             commands::dm_notify::open_dm_detail,
             commands::dm_notify::dm_detail_window_ready,
             commands::dm_notify::send_dm,
+            commands::dm_notify::send_dm_to_email,
             commands::dm_notify::fetch_dm_thread,
+            commands::dm_notify::list_dm_requests,
+            commands::dm_notify::respond_dm_request,
+            commands::messages::open_messages_window,
+            commands::messages::messages_window_ready,
+            commands::messages::list_contacts,
+            commands::messages::list_company_members,
+            commands::messages::get_unread_summary,
             commands::notification_history::fetch_notification_history,
             commands::notification_history::open_notification_history,
             commands::notifications::notification_permission_state,
