@@ -701,12 +701,32 @@ pub struct NotifyDetectedPayload {
     pub source_event_id: Option<String>,
 }
 
+/// Pick the first bot whose status is *active* (still covering the meeting).
+///
+/// hq-pro returns NORMALIZED statuses (`mapRecallStatus` in hq-pro
+/// `bot.types.ts`): `scheduled` / `joining` / `recording` / `processing` —
+/// never Recall's raw codes (`joining_call`, `in_call_recording`, …). hq-pro's
+/// `?meetingUrl=` dedup branch already returns only active bots, so this is a
+/// defensive mirror of that active set. **These strings MUST track hq-pro's
+/// `BotStatus`.** A prior version matched the RAW Recall codes, so a scheduled
+/// meeting stopped suppressing the detect-meeting notification the moment its
+/// bot joined the call (status normalizes to `recording`/`joining`) — the
+/// "scheduled meeting still gets a detect notification" bug.
+fn first_active_bot(bots: Vec<ScheduledBot>) -> Option<ScheduledBot> {
+    bots.into_iter().find(|b| {
+        matches!(
+            b.status.as_str(),
+            "scheduled" | "joining" | "recording" | "processing"
+        )
+    })
+}
+
 /// Check whether an active bot already exists for the given meeting URL.
 ///
 /// Returns `Some(bot)` when a bot with an active status (`scheduled`,
-/// `joining_call`, `in_call_recording`, `in_call_not_recording`) is found.
-/// The Svelte handler calls this before `meetings_notify_detected`; a bot
-/// already in the room means we should skip the notification.
+/// `joining`, `recording`, `processing` — hq-pro's normalized `BotStatus`) is
+/// found. The Svelte handler calls this before `meetings_notify_detected`; a
+/// bot already in the room means we should skip the notification.
 ///
 /// Query: `GET /v1/bot/list?meetingUrl=<url>[&eventId=<id>]`
 #[tauri::command]
@@ -731,13 +751,12 @@ pub async fn meetings_check_bot_for_url(
     }
     let parsed: BotsResponse = serde_json::from_str(&text)
         .map_err(|e| format!("bot/list check parse: {e} — body: {text}"))?;
-    let active = parsed.bots.into_iter().find(|b| {
-        matches!(
-            b.status.as_str(),
-            "scheduled" | "joining_call" | "in_call_recording" | "in_call_not_recording"
-        )
-    });
-    Ok(active)
+    // hq-pro already narrows the `?meetingUrl=` query to active bots; pick the
+    // first whose normalized status still counts as active (see
+    // `first_active_bot`). Matching hq-pro's vocabulary here is what keeps the
+    // detect-meeting notification suppressed for a scheduled meeting whose bot
+    // has already joined the call.
+    Ok(first_active_bot(parsed.bots))
 }
 
 /// Fire a macOS notification for a detected meeting, gated on:
@@ -1196,6 +1215,61 @@ mod tests {
         assert!(!email_present(None));
         assert!(!email_present(Some("")));
         assert!(!email_present(Some("   ")));
+    }
+
+    fn bot_with_status(status: &str) -> ScheduledBot {
+        ScheduledBot {
+            bot_id: "bot-1".into(),
+            meeting_url: "https://zoom.us/j/1".into(),
+            platform: "zoom".into(),
+            status: status.into(),
+            calendar_event_id: None,
+            meeting_title: None,
+            scheduled_start_time: None,
+            auto_scheduled: false,
+            error_message: None,
+            source_landed: false,
+        }
+    }
+
+    #[test]
+    fn first_active_bot_recognizes_hqpro_normalized_statuses() {
+        // Regression: hq-pro returns mapRecallStatus-NORMALIZED statuses
+        // (scheduled/joining/recording/processing). A prior filter matched
+        // Recall's RAW codes (joining_call/in_call_recording/in_call_not_recording),
+        // so a scheduled meeting's bot stopped suppressing the detect-meeting
+        // notification the moment it joined the call (status → recording). Every
+        // normalized active status must be recognized as an active bot.
+        for status in ["scheduled", "joining", "recording", "processing"] {
+            assert!(
+                first_active_bot(vec![bot_with_status(status)]).is_some(),
+                "normalized active status {status:?} must count as an active bot"
+            );
+        }
+    }
+
+    #[test]
+    fn first_active_bot_ignores_terminal_and_empty() {
+        // Terminal/unknown statuses are not active (a completed/failed bot no
+        // longer covers the meeting), and an empty list is None.
+        for status in ["completed", "failed", "error", "unknown", ""] {
+            assert!(
+                first_active_bot(vec![bot_with_status(status)]).is_none(),
+                "non-active status {status:?} must not count as an active bot"
+            );
+        }
+        assert!(first_active_bot(vec![]).is_none());
+    }
+
+    #[test]
+    fn first_active_bot_skips_terminal_and_returns_active() {
+        // A mixed list (e.g. a stale completed bot + the live recording bot for
+        // the same URL) must still surface the active one, not the terminal one.
+        let bots = vec![bot_with_status("completed"), bot_with_status("recording")];
+        assert_eq!(
+            first_active_bot(bots).map(|b| b.status),
+            Some("recording".to_string())
+        );
     }
 
     /// Serde shape lock-in — what the frontend gets is what the modal needs.
