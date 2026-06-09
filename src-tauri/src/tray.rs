@@ -130,11 +130,11 @@ pub fn set_prompt_badge(app: &AppHandle, count: usize) {
     PROMPT_PENDING.store(count, Ordering::SeqCst);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if count > 0 {
-            let _ = tray.set_icon(Some(icon_for_state(TrayState::Prompt)));
+            set_state_icon(&tray, TrayState::Prompt);
             let _ = tray.set_tooltip(Some(TrayState::Prompt.tooltip()));
         } else {
             let state = current_state().lock().map(|s| *s).unwrap_or(TrayState::Idle);
-            let _ = tray.set_icon(Some(icon_for_state(state)));
+            set_state_icon(&tray, state);
             let _ = tray.set_tooltip(Some(state.tooltip()));
         }
     }
@@ -183,6 +183,21 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
         TrayState::Prompt => ICON_IDLE.get_or_init(|| decode(include_bytes!("../icons/tray-idle@2x.png"))),
     }
     .clone()
+}
+
+/// Swap the tray icon for `state`, re-asserting the macOS template flag.
+///
+/// `icon_as_template(true)` is set once at build time, but on macOS every
+/// `set_icon(...)` installs a fresh NSImage whose `isTemplate` defaults to NO —
+/// silently dropping the template flag. Our glyphs are white-on-alpha (correct
+/// for a template, where macOS uses only the alpha shape and recolours it dark
+/// on a light menu bar / light on a dark one); once the flag is lost the raw
+/// white pixels get drawn, leaving the icon invisible/white on a light menu bar.
+/// Re-applying the flag after each swap keeps the glyph adapting to the menu-bar
+/// appearance for the life of the process.
+fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, state: TrayState) {
+    let _ = tray.set_icon(Some(icon_for_state(state)));
+    let _ = tray.set_icon_as_template(true);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -465,7 +480,7 @@ pub fn update_tray_icon(app: &AppHandle, state: TrayState) {
 
     // Update icon + badge-aware tooltip
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_icon(Some(icon_for_state(state)));
+        set_state_icon(&tray, state);
     }
     refresh_tray_tooltip(app);
 }
@@ -499,7 +514,7 @@ fn reassert_tray(app: &AppHandle) {
             let _ = tray.set_visible(false);
             let _ = tray.set_visible(true);
             let state = get_current_state();
-            let _ = tray.set_icon(Some(icon_for_state(state)));
+            set_state_icon(&tray, state);
             refresh_tray_tooltip(&handle);
             log("tray", "reassert_tray: completed");
         } else {

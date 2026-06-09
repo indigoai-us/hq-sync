@@ -163,7 +163,12 @@
     padding: 0;
     background: transparent !important;
     background-color: transparent !important;
-    color-scheme: dark;
+    /* Adapt to the OS appearance so the light-mode tokens in popover.css fire —
+       the native Popover-material frost (banner.rs) already follows the system
+       light/dark, so locking the webview to dark left white text on a light
+       frost (unreadable) in Light Mode. `light dark` keeps the webview in step
+       with the frost; text colours below resolve through the adaptive tokens. */
+    color-scheme: light dark;
     overflow: hidden;
   }
 
@@ -223,7 +228,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: rgba(255, 255, 255, 0.92);
+    color: var(--popover-text-heading);
     background: var(--popover-surface);
     box-shadow: inset 0 0 0 0.5px var(--popover-border);
   }
@@ -238,12 +243,12 @@
   .top { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; }
   /* "HQ Sync" + separator never shrink/wrap — the sender is the only part
      that truncates with an ellipsis when the title is long. */
-  .app { font-weight: 600; color: #fff; white-space: nowrap; flex-shrink: 0; }
-  .sep { color: rgba(255, 255, 255, 0.4); flex-shrink: 0; }
+  .app { font-weight: 600; color: var(--popover-text-heading); white-space: nowrap; flex-shrink: 0; }
+  .sep { color: var(--popover-text-muted); flex-shrink: 0; }
   .from {
     flex: 1;
     min-width: 0;
-    color: rgba(255, 255, 255, 0.7);
+    color: var(--popover-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -257,8 +262,8 @@
     line-height: 1;
     border: none;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.08);
-    color: rgba(255, 255, 255, 0.7);
+    background: var(--popover-surface);
+    color: var(--popover-text-muted);
     font-size: 0.875rem;
     cursor: pointer;
     display: flex;
@@ -266,13 +271,13 @@
     justify-content: center;
     transition: background-color 0.12s ease;
   }
-  .close:hover { background: rgba(255, 255, 255, 0.18); }
+  .close:hover { background: var(--popover-surface-strong); }
 
   .body {
     margin: 0;
     font-size: 0.8125rem;
     line-height: 1.4;
-    color: rgba(255, 255, 255, 0.88);
+    color: var(--popover-text);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     line-clamp: 2;
@@ -297,5 +302,16 @@
   }
   .chip:hover { background: rgba(120, 170, 255, 0.34); }
 
-  .hint { font-size: 0.625rem; color: rgba(255, 255, 255, 0.4); }
+  .hint { font-size: 0.625rem; color: var(--popover-text-muted); }
+
+  /* Light Mode: the near-white chip text is illegible on a light frost — give
+     the action chip a darker blue text + a touch more fill so it stays the
+     accent affordance while remaining readable. */
+  @media (prefers-color-scheme: light) {
+    .chip {
+      background: rgba(40, 90, 200, 0.16);
+      color: #1c3d80;
+    }
+    .chip:hover { background: rgba(40, 90, 200, 0.26); }
+  }
 </style>
