@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { get, writable } from 'svelte/store';
 import {
   activeMemberships,
@@ -59,6 +59,11 @@ interface BackendActiveRecording {
   recordingId?: string;
   companyUid?: string | null;
   startedAt?: string;
+}
+
+interface PopoverMeetingsSnapshot {
+  memberships?: RecordingMembership[];
+  defaultRecordingCompanyUid?: string | null;
 }
 
 export const activeMeetings = writable<ActiveMeeting[]>([]);
@@ -178,12 +183,16 @@ export async function loadRecordingCompanyContext(): Promise<void> {
       () => ({}) as { defaultRecordingCompanyUid?: string | null },
     ),
   ]);
+  setRecordingCompanyContext(list ?? [], settings?.defaultRecordingCompanyUid ?? null);
+}
+
+function setRecordingCompanyContext(
+  list: RecordingMembership[],
+  defaultUid: string | null,
+): void {
   const active = activeMemberships(list ?? []);
   recordingMemberships.set(active);
-  defaultRecordingCompanyUid = resolveValidDefault(
-    settings?.defaultRecordingCompanyUid ?? null,
-    active,
-  );
+  defaultRecordingCompanyUid = resolveValidDefault(defaultUid, active);
   // Seed the resolved default onto rows detected before this loaded — without
   // overwriting an explicit user choice (shouldBackfill guards that).
   for (const m of get(activeMeetings)) {
@@ -263,6 +272,15 @@ async function installActiveMeetingListeners(): Promise<() => void> {
         removeActiveMeeting(windowId);
       },
     ),
+    listen<PopoverMeetingsSnapshot>('popover:meetings-snapshot', (event) => {
+      const next = event.payload ?? {};
+      if (Array.isArray(next.memberships)) {
+        setRecordingCompanyContext(
+          next.memberships,
+          next.defaultRecordingCompanyUid ?? null,
+        );
+      }
+    }),
     listen<{ action: string; windowId: string; platform: string }>(
       'notification:meeting-action',
       async (event) => {
@@ -290,6 +308,7 @@ async function installActiveMeetingListeners(): Promise<() => void> {
   ]);
 
   unlisteners = offs;
+  emit('meetings-window:request-snapshot').catch(() => undefined);
   return stopActiveMeetingListeners;
 }
 

@@ -17,6 +17,7 @@ import { get } from 'svelte/store';
 // timers never leak.
 
 const invokeMock = vi.fn();
+const eventEmitMock = vi.fn((..._args: unknown[]) => Promise.resolve());
 type Handler = (event: { payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
 
@@ -25,6 +26,7 @@ vi.mock('@tauri-apps/api/core', () => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
+  emit: (...args: unknown[]) => eventEmitMock(...args),
   listen: vi.fn((name: string, handler: Handler) => {
     handlers.set(name, handler);
     // `listen` resolves to an unlisten fn.
@@ -128,6 +130,7 @@ describe('activeMeetings — Rust bridge-death terminal event resolves the row',
   beforeEach(async () => {
     vi.useFakeTimers();
     invokeMock.mockReset();
+    eventEmitMock.mockClear();
     invokeMock.mockResolvedValue(undefined);
     activeMeetings.set([]);
     handlers.clear();
@@ -145,6 +148,10 @@ describe('activeMeetings — Rust bridge-death terminal event resolves the row',
 
   it('registers a recording:error listener', () => {
     expect(handlers.has('recording:error')).toBe(true);
+  });
+
+  it('requests the popover meetings snapshot after listener install', () => {
+    expect(eventEmitMock).toHaveBeenCalledWith('meetings-window:request-snapshot');
   });
 
   it('transitions a hung `stopping` row to error and cancels the watchdog', async () => {
@@ -229,6 +236,7 @@ describe('activeMeetings meeting:closed listener', () => {
     // cleanup keep those 12s timers from leaking across tests.
     vi.useFakeTimers();
     invokeMock.mockReset();
+    eventEmitMock.mockClear();
     invokeMock.mockResolvedValue(undefined);
     activeMeetings.set([]);
     handlers.clear();
