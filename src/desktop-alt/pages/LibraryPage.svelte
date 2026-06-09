@@ -25,6 +25,7 @@
   const HEADINGS: Record<LibraryTab, string> = {
     skills: 'Skills',
     workers: 'Workers',
+    installed: 'Installed',
     marketplace: 'Marketplace',
     profile: 'Profile',
   };
@@ -35,9 +36,11 @@
       ? `${items.skills.length} ${items.skills.length === 1 ? 'skill' : 'skills'} available to you`
       : tab === 'workers'
         ? `${items.workers.length} ${items.workers.length === 1 ? 'worker' : 'workers'} available to you`
-        : tab === 'marketplace'
-          ? 'Discover and install skills and workers'
-          : 'Your HQ profile and published work',
+        : tab === 'installed'
+          ? 'Marketplace packs installed in your HQ'
+          : tab === 'marketplace'
+            ? 'Discover and install skills and workers'
+            : 'Your HQ profile and published work',
   );
 
   $effect(() => {

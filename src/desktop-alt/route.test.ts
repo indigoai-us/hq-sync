@@ -51,12 +51,12 @@ describe('desktop-alt routes', () => {
     expect(visible.map((workspace) => workspace.slug)).toEqual(['synced', 'personal']);
   });
 
-  it('maps the four library hotkeys (⌘3–⌘6) to their tabs', () => {
+  it('maps the five library hotkeys (⌘3–⌘7) to their tabs', () => {
     const companies = getDesktopCompanies([
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    // Sync ⌘1 / Meetings ⌘2, then the broken-out library destinations at ⌘3–⌘6.
+    // Sync ⌘1 / Meetings ⌘2, then the broken-out library destinations at ⌘3–⌘7.
     expect(getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
       tab: 'skills',
@@ -67,36 +67,41 @@ describe('desktop-alt routes', () => {
     });
     expect(getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
-      tab: 'marketplace',
+      tab: 'installed',
     });
     expect(getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'library',
+      tab: 'marketplace',
+    });
+    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'library',
       tab: 'profile',
     });
   });
 
-  it('maps company hotkeys at ⌘7+ over the filtered synced company list', () => {
+  it('maps company hotkeys at ⌘8+ over the filtered synced company list', () => {
     const companies = getDesktopCompanies([
       company({ slug: 'unsynced', displayName: 'Unsynced', state: 'local-only' }),
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
     ]);
 
-    // Six primary destinations (Sync, Meetings, Skills, Workers, Marketplace,
-    // Profile) consume ⌘1–⌘6, so companies start at ⌘7.
-    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toEqual({
+    // Seven primary destinations (Sync, Meetings, Skills, Workers, Installed,
+    // Marketplace, Profile) consume ⌘1–⌘7, so companies start at ⌘8.
+    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toEqual({
       kind: 'company',
       slug: 'synced',
     });
   });
 
-  it('exposes the four library tabs as top-level sidebar rows with ⌘3–⌘6', () => {
+  it('exposes the five library tabs as top-level sidebar rows with ⌘3–⌘7', () => {
     const rows = getDesktopSidebarRows({ kind: 'sync' }, []);
     const library = rows.filter((row) => row.route.kind === 'library');
     expect(library.map((row) => [row.label, row.shortcut, row.route.tab])).toEqual([
       ['Skills', '⌘3', 'skills'],
       ['Workers', '⌘4', 'workers'],
-      ['Marketplace', '⌘5', 'marketplace'],
-      ['Profile', '⌘6', 'profile'],
+      ['Installed', '⌘5', 'installed'],
+      ['Marketplace', '⌘6', 'marketplace'],
+      ['Profile', '⌘7', 'profile'],
     ]);
     // The old single "Library" row is gone.
     expect(rows.map((row) => row.label)).not.toContain('Library');
@@ -139,10 +144,10 @@ describe('desktop-alt sidebar rows — admin-only Moderation entry', () => {
     expect(moderationRow.shortcut).toBeUndefined();
   });
 
-  it('keeps company hotkeys at ⌘7 whether or not the admin row is present', () => {
+  it('keeps company hotkeys at ⌘8 whether or not the admin row is present', () => {
     const withAdmin = getDesktopSidebarRows(route, synced, { isAdmin: true });
     const companyRow = withAdmin.find((row) => row.route.kind === 'company');
-    // The admin Moderation row carries no hotkey, so the company keeps ⌘7.
-    expect(companyRow?.shortcut).toBe('⌘7');
+    // The admin Moderation row carries no hotkey, so the company keeps ⌘8.
+    expect(companyRow?.shortcut).toBe('⌘8');
   });
 });

@@ -2,28 +2,29 @@ import type { Workspace } from '../lib/workspaces';
 
 /**
  * Library sub-surfaces. Each is its own top-level sidebar link (Skills /
- * Workers / Marketplace / Profile) but they all share the `library` page +
- * LibraryBrowser body, differing only by which tab is forced. Defaults to
- * 'skills' when a library route carries no tab.
+ * Workers / Installed / Marketplace / Profile) but they all share the `library`
+ * page + LibraryBrowser body, differing only by which tab is forced. Defaults
+ * to 'skills' when a library route carries no tab.
  */
-export type LibraryTab = 'skills' | 'workers' | 'marketplace' | 'profile';
+export type LibraryTab = 'skills' | 'workers' | 'installed' | 'marketplace' | 'profile';
 
 export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
 /**
  * The library sub-surfaces promoted to top-level sidebar links, in display
- * order, with their ⌘ hotkeys (⌘3–⌘6). Companies start at ⌘7 (see
+ * order, with their ⌘ hotkeys (⌘3–⌘7). Companies start at ⌘8 (see
  * getDesktopHotkeyRoute + the company-row mapping below).
  */
 export const LIBRARY_SIDEBAR_TABS: { tab: LibraryTab; label: string; shortcut: string }[] = [
   { tab: 'skills', label: 'Skills', shortcut: '⌘3' },
   { tab: 'workers', label: 'Workers', shortcut: '⌘4' },
-  { tab: 'marketplace', label: 'Marketplace', shortcut: '⌘5' },
-  { tab: 'profile', label: 'Profile', shortcut: '⌘6' },
+  { tab: 'installed', label: 'Installed', shortcut: '⌘5' },
+  { tab: 'marketplace', label: 'Marketplace', shortcut: '⌘6' },
+  { tab: 'profile', label: 'Profile', shortcut: '⌘7' },
 ];
 
-/** First ⌘ hotkey assigned to a company row (after the 6 primary destinations). */
-const COMPANY_HOTKEY_BASE = 7;
+/** First ⌘ hotkey assigned to a company row (after the 7 primary destinations). */
+const COMPANY_HOTKEY_BASE = 8;
 
 export type DesktopRoute = {
   kind: 'sync' | 'meetings' | 'library' | 'moderation' | 'company';
@@ -131,7 +132,7 @@ export function getDesktopSidebarRows(
   return primaryRows.concat(
     companies.map((company, index) => {
       const companyRoute: DesktopRoute = { kind: 'company', slug: company.slug };
-      // Only ⌘7–⌘9 are addressable (single-digit), so the first three
+      // Only ⌘8–⌘9 are addressable (single-digit), so the first two
       // companies get a hotkey; the rest are click-only.
       const hotkeyNumber = COMPANY_HOTKEY_BASE + index;
       return {
@@ -161,14 +162,14 @@ export function getDesktopHotkeyRoute(
   if (event.key === '1') return { kind: 'sync' };
   if (event.key === '2') return { kind: 'meetings' };
 
-  // ⌘3–⌘6 → the four library destinations.
+  // ⌘3–⌘7 → the five library destinations.
   const libraryIndex = Number.parseInt(event.key, 10) - 3;
   if (libraryIndex >= 0 && libraryIndex < LIBRARY_SIDEBAR_TABS.length) {
     return { kind: 'library', tab: LIBRARY_SIDEBAR_TABS[libraryIndex].tab };
   }
 
-  // ⌘7–⌘9 → the first three companies.
-  if (['7', '8', '9'].includes(event.key)) {
+  // ⌘8–⌘9 → the first two companies.
+  if (['8', '9'].includes(event.key)) {
     const company = companies[Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE];
     if (company) return { kind: 'company', slug: company.slug };
   }

@@ -167,24 +167,33 @@
       action: () => navigate({ kind: 'library', tab: 'workers' }),
     },
     {
+      id: 'command-go-installed',
+      label: 'Go to Installed',
+      detail: 'Marketplace packs installed in your HQ',
+      shortcut: '⌘5',
+      action: () => navigate({ kind: 'library', tab: 'installed' }),
+    },
+    {
       id: 'command-go-marketplace',
       label: 'Go to Marketplace',
       detail: 'Discover and install skills and workers',
-      shortcut: '⌘5',
+      shortcut: '⌘6',
       action: () => navigate({ kind: 'library', tab: 'marketplace' }),
     },
     {
       id: 'command-go-profile',
       label: 'Go to Profile',
       detail: 'Your HQ profile and published work',
-      shortcut: '⌘6',
+      shortcut: '⌘7',
       action: () => navigate({ kind: 'library', tab: 'profile' }),
     },
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
       label: `Go to ${company.displayName}`,
       detail: 'Show company workspace',
-      shortcut: index < 4 ? `⌘${index + 4}` : undefined,
+      // Companies start at ⌘8 (after the 7 primary destinations); only ⌘8–⌘9
+      // are single-digit addressable.
+      shortcut: index < 2 ? `⌘${index + 8}` : undefined,
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);

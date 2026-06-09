@@ -67,15 +67,16 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
     // The top-level Board surface was removed — the board lives on each
-    // company/personal page now. The Library surface is broken out into four
+    // company/personal page now. The Library surface is broken out into five
     // top-level destinations: Sync (⌘1), Meetings (⌘2), Skills (⌘3),
-    // Workers (⌘4), Marketplace (⌘5), Profile (⌘6); the personal page +
-    // synced companies follow from ⌘7.
+    // Workers (⌘4), Installed (⌘5), Marketplace (⌘6), Profile (⌘7); the
+    // personal page + synced companies follow from ⌘8.
     expect(rows.map((row) => row.label)).toEqual([
       'Sync',
       'Meetings',
       'Skills',
       'Workers',
+      'Installed',
       'Marketplace',
       'Profile',
       'Personal',
@@ -90,6 +91,7 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
       '⌘6',
       '⌘7',
       '⌘8',
+      '⌘9',
     ]);
     expect(rows[0]).toMatchObject({ active: true, route: { kind: 'sync' } });
     // Sync/Meetings are real pages — no active company resolves.
@@ -113,11 +115,11 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     const companies = getDesktopCompanies(workspaces);
     const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
 
-    // Personal is local-first and now gets its own desktop page (⌘7, after the
-    // six Sync/Meetings/Skills/Workers/Marketplace/Profile top-level rows).
+    // Personal is local-first and now gets its own desktop page (⌘8, after the
+    // seven Sync/Meetings/Skills/Workers/Installed/Marketplace/Profile rows).
     expect(rows.find((row) => row.label === 'Personal')).toMatchObject({
       route: { kind: 'company', slug: 'personal' },
-      shortcut: '⌘7',
+      shortcut: '⌘8',
     });
 
     const acmeRow = rows.find((row) => row.label === 'Acme Corp');
@@ -131,7 +133,7 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
     expect(isDesktopRouteActive(nextRoute, { kind: 'company', slug: 'acme' })).toBe(true);
     expect(rowsAfterClick.find((row) => row.label === 'Acme Corp')).toMatchObject({
       active: true,
-      shortcut: '⌘8',
+      shortcut: '⌘9',
     });
     // Globex is cloud-only (no synced local vault) → no desktop page.
     expect(rowsAfterClick.find((row) => row.label === 'Globex')).toBeUndefined();
