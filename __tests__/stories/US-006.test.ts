@@ -106,6 +106,13 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     expect(card).toContain('Stop recording');
     expect(activeMeetings).toContain("invoke<string>('start_recording'");
     expect(activeMeetings).toContain("await invoke('stop_recording'");
+    // Desktop-alt must also consume the classic popover snapshot. That
+    // snapshot is the proven source old MeetingsWindow uses for the active
+    // memberships list; without it the new Live now picker can degrade to
+    // Personal-only while the old UX still shows companies.
+    expect(activeMeetings).toContain("'popover:meetings-snapshot'");
+    expect(activeMeetings).toContain("emit('meetings-window:request-snapshot')");
+    expect(activeMeetings).toContain('setRecordingCompanyContext(');
     // Per-meeting recording-company picker: a "Record as" <select> that
     // delegates the choice through the oncompany callback (card stays
     // invoke-free — attribution helpers live in the store layer).
