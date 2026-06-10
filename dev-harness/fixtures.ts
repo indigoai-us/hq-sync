@@ -84,8 +84,6 @@ export const popoverProps = {
     bytesDownloaded: 348_000,
     filesSkipped: 2,
   },
-  newFilesCount: 0,
-  newFilesList: [],
   conflicts: [],
   showConflictModal: false,
   updateAvailable: null,

@@ -1,6 +1,5 @@
 import * as Sentry from "@sentry/svelte";
 import App from './App.svelte';
-import NewFilesDetail from './components/NewFilesDetail.svelte';
 import MeetingsWindow from './components/MeetingsWindow.svelte';
 import DriftDetail from './components/DriftDetail.svelte';
 import ActivityLog from './components/ActivityLog.svelte';
@@ -31,9 +30,7 @@ const windowLabel = getCurrentWindow().label;
 document.documentElement.dataset.window = windowLabel;
 
 let Component: typeof App;
-if (windowLabel === 'new-files-detail') {
-  Component = NewFilesDetail as unknown as typeof App;
-} else if (windowLabel === 'meetings-window') {
+if (windowLabel === 'meetings-window') {
   Component = MeetingsWindow as unknown as typeof App;
 } else if (windowLabel === 'drift-detail') {
   Component = DriftDetail as unknown as typeof App;

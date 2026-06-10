@@ -172,7 +172,6 @@ fn main() {
                 .build(),
         )
         .manage(updater::PendingUpdate(Mutex::new(None)))
-        .manage(commands::new_files::PendingNewFiles(Mutex::new(Vec::new())))
         .manage(commands::drift_detail::PendingDrift(Mutex::new(None)))
         .manage(commands::activity::SessionActivity::new())
         .manage(commands::share_notify::PendingShareEvents(Mutex::new(Vec::new())))
@@ -242,8 +241,6 @@ fn main() {
             commands::hq_core_state::check_core_state,
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
-            commands::new_files::open_new_files_detail,
-            commands::new_files::detail_window_ready,
             commands::packages::list_packages,
             commands::packages::check_package_updates,
             commands::packages::install_package,

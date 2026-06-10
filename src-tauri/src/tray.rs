@@ -311,7 +311,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         window.on_window_event(move |event| {
             if let WindowEvent::Focused(false) = event {
                 // Don't dismiss the popover when focus moved to one of OUR OWN
-                // secondary windows (drift / new-files / DM / share detail). A
+                // secondary windows (drift / DM / share detail). A
                 // sync or notification that opens such a window steals key
                 // focus from the popover and fires `Focused(false)`; hiding
                 // here made the popover vanish out from under the user mid-

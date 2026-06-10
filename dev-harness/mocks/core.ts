@@ -192,3 +192,30 @@ export async function invoke<T>(cmd: string, args?: Record<string, unknown>): Pr
 export class Channel<T = unknown> {
   onmessage: ((msg: T) => void) | null = null;
 }
+
+// Some Tauri plugins (e.g. plugin-notification) import these from core. The
+// harness has no backend, so they resolve to inert no-ops.
+export class PluginListener {
+  constructor(
+    public plugin: string,
+    public event: string,
+    public channelId: number,
+  ) {}
+  async unregister(): Promise<void> {}
+}
+
+export async function addPluginListener<T>(
+  _plugin: string,
+  _event: string,
+  _cb: (payload: T) => void,
+): Promise<PluginListener> {
+  return new PluginListener(_plugin, _event, 0);
+}
+
+export function transformCallback(_cb?: (response: unknown) => void, _once = false): number {
+  return 0;
+}
+
+export function convertFileSrc(filePath: string, _protocol = 'asset'): string {
+  return filePath;
+}
