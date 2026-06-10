@@ -179,6 +179,7 @@ fn main() {
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
         .manage(commands::dm_notify::SeenRequestState::new())
         .manage(commands::dm_notify::SeenChannelState::new())
+        .manage(commands::dm_notify::ActiveThreadState::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
@@ -320,6 +321,9 @@ fn main() {
             commands::dm_notify::send_dm,
             commands::dm_notify::send_dm_to_email,
             commands::dm_notify::fetch_dm_thread,
+            commands::dm_notify::fetch_thread,
+            commands::dm_notify::send_thread_reply,
+            commands::dm_notify::set_active_thread,
             commands::dm_notify::list_dm_requests,
             commands::dm_notify::respond_dm_request,
             commands::messages::open_messages_window,
