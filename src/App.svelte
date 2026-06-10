@@ -18,6 +18,7 @@
   import FirstRunWelcome from './components/FirstRunWelcome.svelte';
   import AutoSyncNotice from './components/AutoSyncNotice.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
+  import { transferCountDelta } from './lib/transfer-count';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
@@ -934,11 +935,10 @@
             path: event.payload.path,
             bytes: event.payload.bytes,
           };
-          // Cumulative file counter — every per-file event from the runner
-          // (or personal first-push) bumps this. The popover surfaces it as
-          // "234 files" alongside the current path so the user always has
-          // something moving even when individual paths scroll by.
-          syncFilesProgressed += 1;
+          // Cumulative transfer counter — the runner emits sync:progress
+          // only for files it actually moves, so each event counts as one.
+          // (Counting policy lives in lib/transfer-count.ts.)
+          syncFilesProgressed += transferCountDelta({ kind: 'runner-progress' });
           await invoke('set_tray_state', { state: 'syncing' });
         }
       )
@@ -966,7 +966,13 @@
             path: event.payload.currentFile,
             bytes: 0, // personal-first-push doesn't carry per-file bytes
           };
-          syncFilesProgressed += 1;
+          // The walker emits this per file EXAMINED (skips included) — a
+          // liveness signal, not a transfer. Contributes 0 to the counter;
+          // real personal uploads are credited on the complete event below.
+          syncFilesProgressed += transferCountDelta({
+            kind: 'personal-first-push-progress',
+            currentFile: event.payload.currentFile,
+          });
         }
         await invoke('set_tray_state', { state: 'syncing' });
       })
@@ -975,13 +981,20 @@
     unlisteners.push(
       await listen<{ personUid: string; filesUploaded: number; filesSkipped: number }>(
         'sync:personal-first-push-complete',
-        async () => {
+        async (event) => {
           // Latch the done flag so the unified bar treats the personal
           // slot as 100% filled while the runner spins up. Don't clear
           // personalFilesTotal/Done — leaving them in place keeps the
           // file-level caption visible until the runner takes over with
           // its own caption.
           personalFirstPushDone = true;
+          // Credit the walker's REAL uploads — the only place the personal
+          // phase reports actual transfers (per-file progress events fire
+          // for every examined file, skips included, and count as 0).
+          syncFilesProgressed += transferCountDelta({
+            kind: 'personal-first-push-complete',
+            filesUploaded: event.payload.filesUploaded,
+          });
         }
       )
     );
