@@ -116,9 +116,14 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// Instant-sync OFF stays poll-only: the remote→local pull runs on the 10-minute
 /// cadence and a local push waits for the next pass — there is no second-by-second
-/// upload of local edits. (The remote→local pull is ALWAYS poll-driven for now —
-/// the real-time pull-on-event receiver is dormant until the server-side per-
-/// client queue is provisioned — so the 10-minute poll stays regardless.)
+/// upload of local edits. (The remote→local pull is poll-driven for most users.
+/// The server side shipped in hq-pro US-015/US-016 — `POST /v1/sync/subscribe`
+/// mints a per-device SQS queue and vends scoped receive credentials — and as
+/// of hq-cloud ≥6.3.1 the runner brings up real event-driven pull INSIDE
+/// `--event-push` for accounts enrolled in its Phase 3 rollout gate
+/// (`resolveEventSync`, exact-email allowlist + `HQ_SYNC_EVENT_SYNC` override);
+/// no new menubar flag is involved. The 10-minute poll stays regardless, as
+/// the correctness backstop.)
 /// Conflict policy is `keep` (skip-and-surface) — local
 /// edits win and the conflict store routes them through the existing modal so
 /// auto-pull never clobbers an in-progress resolution.
