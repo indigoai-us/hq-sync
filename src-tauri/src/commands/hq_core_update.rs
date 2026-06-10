@@ -225,10 +225,12 @@ const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 ///
 /// Shape mirrors `hq_core_staging::run_replace_from_staging`:
 ///   1. Resolve the HQ folder via the standard 4-tier resolver. Bail if it
-///      isn't a valid HQ root (missing `companies/` or `personal/`) — the
-///      rescue script depends on `personal/` as the drift override target,
-///      so failing fast here gives a clean error instead of an opaque
-///      bash exit-3.
+///      isn't a valid HQ root (`looks_like_hq_root`: `companies/` plus one of
+///      `.claude/`, `core/`, or `personal/`) so we fail fast with a clean
+///      error instead of an opaque rescue exit-3. Note this must NOT require
+///      `personal/` — a faithful v14.0.0 install has none (rescue creates it
+///      as the drift override target), and requiring it blocked every
+///      v14.0.0 → v15 update (DEV-1741).
 ///   2. Refetch the latest release tag from GitHub. We don't trust the
 ///      frontend-supplied value — it may be stale (last background check
 ///      ran 6h ago) and the operation is heavyweight enough that the
@@ -249,9 +251,9 @@ const PROD_HQ_CORE_REPO: &str = "indigoai-us/hq-core";
 pub async fn install_hq_core_update(
 ) -> Result<crate::commands::hq_core_staging::RescueRunResult, String> {
     let hq_folder = crate::commands::hq_core_staging::resolve_hq_folder();
-    if !hq_folder.join("companies").is_dir() || !hq_folder.join("personal").is_dir() {
+    if !crate::commands::hq_core_staging::looks_like_hq_root(&hq_folder) {
         return Err(format!(
-            "HQ folder at {} is missing companies/ or personal/ (not a valid HQ root)",
+            "HQ folder at {} is not a valid HQ root (need companies/ plus one of .claude/, core/, or personal/)",
             hq_folder.display()
         ));
     }
