@@ -329,6 +329,14 @@ pub struct SyncCompanyFirstPushFailedEvent {
 // ── Personal first-push events ────────────────────────────────────────────────
 
 pub const EVENT_SYNC_PERSONAL_PROVISIONED: &str = "sync:personal-provisioned";
+/// Scan-phase liveness — emitted once per file the personal first-push
+/// walker EXAMINES (skips included) while it builds the upload plan.
+/// Carries walk totals; never a transfer signal. The UI may show the
+/// current path but must not feed these counts into "x of N files".
+pub const EVENT_SYNC_PERSONAL_FIRST_PUSH_SCAN: &str = "sync:personal-first-push-scan";
+/// Upload-phase progress — emitted once per file in the upload plan.
+/// `files_total` is the plan (changed-file) count, the honest denominator
+/// for the popover's "x of N files" caption.
 pub const EVENT_SYNC_PERSONAL_FIRST_PUSH_PROGRESS: &str = "sync:personal-first-push-progress";
 pub const EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE: &str = "sync:personal-first-push-complete";
 pub const EVENT_SYNC_PERSONAL_SKIPPED_OWNERSHIP_MISMATCH: &str =
@@ -347,6 +355,15 @@ pub const EVENT_SYNC_TOTALS: &str = "sync:totals";
 pub struct SyncPersonalProvisionedEvent {
     pub person_uid: String,
     pub bucket_name: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncPersonalFirstPushScanEvent {
+    pub person_uid: String,
+    pub files_scanned: usize,
+    pub files_total: usize,
+    pub current_file: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

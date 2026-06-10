@@ -945,11 +945,37 @@
     );
 
     // ── Personal-first-push events ────────────────────────────────────────
-    // The in-process Rust personal first-push fires its own progress events
-    // (not routed through the runner's sync:progress channel) and carries
-    // an upfront filesTotal — we feed both into the live-progress card so
-    // the personal phase shows "234 of 1,247 files" while the (unknown-
-    // total) runner phase shows just "234 files synced".
+    // The in-process Rust personal first-push runs in two phases. Scan:
+    // hash every personal-vault file against the journal to build the
+    // upload plan. Upload: push exactly that plan. Each phase has its own
+    // event so the caption denominator is the CHANGED count, not the walk
+    // size — feeding walk totals into the caption made a 1-file delta read
+    // "x of 2,877 files".
+
+    // Scan-phase liveness: fires per file EXAMINED (skips included).
+    // Surface the current path so the popover isn't frozen during the hash
+    // pass, but feed NOTHING into the file counters.
+    unlisteners.push(
+      await listen<{
+        personUid: string;
+        filesScanned: number;
+        filesTotal: number;
+        currentFile: string | null;
+      }>('sync:personal-first-push-scan', async (event) => {
+        syncState = 'syncing';
+        if (event.payload.currentFile) {
+          syncProgress = {
+            company: 'personal',
+            path: event.payload.currentFile,
+            bytes: 0,
+          };
+        }
+      })
+    );
+
+    // Upload-phase progress: fires per file in the upload plan, with
+    // filesTotal = plan (changed-file) size — the honest denominator for
+    // the "x of N files" caption.
     unlisteners.push(
       await listen<{
         personUid: string;
@@ -966,9 +992,10 @@
             path: event.payload.currentFile,
             bytes: 0, // personal-first-push doesn't carry per-file bytes
           };
-          // The walker emits this per file EXAMINED (skips included) — a
-          // liveness signal, not a transfer. Contributes 0 to the counter;
-          // real personal uploads are credited on the complete event below.
+          // Counted 0 here even though these are now real uploads — the
+          // counter credit comes once from filesUploaded on the complete
+          // event below, so counting both would double. (Policy lives in
+          // lib/transfer-count.ts.)
           syncFilesProgressed += transferCountDelta({
             kind: 'personal-first-push-progress',
             currentFile: event.payload.currentFile,
