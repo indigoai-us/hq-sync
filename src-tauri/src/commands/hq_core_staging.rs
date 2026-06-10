@@ -514,6 +514,25 @@ pub(crate) fn resolve_hq_folder() -> std::path::PathBuf {
     )
 }
 
+/// True when `folder` looks like a real HQ root, guarding the rescue/update
+/// paths against operating on an unrelated directory.
+///
+/// Anchors on `companies/` (present and preserved on every HQ install) plus at
+/// least one core scaffold marker — ANY of `.claude/`, `core/`, or `personal/`.
+/// We accept any one because the layout drifted across releases: a faithful
+/// v14.0.0 install ships NEITHER `personal/` (introduced in v15) NOR `core/`
+/// (the v15 scaffold home) — only `.claude/`. The old check required
+/// `companies/` AND `personal/`, which aborted every v14.0.0 user before the
+/// rescue could run, leaving them with no upgrade path to v15 (DEV-1741).
+/// `.claude/` exists on every release from v14 through v15, so this admits the
+/// full upgrade range while still rejecting a directory that is not an HQ root.
+pub(crate) fn looks_like_hq_root(folder: &std::path::Path) -> bool {
+    folder.join("companies").is_dir()
+        && (folder.join(".claude").is_dir()
+            || folder.join("core").is_dir()
+            || folder.join("personal").is_dir())
+}
+
 /// Build the base command that runs the drift-preserving rescue via
 /// hq-cloud's `hq-rescue` bin, pinned to `HQ_CLOUD_VERSION` — the same
 /// npx-package mechanism the sync runner uses (see `commands::sync`). This
@@ -581,9 +600,9 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
     let token = resolve_gh_token()
         .ok_or_else(|| "no GitHub token available (gh auth token failed)".to_string())?;
     let hq_folder = resolve_hq_folder();
-    if !hq_folder.join("companies").is_dir() || !hq_folder.join("personal").is_dir() {
+    if !looks_like_hq_root(&hq_folder) {
         return Err(format!(
-            "HQ folder at {} is missing companies/ or personal/ (not a valid HQ root)",
+            "HQ folder at {} is not a valid HQ root (need companies/ plus one of .claude/, core/, or personal/)",
             hq_folder.display()
         ));
     }
@@ -662,6 +681,43 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression for DEV-1741: the HQ-root gate must admit a faithful v14.0.0
+    /// install — `companies/` + `.claude/` but NO `personal/` and NO `core/` —
+    /// while still rejecting a directory that is not an HQ root.
+    #[test]
+    fn looks_like_hq_root_admits_v14_and_rejects_non_hq() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mk = |name: &str, dirs: &[&str]| {
+            let root = tmp.path().join(name);
+            for d in dirs {
+                std::fs::create_dir_all(root.join(d)).unwrap();
+            }
+            root
+        };
+
+        // Faithful v14.0.0: companies/ + .claude/, no personal/, no core/.
+        let v14 = mk("v14", &["companies", ".claude", "repos", "workspace"]);
+        assert!(!v14.join("personal").is_dir());
+        assert!(!v14.join("core").is_dir());
+        assert!(looks_like_hq_root(&v14), "v14.0.0 root must be admitted");
+
+        // v15: companies/ + core/ + personal/.
+        let v15 = mk("v15", &["companies", ".claude", "core", "personal"]);
+        assert!(looks_like_hq_root(&v15));
+
+        // core-only marker is enough alongside companies/.
+        let core_only = mk("coreonly", &["companies", "core"]);
+        assert!(looks_like_hq_root(&core_only));
+
+        // companies/ with no scaffold marker -> not an HQ root.
+        let bare = mk("bare", &["companies"]);
+        assert!(!looks_like_hq_root(&bare));
+
+        // marker but no companies/ -> not an HQ root.
+        let no_co = mk("nocompanies", &[".claude", "core", "personal"]);
+        assert!(!looks_like_hq_root(&no_co));
+    }
 
     fn idx() -> StagingIndex {
         let mut main = BTreeMap::new();
