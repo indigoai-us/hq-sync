@@ -151,9 +151,12 @@ describe('desktop-alt Board surface (US-007)', () => {
     const sidebar = readRepoFile('src/desktop-alt/DesktopSidebar.svelte');
 
     // Route kind union no longer carries 'board' (Library was added alongside
-    // the Sync/Meetings primaries — see the Library surface — and the admin-only
-    // Moderation route was added after it, default-deny — see the Moderation nav).
-    expect(route).toContain("'sync' | 'meetings' | 'library' | 'moderation' | 'company'");
+    // the Sync/Meetings primaries — see the Library surface; the admin-only
+    // Moderation route was added after it, default-deny — see the Moderation nav;
+    // and Messages (US-019) sits at ⌘3 right after Meetings — see route.ts).
+    expect(route).toContain(
+      "'sync' | 'meetings' | 'messages' | 'library' | 'moderation' | 'company'",
+    );
     expect(route).not.toContain("kind: 'board' | 'sync'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");
