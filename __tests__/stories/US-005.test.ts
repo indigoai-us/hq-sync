@@ -11,10 +11,6 @@ const sourcesList = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/components/SourcesList.svelte'),
   'utf8',
 );
-const attentionPanel = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/AttentionPanel.svelte'),
-  'utf8',
-);
 const syncModel = readFileSync(resolve(process.cwd(), 'src/desktop-alt/lib/sync-model.ts'), 'utf8');
 const appShell = readFileSync(resolve(process.cwd(), 'src/App.svelte'), 'utf8');
 const cognitoCommands = readFileSync(
@@ -63,7 +59,7 @@ describe('US-005: Alt Sync page wires to real sync state and events', () => {
   });
 
   it('renders sources, attention, and recent activity without demo fixtures', () => {
-    const combined = normalize(`${syncPage}\n${sourcesList}\n${attentionPanel}\n${syncModel}`);
+    const combined = normalize(`${syncPage}\n${sourcesList}\n${syncModel}`);
 
     expect(combined).toContain('No syncable workspaces found.');
     expect(combined).toContain('No sync events yet');
