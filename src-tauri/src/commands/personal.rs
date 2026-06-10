@@ -83,6 +83,24 @@ pub(crate) const PERSONAL_VAULT_EXCLUDED_TOP_LEVEL: &[&str] = &[
     "workspace",
 ];
 
+/// Journal slug for the personal vault. MUST match `PERSONAL_VAULT_JOURNAL_SLUG`
+/// in `@indigoai-us/hq-cloud` (`src/journal.ts` = `"__hq_personal_vault__"`).
+///
+/// The steady-state runner journals the personal vault under this slug. An
+/// older layout used the bare `"personal"` slug (the `companies/personal`
+/// company journal); hq-cloud's `migratePersonalVaultJournal()` renames that
+/// file to this slug on the first runner sync, and the JS CLI was updated to
+/// read/write it (see `hq-cli` cloud.ts `PERSONAL_VAULT_JOURNAL_SLUG`).
+///
+/// This Rust personal-push planner + uploader were left reading the legacy
+/// `"personal"` journal, so they judged file currency against a STALE,
+/// runner-abandoned baseline — flagging already-synced files as "changed" and
+/// re-uploading the local (often older) copy over a newer cloud object with no
+/// remote-currency check. That regressed the personal vault on idle devices
+/// (CloudTrail-confirmed, 2026-06-10). Reading the same slug the runner writes
+/// makes the skip-unchanged decision correct again.
+pub(crate) const PERSONAL_VAULT_JOURNAL_SLUG: &str = "__hq_personal_vault__";
+
 /// True when a relative path (relative to hq_root, forward-slash separators)
 /// is part of the personal vault — i.e. its top-level segment is NOT in
 /// `PERSONAL_VAULT_EXCLUDED_TOP_LEVEL`. Empty paths return false (no top
@@ -114,7 +132,10 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
     let mut to_upload: u64 = 0;
 
     // ── Personal allowlist (.claude, knowledge, policies, projects) ───────
-    let personal_journal = crate::util::journal::read_journal("personal")
+    // Read the SAME journal slug the steady-state runner writes
+    // (`__hq_personal_vault__`), not the legacy `"personal"` slug — otherwise
+    // the count reflects a stale baseline. See PERSONAL_VAULT_JOURNAL_SLUG.
+    let personal_journal = crate::util::journal::read_journal(PERSONAL_VAULT_JOURNAL_SLUG)
         .unwrap_or_default();
     for entry in WalkDir::new(hq_root).into_iter().filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
@@ -339,7 +360,9 @@ async fn upload_with_retry(
 // ── Core upload algorithm ─────────────────────────────────────────────────────
 
 /// Walk `hq_root/`, applying the ignore filter and excluding `companies/` prefix.
-/// Slug is always `"personal"` → journal at state_dir/sync-journal.personal.json.
+/// Reads + writes the personal-vault journal under `PERSONAL_VAULT_JOURNAL_SLUG`
+/// (`__hq_personal_vault__`) — the same slug the steady-state runner uses — so
+/// currency decisions agree with the runner instead of a stale legacy journal.
 pub(crate) async fn run_personal_first_push<C, P, S>(
     hq_root: &Path,
     uploader: UploaderFn,
@@ -376,7 +399,12 @@ where
     let walk_total = file_paths.len();
     let mut uploaded = 0usize;
     let mut skipped = 0usize;
-    let mut journal = read_journal("personal")?;
+    // Currency baseline MUST be the runner's personal-vault journal
+    // (`__hq_personal_vault__`), not the legacy `"personal"` slug. Reading the
+    // stale legacy journal made `file_needs_upload` re-flag already-synced
+    // files and re-push older local copies over newer cloud objects. See
+    // PERSONAL_VAULT_JOURNAL_SLUG.
+    let mut journal = read_journal(PERSONAL_VAULT_JOURNAL_SLUG)?;
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     // Phase A — scan: hash every in-scope file against the journal to build
@@ -468,14 +496,14 @@ where
                     direction: Direction::Up,
                 },
             );
-            write_journal("personal", &journal)?;
+            write_journal(PERSONAL_VAULT_JOURNAL_SLUG, &journal)?;
             uploaded += 1;
         }
         on_progress(plan_total, plan_total, None);
     }
 
     journal.last_sync = now;
-    let _ = write_journal("personal", &journal);
+    let _ = write_journal(PERSONAL_VAULT_JOURNAL_SLUG, &journal);
 
     if let Some(e) = upload_err {
         return Err(e);
@@ -1283,6 +1311,73 @@ mod tests {
 
             assert_eq!(uploaded, 0, "second run must upload nothing");
             assert!(calls2.lock().unwrap().is_empty(), "no PutObject calls on re-run");
+        }
+    }
+
+    // (f) Regression — personal-vault rollback (2026-06-10). The push MUST judge
+    //     currency against the runner's `__hq_personal_vault__` journal, NOT the
+    //     legacy `"personal"` journal. A file already recorded as synced by the
+    //     runner must be SKIPPED even when a stale legacy `"personal"` journal
+    //     disagrees — otherwise the Rust path re-uploads the local (possibly
+    //     older) copy over a newer cloud object, regressing the vault. Pre-fix
+    //     this read the empty legacy journal and uploaded; post-fix it reads the
+    //     runner journal and skips.
+    #[tokio::test]
+    async fn test_personal_push_uses_runner_journal_slug_not_legacy() {
+        use crate::util::journal::SyncJournal;
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+
+        let rel = "knowledge/notes.md";
+        let content = b"already synced by the runner";
+        write_file(&root.join(rel), content);
+        let hash = format!("{:x}", Sha256::digest(content));
+
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+            // Runner's journal (`__hq_personal_vault__`): file already synced,
+            // hash matches what's on disk → should be skipped.
+            let mut runner = SyncJournal::default();
+            runner.files.insert(
+                rel.to_string(),
+                JournalEntry {
+                    hash: hash.clone(),
+                    size: content.len() as u64,
+                    synced_at: "2026-06-10T18:00:00Z".into(),
+                    direction: Direction::Down,
+                },
+            );
+            write_journal(PERSONAL_VAULT_JOURNAL_SLUG, &runner).unwrap();
+
+            // Stale legacy `"personal"` journal — empty. The PRE-FIX code read
+            // THIS and would re-upload the file; present here to prove the slug
+            // choice is exactly what decides skip-vs-reupload.
+            write_journal("personal", &SyncJournal::default()).unwrap();
+
+            let calls = Arc::new(Mutex::new(vec![]));
+            let (uploaded, _) = run_personal_first_push(
+                root,
+                make_uploader(calls.clone()),
+                |_, _, _| {},
+                |_, _, _| {},
+                |_, _| {},
+            )
+            .await
+            .unwrap();
+
+            std::env::remove_var("HQ_STATE_DIR");
+
+            assert_eq!(
+                uploaded, 0,
+                "file already in the runner journal must be skipped, not re-uploaded over a possibly-newer cloud object",
+            );
+            assert!(
+                calls.lock().unwrap().is_empty(),
+                "no PutObject when the runner journal says synced (no stale re-push)",
+            );
         }
     }
 
