@@ -14,9 +14,19 @@
   // company teammates) and, on click, loads that peer's thread into the shared
   // <Conversation> component. Requests and Channels are present but scaffolded
   // (empty/placeholder) — compose, request handling, and channels are later
-  // stories. Visuals reuse the popover.css Liquid Glass tokens; this is a
-  // larger window so it can breathe while keeping the same language.
-  import '../../styles/popover.css';
+  // stories.
+  //
+  // Visuals adopt the desktop "Company OS" design language: the standalone
+  // Messages window consumes the SAME token layer as the desktop window via
+  // `desktop-alt.css` (which `@import`s the canonical `popover.css` primitives
+  // and adds the desktop alias layer + 13px type ramp, scoped to
+  // `html[data-window='messages']` alongside `desktop-alt`). The Geist/Inter
+  // faces are bundled offline here so the window renders the real type rather
+  // than a system fallback. See DESIGN.md → "Big-window type & chrome".
+  import '@fontsource-variable/inter/wght.css';
+  import '@fontsource-variable/inter-tight/wght.css';
+  import '@fontsource-variable/geist-mono/wght.css';
+  import '../../desktop-alt/styles/desktop-alt.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
@@ -472,35 +482,35 @@
 </div>
 
 <style>
-  :global([data-window='messages'] html),
-  :global([data-window='messages'] body) {
-    margin: 0;
-    padding: 0;
-    background: #0d0d10;
-    color-scheme: dark;
-  }
+  /* The Messages window adopts the desktop "Company OS" language: monochrome
+     glass surfaces layered by alpha, ONE 13px type size with 11px monospace
+     ALL-CAPS micro-labels, hierarchy by weight + the grey/white split, hairline
+     borders, square-ish corners, and the Indigo accent reserved for the
+     active/selected row + focus ring only. Tokens come from the shared desktop
+     alias layer (desktop-alt.css, scoped to data-window='messages'). */
 
   .messages-window {
     display: flex;
     width: 100vw;
     height: 100vh;
     box-sizing: border-box;
-    background: var(--popover-bg, #14141a);
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg-gradient);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    letter-spacing: -0.006em;
     overflow: hidden;
   }
 
   /* ── Left rail ──────────────────────────────────────────────────────── */
 
   .rail {
-    width: 248px;
+    width: 240px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    border-right: 1px solid var(--border);
+    background: var(--surface-rail);
     min-height: 0;
   }
 
@@ -508,115 +518,140 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 0.5rem;
-    padding: 1rem 1.25rem 0.5rem;
+    gap: var(--space-2);
+    padding: var(--space-4) var(--space-4) var(--space-3);
     flex-shrink: 0;
   }
 
   .rail-header h1 {
     margin: 0;
-    font-size: 0.9375rem;
+    font-family: var(--font-display);
+    font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    letter-spacing: -0.01em;
+    color: var(--fg);
   }
 
   .new-message-btn {
     flex-shrink: 0;
-    border: 1px solid rgba(120, 170, 255, 0.32);
-    background: rgba(120, 170, 255, 0.16);
-    color: #dce8ff;
-    font-family: inherit;
-    font-size: 0.6875rem;
-    font-weight: 600;
-    padding: 0.25rem 0.5rem;
-    border-radius: 7px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface-raise);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
     cursor: pointer;
-    transition: background-color 0.12s ease;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
   }
 
   .new-message-btn:hover {
-    background: rgba(120, 170, 255, 0.28);
+    background: var(--row-hover);
+    border-color: var(--accent);
+  }
+
+  .new-message-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   .segments {
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
-    padding: 0.25rem 0.625rem 0.5rem;
+    gap: 1px;
+    padding: 0 var(--space-3) var(--space-3);
     flex-shrink: 0;
   }
 
   .segment {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--space-2);
     width: 100%;
+    height: 30px;
     text-align: left;
-    padding: 0.4375rem 0.625rem;
+    padding: 0 var(--space-2) 0 calc(var(--space-3) + 6px);
     border: none;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
-    color: var(--popover-text-muted, #a0a0b0);
-    font-family: inherit;
-    font-size: 0.8125rem;
-    font-weight: 500;
+    color: var(--muted);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    font-weight: 400;
     cursor: pointer;
-    transition: background-color 0.12s ease, color 0.12s ease;
+    transition:
+      background-color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1),
+      color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
   .segment:hover {
-    background: rgba(255, 255, 255, 0.05);
-    color: var(--popover-text, #e8e8ee);
+    background: var(--row-hover);
+    color: var(--fg);
   }
 
+  /* Active nav cue mirrors the desktop sidebar: a restrained row-active surface
+     plus a 4px Indigo dot in the left gutter — not a filled accent pill. */
   .segment.active {
-    background: rgba(255, 255, 255, 0.09);
-    color: var(--popover-text-heading, #ffffff);
+    background: var(--row-active);
+    color: var(--fg);
+    font-weight: 500;
   }
 
+  .segment.active::before {
+    content: '';
+    position: absolute;
+    left: var(--space-2);
+    top: 50%;
+    width: 4px;
+    height: 4px;
+    margin-top: -2px;
+    border-radius: 999px;
+    background: var(--accent);
+  }
+
+  .segment:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: -2px;
+  }
+
+  /* Request count: a subtle neutral pill that marks state (count), not
+     decoration. Monospace tabular numerals, no stoplight color. */
   .segment-badge {
     margin-left: auto;
-    min-width: 1.125rem;
-    height: 1.125rem;
-    padding: 0 0.3125rem;
+    min-width: 18px;
+    height: 16px;
+    padding: 0 var(--space-1);
     box-sizing: border-box;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: 999px;
-    font-size: 0.625rem;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
     font-weight: 600;
     line-height: 1;
-    background: rgba(255, 176, 102, 0.28);
-    color: #ffd9b0;
+    font-variant-numeric: tabular-nums;
+    background: var(--surface-raise);
+    color: var(--muted-2);
   }
 
   .rail-body {
     flex: 1;
     overflow-y: auto;
     min-height: 0;
-    padding: 0.25rem 0.5rem 0.75rem;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
-  }
-
-  .rail-body::-webkit-scrollbar {
-    width: 6px;
-  }
-
-  .rail-body::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.12);
-    border-radius: 3px;
+    padding: var(--space-1) var(--space-2) var(--space-3);
   }
 
   .rail-status {
-    margin: 0.5rem 0.625rem;
-    font-size: 0.75rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    margin: var(--space-2) var(--space-3);
+    font-size: var(--text-base);
+    color: var(--muted);
   }
 
   .rail-error {
-    color: #ff9b9b;
+    color: var(--red);
   }
 
   .contact-list {
@@ -625,45 +660,67 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0.125rem;
+    gap: 1px;
   }
 
   .contact-row {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 0.5625rem;
+    gap: var(--space-2);
     width: 100%;
     text-align: left;
-    padding: 0.4375rem 0.5rem;
+    padding: var(--space-2) var(--space-2) var(--space-2) calc(var(--space-2) + 2px);
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     background: transparent;
     color: inherit;
-    font-family: inherit;
+    font-family: var(--font-sans);
     cursor: pointer;
-    transition: background-color 0.12s ease;
+    transition: background-color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
   .contact-row:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--row-hover);
   }
 
+  /* Selected conversation: restrained row-active surface + a 2px Indigo edge —
+     the desktop "active row" treatment, accent kept to a hairline. */
   .contact-row.active {
-    background: rgba(120, 170, 255, 0.16);
+    background: var(--row-active);
+  }
+
+  .contact-row.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: 999px;
+    background: var(--accent);
+  }
+
+  .contact-row:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: -2px;
   }
 
   .contact-avatar {
     flex-shrink: 0;
-    width: 1.75rem;
-    height: 1.75rem;
-    border-radius: 50%;
+    width: 26px;
+    height: 26px;
+    border-radius: 7px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 255, 255, 0.1);
-    color: var(--popover-text, #e8e8ee);
-    font-size: 0.625rem;
+    background: var(--surface-raise);
+    border: 1px solid var(--border);
+    color: var(--muted-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
     font-weight: 600;
+    letter-spacing: 0.02em;
   }
 
   .contact-meta {
@@ -673,17 +730,18 @@
   }
 
   .contact-name {
-    font-size: 0.8125rem;
-    font-weight: 500;
-    color: var(--popover-text, #e8e8ee);
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .contact-sub {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #8a8a98);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -692,29 +750,29 @@
   .request-list {
     list-style: none;
     margin: 0;
-    padding: 0.25rem 0.125rem 0.5rem;
+    padding: var(--space-1) 0 var(--space-2);
     display: flex;
     flex-direction: column;
-    gap: 0.625rem;
+    gap: var(--space-2);
   }
 
   .segment-empty {
-    padding: 1.25rem 0.875rem;
+    padding: var(--space-5) var(--space-3);
     text-align: center;
   }
 
   .segment-empty-title {
-    margin: 0 0 0.375rem;
-    font-size: 0.8125rem;
+    margin: 0 0 var(--space-1);
+    font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text, #e8e8ee);
+    color: var(--fg);
   }
 
   .segment-empty-sub {
     margin: 0;
-    font-size: 0.75rem;
-    line-height: 1.45;
-    color: var(--popover-text-muted, #8a8a98);
+    font-size: var(--text-base);
+    line-height: 1.5;
+    color: var(--muted);
   }
 
   /* ── Right conversation pane ────────────────────────────────────────── */
@@ -732,30 +790,33 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 2rem;
+    padding: var(--space-6);
   }
 
   .pane-empty p {
     margin: 0;
-    font-size: 0.8125rem;
-    color: var(--popover-text-muted, #8a8a98);
+    font-size: var(--text-base);
+    color: var(--muted);
     text-align: center;
   }
 
   .pane-header {
     display: flex;
     align-items: baseline;
-    gap: 0.5rem;
-    padding: 1rem 1.25rem 0.75rem;
-    border-bottom: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.06));
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5) var(--space-3);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-panel);
     flex-shrink: 0;
   }
 
   .pane-header h2 {
     margin: 0;
-    font-size: 0.9375rem;
+    font-family: var(--font-display);
+    font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    letter-spacing: -0.01em;
+    color: var(--fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -763,8 +824,9 @@
 
   .pane-sub {
     margin-left: auto;
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    color: var(--muted);
     white-space: nowrap;
   }
 </style>

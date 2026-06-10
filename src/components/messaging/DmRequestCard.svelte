@@ -118,34 +118,45 @@
 </article>
 
 <style>
+  /* Desktop "Company OS" language: a hairline-bordered card (deliberately NOT a
+     chat bubble) over a low-fill surface, one 13px size + 11px monospace caps
+     for the avatar + email, accent reserved for the primary Accept CTA + focus
+     ring. Decline is neutral; Block carries --red only to MARK the destructive
+     action, never decoration. No side-stripe borders. Tokens come from the
+     shared desktop alias layer (desktop-alt.css). */
+
   .request-card {
     display: flex;
     flex-direction: column;
-    gap: 0.625rem;
-    padding: 0.875rem;
-    border: 1px solid var(--popover-divider, rgba(255, 255, 255, 0.12));
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.035);
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raise);
+    font-family: var(--font-sans);
+    letter-spacing: -0.006em;
   }
 
   .request-head {
     display: flex;
     align-items: center;
-    gap: 0.625rem;
+    gap: var(--space-3);
     min-width: 0;
   }
 
   .request-avatar {
     flex-shrink: 0;
-    width: 2rem;
-    height: 2rem;
-    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    border-radius: 7px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: rgba(255, 176, 102, 0.22);
-    color: #ffd9b0;
-    font-size: 0.6875rem;
+    background: var(--surface-panel);
+    border: 1px solid var(--border);
+    color: var(--muted-2);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
     font-weight: 600;
   }
 
@@ -156,17 +167,18 @@
   }
 
   .request-name {
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 600;
-    color: var(--popover-text-heading, #ffffff);
+    color: var(--fg);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .request-email {
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #8a8a98);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    color: var(--muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -174,57 +186,58 @@
 
   .request-hint {
     margin: 0;
-    font-size: 0.6875rem;
-    color: var(--popover-text-muted, #a0a0b0);
+    font-size: var(--text-base);
+    color: var(--muted);
   }
 
   .request-hint strong {
-    color: var(--popover-text, #e8e8ee);
+    color: var(--fg);
     font-weight: 600;
   }
 
   .request-message {
     margin: 0;
-    padding: 0.5rem 0.75rem;
-    border-left: 2px solid rgba(255, 255, 255, 0.18);
-    border-radius: 0 6px 6px 0;
-    background: rgba(255, 255, 255, 0.04);
-    font-size: 0.8125rem;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-panel);
+    font-size: var(--text-base);
     line-height: 1.45;
-    color: var(--popover-text-muted, #b8b8c4);
+    color: var(--muted-2);
     white-space: pre-wrap;
     word-break: break-word;
   }
 
   .request-no-message {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     font-style: italic;
-    color: var(--popover-text-muted, #8a8a98);
+    color: var(--muted);
   }
 
   .request-error {
     margin: 0;
-    font-size: 0.75rem;
-    color: #ff9b9b;
+    font-size: var(--text-sm);
+    color: var(--red);
   }
 
   .request-actions {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
   }
 
   .action {
     flex: 1;
-    padding: 0.4375rem 0.5rem;
-    border-radius: 8px;
+    padding: var(--space-2);
+    border-radius: var(--radius-sm);
     border: 1px solid transparent;
-    font-family: inherit;
-    font-size: 0.75rem;
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     transition:
       background-color 0.12s ease,
+      filter 0.12s ease,
       opacity 0.12s ease;
   }
 
@@ -233,33 +246,38 @@
     opacity: 0.55;
   }
 
+  .action:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+
   .action-accept {
-    background: rgba(120, 170, 255, 0.2);
-    border-color: rgba(120, 170, 255, 0.4);
-    color: #dce8ff;
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
   }
 
   .action-accept:hover:not(:disabled) {
-    background: rgba(120, 170, 255, 0.32);
+    filter: brightness(1.1);
   }
 
   .action-decline {
-    background: rgba(255, 255, 255, 0.06);
-    border-color: rgba(255, 255, 255, 0.14);
-    color: var(--popover-text, #e8e8ee);
+    background: var(--surface-raise);
+    border-color: var(--border-strong);
+    color: var(--fg);
   }
 
   .action-decline:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.12);
+    background: var(--row-hover);
   }
 
   .action-block {
-    background: rgba(255, 107, 107, 0.14);
-    border-color: rgba(255, 107, 107, 0.34);
-    color: #ffb0b0;
+    background: transparent;
+    border-color: var(--border-strong);
+    color: var(--red);
   }
 
   .action-block:hover:not(:disabled) {
-    background: rgba(255, 107, 107, 0.24);
+    background: var(--row-hover);
   }
 </style>

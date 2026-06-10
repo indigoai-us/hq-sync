@@ -27,13 +27,23 @@
 
 html[data-window='desktop-alt'],
 html[data-window='desktop-alt'] body,
-html[data-window='desktop-alt'] #desktop-alt {
+html[data-window='desktop-alt'] #desktop-alt,
+html[data-window='messages'],
+html[data-window='messages'] body {
   width: 100%;
   height: 100%;
   margin: 0;
 }
 
-html[data-window='desktop-alt'] {
+/* The standalone Messages window adopts the same "Company OS" token layer as
+   the desktop window: it shares this alias layer + type ramp + Geist/Inter
+   families so the two surfaces read as one design system (DESIGN.md →
+   "Unified desktop token set"). Only the token-defining and base-reset blocks
+   are shared here; the structural `.desktop-*` shell classes below stay
+   desktop-only. Component visuals for Messages live in their own
+   component-scoped <style> blocks. */
+html[data-window='desktop-alt'],
+html[data-window='messages'] {
   /* ---- Semantic alias layer (desktop vocabulary → canonical tokens) ----
    *
    * Dark-mode resolved values are byte-for-byte identical to the previous
@@ -125,7 +135,8 @@ html[data-window='desktop-alt'] {
   letter-spacing: -0.003em;
 }
 
-html[data-window='desktop-alt'] body {
+html[data-window='desktop-alt'] body,
+html[data-window='messages'] body {
   overflow: hidden;
   /* App body sits behind the window surface. */
   background: var(--bg-body);
@@ -136,7 +147,8 @@ html[data-window='desktop-alt'] body {
  * as the same monochrome-glass system under a light desktop. Neutral inversion
  * of the dark values above — no hue introduced. */
 @media (prefers-color-scheme: light) {
-  html[data-window='desktop-alt'] {
+  html[data-window='desktop-alt'],
+  html[data-window='messages'] {
     --bg: #f6f6f8;
     --bg-gradient: linear-gradient(155deg, #fbfbfc 0%, #f5f5f7 55%, #f1f1f4 100%);
     --bg-subtle: rgba(0, 0, 0, 0.02);
@@ -171,7 +183,8 @@ html[data-window='desktop-alt'] body {
  * reduced-transparency contract is satisfied by promoting the few alpha-based
  * surfaces to solid neutrals. Dark + light variants both covered. */
 @media (prefers-reduced-transparency: reduce) {
-  html[data-window='desktop-alt'] {
+  html[data-window='desktop-alt'],
+  html[data-window='messages'] {
     --border: rgba(255, 255, 255, 0.16);
     --border-strong: rgba(255, 255, 255, 0.22);
     --row-hover: #18181b;
@@ -180,7 +193,8 @@ html[data-window='desktop-alt'] body {
 }
 
 @media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
-  html[data-window='desktop-alt'] {
+  html[data-window='desktop-alt'],
+  html[data-window='messages'] {
     --border: rgba(0, 0, 0, 0.16);
     --border-strong: rgba(0, 0, 0, 0.22);
     --row-hover: #ededf0;
@@ -188,26 +202,31 @@ html[data-window='desktop-alt'] body {
   }
 }
 
-html[data-window='desktop-alt'] * {
+html[data-window='desktop-alt'] *,
+html[data-window='messages'] * {
   box-sizing: border-box;
 }
 
-/* Subtle dark scrollbars, scoped to the desktop-alt window. */
-html[data-window='desktop-alt'] ::-webkit-scrollbar {
+/* Subtle dark scrollbars, scoped to the desktop + messages windows. */
+html[data-window='desktop-alt'] ::-webkit-scrollbar,
+html[data-window='messages'] ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
 }
 
-html[data-window='desktop-alt'] ::-webkit-scrollbar-track {
+html[data-window='desktop-alt'] ::-webkit-scrollbar-track,
+html[data-window='messages'] ::-webkit-scrollbar-track {
   background: transparent;
 }
 
-html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb {
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb,
+html[data-window='messages'] ::-webkit-scrollbar-thumb {
   background: var(--scrollbar-thumb);
   border-radius: 3px;
 }
 
-html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover {
+html[data-window='desktop-alt'] ::-webkit-scrollbar-thumb:hover,
+html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
 }
 
