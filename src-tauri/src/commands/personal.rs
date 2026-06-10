@@ -459,9 +459,20 @@ async fn validate_cache_via_list(vault: &VaultClient, cache: &PersonEntityCache)
 /// returns empty — i.e. a brand-new account that has never synced before.
 /// Mirrors `vault-client.ts::ensureMyPersonEntity` so the auto-create path is
 /// identical in shape to the runner's claim-dance path.
+///
+/// Return semantics:
+///   * `Ok(Some(entity))` — created (or recovered an already-existing) person.
+///   * `Ok(None)` — the person already exists server-side (HTTP 409) but could
+///     not be resolved this cycle. This is BENIGN: the `hq-sync-runner` that
+///     follows owns the personal vault, so the caller should skip personal
+///     first-push quietly rather than surface a `sync:error`. Mirrors the TS
+///     runner's claim-dance, which tolerates an already-provisioned person
+///     ("claim-dance skipped — …") instead of treating it as a sync failure.
+///   * `Err(..)` — a REAL failure (5xx, network, auth, malformed token). These
+///     are NOT 409s and stay loud so genuine first-push breakage is reported.
 pub(crate) async fn create_person_entity_from_cognito(
     vault: &VaultClient,
-) -> Result<EntityInfo, String> {
+) -> Result<Option<EntityInfo>, String> {
     let tokens = crate::commands::cognito::read_tokens_from_file()?
         .ok_or_else(|| "no cached cognito tokens — sign in first".to_string())?;
     let id_token = tokens
@@ -500,17 +511,52 @@ pub(crate) async fn create_person_entity_from_cognito(
     };
 
     log("personal", &format!("auto-create person entity: slug={slug} name={display_name}"));
-    let result = vault
+    match vault
         .create_entity(&crate::commands::vault_client::CreateEntityInput {
             entity_type: "person".into(),
-            slug,
+            slug: slug.clone(),
             name: display_name,
             email: claims.email.clone(),
             owner_uid: Some(owner_sub),
         })
         .await
-        .map_err(|e| format!("create person entity: {e}"))?;
-    Ok(result)
+    {
+        Ok(entity) => Ok(Some(entity)),
+        // 409 = the person entity already exists. We only reach create at all
+        // when `list_entities_by_type("person")` returned empty, so an
+        // already-exists here means the list/create views disagreed this cycle
+        // (e.g. eventual-consistency or scoping skew). Recover the existing row
+        // by slug so first-push can still proceed; if it can't be resolved,
+        // return None so the caller skips quietly. Either way this is benign and
+        // must NOT surface as a user-facing "personal first-push failed" error.
+        Err(VaultClientError::Http { status: 409, .. }) => {
+            log(
+                "personal",
+                &format!("person entity already exists (409) — recovering by slug={slug}"),
+            );
+            match vault.find_entity_by_slug("person", &slug).await {
+                Ok(Some(existing)) => Ok(Some(existing)),
+                Ok(None) => {
+                    log(
+                        "personal",
+                        &format!("person entity exists (409) but not resolvable by slug={slug} — skipping personal first-push (runner will handle)"),
+                    );
+                    Ok(None)
+                }
+                Err(e) => {
+                    // Recovery lookup itself failed transiently. The person
+                    // still exists (we got a 409), so this remains benign —
+                    // skip quietly rather than report an error.
+                    log(
+                        "personal",
+                        &format!("person-entity recovery lookup failed after 409: {e} — skipping personal first-push"),
+                    );
+                    Ok(None)
+                }
+            }
+        }
+        Err(e) => Err(format!("create person entity: {e}")),
+    }
 }
 
 // ── Person resolution: cache → list+provision (no recursion) ─────────────────
@@ -521,20 +567,24 @@ pub(crate) async fn create_person_entity_from_cognito(
 /// Cache validation uses `validate_cache_via_list` exclusively — the by-slug
 /// route expects a Cognito sub / human identifier, not a UID like `prs_01HX...`.
 /// On transient vault errors the cached data is used optimistically.
+/// Returns `Ok(Some((person_uid, bucket_name)))` once resolved. Returns
+/// `Ok(None)` when the person entity already exists but can't be resolved this
+/// cycle (benign 409 — see `create_person_entity_from_cognito`); the caller
+/// skips personal first-push quietly in that case.
 async fn resolve_or_provision<R: tauri::Runtime + 'static>(
     app: &tauri::AppHandle<R>,
     vault: &VaultClient,
-) -> Result<(String, String), String> {
+) -> Result<Option<(String, String)>, String> {
     if let Some(cache) = read_cache() {
         match validate_cache_via_list(vault, &cache).await {
-            Ok(true) => return Ok((cache.person_uid, cache.bucket_name)),
+            Ok(true) => return Ok(Some((cache.person_uid, cache.bucket_name))),
             Ok(false) => {
                 // Entity confirmed absent from vault — invalidate cache
                 delete_cache();
             }
             Err(_) => {
                 // Transient error (5xx, network) — proceed optimistically with cached data
-                return Ok((cache.person_uid, cache.bucket_name));
+                return Ok(Some((cache.person_uid, cache.bucket_name)));
             }
         }
     }
@@ -564,7 +614,13 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
             // the user stuck — they had to do the setup dance externally.
             // After creation the rest of provisioning continues as for any
             // existing entity (provision_bucket, cache, return).
-            crate::commands::personal::create_person_entity_from_cognito(vault).await?
+            //
+            // `Ok(None)` here means the person already exists server-side (409)
+            // but couldn't be resolved — propagate the benign skip upward.
+            match crate::commands::personal::create_person_entity_from_cognito(vault).await? {
+                Some(entity) => entity,
+                None => return Ok(None),
+            }
         }
     };
 
@@ -591,7 +647,7 @@ async fn resolve_or_provision<R: tauri::Runtime + 'static>(
     };
     let _ = write_cache(&cache);
 
-    Ok((pick.uid, resolved_bucket))
+    Ok(Some((pick.uid, resolved_bucket)))
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -612,7 +668,29 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
     hq_root: &Path,
     uploader_override: Option<UploaderFn>,
 ) -> Result<(), String> {
-    let (person_uid, bucket_name) = resolve_or_provision(app, vault).await?;
+    let (person_uid, bucket_name) = match resolve_or_provision(app, vault).await? {
+        Some(p) => p,
+        None => {
+            // Benign: the person entity already exists but isn't resolvable this
+            // cycle (HTTP 409). Skip personal first-push quietly — the
+            // hq-sync-runner that follows owns the personal vault. Emit a
+            // diagnostic skip event (no frontend error surface) and return Ok so
+            // the user never sees a spurious "personal first-push failed".
+            let _ = app.emit(
+                EVENT_SYNC_PERSONAL_FIRST_PUSH_SKIPPED,
+                SyncPersonalFirstPushSkippedEvent {
+                    person_uid: String::new(),
+                    path: "personal".to_string(),
+                    reason: "person-entity-already-exists".to_string(),
+                },
+            );
+            log(
+                "personal",
+                "personal first-push skipped — person entity already exists (benign 409)",
+            );
+            return Ok(());
+        }
+    };
 
     // Obtain STS credentials via /sts/vend-self (never vend-child)
     let vend_result = match vault
@@ -792,6 +870,32 @@ mod tests {
             },
             "expiresAt": "2026-01-01T01:00:00Z"
         })
+    }
+
+    /// Writes a `~/.hq/cognito-tokens.json` (under the test's `HOME`) whose
+    /// id_token decodes to the given `sub` + `name`, so the auto-create person
+    /// path can derive a slug. With name="Test User" the derived slug is
+    /// "test-user". Returns the synthetic id_token for reference.
+    fn write_cognito_tokens(home: &Path, sub: &str, name: &str) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        let payload = serde_json::json!({ "sub": sub, "name": name }).to_string();
+        let b64 = URL_SAFE_NO_PAD.encode(payload.as_bytes());
+        let id_token = format!("hdr.{b64}.sig");
+        let json = serde_json::json!({
+            "accessToken": "atok",
+            "idToken": id_token,
+            "refreshToken": "rtok",
+            "expiresAt": 9_999_999_999_999i64,
+        });
+        let dir = home.join(".hq");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("cognito-tokens.json"),
+            serde_json::to_vec(&json).unwrap(),
+        )
+        .unwrap();
+        id_token
     }
 
     // (a) No bucket → ensure_personal_bucket_and_first_push provisions exactly once.
@@ -1251,6 +1355,200 @@ mod tests {
             upload_counter.load(Ordering::SeqCst),
             0,
             "no uploads must happen after ownership mismatch"
+        );
+    }
+
+    // (h) Regression (feedback_dd73b772 / feedback_b5bd30ee): the person entity
+    //     is already provisioned, but the list comes back empty this cycle, so
+    //     resolve_or_provision reaches create → server returns 409. The fix
+    //     recovers the existing entity by slug and resolves normally — the
+    //     benign already-exists must NOT surface as a "personal first-push
+    //     failed" error every sync.
+    #[tokio::test]
+    async fn test_create_409_recovered_by_slug_is_not_an_error() {
+        let server = MockServer::start().await;
+
+        // list returns empty → forces the create path
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "entities": [] })))
+            .mount(&server)
+            .await;
+        // create → 409 (already exists)
+        Mock::given(method("POST"))
+            .and(path("/entity"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({ "error": "already exists" })))
+            .mount(&server)
+            .await;
+        // recovery by slug returns the existing entity (bucket present → no provision)
+        Mock::given(method("GET"))
+            .and(path("/entity/by-slug/person/test-user"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "entity": person_entity_json("prs_existing", "test-user", Some("hq-vault-prs-existing"), "2026-01-01T00:00:00Z")
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/sts/vend-self"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(vend_self_ok()))
+            .mount(&server)
+            .await;
+
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let tmp_home = TempDir::new().unwrap();
+        let upload_counter = Arc::new(AtomicUsize::new(0));
+
+        let result = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            std::env::set_var("HOME", tmp_home.path());
+            write_cognito_tokens(tmp_home.path(), "sub-123", "Test User");
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = ensure_impl(&handle, &vault, tmp_hq.path(), Some(make_counter_uploader(upload_counter.clone()))).await;
+
+            std::env::remove_var("HQ_STATE_DIR");
+            std::env::remove_var("HOME");
+            r
+        };
+
+        assert!(
+            result.is_ok(),
+            "benign 409 (recovered by slug) must NOT surface as an error; got: {:?}",
+            result
+        );
+
+        // vend_self ran against the recovered entity → first-push proceeded.
+        let reqs = server.received_requests().await.unwrap();
+        let vend: Vec<_> = reqs.iter().filter(|r| r.url.path() == "/sts/vend-self").collect();
+        assert_eq!(vend.len(), 1, "vend_self must run once against the recovered entity");
+    }
+
+    // (i) Person exists (409) but is not resolvable by slug → benign skip:
+    //     ensure_impl returns Ok(()), emits a personal-first-push-skipped
+    //     diagnostic event, performs zero uploads, and never reaches vend_self.
+    #[tokio::test]
+    async fn test_create_409_unresolvable_skips_quietly() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "entities": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/entity"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({ "error": "already exists" })))
+            .mount(&server)
+            .await;
+        // recovery by slug 404s → unresolvable
+        Mock::given(method("GET"))
+            .and(path("/entity/by-slug/person/test-user"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({ "error": "not found" })))
+            .mount(&server)
+            .await;
+
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let tmp_home = TempDir::new().unwrap();
+        let upload_counter = Arc::new(AtomicUsize::new(0));
+        let skip_events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let skip_events_clone = skip_events.clone();
+
+        let result = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            std::env::set_var("HOME", tmp_home.path());
+            write_cognito_tokens(tmp_home.path(), "sub-123", "Test User");
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            app.listen(EVENT_SYNC_PERSONAL_FIRST_PUSH_SKIPPED, move |e| {
+                skip_events_clone.lock().unwrap().push(e.payload().to_string());
+            });
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = ensure_impl(&handle, &vault, tmp_hq.path(), Some(make_counter_uploader(upload_counter.clone()))).await;
+
+            std::env::remove_var("HQ_STATE_DIR");
+            std::env::remove_var("HOME");
+            r
+        };
+
+        assert!(
+            result.is_ok(),
+            "unresolvable benign 409 must NOT surface as an error; got: {:?}",
+            result
+        );
+        assert_eq!(
+            upload_counter.load(Ordering::SeqCst),
+            0,
+            "no uploads when personal first-push is skipped"
+        );
+        let evs = skip_events.lock().unwrap();
+        assert!(
+            evs.iter().any(|p| p.contains("person-entity-already-exists")),
+            "a personal-first-push-skipped event with the benign reason must be emitted; got: {:?}",
+            *evs
+        );
+        let reqs = server.received_requests().await.unwrap();
+        let vend: Vec<_> = reqs.iter().filter(|r| r.url.path() == "/sts/vend-self").collect();
+        assert_eq!(vend.len(), 0, "vend_self must not run on the skip path");
+    }
+
+    // (j) A REAL create failure (5xx) is NOT a benign 409 — it must still
+    //     surface loudly as an Err so genuine first-push breakage is reported.
+    #[tokio::test]
+    async fn test_create_5xx_still_surfaces_as_err() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/entity/by-type/person"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "entities": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/entity"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({ "error": "boom" })))
+            .mount(&server)
+            .await;
+
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let tmp_home = TempDir::new().unwrap();
+        let upload_counter = Arc::new(AtomicUsize::new(0));
+
+        let result = {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            std::env::set_var("HOME", tmp_home.path());
+            write_cognito_tokens(tmp_home.path(), "sub-123", "Test User");
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            let vault = VaultClient::new(&server.uri(), "tok");
+            let r = ensure_impl(&handle, &vault, tmp_hq.path(), Some(make_counter_uploader(upload_counter.clone()))).await;
+
+            std::env::remove_var("HQ_STATE_DIR");
+            std::env::remove_var("HOME");
+            r
+        };
+
+        assert!(
+            result.is_err(),
+            "a 5xx create failure must surface as Err (loud), not be swallowed"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("create person entity"),
+            "error should identify the create failure; got: {msg}"
+        );
+        assert_eq!(
+            upload_counter.load(Ordering::SeqCst),
+            0,
+            "no uploads on a hard create failure"
         );
     }
 
