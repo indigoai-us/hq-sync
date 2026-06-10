@@ -7,6 +7,8 @@
   // `onsend` callback. Visuals (bubble + composer CSS) live here so they travel
   // with the component.
   import { tick } from 'svelte';
+  import ReactionBar from './ReactionBar.svelte';
+  import { type ReactionMap } from '../../lib/reactions';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -60,6 +62,13 @@
     // When set, the root bubble whose `rootEventId` matches gets an "active
     // thread" highlight (the ThreadPanel for it is open).
     activeRootEventId?: string | null;
+    // Reactions (US-025). The host owns the reaction map (messageId → sorted
+    // aggregates) and the toggle. When `ontogglereaction` is set, a ReactionBar
+    // renders under every bubble (pills + a tap-visible add-reaction trigger).
+    // Hosts that don't support reactions (e.g. an invited-not-joined channel
+    // preview) simply omit the callback and no bar renders.
+    reactions?: ReactionMap;
+    ontogglereaction?: (messageId: string, emoji: string) => void;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -76,6 +85,8 @@
     onsend,
     onopenthread,
     activeRootEventId = null,
+    reactions = {},
+    ontogglereaction,
   }: Props = $props();
 
   let replyText = $state('');
@@ -214,6 +225,13 @@
             <span class="thread-affordance-time">· last {formatRelative(msg.lastReplyAt)}</span>
           {/if}
         </button>
+      {/if}
+      {#if ontogglereaction && !msg.pending}
+        <ReactionBar
+          messageId={msg.eventId}
+          reactions={reactions[msg.eventId]}
+          ontoggle={ontogglereaction}
+        />
       {/if}
       {#if msg.pending}
         <span class="dm-msg-pending">{msg.pendingLabel || 'Pending'}</span>

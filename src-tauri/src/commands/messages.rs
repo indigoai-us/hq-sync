@@ -697,6 +697,156 @@ pub async fn mark_channel_read(channel_id: String) -> Result<(), String> {
     Ok(())
 }
 
+// ── Reactions (US-025) ────────────────────────────────────────────────────────
+//
+// Emoji reactions on any message (DM, channel, or thread reply). Thin clients
+// over the hq-pro US-024 surface; all HTTP happens here in Rust (the webview
+// never holds the bearer). The `messageScope` is opaque to this layer — the
+// frontend builds it (`dm:{pairKey-or-peer}` | `chan:{channelId}`) and the
+// server keys the reactions partition by it. React authorization reuses the
+// message domain's read gate server-side (no new auth here).
+//
+// Realtime: a "reaction" wake arrives on the person topic and is folded into the
+// SINGLE DM poll path (`dm_notify::do_poll` → `poll_reactions`), which re-fetches
+// the open conversation's reactions and emits the `message:reaction` Tauri event
+// — there is NO parallel reaction poller.
+//
+//   `toggle_reaction` — POST (add) / DELETE (remove) /v1/notify/reactions
+//   `fetch_reactions` — GET /v1/notify/reactions?messageScope=&messageId=
+
+/// One emoji's aggregate on a single message, as returned by
+/// `GET /v1/notify/reactions`. `reacted_by_me` drives the highlighted pill +
+/// toggle direction in the UI. Mirrors the TS `ReactionAggregate`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReactionAggregate {
+    pub emoji: String,
+    #[serde(default)]
+    pub count: u32,
+    #[serde(default)]
+    pub reacted_by_me: bool,
+}
+
+/// The aggregate set for one message. The GET endpoint returns a bare array, so
+/// `fetch_reactions` deserializes into `Vec<ReactionAggregate>` directly; this
+/// wrapper is the per-message shape carried by the `message:reaction` event.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageReactions {
+    pub message_scope: String,
+    pub message_id: String,
+    pub reactions: Vec<ReactionAggregate>,
+}
+
+/// Build the `/v1/notify/reactions` mutation body. Identical shape for add
+/// (POST) and remove (DELETE): `{ messageScope, messageId, emoji }`. Pure so the
+/// wire shape is unit-testable.
+fn build_reaction_payload(message_scope: &str, message_id: &str, emoji: &str) -> serde_json::Value {
+    serde_json::json!({
+        "messageScope": message_scope,
+        "messageId": message_id,
+        "emoji": emoji,
+    })
+}
+
+/// Build the `GET /v1/notify/reactions` query URL. Pure + side-effect-free so
+/// the query shape is unit-testable; segments are minimally escaped (`esc_seg`)
+/// so a reserved char in the scope/id/emoji can't break the query.
+fn build_reactions_url(base_url: &str, message_scope: &str, message_id: &str) -> String {
+    format!(
+        "{}/v1/notify/reactions?messageScope={}&messageId={}",
+        base_url,
+        esc_seg(message_scope),
+        esc_seg(message_id),
+    )
+}
+
+/// Tauri command: add or remove the caller's reaction to a message (US-025).
+/// `add = true` → POST `/v1/notify/reactions` (idempotent conditional Put);
+/// `add = false` → DELETE the exact key. The UI toggles optimistically and
+/// reconciles on the `message:reaction` event, so this surfaces failures to the
+/// caller for rollback. `message_scope` is opaque (built by the frontend).
+#[tauri::command]
+pub async fn toggle_reaction(
+    message_scope: String,
+    message_id: String,
+    emoji: String,
+    add: bool,
+) -> Result<(), String> {
+    let scope = message_scope.trim();
+    let id = message_id.trim();
+    let e = emoji.trim();
+    if scope.is_empty() || id.is_empty() || e.is_empty() {
+        return Err("messageScope, messageId, and emoji must not be empty".to_string());
+    }
+
+    let (base, token) = auth_and_base("MESSAGES_REACTION").await?;
+    let url = format!("{base}/v1/notify/reactions");
+    let payload = build_reaction_payload(scope, id, e);
+
+    let client = build_client();
+    let req = if add {
+        client.post(&url)
+    } else {
+        client.delete(&url)
+    };
+    let resp = req
+        .header("authorization", format!("Bearer {token}"))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|err| {
+            log(LOG_TAG, &format!("MESSAGES_REACTION_NETWORK_FAIL {err}"));
+            format!("Network error: {err}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("MESSAGES_REACTION_ERROR status={status} add={add} msg={server_msg:?}"),
+        );
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Reaction failed (status {})", status.as_u16())));
+    }
+
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_REACTION_OK add={add} scope={scope} id={id} emoji={e}"),
+    );
+    Ok(())
+}
+
+/// Tauri command: fetch the aggregated reactions for one message (US-025).
+/// `GET /v1/notify/reactions?messageScope=&messageId=` → the per-emoji counts
+/// with `reactedByMe`. Used for the initial load of a conversation's reactions
+/// and as the truth source the `message:reaction` event re-fetches. Surfaces
+/// failures so the caller can keep its optimistic state.
+#[tauri::command]
+pub async fn fetch_reactions(
+    message_scope: String,
+    message_id: String,
+) -> Result<Vec<ReactionAggregate>, String> {
+    let scope = message_scope.trim();
+    let id = message_id.trim();
+    if scope.is_empty() || id.is_empty() {
+        return Err("messageScope and messageId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_REACTIONS_GET").await?;
+    let url = build_reactions_url(&base, scope, id);
+    let out: Vec<ReactionAggregate> = get_json(&url, &token, "MESSAGES_REACTIONS_GET").await?;
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_REACTIONS_GET_OK scope={scope} id={id} count={}", out.len()),
+    );
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,5 +984,74 @@ mod tests {
         assert_eq!(esc_seg("chn_abc123"), "chn_abc123");
         assert_eq!(esc_seg("a/b c"), "a%2Fb%20c");
         assert_eq!(esc_seg("q?x#y"), "q%3Fx%23y");
+    }
+
+    // ── Reactions (US-025) ────────────────────────────────────────────────────
+
+    #[test]
+    fn reaction_payload_carries_scope_id_emoji_only() {
+        let payload = build_reaction_payload("dm:prs_peer", "evt_1", "👍");
+        assert_eq!(payload["messageScope"], "dm:prs_peer");
+        assert_eq!(payload["messageId"], "evt_1");
+        assert_eq!(payload["emoji"], "👍");
+        // Exactly the three contract keys — add (POST) and remove (DELETE) share
+        // this body.
+        assert_eq!(payload.as_object().expect("object").len(), 3);
+    }
+
+    #[test]
+    fn reactions_url_escapes_scope_and_id() {
+        // Channel scope is URL-safe; a stray reserved char must still be escaped.
+        assert_eq!(
+            build_reactions_url("https://api.example.com", "chan:chn_1", "evt_9"),
+            "https://api.example.com/v1/notify/reactions?messageScope=chan:chn_1&messageId=evt_9"
+        );
+        assert_eq!(
+            build_reactions_url("https://api.example.com", "dm:a/b", "e?1"),
+            "https://api.example.com/v1/notify/reactions?messageScope=dm:a%2Fb&messageId=e%3F1"
+        );
+    }
+
+    #[test]
+    fn reaction_aggregate_deserializes_camel_case() {
+        // The GET endpoint returns a bare array of aggregates.
+        let json = r#"[
+            { "emoji": "👍", "count": 3, "reactedByMe": true },
+            { "emoji": "🎉", "count": 1, "reactedByMe": false }
+        ]"#;
+        let out: Vec<ReactionAggregate> = serde_json::from_str(json).expect("aggregates parse");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].emoji, "👍");
+        assert_eq!(out[0].count, 3);
+        assert!(out[0].reacted_by_me);
+        assert!(!out[1].reacted_by_me);
+    }
+
+    #[test]
+    fn reaction_aggregate_tolerates_missing_fields() {
+        // count/reactedByMe default so a sparse server row still parses.
+        let json = r#"{ "emoji": "🔥" }"#;
+        let a: ReactionAggregate = serde_json::from_str(json).expect("parses");
+        assert_eq!(a.emoji, "🔥");
+        assert_eq!(a.count, 0);
+        assert!(!a.reacted_by_me);
+    }
+
+    #[test]
+    fn message_reactions_serializes_camel_case_for_event() {
+        // The `message:reaction` event payload shape the frontend listens for.
+        let mr = MessageReactions {
+            message_scope: "dm:prs_x".to_string(),
+            message_id: "evt_1".to_string(),
+            reactions: vec![ReactionAggregate {
+                emoji: "👍".to_string(),
+                count: 2,
+                reacted_by_me: true,
+            }],
+        };
+        let v = serde_json::to_value(&mr).unwrap();
+        assert_eq!(v["messageScope"], "dm:prs_x");
+        assert_eq!(v["messageId"], "evt_1");
+        assert_eq!(v["reactions"][0]["reactedByMe"], true);
     }
 }
