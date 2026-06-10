@@ -22,10 +22,11 @@ use aws_sdk_s3::primitives::ByteStream;
 use crate::commands::vault_client::{EntityInfo, VaultClient, VaultClientError, VendSelfInput};
 use crate::util::logfile::log;
 use crate::events::{
-    SyncPersonalFirstPushCompleteEvent, SyncPersonalFirstPushProgressEvent,
+    SyncPersonalFirstPushCompleteEvent, SyncPersonalFirstPushProgressEvent, SyncPersonalFirstPushScanEvent,
     SyncPersonalFirstPushSkippedEvent, SyncPersonalProvisionedEvent,
     SyncPersonalSkippedOwnershipMismatchEvent,
     EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE, EVENT_SYNC_PERSONAL_FIRST_PUSH_PROGRESS,
+    EVENT_SYNC_PERSONAL_FIRST_PUSH_SCAN,
     EVENT_SYNC_PERSONAL_FIRST_PUSH_SKIPPED, EVENT_SYNC_PERSONAL_PROVISIONED,
     EVENT_SYNC_PERSONAL_SKIPPED_OWNERSHIP_MISMATCH,
 };
@@ -339,13 +340,15 @@ async fn upload_with_retry(
 
 /// Walk `hq_root/`, applying the ignore filter and excluding `companies/` prefix.
 /// Slug is always `"personal"` → journal at state_dir/sync-journal.personal.json.
-pub(crate) async fn run_personal_first_push<P, S>(
+pub(crate) async fn run_personal_first_push<C, P, S>(
     hq_root: &Path,
     uploader: UploaderFn,
+    on_scan: C,
     on_progress: P,
     on_skip: S,
 ) -> Result<(usize, usize), String>
 where
+    C: Fn(usize, usize, Option<String>),
     P: Fn(usize, usize, Option<String>),
     S: Fn(String, String),
 {
@@ -370,23 +373,29 @@ where
         file_paths.push(abs);
     }
 
-    let total = file_paths.len();
+    let walk_total = file_paths.len();
     let mut uploaded = 0usize;
     let mut skipped = 0usize;
     let mut journal = read_journal("personal")?;
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
+    // Phase A — scan: hash every in-scope file against the journal to build
+    // the upload plan. `on_scan` is a liveness signal carrying walk totals;
+    // the popover's "x of N files" denominator comes from `on_progress`
+    // below, which only ever carries the plan (changed-file) size — feeding
+    // the walk total there made a 1-file delta read "x of 2,877 files".
     let mut upload_err: Option<String> = None;
-    'upload: for (i, abs) in file_paths.into_iter().enumerate() {
+    let mut plan: Vec<(PathBuf, String)> = Vec::new();
+    'scan: for (i, abs) in file_paths.into_iter().enumerate() {
         let rel_key = match abs.strip_prefix(hq_root) {
             Ok(p) => p.to_string_lossy().replace('\\', "/"),
             Err(e) => {
                 upload_err = Some(format!("path strip error: {e}"));
-                break 'upload;
+                break 'scan;
             }
         };
 
-        on_progress(i, total, Some(rel_key.clone()));
+        on_scan(i, walk_total, Some(rel_key.clone()));
 
         if !IgnoreFilter::within_size_limit(&abs) {
             on_skip(rel_key.clone(), "exceeds 50MB limit".into());
@@ -395,13 +404,12 @@ where
         }
 
         let contents = match std::fs::read(&abs) {
-            Ok(c) => Bytes::from(c),
+            Ok(c) => c,
             Err(e) => {
                 upload_err = Some(format!("{}: {e}", abs.display()));
-                break 'upload;
+                break 'scan;
             }
         };
-        let size = contents.len() as u64;
         let digest = Sha256::digest(&contents);
         let sha256_hex = format!("{:x}", digest);
 
@@ -412,28 +420,59 @@ where
             }
         }
 
-        match upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await {
-            Ok(()) => {}
-            Err(e) => {
-                upload_err = Some(e);
-                break 'upload;
-            }
-        }
-
-        journal.files.insert(
-            rel_key.clone(),
-            JournalEntry {
-                hash: sha256_hex,
-                size,
-                synced_at: now.clone(),
-                direction: Direction::Up,
-            },
-        );
-        write_journal("personal", &journal)?;
-        uploaded += 1;
+        plan.push((abs, rel_key));
     }
+    on_scan(walk_total, walk_total, None);
 
-    on_progress(total, total, None);
+    // Phase B — upload exactly the plan. Files are re-read here rather than
+    // carried from the scan: holding the whole changed set in memory would
+    // pin the entire vault on a true first push. Re-hashing keeps the
+    // journal entry honest if a file changed between phases.
+    if upload_err.is_none() {
+        let plan_total = plan.len();
+        'upload: for (i, (abs, rel_key)) in plan.into_iter().enumerate() {
+            on_progress(i, plan_total, Some(rel_key.clone()));
+
+            let contents = match std::fs::read(&abs) {
+                Ok(c) => Bytes::from(c),
+                Err(e) => {
+                    upload_err = Some(format!("{}: {e}", abs.display()));
+                    break 'upload;
+                }
+            };
+            let size = contents.len() as u64;
+            let digest = Sha256::digest(&contents);
+            let sha256_hex = format!("{:x}", digest);
+
+            if let Some(entry) = journal.files.get(&rel_key) {
+                if entry.hash == sha256_hex {
+                    skipped += 1;
+                    continue;
+                }
+            }
+
+            match upload_with_retry(&rel_key, contents, &sha256_hex, &uploader).await {
+                Ok(()) => {}
+                Err(e) => {
+                    upload_err = Some(e);
+                    break 'upload;
+                }
+            }
+
+            journal.files.insert(
+                rel_key.clone(),
+                JournalEntry {
+                    hash: sha256_hex,
+                    size,
+                    synced_at: now.clone(),
+                    direction: Direction::Up,
+                },
+            );
+            write_journal("personal", &journal)?;
+            uploaded += 1;
+        }
+        on_progress(plan_total, plan_total, None);
+    }
 
     journal.last_sync = now;
     let _ = write_journal("personal", &journal);
@@ -764,6 +803,8 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
         }
     };
 
+    let app_scan = app.clone();
+    let person_uid_scan = person_uid.clone();
     let app_progress = app.clone();
     let person_uid_progress = person_uid.clone();
     let app_skip = app.clone();
@@ -773,6 +814,17 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
     let (files_uploaded, files_skipped) = run_personal_first_push(
         hq_root,
         uploader,
+        move |scanned, total, file| {
+            let _ = app_scan.emit(
+                EVENT_SYNC_PERSONAL_FIRST_PUSH_SCAN,
+                SyncPersonalFirstPushScanEvent {
+                    person_uid: person_uid_scan.clone(),
+                    files_scanned: scanned,
+                    files_total: total,
+                    current_file: file,
+                },
+            );
+        },
         move |done, total, file| {
             let _ = app_progress.emit(
                 EVENT_SYNC_PERSONAL_FIRST_PUSH_PROGRESS,
@@ -1040,7 +1092,7 @@ mod tests {
         {
             let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
-            let _ = run_personal_first_push(root, make_uploader(calls.clone()), |_, _, _| {}, |_, _| {}).await;
+            let _ = run_personal_first_push(root, make_uploader(calls.clone()), |_, _, _| {}, |_, _, _| {}, |_, _| {}).await;
             std::env::remove_var("HQ_STATE_DIR");
         }
 
@@ -1117,6 +1169,87 @@ mod tests {
         assert!(!is_personal_vault_path(""));
     }
 
+    // Regression: upload-phase progress totals must reflect the CHANGED-file
+    // plan, not the walk total. Pre-fix, on_progress fired once per file
+    // EXAMINED with total = every personal-vault file, so a re-run that only
+    // needed to move 1 of 2,877 files showed "x of 2,877 files" in the
+    // popover. The walker now scans first (on_scan, walk totals) and emits
+    // on_progress only for files in the upload plan, with the plan size as
+    // the denominator.
+    #[tokio::test]
+    async fn test_progress_total_is_changed_count_not_walk_count() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+
+        write_file(&root.join("knowledge/a.md"), b"alpha");
+        write_file(&root.join("knowledge/b.md"), b"bravo");
+        write_file(&root.join("knowledge/c.md"), b"charlie");
+
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+            // First run: all 3 are new → plan total 3.
+            let progress1: Arc<Mutex<Vec<(usize, usize, Option<String>)>>> =
+                Arc::new(Mutex::new(vec![]));
+            let p1 = progress1.clone();
+            run_personal_first_push(
+                root,
+                make_uploader(Arc::new(Mutex::new(vec![]))),
+                |_, _, _| {},
+                move |done, total, file| p1.lock().unwrap().push((done, total, file)),
+                |_, _| {},
+            )
+            .await
+            .unwrap();
+            assert!(
+                progress1.lock().unwrap().iter().all(|(_, total, _)| *total == 3),
+                "first run: every progress event must carry plan total 3; got {:?}",
+                progress1.lock().unwrap(),
+            );
+
+            // Touch ONE file. Re-run: walk still sees 3 files, but the plan
+            // is 1 — progress must say "of 1", never "of 3".
+            write_file(&root.join("knowledge/b.md"), b"bravo-changed");
+            let scans: Arc<Mutex<Vec<(usize, usize)>>> = Arc::new(Mutex::new(vec![]));
+            let s2 = scans.clone();
+            let progress2: Arc<Mutex<Vec<(usize, usize, Option<String>)>>> =
+                Arc::new(Mutex::new(vec![]));
+            let p2 = progress2.clone();
+            let (uploaded, _) = run_personal_first_push(
+                root,
+                make_uploader(Arc::new(Mutex::new(vec![]))),
+                move |done, total, _| s2.lock().unwrap().push((done, total)),
+                move |done, total, file| p2.lock().unwrap().push((done, total, file)),
+                |_, _| {},
+            )
+            .await
+            .unwrap();
+
+            std::env::remove_var("HQ_STATE_DIR");
+
+            assert_eq!(uploaded, 1, "only the touched file uploads");
+            let prog = progress2.lock().unwrap();
+            assert!(
+                prog.iter().all(|(_, total, _)| *total == 1),
+                "progress denominator must be the changed count (1), not the walk count (3); got {prog:?}",
+            );
+            assert!(
+                prog.iter()
+                    .filter_map(|(_, _, f)| f.as_deref())
+                    .all(|f| f == "knowledge/b.md"),
+                "progress must only fire for planned uploads; got {prog:?}",
+            );
+            // Scan liveness still reports walk totals (3) — separate channel.
+            assert!(
+                scans.lock().unwrap().iter().all(|(_, total)| *total == 3),
+                "scan events carry the walk total; got {:?}",
+                scans.lock().unwrap(),
+            );
+        }
+    }
+
     // (d) Re-run with journal populated → zero PutObject calls.
     //     Uses an allowlisted path (knowledge/) — pre-allowlist this test
     //     used a root-level notes.md which is now excluded by design.
@@ -1133,7 +1266,7 @@ mod tests {
             std::env::set_var("HQ_STATE_DIR", tmp_state.path());
 
             let calls1 = Arc::new(Mutex::new(vec![]));
-            run_personal_first_push(root, make_uploader(calls1.clone()), |_, _, _| {}, |_, _| {})
+            run_personal_first_push(root, make_uploader(calls1.clone()), |_, _, _| {}, |_, _, _| {}, |_, _| {})
                 .await.unwrap();
             assert_eq!(calls1.lock().unwrap().len(), 1);
 
@@ -1141,6 +1274,7 @@ mod tests {
             let (uploaded, _) = run_personal_first_push(
                 root,
                 make_uploader(calls2.clone()),
+                |_, _, _| {},
                 |_, _, _| {},
                 |_, _| {},
             ).await.unwrap();
