@@ -46,6 +46,44 @@ use crate::commands::sync::resolve_vault_api_url;
 use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
+/// POST `url` with the bearer + JSON `payload`, parsing the response body into
+/// `T`. Centralizes the status-check + server-error-extraction used by the
+/// channel write commands below. Mirrors `get_json` for the read side.
+async fn post_json<T: serde::de::DeserializeOwned>(
+    url: &str,
+    token: &str,
+    payload: &serde_json::Value,
+    code: &str,
+) -> Result<T, String> {
+    let resp = build_client()
+        .post(url)
+        .header("authorization", format!("Bearer {token}"))
+        .json(payload)
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("{code}_NETWORK_FAIL {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(LOG_TAG, &format!("{code}_ERROR status={status} msg={server_msg:?}"));
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Request failed (status {})", status.as_u16())));
+    }
+
+    resp.json::<T>().await.map_err(|e| {
+        log(LOG_TAG, &format!("{code}_PARSE_FAIL {e}"));
+        format!("Could not parse response: {e}")
+    })
+}
+
 const LOG_TAG: &str = "messages";
 
 /// Label of the dedicated Messages window. Routed in `src/main.ts`.
@@ -265,6 +303,400 @@ pub async fn get_unread_summary(app: AppHandle) -> Result<UnreadSummary, String>
     })
 }
 
+// ── Channels (US-018) ────────────────────────────────────────────────────────
+//
+// Channels are multi-party conversations, personal or company-scoped. The
+// commands below are thin clients over the hq-pro `/v1/notify/channels*`
+// surface; all HTTP happens here in Rust (the webview never holds the bearer).
+// Realtime: a "channel" wake arrives on the person topic and is folded into the
+// SINGLE DM poll path (`dm_notify::do_poll` → `poll_channels`), which emits the
+// `channel:new-message` / `channel:updated` Tauri events — there is NO parallel
+// channel poller.
+//
+//   `list_channels`         — GET    /v1/notify/channels
+//   `fetch_channel`         — GET    /v1/notify/channels/{id}/messages (+ meta)
+//   `create_channel`        — POST   /v1/notify/channels
+//   `join_channel`          — POST   /v1/notify/channels/{id}/members (self)
+//   `invite_to_channel`     — POST   /v1/notify/channels/{id}/members (others)
+//   `send_channel_message`  — POST   /v1/notify/channels/{id}/messages
+//   `list_channel_members`  — GET    /v1/notify/channels/{id}/members
+//   `remove_channel_member` — DELETE /v1/notify/channels/{id}/members/{uid}
+//   `mark_channel_read`     — POST   /v1/notify/channels/{id}/read
+
+/// One channel the caller can see. Tolerant of server additions — unknown
+/// fields are ignored. `company_uid` is present only for company-scoped
+/// channels. Mirrors the TS `Channel` shape in `src/lib/channels.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Channel {
+    pub channel_id: String,
+    #[serde(default)]
+    pub name: String,
+    /// "personal" | "company".
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub company_name: Option<String>,
+    /// "all" | "owner" — who may post.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_policy: Option<String>,
+    /// "company" | "private".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visibility: Option<String>,
+    /// Caller's membership: "joined" | "invited" | "none".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub membership: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unread: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_count: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelsResponse {
+    #[serde(default)]
+    pub channels: Vec<Channel>,
+}
+
+/// One member of a channel. `role` is "owner" | "member".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMember {
+    pub person_uid: String,
+    #[serde(default)]
+    pub email: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMembersResponse {
+    #[serde(default)]
+    pub members: Vec<ChannelMember>,
+}
+
+/// One channel message, as returned by `/v1/notify/channels/{id}/messages`.
+/// `direction` is tagged by the server relative to the caller ("in"/"out") so
+/// the shared `<Conversation showAuthors>` renders it identically to a DM.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelMessage {
+    pub event_id: String,
+    pub from_person_uid: String,
+    #[serde(default)]
+    pub from_email: String,
+    #[serde(default)]
+    pub from_display_name: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub direction: String,
+}
+
+/// The full channel view: its metadata + a page of messages (newest-first).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelDetail {
+    pub channel: Channel,
+    #[serde(default)]
+    pub messages: Vec<ChannelMessage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// URL-escape a path segment for the channel id / personUid. These are
+/// server-issued slugs (URL-safe), but a defensive minimal escape avoids a
+/// malformed URL if a future id carries a reserved char. Keeps the dep surface
+/// at zero (no `urlencoding` crate) — only `/`, `?`, `#`, and space are escaped.
+fn esc_seg(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '/' => "%2F".to_string(),
+            '?' => "%3F".to_string(),
+            '#' => "%23".to_string(),
+            ' ' => "%20".to_string(),
+            other => other.to_string(),
+        })
+        .collect()
+}
+
+/// Tauri command: list every channel the caller can see (personal + company,
+/// joined + invited). `GET /v1/notify/channels`.
+#[tauri::command]
+pub async fn list_channels() -> Result<ChannelsResponse, String> {
+    let (base, token) = auth_and_base("MESSAGES_CHANNELS").await?;
+    let url = format!("{base}/v1/notify/channels");
+    let out: ChannelsResponse = get_json(&url, &token, "MESSAGES_CHANNELS").await?;
+    log(LOG_TAG, &format!("MESSAGES_CHANNELS_OK count={}", out.channels.len()));
+    Ok(out)
+}
+
+/// Tauri command: fetch one channel's metadata + its newest page of messages.
+/// `GET /v1/notify/channels/{id}/messages`. Opening a channel also marks it
+/// read server-side (the page read advances the caller's cursor), but the
+/// caller should still call `mark_channel_read` to zero the local unread.
+#[tauri::command]
+pub async fn fetch_channel(
+    channel_id: String,
+    limit: Option<u32>,
+    cursor: Option<String>,
+) -> Result<ChannelDetail, String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_FETCH").await?;
+    let mut url = format!("{base}/v1/notify/channels/{}/messages", esc_seg(id));
+    let mut sep = '?';
+    if let Some(n) = limit {
+        url.push_str(&format!("{sep}limit={n}"));
+        sep = '&';
+    }
+    if let Some(c) = cursor.as_deref().filter(|c| !c.is_empty()) {
+        url.push_str(&format!("{sep}cursor={}", esc_seg(c)));
+    }
+    let out: ChannelDetail = get_json(&url, &token, "MESSAGES_CHANNEL_FETCH").await?;
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CHANNEL_FETCH_OK id={id} msgs={}", out.messages.len()),
+    );
+    Ok(out)
+}
+
+/// Build the `POST /v1/notify/channels` create body. Exactly the fields the
+/// server contract expects: `name`, `scope`, optional `companyUid` (required
+/// only for company scope), optional `invite` (personUids). Pure so the wire
+/// shape is unit-testable.
+fn build_create_payload(
+    name: &str,
+    scope: &str,
+    company_uid: Option<&str>,
+    invite: &[String],
+) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("name".to_string(), serde_json::Value::String(name.to_string()));
+    obj.insert("scope".to_string(), serde_json::Value::String(scope.to_string()));
+    if let Some(uid) = company_uid.map(str::trim).filter(|s| !s.is_empty()) {
+        obj.insert("companyUid".to_string(), serde_json::Value::String(uid.to_string()));
+    }
+    if !invite.is_empty() {
+        obj.insert(
+            "invite".to_string(),
+            serde_json::Value::Array(
+                invite.iter().map(|u| serde_json::Value::String(u.clone())).collect(),
+            ),
+        );
+    }
+    serde_json::Value::Object(obj)
+}
+
+/// Tauri command: create a channel. `POST /v1/notify/channels`. `scope` is
+/// "personal" | "company"; a company channel requires `company_uid`. Optional
+/// `invite` seeds initial members by personUid. Returns the created `Channel`.
+#[tauri::command]
+pub async fn create_channel(
+    name: String,
+    scope: String,
+    company_uid: Option<String>,
+    invite: Option<Vec<String>>,
+) -> Result<Channel, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Channel name must not be empty".to_string());
+    }
+    let scope_norm = scope.trim().to_ascii_lowercase();
+    if scope_norm != "personal" && scope_norm != "company" {
+        return Err("Channel scope must be 'personal' or 'company'".to_string());
+    }
+    let company = company_uid.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    if scope_norm == "company" && company.is_none() {
+        return Err("A company channel requires a companyUid".to_string());
+    }
+    let invites = invite.unwrap_or_default();
+
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_CREATE").await?;
+    let url = format!("{base}/v1/notify/channels");
+    let payload = build_create_payload(trimmed, &scope_norm, company, &invites);
+    let out: Channel = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_CREATE").await?;
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CHANNEL_CREATE_OK id={} scope={scope_norm}", out.channel_id),
+    );
+    Ok(out)
+}
+
+/// Tauri command: join a channel the caller was invited to (or a discoverable
+/// company channel). `POST /v1/notify/channels/{id}/members` with no body —
+/// the server adds the authenticated caller. Returns the updated `Channel`.
+#[tauri::command]
+pub async fn join_channel(channel_id: String) -> Result<Channel, String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_JOIN").await?;
+    let url = format!("{base}/v1/notify/channels/{}/members", esc_seg(id));
+    // Empty body → join self (no `personUid`). The server distinguishes
+    // self-join from invite by the presence of `personUid`.
+    let payload = serde_json::json!({});
+    let out: Channel = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_JOIN").await?;
+    log(LOG_TAG, &format!("MESSAGES_CHANNEL_JOIN_OK id={id}"));
+    Ok(out)
+}
+
+/// Tauri command: invite people to a channel (owner action). `POST
+/// /v1/notify/channels/{id}/members` with `{ personUids: [...] }`. Returns the
+/// channel's updated member list so the roster refreshes in place.
+#[tauri::command]
+pub async fn invite_to_channel(
+    channel_id: String,
+    person_uids: Vec<String>,
+) -> Result<ChannelMembersResponse, String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let cleaned: Vec<String> = person_uids
+        .into_iter()
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty())
+        .collect();
+    if cleaned.is_empty() {
+        return Err("At least one person is required".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_INVITE").await?;
+    let url = format!("{base}/v1/notify/channels/{}/members", esc_seg(id));
+    let payload = serde_json::json!({ "personUids": cleaned });
+    let out: ChannelMembersResponse =
+        post_json(&url, &token, &payload, "MESSAGES_CHANNEL_INVITE").await?;
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CHANNEL_INVITE_OK id={id} members={}", out.members.len()),
+    );
+    Ok(out)
+}
+
+/// Tauri command: post a message into a channel. `POST
+/// /v1/notify/channels/{id}/messages` with `{ body }`. Surfaces failures to the
+/// caller (e.g. an owner-only post policy rejection) for composer feedback.
+#[tauri::command]
+pub async fn send_channel_message(channel_id: String, body: String) -> Result<(), String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let text = body.trim();
+    if text.is_empty() {
+        return Err("Message body must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_SEND").await?;
+    let url = format!("{base}/v1/notify/channels/{}/messages", esc_seg(id));
+    let payload = serde_json::json!({ "body": text });
+    let _: serde_json::Value =
+        post_json(&url, &token, &payload, "MESSAGES_CHANNEL_SEND").await?;
+    log(LOG_TAG, &format!("MESSAGES_CHANNEL_SEND_OK id={id}"));
+    Ok(())
+}
+
+/// Tauri command: list a channel's members. `GET
+/// /v1/notify/channels/{id}/members`. Drives the roster (name + role; the owner
+/// sees the remove affordance).
+#[tauri::command]
+pub async fn list_channel_members(channel_id: String) -> Result<ChannelMembersResponse, String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_MEMBERS").await?;
+    let url = format!("{base}/v1/notify/channels/{}/members", esc_seg(id));
+    let out: ChannelMembersResponse = get_json(&url, &token, "MESSAGES_CHANNEL_MEMBERS").await?;
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_CHANNEL_MEMBERS_OK id={id} count={}", out.members.len()),
+    );
+    Ok(out)
+}
+
+/// Tauri command: remove a member from a channel (owner action). `DELETE
+/// /v1/notify/channels/{id}/members/{personUid}`. Returns the updated member
+/// list so the roster refreshes in place.
+#[tauri::command]
+pub async fn remove_channel_member(
+    channel_id: String,
+    person_uid: String,
+) -> Result<ChannelMembersResponse, String> {
+    let id = channel_id.trim();
+    let uid = person_uid.trim();
+    if id.is_empty() || uid.is_empty() {
+        return Err("channelId and personUid must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_REMOVE").await?;
+    let url = format!(
+        "{base}/v1/notify/channels/{}/members/{}",
+        esc_seg(id),
+        esc_seg(uid)
+    );
+    let resp = build_client()
+        .delete(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("MESSAGES_CHANNEL_REMOVE_NETWORK_FAIL {e}"));
+            format!("Network error: {e}")
+        })?;
+    let status = resp.status();
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(
+            LOG_TAG,
+            &format!("MESSAGES_CHANNEL_REMOVE_ERROR status={status} msg={server_msg:?}"),
+        );
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Remove failed (status {})", status.as_u16())));
+    }
+    // The server returns the updated member list; tolerate an empty 204 by
+    // re-listing only if the body didn't parse.
+    let out: ChannelMembersResponse = resp
+        .json::<ChannelMembersResponse>()
+        .await
+        .unwrap_or(ChannelMembersResponse { members: Vec::new() });
+    log(LOG_TAG, &format!("MESSAGES_CHANNEL_REMOVE_OK id={id} uid={uid}"));
+    Ok(out)
+}
+
+/// Tauri command: mark a channel read (zeroes its server-side unread). `POST
+/// /v1/notify/channels/{id}/read`. Called when the user opens a channel; the
+/// local unread is cleared in the UI immediately and reconciled here.
+#[tauri::command]
+pub async fn mark_channel_read(channel_id: String) -> Result<(), String> {
+    let id = channel_id.trim();
+    if id.is_empty() {
+        return Err("channelId must not be empty".to_string());
+    }
+    let (base, token) = auth_and_base("MESSAGES_CHANNEL_READ").await?;
+    let url = format!("{base}/v1/notify/channels/{}/read", esc_seg(id));
+    let payload = serde_json::json!({});
+    let _: serde_json::Value =
+        post_json(&url, &token, &payload, "MESSAGES_CHANNEL_READ").await?;
+    log(LOG_TAG, &format!("MESSAGES_CHANNEL_READ_OK id={id}"));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +745,94 @@ mod tests {
         // Missing key → empty.
         let empty: RequestsResponse = serde_json::from_str("{}").unwrap();
         assert_eq!(empty.requests.len(), 0);
+    }
+
+    // ── Channels (US-018) ────────────────────────────────────────────────────
+
+    #[test]
+    fn channel_deserializes_minimal() {
+        // Only channelId is strictly required; the rest default.
+        let json = r#"{ "channelId": "chn_1", "name": "general", "scope": "company" }"#;
+        let c: Channel = serde_json::from_str(json).expect("Channel parses");
+        assert_eq!(c.channel_id, "chn_1");
+        assert_eq!(c.name, "general");
+        assert_eq!(c.scope, "company");
+        assert!(c.company_uid.is_none());
+        assert!(c.unread.is_none());
+    }
+
+    #[test]
+    fn channel_deserializes_full_row() {
+        let json = r#"{
+            "channelId": "chn_2",
+            "name": "eng",
+            "scope": "company",
+            "companyUid": "ent_co",
+            "companyName": "Acme",
+            "postPolicy": "all",
+            "visibility": "company",
+            "membership": "invited",
+            "unread": 3,
+            "memberCount": 12
+        }"#;
+        let c: Channel = serde_json::from_str(json).expect("Channel parses");
+        assert_eq!(c.company_uid.as_deref(), Some("ent_co"));
+        assert_eq!(c.company_name.as_deref(), Some("Acme"));
+        assert_eq!(c.membership.as_deref(), Some("invited"));
+        assert_eq!(c.unread, Some(3));
+        assert_eq!(c.member_count, Some(12));
+    }
+
+    #[test]
+    fn channel_member_and_detail_deserialize() {
+        let members_json = r#"{ "members": [
+            { "personUid": "prs_o", "email": "o@x.com", "displayName": "Owner", "role": "owner" },
+            { "personUid": "prs_m", "email": "m@x.com", "displayName": "Member", "role": "member" }
+        ] }"#;
+        let m: ChannelMembersResponse =
+            serde_json::from_str(members_json).expect("members parse");
+        assert_eq!(m.members.len(), 2);
+        assert_eq!(m.members[0].role, "owner");
+
+        let detail_json = r#"{
+            "channel": { "channelId": "chn_1", "name": "g", "scope": "personal" },
+            "messages": [
+                { "eventId": "e1", "fromPersonUid": "prs_a", "body": "hi",
+                  "createdAt": "2026-06-05T00:00:00Z", "direction": "in" }
+            ]
+        }"#;
+        let d: ChannelDetail = serde_json::from_str(detail_json).expect("detail parses");
+        assert_eq!(d.channel.channel_id, "chn_1");
+        assert_eq!(d.messages.len(), 1);
+        assert_eq!(d.messages[0].direction, "in");
+    }
+
+    #[test]
+    fn create_payload_personal_omits_company_and_empty_invite() {
+        let payload = build_create_payload("diary", "personal", None, &[]);
+        let obj = payload.as_object().expect("object");
+        assert_eq!(payload["name"], "diary");
+        assert_eq!(payload["scope"], "personal");
+        assert!(!obj.contains_key("companyUid"));
+        assert!(!obj.contains_key("invite"));
+    }
+
+    #[test]
+    fn create_payload_company_with_invites() {
+        let invites = vec!["prs_a".to_string(), "prs_b".to_string()];
+        let payload = build_create_payload("eng", "company", Some("ent_co"), &invites);
+        assert_eq!(payload["companyUid"], "ent_co");
+        assert_eq!(payload["invite"][0], "prs_a");
+        assert_eq!(payload["invite"][1], "prs_b");
+        // A blank companyUid is treated as absent.
+        let blank = build_create_payload("x", "company", Some("   "), &[]);
+        assert!(!blank.as_object().unwrap().contains_key("companyUid"));
+    }
+
+    #[test]
+    fn esc_seg_escapes_path_reserved_chars_only() {
+        assert_eq!(esc_seg("chn_abc123"), "chn_abc123");
+        assert_eq!(esc_seg("a/b c"), "a%2Fb%20c");
+        assert_eq!(esc_seg("q?x#y"), "q%3Fx%23y");
     }
 }

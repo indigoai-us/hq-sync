@@ -178,6 +178,7 @@ fn main() {
         .manage(commands::dm_notify::PendingDmEvents(Mutex::new(Vec::new())))
         .manage(commands::dm_notify::UnreadDmState(Mutex::new(0)))
         .manage(commands::dm_notify::SeenRequestState::new())
+        .manage(commands::dm_notify::SeenChannelState::new())
         .manage(commands::banner::PendingBanner(Mutex::new(None)))
         // Menubar-app close behaviour: intercept window-close (traffic-light
         // red button, Cmd-W, File→Close) and hide the window instead of
@@ -326,6 +327,15 @@ fn main() {
             commands::messages::list_contacts,
             commands::messages::list_company_members,
             commands::messages::get_unread_summary,
+            commands::messages::list_channels,
+            commands::messages::fetch_channel,
+            commands::messages::create_channel,
+            commands::messages::join_channel,
+            commands::messages::invite_to_channel,
+            commands::messages::send_channel_message,
+            commands::messages::list_channel_members,
+            commands::messages::remove_channel_member,
+            commands::messages::mark_channel_read,
             commands::notification_history::fetch_notification_history,
             commands::notification_history::open_notification_history,
             commands::notifications::notification_permission_state,

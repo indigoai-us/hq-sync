@@ -12,22 +12,23 @@ export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
 /**
  * The library sub-surfaces promoted to top-level sidebar links, in display
- * order, with their ⌘ hotkeys (⌘3–⌘7). Companies start at ⌘8 (see
- * getDesktopHotkeyRoute + the company-row mapping below).
+ * order, with their ⌘ hotkeys (⌘4–⌘8). Sync ⌘1 / Meetings ⌘2 / Messages ⌘3
+ * precede them; companies start at ⌘9 (see getDesktopHotkeyRoute + the
+ * company-row mapping below).
  */
 export const LIBRARY_SIDEBAR_TABS: { tab: LibraryTab; label: string; shortcut: string }[] = [
-  { tab: 'skills', label: 'Skills', shortcut: '⌘3' },
-  { tab: 'workers', label: 'Workers', shortcut: '⌘4' },
-  { tab: 'installed', label: 'Installed', shortcut: '⌘5' },
-  { tab: 'marketplace', label: 'Marketplace', shortcut: '⌘6' },
-  { tab: 'profile', label: 'Profile', shortcut: '⌘7' },
+  { tab: 'skills', label: 'Skills', shortcut: '⌘4' },
+  { tab: 'workers', label: 'Workers', shortcut: '⌘5' },
+  { tab: 'installed', label: 'Installed', shortcut: '⌘6' },
+  { tab: 'marketplace', label: 'Marketplace', shortcut: '⌘7' },
+  { tab: 'profile', label: 'Profile', shortcut: '⌘8' },
 ];
 
-/** First ⌘ hotkey assigned to a company row (after the 7 primary destinations). */
-const COMPANY_HOTKEY_BASE = 8;
+/** First ⌘ hotkey assigned to a company row (after the primary destinations). */
+const COMPANY_HOTKEY_BASE = 9;
 
 export type DesktopRoute = {
-  kind: 'sync' | 'meetings' | 'library' | 'moderation' | 'company';
+  kind: 'sync' | 'meetings' | 'messages' | 'library' | 'moderation' | 'company';
   /** Company slug — set for `company` routes. */
   slug?: string;
   /** Library sub-surface — set for `library` routes (defaults to 'skills'). */
@@ -104,9 +105,16 @@ export function getDesktopSidebarRows(
       shortcut: '⌘2',
       active: isDesktopRouteActive(route, { kind: 'meetings' }),
     },
-    // The Library surface is broken out into four top-level destinations
-    // (Skills / Workers / Marketplace / Profile), each forcing its tab on the
-    // shared library page. ⌘3–⌘6; companies pick up at ⌘7.
+    // Messages (US-019) sits right after Meetings at ⌘3, hosting MessagesShell.
+    {
+      route: { kind: 'messages' },
+      label: 'Messages',
+      shortcut: '⌘3',
+      active: isDesktopRouteActive(route, { kind: 'messages' }),
+    },
+    // The Library surface is broken out into five top-level destinations
+    // (Skills / Workers / Installed / Marketplace / Profile), each forcing its
+    // tab on the shared library page. ⌘4–⌘8; companies pick up at ⌘9.
     ...LIBRARY_SIDEBAR_TABS.map(({ tab, label, shortcut }) => {
       const libraryRoute: DesktopRoute = { kind: 'library', tab };
       return {
@@ -132,8 +140,9 @@ export function getDesktopSidebarRows(
   return primaryRows.concat(
     companies.map((company, index) => {
       const companyRoute: DesktopRoute = { kind: 'company', slug: company.slug };
-      // Only ⌘8–⌘9 are addressable (single-digit), so the first two
-      // companies get a hotkey; the rest are click-only.
+      // Only ⌘9 is single-digit-addressable now (Sync/Meetings/Messages +
+      // five library tabs consume ⌘1–⌘8), so the first company gets a hotkey;
+      // the rest are click-only.
       const hotkeyNumber = COMPANY_HOTKEY_BASE + index;
       return {
         route: companyRoute,
@@ -161,15 +170,16 @@ export function getDesktopHotkeyRoute(
 
   if (event.key === '1') return { kind: 'sync' };
   if (event.key === '2') return { kind: 'meetings' };
+  if (event.key === '3') return { kind: 'messages' };
 
-  // ⌘3–⌘7 → the five library destinations.
-  const libraryIndex = Number.parseInt(event.key, 10) - 3;
+  // ⌘4–⌘8 → the five library destinations.
+  const libraryIndex = Number.parseInt(event.key, 10) - 4;
   if (libraryIndex >= 0 && libraryIndex < LIBRARY_SIDEBAR_TABS.length) {
     return { kind: 'library', tab: LIBRARY_SIDEBAR_TABS[libraryIndex].tab };
   }
 
-  // ⌘8–⌘9 → the first two companies.
-  if (['8', '9'].includes(event.key)) {
+  // ⌘9 → the first company (single-digit addressable; the rest are click-only).
+  if (event.key === '9') {
     const company = companies[Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE];
     if (company) return { kind: 'company', slug: company.slug };
   }

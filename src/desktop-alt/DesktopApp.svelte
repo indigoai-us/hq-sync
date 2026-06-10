@@ -8,6 +8,7 @@
   import SyncPage from './pages/SyncPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
+  import MessagesPage from './pages/MessagesPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
@@ -153,47 +154,54 @@
       action: () => navigate({ kind: 'meetings' }),
     },
     {
+      id: 'command-go-messages',
+      label: 'Go to Messages',
+      detail: 'Direct messages and channels',
+      shortcut: '⌘3',
+      action: () => navigate({ kind: 'messages' }),
+    },
+    {
       id: 'command-go-skills',
       label: 'Go to Skills',
       detail: 'Browse skills',
-      shortcut: '⌘3',
+      shortcut: '⌘4',
       action: () => navigate({ kind: 'library', tab: 'skills' }),
     },
     {
       id: 'command-go-workers',
       label: 'Go to Workers',
       detail: 'Browse workers',
-      shortcut: '⌘4',
+      shortcut: '⌘5',
       action: () => navigate({ kind: 'library', tab: 'workers' }),
     },
     {
       id: 'command-go-installed',
       label: 'Go to Installed',
       detail: 'Marketplace packs installed in your HQ',
-      shortcut: '⌘5',
+      shortcut: '⌘6',
       action: () => navigate({ kind: 'library', tab: 'installed' }),
     },
     {
       id: 'command-go-marketplace',
       label: 'Go to Marketplace',
       detail: 'Discover and install skills and workers',
-      shortcut: '⌘6',
+      shortcut: '⌘7',
       action: () => navigate({ kind: 'library', tab: 'marketplace' }),
     },
     {
       id: 'command-go-profile',
       label: 'Go to Profile',
       detail: 'Your HQ profile and published work',
-      shortcut: '⌘7',
+      shortcut: '⌘8',
       action: () => navigate({ kind: 'library', tab: 'profile' }),
     },
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
       label: `Go to ${company.displayName}`,
       detail: 'Show company workspace',
-      // Companies start at ⌘8 (after the 7 primary destinations); only ⌘8–⌘9
-      // are single-digit addressable.
-      shortcut: index < 2 ? `⌘${index + 8}` : undefined,
+      // Companies start at ⌘9 (after the 8 primary destinations); only ⌘9 is
+      // single-digit addressable.
+      shortcut: index < 1 ? `⌘${index + 9}` : undefined,
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);
@@ -705,6 +713,10 @@
             <div class="page">
               <LibraryPage tab={route.tab} />
             </div>
+          {:else if route.kind === 'messages'}
+            <div class="messages-host">
+              <MessagesPage />
+            </div>
           {:else if route.kind === 'moderation'}
             <!-- Admin-only. Rendered only when the admin gate is satisfied
                  (default-deny); ModerationPanel ALSO re-checks + locks itself, and
@@ -762,3 +774,15 @@
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
   {/if}
 </div>
+
+<style>
+  /* The Messages route hosts the full-bleed MessagesShell rather than the
+     padded, scrolling .page layout — it fills the content area and anchors the
+     shell's absolutely-positioned host. */
+  .messages-host {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+</style>
