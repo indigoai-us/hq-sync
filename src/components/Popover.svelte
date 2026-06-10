@@ -689,7 +689,7 @@
             <path d="M5 12h-2.5v2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         {:else}
-          <!-- Refresh / sync icon — same as the legacy body SyncButton. -->
+          <!-- Refresh / sync icon. -->
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
             <path d="M1.5 8a6.5 6.5 0 0 1 11.48-4.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
             <path d="M14.5 8A6.5 6.5 0 0 1 3.02 12.16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
@@ -1327,9 +1327,8 @@
     text-overflow: ellipsis;
   }
 
-  /* Header Sync button — same visual weight as the legacy body SyncButton
-     (icon + pill, popover-primary background) but inline + right-aligned
-     instead of full-width. The data-tauri-drag-region on .popover-header
+  /* Header Sync button — icon + pill, popover-primary background,
+     inline + right-aligned. The data-tauri-drag-region on .popover-header
      means clicks-and-holds drag the window; -webkit-app-region: no-drag
      restores click handling for this button. */
   .header-sync {
