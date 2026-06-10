@@ -23,6 +23,7 @@
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
+  import { refreshOnPopoverOpen } from './lib/popover-refresh';
   import {
     handleMeetingDetected,
     type MeetingDetectedPayload,
@@ -824,11 +825,14 @@
     unlisteners.push(
       await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
         if (focused) {
-          loadWorkspaces();
-          // Re-pull CLI-update state on every popover open so a missed
-          // `hq-cli-update:available` event surfaces within one open instead
-          // of up to 6h. Fire-and-forget.
-          refreshHqCliUpdate();
+          // Refresh the open-set on every popover open (fire-and-forget):
+          //  - workspaces, so a company added between syncs appears
+          //  - hq-cli update state, so a missed event surfaces within one
+          //    open instead of up to 6h
+          //  - hq-core version, so the footer recovers from a startup null
+          //    (transient core.yaml/folder-resolution race) without a relaunch
+          // Set is a typed contract in lib/popover-refresh — see its test.
+          refreshOnPopoverOpen({ loadWorkspaces, refreshHqCliUpdate, loadHqVersion });
         }
       })
     );
