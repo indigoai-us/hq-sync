@@ -53,7 +53,10 @@
   }
 
   interface ChannelDetail {
-    channel: Channel;
+    // Optional: the `/messages` endpoint may return only the message page (the
+    // caller already holds the channel from the list). Consumed via a guard
+    // below — `if (detail.channel)`.
+    channel?: Channel;
     messages: ChannelMessageRow[];
     nextCursor?: string | null;
   }
