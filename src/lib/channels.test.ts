@@ -29,6 +29,31 @@ describe('channelDisplayName', () => {
   });
 });
 
+describe('group DMs', () => {
+  it('labels an unnamed group by member count, else a generic label', () => {
+    expect(
+      channelDisplayName(ch({ channelId: 'g1', name: '', scope: 'group', memberCount: 3 })),
+    ).toBe('Group · 3');
+    expect(channelDisplayName(ch({ channelId: 'g1', name: '', scope: 'group' }))).toBe('Group DM');
+  });
+  it('uses a "Group" scope chip', () => {
+    expect(scopeChipLabel(ch({ channelId: 'g', name: '', scope: 'group' }))).toBe('Group');
+  });
+  it('buckets group DMs under a "Direct" header, first and separate from company/personal', () => {
+    const groups = groupChannels([
+      ch({ channelId: 'g1', name: '', scope: 'group', memberCount: 3 }),
+      ch({ channelId: 'p1', name: 'diary', scope: 'personal' }),
+      ch({ channelId: 'c1', name: 'eng', scope: 'company', companyUid: 'ent_1', companyName: 'Acme' }),
+    ]);
+    expect(groups[0].key).toBe('group');
+    expect(groups[0].label).toBe('Direct');
+    expect(groups[0].channels.map((c) => c.channelId)).toEqual(['g1']);
+    // Group DMs never leak into the company buckets.
+    const company = groups.find((g) => g.scope === 'company');
+    expect(company?.channels.map((c) => c.channelId)).toEqual(['c1']);
+  });
+});
+
 describe('scopeChipLabel', () => {
   it('returns Personal for personal channels', () => {
     expect(scopeChipLabel(ch({ channelId: 'c', name: 'x', scope: 'personal' }))).toBe('Personal');
