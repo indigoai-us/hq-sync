@@ -96,7 +96,12 @@ fn read_menubar_obj(path: &Path) -> Map<String, Value> {
 /// Untyped-merge `updates` into the `menubar.json` at `path` and atomic-rename
 /// it back. Unknown / future top-level keys pass through unchanged. Mirrors the
 /// `config::ensure_machine_id` write algorithm exactly.
-fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(), String> {
+///
+/// `pub(crate)` so sibling commands (e.g. `hq_cli_update`'s per-version
+/// dismissal flag) write through the same untyped-merge path instead of the
+/// typed `save_settings` round-trip, which would drop any key not in
+/// `MenubarPrefs`.
+pub(crate) fn merge_menubar_flags(path: &Path, updates: &[(&str, Value)]) -> Result<(), String> {
     let mut obj = read_menubar_obj(path);
     for (k, v) in updates {
         obj.insert((*k).to_string(), v.clone());
