@@ -290,7 +290,14 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// 290 sources/ delete-markers in one afternoon). Bypass paths preserved:
 /// `HQ_SYNC_DELETE_BULK_OVERRIDE=1` env or `propagateDeletePolicy: "all"`.
 /// See indigoai-us/hq-cloud#28.
-pub const HQ_CLOUD_VERSION: &str = "~6.3.5";
+///
+/// **6.4.0 (listJournals — `hq sync status` blindness fix)** — adds the
+/// `listJournals` enumeration API so `hq sync status` reads every journal
+/// shard the runner writes (personal-vault + per-company) instead of one
+/// path. No runner-behavior change for hq-sync; the `~6.3.5` -> `~6.4.0`
+/// bump keeps the menubar's npx pin on the same release train as hq-cli.
+/// See indigoai-us/hq-cloud#66.
+pub const HQ_CLOUD_VERSION: &str = "~6.4.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
