@@ -117,11 +117,14 @@ const handlers: Record<string, Handler> = {
       { slug: 'personal', displayName: 'Corey Epstein', kind: 'personal', state: 'personal', hasLocalFolder: true },
       { slug: 'indigo', displayName: 'Indigo', kind: 'company', state: 'synced', hasLocalFolder: true },
       { slug: 'liverecover', displayName: 'Liverecover', kind: 'company', state: 'synced', hasLocalFolder: true },
+      // A local-only company exercises the Sources tab's inline Connect button.
+      { slug: 'newco', displayName: 'New Co', kind: 'company', state: 'local-only', hasLocalFolder: true, cloudUid: null },
     ],
     cloudReachable: true,
     error: null,
     hqFolderPath: '/Users/corey/Documents/HQ',
   }),
+  connect_workspace_to_cloud: () => null,
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
   get_local_company_goals: () => COMPANY_GOALS,
@@ -151,6 +154,58 @@ const handlers: Record<string, Handler> = {
       { company: 'personal', path: 'personal/projects/redesign/sketch.md', bytes: 980, direction: 'up', author: undefined, isNew: false, at: now - 14 * 60 * 1000 },
       { company: 'indigo', path: 'companies/indigo/policies/e2e-testing.md', bytes: 5120, direction: 'down', author: 'maya@getindigo.ai', isNew: false, at: now - 22 * 60 * 1000 },
     ];
+  },
+  // Notifications feed (the popover's default body since the redesign). Returns
+  // a representative mix of DMs, shares, and cross-session new-file rows so the
+  // inline feed renders fully in the browser harness (?view=popover).
+  fetch_notification_history: () => {
+    const iso = (minsAgo: number) => new Date(Date.now() - minsAgo * 60 * 1000).toISOString();
+    return {
+      dms: [
+        {
+          eventId: 'dm-1',
+          fromDisplayName: 'Maya Chen',
+          fromEmail: 'maya@getindigo.ai',
+          body: 'Pushed the conflict-versioning notes — take a look when you get a sec?',
+          createdAt: iso(6),
+        },
+        {
+          eventId: 'dm-2',
+          fromDisplayName: 'Sam Rivera',
+          fromEmail: 'sam@liverecover.com',
+          body: 'Meeting recap is synced to the Liverecover folder.',
+          createdAt: iso(48),
+        },
+      ],
+      shares: [
+        {
+          eventId: 'share-1',
+          issuerDisplayName: 'Jacob Patel',
+          issuerEmail: 'jacob@getindigo.ai',
+          paths: ['companies/indigo/financials/Q2-model.xlsx'],
+          note: 'Latest forecast for review',
+          createdAt: iso(20),
+        },
+      ],
+      files: [
+        {
+          eventId: 'file-1',
+          path: 'companies/indigo/knowledge/prd.json',
+          bytes: 4096,
+          addedBy: 'maya@getindigo.ai',
+          companySlug: 'indigo',
+          createdAt: iso(40),
+        },
+        {
+          eventId: 'file-2',
+          path: 'companies/indigo/policies/e2e-testing.md',
+          bytes: 5120,
+          addedBy: 'maya@getindigo.ai',
+          companySlug: 'indigo',
+          createdAt: iso(75),
+        },
+      ],
+    };
   },
   get_autostart_enabled: () => true,
   set_autostart_enabled: () => null,
