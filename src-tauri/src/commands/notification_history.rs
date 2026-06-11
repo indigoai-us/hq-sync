@@ -17,7 +17,6 @@
 //! auth/URL failure (can't even build the request) surfaces as an error.
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
 
 use crate::commands::cognito;
 use crate::commands::dm_notify::DmEvent;
@@ -27,7 +26,6 @@ use crate::util::client_info::build_client;
 use crate::util::logfile::log;
 
 const LOG_TAG: &str = "notif-history";
-const WINDOW_LABEL: &str = "notification-history";
 
 /// Default + maximum number of items fetched per source. The server returns
 /// newest-first, so this is the most-recent N; pagination is a future add.
@@ -213,33 +211,4 @@ pub async fn fetch_notification_history(
         ),
     );
     Ok(NotificationHistory { dms, shares, files })
-}
-
-/// Open (or focus) the notification-history window. Mirrors the DM/share detail
-/// windows: built at runtime on the shared `index.html`, dispatched by label in
-/// `src/main.ts`. The window fetches its own data on mount.
-#[tauri::command]
-pub async fn open_notification_history(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        WINDOW_LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Notifications")
-    .inner_size(640.0, 680.0)
-    .min_inner_size(460.0, 420.0)
-    .resizable(true)
-    .decorations(true)
-    .title_bar_style(tauri::TitleBarStyle::Overlay)
-    .visible(true)
-    .build()
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
 }
