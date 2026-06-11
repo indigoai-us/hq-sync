@@ -43,9 +43,13 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // (no hyphen) and the `.hq/` directory is unaffected.
     "*.pid", ".hq-*",
     "modules.lock",
-    // hq-root identity marker — discovered locally per-machine, never synced.
-    // Root-anchored so the real scaffold manifest at core/core.yaml syncs.
-    "/core.yaml",
+    // NOTE: the root-anchored `/core.yaml` exclusion is intentionally NOT a
+    // static default — it is layout-dependent and added conditionally in
+    // `for_hq_root` (see the `core/core.yaml` probe there), mirroring
+    // hq-cloud's `createIgnoreFilter`. v15+ keeps the scaffold/version manifest
+    // at `core/core.yaml` (a stale root `core.yaml` must not round-trip); v12–
+    // v14 keep it at the ROOT `core.yaml`, which MUST sync (else the vault has
+    // no version marker and the file is undetectable fleet-side).
     // hq modules manifest — local module-resolution state, never synced.
     "modules/modules.yaml",
     // per-company identity file — written locally on first sync, never round-tripped.
@@ -78,6 +82,21 @@ impl IgnoreFilter {
             builder
                 .add_line(None, pat)
                 .map_err(|e| format!("default pattern `{pat}`: {e}"))?;
+        }
+        // Layout-aware root `core.yaml` exclusion (mirrors hq-cloud's
+        // createIgnoreFilter). The hq-core scaffold/version manifest moved
+        // across releases: v15+ keeps it at `core/core.yaml` (always syncs),
+        // v12–v14 keep it at the ROOT as `core.yaml`. Sync whichever one is the
+        // real manifest so the vault always carries a version marker.
+        //   - v15+ (core/core.yaml present): exclude root `/core.yaml` — it is a
+        //     stale/duplicate per-machine marker, never the authoritative one.
+        //   - v12–v14 (core/core.yaml absent): do NOT exclude — the root
+        //     `core.yaml` IS the manifest and must round-trip (the ~98 "no
+        //     core.yaml in vault" users were all old-layout).
+        if hq_root.join("core").join("core.yaml").is_file() {
+            builder
+                .add_line(None, "/core.yaml")
+                .map_err(|e| format!("default pattern `/core.yaml`: {e}"))?;
         }
         for name in [".gitignore", ".hqignore", ".hqsyncignore"] {
             let p = hq_root.join(name);
@@ -215,15 +234,32 @@ mod tests {
     }
 
     #[test]
-    fn hq_root_core_yaml_marker_is_ignored() {
-        // core.yaml is the local hq-root identity marker. It must never
-        // round-trip through the bucket — pulling another machine's marker
-        // would corrupt root discovery.
+    fn v15_layout_root_core_yaml_is_ignored_but_nested_syncs() {
+        // On v15+ the scaffold/version manifest lives at `core/core.yaml`
+        // (which syncs). Any root-level `core.yaml` is a stale per-machine
+        // duplicate that must never round-trip. Anchored so it never touches
+        // `core/core.yaml`.
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
+        fs::create_dir_all(root.join("core")).unwrap();
+        fs::write(root.join("core/core.yaml"), "version: 1\nhqVersion: \"15.0.12\"\n").unwrap();
+        fs::write(root.join("core.yaml"), "version: 1\nhqVersion: \"15.0.12\"\n").unwrap();
         let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("core.yaml")));
         assert!(filter.should_sync(&root.join("core/core.yaml")));
+    }
+
+    #[test]
+    fn v12_to_v14_layout_root_core_yaml_is_the_manifest_and_syncs() {
+        // Regression for DEV-1729 / the ~98 "no core.yaml in vault, version
+        // undetectable" fleet users. On v12–v14 roots there is NO
+        // `core/core.yaml` — the ROOT `core.yaml` IS the scaffold/version
+        // manifest and must round-trip, else the vault has no version marker.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::write(root.join("core.yaml"), "version: 1\nhqVersion: \"14.0.0\"\n").unwrap();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(filter.should_sync(&root.join("core.yaml")));
     }
 
     #[test]

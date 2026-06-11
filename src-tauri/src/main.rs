@@ -237,6 +237,7 @@ fn main() {
             updater::available_channels,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
+            commands::hq_cli_update::set_hq_cli_update_dismissed,
             commands::hq_core_update::get_hq_version,
             commands::hq_core_update::install_hq_core_update,
             commands::hq_core_drift::restore_from_upstream,

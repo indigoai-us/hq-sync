@@ -73,7 +73,7 @@ Important constraints:
 | File | Written By | Purpose |
 |------|-----------|---------|
 | `~/.hq/config.json` | hq-installer | Company UID, slug, person, bucket, vault URL, HQ folder path |
-| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon, realtimeSync, personalSyncEnabled, instantSync, driftStagingRepo, shareNotifications, releaseChannel, machineId, firstRunCompleted, autoSyncNoticeShown |
+| `~/.hq/menubar.json` | This app | HQ path override, syncOnLaunch, notifications, startAtLogin, autostartDaemon, realtimeSync, personalSyncEnabled, instantSync, driftStagingRepo, shareNotifications, releaseChannel, machineId, firstRunCompleted, autoSyncNoticeShown, cliAutoUpdate, cliUpdateDismissedVersion (the hq-CLI version the user dismissed the "update available" notice for — sticky until a newer version publishes) |
 | `~/.hq/cognito-tokens.json` | hq-installer / this app | Cognito access + refresh + id tokens |
 
 ## HQ Folder Path Resolution

@@ -43,6 +43,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use crate::util::logfile::log;
@@ -211,6 +212,49 @@ fn cli_auto_update_enabled() -> bool {
         .unwrap_or(true)
 }
 
+/// menubar.json key that records the most recent CLI version the user
+/// dismissed the "update available" notice for. Read untyped (same leniency
+/// as `cli_auto_update_enabled`) so the background loop picks it up without a
+/// restart, and written through the untyped-merge path so it survives the
+/// typed `save_settings` round-trip.
+const DISMISSED_VERSION_KEY: &str = "cliUpdateDismissedVersion";
+
+/// The version the user last dismissed the CLI-update notice for, if any.
+/// `None` when the key is absent / unreadable — i.e. nothing dismissed, so
+/// the notice is free to show.
+fn dismissed_cli_version() -> Option<String> {
+    let dir = paths::hq_config_dir().ok()?;
+    let contents = std::fs::read_to_string(dir.join("menubar.json")).ok()?;
+    let json: Value = serde_json::from_str(&contents).ok()?;
+    json.get(DISMISSED_VERSION_KEY)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Pure dismissal decision: should the live "update available" banner be
+/// suppressed for `latest` given the version the user last `dismissed`?
+///
+/// Per-version semantics: a dismissal is sticky for the version it was made
+/// against and is re-shown only when a **strictly newer** `latest` appears —
+/// dismissing 5.38.x stays dismissed until 5.39 (or any greater version) is
+/// published. We compare with `cmp_semver` so a dismissed "5.38.2" suppresses
+/// "5.38.2" (Equal) but not "5.39.0" (Greater → show again). A newly published
+/// version is exactly the fix users are being emailed about, so re-surfacing
+/// it once (still dismissible) is the intended non-nagging behavior.
+pub(crate) fn suppress_for_dismissal(latest: &str, dismissed: Option<&str>) -> bool {
+    match dismissed {
+        Some(d) => cmp_semver(latest, d) != std::cmp::Ordering::Greater,
+        None => false,
+    }
+}
+
+/// Whether the live banner should be suppressed for `latest` because the user
+/// already dismissed it. Reads the persisted dismissal then applies the pure
+/// `suppress_for_dismissal` rule.
+fn is_cli_update_dismissed(latest: &str) -> bool {
+    suppress_for_dismissal(latest, dismissed_cli_version().as_deref())
+}
+
 /// Capture a Sentry event when `hq` is installed but every version probe
 /// failed. Scrubbed by `sentry_scrub.rs` before send. This is the
 /// "detection silently degraded" signal the team triages immediately —
@@ -307,15 +351,55 @@ pub async fn check_once(app: &AppHandle) -> Result<Option<HqCliUpdateInfo>, Stri
         return Ok(None);
     }
     let info = HqCliUpdateInfo { local, latest };
-    let _ = app.emit("hq-cli-update:available", &info);
+    // Surface the live banner only when the user hasn't dismissed this version.
+    // The emit drives the in-popover notice; suppressing it (not the return
+    // value) keeps the notice non-nagging while leaving the background
+    // auto-install path — which acts on the returned `Some` — untouched.
+    if is_cli_update_dismissed(&info.latest) {
+        log(
+            "hq-cli-update",
+            &format!(
+                "update {} available but dismissed by user — suppressing banner",
+                info.latest
+            ),
+        );
+    } else {
+        let _ = app.emit("hq-cli-update:available", &info);
+    }
     Ok(Some(info))
 }
 
 /// Tauri command — synchronous one-shot check used by the tray
-/// "Check for Updates" menu item and by the Settings panel.
+/// "Check for Updates" menu item, the popover on-focus refresh, and the
+/// Settings panel.
+///
+/// Unlike the raw `check_once` (whose `Some` still drives the background
+/// auto-installer), this filters out a dismissed version so the popover's
+/// on-focus refresh clears/keeps-hidden the banner until a newer version is
+/// published — the user-facing half of the non-nagging contract.
 #[tauri::command]
 pub async fn check_hq_cli_update(app: AppHandle) -> Result<Option<HqCliUpdateInfo>, String> {
-    check_once(&app).await
+    let result = check_once(&app).await?;
+    Ok(result.filter(|info| !is_cli_update_dismissed(&info.latest)))
+}
+
+/// Tauri command — record that the user dismissed the "CLI update available"
+/// notice for `version`. Persists `cliUpdateDismissedVersion` through the
+/// untyped-merge path (so it survives `save_settings`, which only writes typed
+/// `MenubarPrefs` fields). The notice stays hidden for this version and any
+/// older one, and re-appears once a strictly-newer `latest` is published — see
+/// `is_cli_update_dismissed`.
+#[tauri::command]
+pub fn set_hq_cli_update_dismissed(version: String) -> Result<(), String> {
+    let path = paths::menubar_json_path()?;
+    log(
+        "hq-cli-update",
+        &format!("user dismissed CLI-update notice for v{version}"),
+    );
+    crate::commands::first_run::merge_menubar_flags(
+        &path,
+        &[(DISMISSED_VERSION_KEY, Value::String(version))],
+    )
 }
 
 /// Build the argv for the global install. Factored out so the unit test
@@ -528,6 +612,29 @@ mod tests {
             "package arg must request @latest; got {}",
             argv[2],
         );
+    }
+
+    #[test]
+    fn dismissal_suppresses_same_and_older_versions() {
+        // Nothing dismissed → always show.
+        assert!(!suppress_for_dismissal("5.38.2", None));
+        // Dismissed the exact current version → stay hidden.
+        assert!(suppress_for_dismissal("5.38.2", Some("5.38.2")));
+        // A version older than what was dismissed → also hidden (can't regress
+        // the user back into a notice for something they already moved past).
+        assert!(suppress_for_dismissal("5.38.1", Some("5.38.2")));
+    }
+
+    #[test]
+    fn dismissal_clears_when_a_newer_version_appears() {
+        // The headline example: dismissing 5.38.x stays dismissed until 5.39.
+        assert!(!suppress_for_dismissal("5.39.0", Some("5.38.2")));
+        // A patch bump past the dismissed version re-surfaces once (a freshly
+        // published fix is exactly what stale users need to see) — still
+        // dismissible afterwards.
+        assert!(!suppress_for_dismissal("5.38.3", Some("5.38.2")));
+        // Numeric, not lexical: 5.41 > 5.9 even though '4' < '9'.
+        assert!(!suppress_for_dismissal("5.41.0", Some("5.9.0")));
     }
 
     #[test]

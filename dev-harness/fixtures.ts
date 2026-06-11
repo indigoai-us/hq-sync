@@ -119,10 +119,22 @@ export const popoverProps = {
   ondismissconflicts: () => {},
   oninstallupdate: () => {},
   oninstallhqcliupdate: () => {},
+  ondismisshqcliupdate: () => console.debug('[harness] dismiss hq cli update'),
   oninstallcore: () => console.debug('[harness] install core'),
   onworkspacesrefresh: () => {},
   bindStatsRefresh: () => {},
   onmeetingsclick: () => {},
+};
+
+/**
+ * A stale-CLI fixture for the dev-harness `?view=popover&state=cli-update`
+ * preview — drives the "CLI update available" banner (copyable one-liner +
+ * dismiss ×). `local` is deliberately behind `latest` so the "You're on vX"
+ * line renders. Mirrors the real `HqCliUpdateInfo` shape (`{ local, latest }`).
+ */
+export const hqCliUpdateAvailable = {
+  local: '5.38.2',
+  latest: '5.41.0',
 };
 
 /**
