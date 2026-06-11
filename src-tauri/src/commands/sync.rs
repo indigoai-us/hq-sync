@@ -306,7 +306,19 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// ride this fix). Dry-run and the live run share one classification path.
 /// The `~6.4.0` -> `~6.5.0` bump keeps the menubar's npx pin on the same
 /// release train as hq-cli. See indigoai-us/hq-cloud#67 (DEV-1767).
-pub const HQ_CLOUD_VERSION: &str = "~6.5.0";
+///
+/// **6.6.0 (unwedge all→shared scope-shrink + non-destructive recovery)** — a
+/// customer's menubar sync was permanently wedged (exit 2 every run): a buggy
+/// hq-cli pull seeded an all-mode PullRecord, so the runner's real shared/custom
+/// pull scope-shrank against `[""]` and threw `ScopeShrinkBlockedError(all→shared)`
+/// forever, with un-followable "pass --force-scope-shrink" advice. 6.6.0 makes
+/// the runner's pull self-heal: dirty out-of-scope files are KEPT on disk +
+/// un-tracked, clean ones are QUARANTINED (recoverable, never silently deleted),
+/// and the wedged journal clears itself on the next sync. The menubar MUST ride
+/// this — it's the surface that was stuck. The `~6.5.0` -> `~6.6.0` bump keeps
+/// the npx pin on the same release train as hq-cli. See
+/// indigoai-us/hq-cloud#70 (DEV-1768).
+pub const HQ_CLOUD_VERSION: &str = "~6.6.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
