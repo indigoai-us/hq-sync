@@ -567,7 +567,7 @@
     gap: var(--space-2);
     margin: 0;
     color: var(--fg);
-    font-size: var(--text-lg, 15px);
+    font-size: var(--text-lg, 18px);
     font-weight: 700;
   }
 
@@ -709,7 +709,7 @@
     border: 1px solid var(--border);
     background: var(--row-hover);
     color: var(--muted-2);
-    font-size: var(--text-lg, 15px);
+    font-size: var(--text-lg, 18px);
     font-weight: 700;
   }
 

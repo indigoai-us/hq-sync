@@ -701,6 +701,7 @@
                 onsync={handleSyncAll}
                 onsettings={handleOpenSettings}
                 onaddsource={handleAddSource}
+                onrefresh={loadWorkspaces}
                 {actionMessage}
                 {actionError}
               />

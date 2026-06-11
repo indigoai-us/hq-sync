@@ -34,6 +34,8 @@
     onsync: () => void;
     onsettings: () => void;
     onaddsource: () => void;
+    /** Re-fetch workspaces after a successful in-place Connect. */
+    onrefresh?: () => void;
     actionMessage?: string;
     actionError?: string;
   }
@@ -51,6 +53,7 @@
     cloudReachable,
     activity,
     syncErrorMessage = '',
+    onrefresh,
   }: Props = $props();
 
   const recentActivity = $derived(
@@ -97,6 +100,7 @@
       {statsBySlug}
       {cloudReachable}
       loading={!ready}
+      {onrefresh}
     />
 
     <aside class="side-column">

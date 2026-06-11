@@ -486,7 +486,7 @@
     color: var(--fg);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 0.92em;
+    font-size: var(--text-base);
   }
 
   .markdown-body :global(pre) {
