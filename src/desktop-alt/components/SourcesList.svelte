@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import type { Workspace } from '../../lib/workspaces';
   import SyncModeToggle from '../../components/SyncModeToggle.svelte';
   import {
@@ -17,10 +18,19 @@
     cloudReachable: boolean;
     /** True during the first real-state fetch → skeleton rows, not empty state. */
     loading?: boolean;
+    /** Re-fetch workspaces after a successful in-place Connect. */
+    onrefresh?: () => void;
   }
 
-  let { workspaces, syncState, progress, statsBySlug, cloudReachable, loading = false }: Props =
-    $props();
+  let {
+    workspaces,
+    syncState,
+    progress,
+    statsBySlug,
+    cloudReachable,
+    loading = false,
+    onrefresh,
+  }: Props = $props();
 
   const rows = $derived(
     buildSourceRows({
@@ -43,6 +53,27 @@
       case 'ok':
       default:
         return 'OK';
+    }
+  }
+
+  // Per-row Connect state: `true` while in flight, an error string after a
+  // failure (the row flips to a Retry affordance), absent otherwise. Mirrors
+  // the menubar WorkspaceList Connect flow — the same `connect_workspace_to_cloud`
+  // command provisions a local-only folder or reconciles a broken manifest row.
+  let connectState = $state<Record<string, true | string>>({});
+
+  async function handleConnect(slug: string) {
+    if (connectState[slug] === true) return; // block double-clicks while in flight
+    connectState = { ...connectState, [slug]: true };
+    try {
+      await invoke('connect_workspace_to_cloud', { slug });
+      const { [slug]: _done, ...rest } = connectState;
+      connectState = rest;
+      onrefresh?.();
+    } catch (err) {
+      const msg = String(err);
+      console.error('connect_workspace_to_cloud failed:', msg);
+      connectState = { ...connectState, [slug]: msg };
     }
   }
 </script>
@@ -113,13 +144,30 @@
           <span class="source-muted" role="cell">{row.lastSyncLabel}</span>
           <span class="source-muted" role="cell">{row.transferredLabel}</span>
           <div class="source-action" class:has-sync-mode={row.showSyncMode} role="cell">
-            <span class="action-pill {row.action.toLowerCase().replaceAll(' ', '-')}">
-              {row.action}
-            </span>
-            {#if row.showSyncMode}
-              <div class="sync-mode-slot">
-                <SyncModeToggle slug={row.slug} {cloudReachable} />
-              </div>
+            {#if row.connectable}
+              {@const err = typeof connectState[row.slug] === 'string' ? (connectState[row.slug] as string) : null}
+              {@const connecting = connectState[row.slug] === true}
+              <button
+                type="button"
+                class="connect-btn"
+                class:connecting
+                class:errored={err !== null}
+                disabled={connecting || !cloudReachable}
+                title={err ?? 'Connect this workspace to the cloud'}
+                data-testid="source-connect"
+                onclick={() => handleConnect(row.slug)}
+              >
+                {connecting ? 'Connecting…' : err ? 'Retry' : 'Connect'}
+              </button>
+            {:else}
+              <span class="action-pill {row.action.toLowerCase().replaceAll(' ', '-')}">
+                {row.action}
+              </span>
+              {#if row.showSyncMode}
+                <div class="sync-mode-slot">
+                  <SyncModeToggle slug={row.slug} {cloudReachable} />
+                </div>
+              {/if}
             {/if}
           </div>
         </div>
@@ -361,6 +409,47 @@
     align-items: center;
     justify-content: flex-end;
     min-width: 74px;
+  }
+
+  /* Inline Connect for local-only / broken rows. An actionable button (not a
+     status pill) so the Sources tab can reconcile a workspace to the cloud
+     without bouncing the user back to the menubar. */
+  .connect-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 74px;
+    height: 24px;
+    padding: 0 11px;
+    border: 1px solid rgba(96, 165, 250, 0.45);
+    border-radius: 999px;
+    background: rgba(96, 165, 250, 0.12);
+    color: var(--blue);
+    font-size: var(--text-base);
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+  }
+
+  .connect-btn:hover:not(:disabled) {
+    background: rgba(96, 165, 250, 0.2);
+    border-color: rgba(96, 165, 250, 0.65);
+  }
+
+  .connect-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+
+  .connect-btn.connecting {
+    color: var(--muted-2);
+  }
+
+  .connect-btn.errored {
+    border-color: rgba(248, 113, 113, 0.5);
+    background: rgba(248, 113, 113, 0.12);
+    color: var(--red);
   }
 
   .action-pill {

@@ -78,10 +78,7 @@ async fn post_json<T: serde::de::DeserializeOwned>(
             .unwrap_or_else(|| format!("Request failed (status {})", status.as_u16())));
     }
 
-    resp.json::<T>().await.map_err(|e| {
-        log(LOG_TAG, &format!("{code}_PARSE_FAIL {e}"));
-        format!("Could not parse response: {e}")
-    })
+    parse_body::<T>(resp, code).await
 }
 
 const LOG_TAG: &str = "messages";
@@ -234,8 +231,25 @@ async fn get_json<T: serde::de::DeserializeOwned>(
             .unwrap_or_else(|| format!("Request failed (status {})", status.as_u16())));
     }
 
-    resp.json::<T>().await.map_err(|e| {
-        log(LOG_TAG, &format!("{code}_PARSE_FAIL {e}"));
+    parse_body::<T>(resp, code).await
+}
+
+/// Read a successful response body as text, then deserialize into `T`. On a
+/// decode failure we log a truncated copy of the RAW body (alongside the serde
+/// error) so a server↔client contract drift is diagnosable from
+/// `~/.hq/logs/hq-sync.log` instead of surfacing only the opaque "error
+/// decoding response body". Shared by `get_json` + `post_json`.
+async fn parse_body<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+    code: &str,
+) -> Result<T, String> {
+    let body = resp.text().await.map_err(|e| {
+        log(LOG_TAG, &format!("{code}_BODY_READ_FAIL {e}"));
+        format!("Could not read response: {e}")
+    })?;
+    serde_json::from_str::<T>(&body).map_err(|e| {
+        let snippet: String = body.chars().take(400).collect();
+        log(LOG_TAG, &format!("{code}_PARSE_FAIL {e} body={snippet}"));
         format!("Could not parse response: {e}")
     })
 }
@@ -407,7 +421,13 @@ pub struct ChannelMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelDetail {
-    pub channel: Channel,
+    /// The channel metadata. Optional because the `/messages` endpoint may
+    /// return only the message page (the caller already holds the channel from
+    /// the list); a required field here made an otherwise-fine fetch fail to
+    /// decode with "error decoding response body". The frontend already treats
+    /// it as optional (`if (detail.channel)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<Channel>,
     #[serde(default)]
     pub messages: Vec<ChannelMessage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -877,6 +897,40 @@ mod tests {
     }
 
     #[test]
+    fn channel_detail_decodes_without_channel_key() {
+        // Regression: the `/v1/notify/channels/{id}/messages` endpoint returns
+        // only the message page (no nested `channel`). A required `channel`
+        // field made this fail to decode ("error decoding response body") and
+        // broke opening a freshly-created/empty channel. `channel` is optional.
+        let json = r#"{ "messages": [], "nextCursor": null }"#;
+        let detail: ChannelDetail = serde_json::from_str(json).expect("ChannelDetail parses");
+        assert!(detail.channel.is_none());
+        assert!(detail.messages.is_empty());
+        assert!(detail.next_cursor.is_none());
+    }
+
+    #[test]
+    fn channel_detail_decodes_with_channel_and_messages() {
+        let json = r#"{
+            "channel": { "channelId": "chn_1", "name": "crew", "scope": "company" },
+            "messages": [
+                {
+                    "eventId": "evt_1",
+                    "fromPersonUid": "prs_a",
+                    "body": "hi",
+                    "createdAt": "2026-06-10T16:00:00Z",
+                    "direction": "in"
+                }
+            ]
+        }"#;
+        let detail: ChannelDetail = serde_json::from_str(json).expect("ChannelDetail parses");
+        let channel = detail.channel.expect("channel present");
+        assert_eq!(channel.channel_id, "chn_1");
+        assert_eq!(detail.messages.len(), 1);
+        assert_eq!(detail.messages[0].body, "hi");
+    }
+
+    #[test]
     fn unread_summary_serializes_camel_case() {
         let s = UnreadSummary {
             unread_dms: 3,
@@ -952,7 +1006,7 @@ mod tests {
             ]
         }"#;
         let d: ChannelDetail = serde_json::from_str(detail_json).expect("detail parses");
-        assert_eq!(d.channel.channel_id, "chn_1");
+        assert_eq!(d.channel.expect("channel present").channel_id, "chn_1");
         assert_eq!(d.messages.len(), 1);
         assert_eq!(d.messages[0].direction, "in");
     }

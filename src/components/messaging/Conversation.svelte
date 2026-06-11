@@ -9,6 +9,7 @@
   import { tick } from 'svelte';
   import ReactionBar from './ReactionBar.svelte';
   import { type ReactionMap } from '../../lib/reactions';
+  import { copyableText, type CopyKind } from '../../lib/conversation-copy';
 
   // One rendered message in the thread. `direction` is relative to the signed-in
   // user: "out" = I sent it, "in" = the other person sent it. Extra fields
@@ -90,7 +91,12 @@
   }: Props = $props();
 
   let replyText = $state('');
-  let copiedId = $state<string | null>(null);
+  // Tracks the last successful copy so the "Copied!" feedback stays scoped to
+  // the exact affordance the user clicked — a bubble can offer both a
+  // copy-message and a copy-prompt action.
+  let copied = $state<{ id: string; kind: CopyKind } | null>(null);
+  const isCopied = (id: string, kind: CopyKind) =>
+    copied?.id === id && copied?.kind === kind;
   let scrollEl = $state<HTMLDivElement | null>(null);
 
   async function scrollToBottom(): Promise<void> {
@@ -164,14 +170,18 @@
     if (id) onopenthread?.(id);
   }
 
-  async function copyPrompt(id: string, prompt: string | null | undefined): Promise<void> {
-    const p = prompt?.trim();
-    if (!p) return;
+  // Copy either a message's body or its attached agent prompt to the clipboard.
+  // The text selection (trim + empty→null) lives in the pure `copyableText`
+  // helper so it stays unit-tested; here we just perform the write and flash the
+  // scoped "Copied!" feedback.
+  async function copyText(id: string, kind: CopyKind, msg: ConversationMessage): Promise<void> {
+    const text = copyableText(msg, kind);
+    if (!text) return;
     try {
-      await navigator.clipboard.writeText(p);
-      copiedId = id;
+      await navigator.clipboard.writeText(text);
+      copied = { id, kind };
       setTimeout(() => {
-        if (copiedId === id) copiedId = null;
+        if (copied?.id === id && copied?.kind === kind) copied = null;
       }, 1800);
     } catch (err) {
       console.error('conversation: clipboard write failed', err);
@@ -196,6 +206,30 @@
         class="dm-bubble"
         class:dm-bubble-thread-active={!!activeRootEventId && msg.rootEventId === activeRootEventId}
       >
+        <!-- Copy the whole message. Hover/focus-revealed on every bubble so it
+             stays out of the way until wanted; copying the agent prompt is a
+             separate, always-visible labelled action below. -->
+        <div class="dm-bubble-actions">
+          <button
+            type="button"
+            class="dm-action"
+            class:dm-action-done={isCopied(msg.eventId, 'body')}
+            onclick={() => copyText(msg.eventId, 'body', msg)}
+            aria-label={isCopied(msg.eventId, 'body') ? 'Message copied' : 'Copy message'}
+            title={isCopied(msg.eventId, 'body') ? 'Copied!' : 'Copy message'}
+          >
+            {#if isCopied(msg.eventId, 'body')}
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M3 8.5L6.5 12L13 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            {:else}
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3" />
+                <path d="M3.5 10.5H3A1.5 1.5 0 0 1 1.5 9V3A1.5 1.5 0 0 1 3 1.5h6A1.5 1.5 0 0 1 10.5 3v.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            {/if}
+          </button>
+        </div>
         <p class="dm-bubble-body">{msg.body}</p>
         {#if msg.details}
           <div class="dm-bubble-details">{msg.details}</div>
@@ -203,10 +237,10 @@
         {#if msg.prompt}
           <button
             class="btn btn-copy"
-            onclick={() => copyPrompt(msg.eventId, msg.prompt)}
+            onclick={() => copyText(msg.eventId, 'prompt', msg)}
             aria-label="Copy agent prompt to clipboard"
           >
-            {copiedId === msg.eventId ? 'Copied!' : 'Copy prompt'}
+            {isCopied(msg.eventId, 'prompt') ? 'Copied!' : 'Copy prompt'}
           </button>
         {/if}
       </div>
@@ -321,11 +355,61 @@
   }
 
   .dm-bubble {
+    position: relative;
     padding: 0.5rem 0.75rem;
     border-radius: 12px;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+  }
+
+  /* Hover/focus copy-message toolbar, pinned to the bubble's top-right. Hidden
+     until the bubble is hovered or something inside it is focused (keyboard
+     users reach the button by Tab), so it never clutters the thread. */
+  .dm-bubble-actions {
+    position: absolute;
+    /* Float just above the bubble's top-right corner so the control never sits
+       over the message text on hover (Slack/Discord pattern). */
+    top: -0.625rem;
+    right: 0.375rem;
+    z-index: 2;
+    display: flex;
+    gap: 0.125rem;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+
+  .dm-bubble:hover .dm-bubble-actions,
+  .dm-bubble:focus-within .dm-bubble-actions {
+    opacity: 1;
+  }
+
+  .dm-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.375rem;
+    height: 1.375rem;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.32);
+    color: var(--popover-text, #e0e0e0);
+    transition: background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .dm-action:hover {
+    background: rgba(0, 0, 0, 0.48);
+  }
+
+  .dm-action:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.4);
+    outline-offset: 1px;
+  }
+
+  .dm-action-done {
+    color: #7ee0a8;
   }
 
   .dm-msg-in .dm-bubble {
@@ -616,6 +700,22 @@
 
   :global([data-window='messages']) .btn-copy:hover {
     background: var(--row-hover);
+  }
+
+  :global([data-window='messages']) .dm-action {
+    background: var(--surface-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--muted-2);
+  }
+
+  :global([data-window='messages']) .dm-action:hover {
+    background: var(--row-hover);
+    color: var(--fg);
+  }
+
+  :global([data-window='messages']) .dm-action-done {
+    color: var(--emerald, #7ee0a8);
   }
 
   :global([data-window='messages']) .dm-reply {

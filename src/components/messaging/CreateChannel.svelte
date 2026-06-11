@@ -241,7 +241,7 @@
 
   .create-header h2 {
     margin: 0;
-    font-size: 0.9375rem;
+    font-size: var(--text-lg, 18px);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
   }
@@ -250,7 +250,7 @@
     border: none;
     background: transparent;
     color: var(--popover-text-muted, #a0a0b0);
-    font-size: 1.25rem;
+    font-size: var(--text-lg, 18px);
     line-height: 1;
     cursor: pointer;
     padding: 0 0.25rem;
@@ -269,7 +269,7 @@
   }
 
   .create-label {
-    font-size: 0.625rem;
+    font-size: var(--text-base, 13px);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -300,7 +300,7 @@
 
   .name-hash {
     color: var(--popover-text-muted, #8a8a98);
-    font-size: 0.875rem;
+    font-size: var(--text-base, 13px);
     font-weight: 600;
   }
 
@@ -310,7 +310,7 @@
     background: transparent;
     color: var(--popover-text, #e0e0e0);
     font-family: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-base, 13px);
     line-height: 1.4;
     padding: 0.5rem 0;
   }
@@ -328,7 +328,7 @@
     background: rgba(255, 255, 255, 0.04);
     color: var(--popover-text, #e0e0e0);
     font-family: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-base, 13px);
   }
 
   .scope-select:focus {
@@ -338,7 +338,7 @@
 
   .scope-hint {
     margin: 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-base, 13px);
     color: var(--popover-text-muted, #8a8a98);
   }
 
@@ -362,7 +362,7 @@
   }
 
   .invite-chip-name {
-    font-size: 0.6875rem;
+    font-size: var(--text-base, 13px);
     color: #dce8ff;
   }
 
@@ -370,7 +370,7 @@
     border: none;
     background: transparent;
     color: #dce8ff;
-    font-size: 0.875rem;
+    font-size: var(--text-base, 13px);
     line-height: 1;
     cursor: pointer;
     padding: 0 0.125rem;
@@ -388,12 +388,12 @@
   }
 
   .create-hint {
-    font-size: 0.6875rem;
+    font-size: var(--text-base, 13px);
     color: var(--popover-text-muted, #a0a0b0);
   }
 
   .create-error {
-    font-size: 0.75rem;
+    font-size: var(--text-base, 13px);
     color: #ff9b9b;
     word-break: break-word;
   }
@@ -403,7 +403,7 @@
     align-items: center;
     padding: 0.4375rem 0.875rem;
     border-radius: 7px;
-    font-size: 0.75rem;
+    font-size: var(--text-base, 13px);
     font-weight: 600;
     cursor: pointer;
     border: none;

@@ -65,6 +65,10 @@ export interface SourceViewModel {
   state: Workspace['state'];
   isPersonal: boolean;
   showSyncMode: boolean;
+  /** Local-only or broken rows can be reconciled to the cloud in place via
+   *  `connect_workspace_to_cloud` (mirrors the menubar WorkspaceList Connect
+   *  affordance). Drives the inline Connect button in the Sources tab. */
+  connectable: boolean;
   name: string;
   detail: string;
   liveState: SourceLiveState;
@@ -261,6 +265,7 @@ export function buildSourceRows(args: {
       state: workspace.state,
       isPersonal: workspace.kind === 'personal',
       showSyncMode: showSyncModeFor(workspace),
+      connectable: workspace.state === 'local-only' || workspace.state === 'broken',
       name: workspace.displayName,
       detail,
       liveState: syncing

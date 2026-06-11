@@ -229,3 +229,66 @@ describe('desktop-alt sync model attention states', () => {
     );
   });
 });
+
+describe('desktop-alt sources Connect affordance', () => {
+  // The Sources tab gained an inline Connect for rows that can be reconciled
+  // to the cloud in place (mirrors the menubar WorkspaceList). `connectable`
+  // gates that button; it must light up only for local-only / broken rows and
+  // stay off for rows that already have a cloud presence (which instead get the
+  // hover Shared/All toggle).
+  const localOnly: Workspace = {
+    ...companyWorkspace,
+    slug: 'local-only',
+    displayName: 'Local Only Co',
+    state: 'local-only',
+    cloudUid: null,
+  };
+  const broken: Workspace = {
+    ...companyWorkspace,
+    slug: 'broken',
+    displayName: 'Broken Co',
+    state: 'broken',
+    brokenReason: 'Manifest out of sync',
+  };
+  const cloudOnly: Workspace = {
+    ...companyWorkspace,
+    slug: 'cloud-only',
+    displayName: 'Cloud Only Co',
+    state: 'cloud-only',
+  };
+
+  function rowsBySlug(workspaces: Workspace[]) {
+    const rows = buildSourceRows({
+      workspaces,
+      syncState: 'idle',
+      progress: null,
+      statsBySlug: {},
+      cloudReachable: true,
+    });
+    return Object.fromEntries(rows.map((r) => [r.slug, r]));
+  }
+
+  it('marks local-only and broken rows as connectable', () => {
+    const rows = rowsBySlug([localOnly, broken]);
+    expect(rows['local-only'].connectable).toBe(true);
+    expect(rows['broken'].connectable).toBe(true);
+  });
+
+  it('does not mark cloud-backed or personal rows as connectable', () => {
+    const rows = rowsBySlug([personalWorkspace, companyWorkspace, cloudOnly]);
+    expect(rows['personal'].connectable).toBe(false);
+    expect(rows['acme'].connectable).toBe(false);
+    expect(rows['cloud-only'].connectable).toBe(false);
+  });
+
+  it('keeps Connect and the Shared/All toggle mutually exclusive per row', () => {
+    // connectable rows never show the sync-mode toggle, and vice versa — the
+    // action cell renders one or the other, never both.
+    const rows = rowsBySlug([localOnly, broken, companyWorkspace, cloudOnly]);
+    for (const row of Object.values(rows)) {
+      expect(row.connectable && row.showSyncMode).toBe(false);
+    }
+    expect(rows['acme'].showSyncMode).toBe(true);
+    expect(rows['cloud-only'].showSyncMode).toBe(true);
+  });
+});

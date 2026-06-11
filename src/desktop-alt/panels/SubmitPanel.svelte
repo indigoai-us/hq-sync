@@ -305,7 +305,7 @@
   .submit-title {
     margin: 0;
     color: var(--fg);
-    font-size: var(--text-lg, 15px);
+    font-size: var(--text-lg, 18px);
     font-weight: 700;
   }
 
@@ -414,7 +414,7 @@
     margin: 0;
     color: var(--muted-2);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-micro, 11px);
+    font-size: var(--text-micro, 13px);
     line-height: 1.5;
     white-space: pre-wrap;
     word-break: break-word;
@@ -442,7 +442,7 @@
     border-radius: 3px;
     background: var(--row-active);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: var(--text-micro, 11px);
+    font-size: var(--text-micro, 13px);
   }
 
   .success-sub {
@@ -456,7 +456,7 @@
     align-items: center;
     padding: 1px 7px;
     border-radius: 999px;
-    font-size: var(--text-micro, 11px);
+    font-size: var(--text-micro, 13px);
     font-weight: 700;
   }
 

@@ -375,7 +375,7 @@
     margin: var(--space-2) 0 0;
     color: var(--fg);
     font-family: var(--font-display);
-    font-size: 19px;
+    font-size: var(--text-lg);
     font-weight: 600;
     letter-spacing: -0.01em;
     line-height: 1.2;

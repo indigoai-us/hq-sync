@@ -346,7 +346,6 @@ fn main() {
             commands::messages::toggle_reaction,
             commands::messages::fetch_reactions,
             commands::notification_history::fetch_notification_history,
-            commands::notification_history::open_notification_history,
             commands::notifications::notification_permission_state,
             commands::notifications::notification_request_permission,
             commands::banner::banner_window_ready,

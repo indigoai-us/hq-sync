@@ -3,7 +3,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import SyncStats from './SyncStats.svelte';
   import ConflictModal from './ConflictModal.svelte';
-  import WorkspaceList from './WorkspaceList.svelte';
+  import NotificationFeed from './NotificationFeed.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import MeetingIcon from './MeetingIcon.svelte';
@@ -233,15 +233,6 @@
     ) => void;
     /** Indigo-only dogfood gate for the desktop alternate window toggle. */
     desktopAltEnabled?: boolean;
-    /** Opens the dedicated Messages window (US-009). Owner is App.svelte,
-     *  which invokes `open_messages_window`. Always available. */
-    onmessagesclick?: () => void;
-    /** Live counts for the Messages header icon badge — unread DMs + channel
-     *  unread (folded into the badge count) plus a distinct pending-request
-     *  accent. Kept current by App.svelte off the `dm:unread-summary` +
-     *  `channel:new-message` events (no separate poller). `channelUnread` is
-     *  optional so older callers still type-check. */
-    unreadSummary?: { unreadDms: number; pendingRequests: number; channelUnread?: number };
   }
 
   /** Mirror of `App.svelte`'s `ActiveMeeting` interface — duplicated here
@@ -310,16 +301,7 @@
     recordingCompanies = [],
     onchangerecordingcompany,
     desktopAltEnabled = false,
-    onmessagesclick,
-    unreadSummary = { unreadDms: 0, pendingRequests: 0, channelUnread: 0 },
   }: Props = $props();
-
-  // The header badge folds DM unread + channel unread into one count; pending
-  // connection requests get the distinct dot accent (a different kind of
-  // attention than "you have unread messages").
-  const messagesUnreadCount = $derived(
-    (unreadSummary.unreadDms ?? 0) + (unreadSummary.channelUnread ?? 0),
-  );
 
   let desktopAltError = $state('');
   let desktopAltErrorTimer: ReturnType<typeof setTimeout> | null = null;
@@ -349,14 +331,6 @@
     } catch (e) {
       console.error('open_desktop_alt_window failed:', e);
       showDesktopAltError('Could not open desktop view.');
-    }
-  }
-
-  async function openNotificationHistory() {
-    try {
-      await invoke('open_notification_history');
-    } catch (e) {
-      console.error('open_notification_history failed:', e);
     }
   }
 
@@ -588,55 +562,10 @@
       <!-- Secondary icon controls cluster — visually grouped and set apart from
            the primary Sync pill by the gap on `.header-sync` below. -->
       <div class="header-icon-group">
-      <!-- Notification history → opens a window listing past DMs, shares, and
-           this session's new files. Always available (not identity-gated). A
-           bell glyph reads as "things that pinged me". -->
-      <button
-        class="header-icon-button notif-history-toggle"
-        type="button"
-        onclick={openNotificationHistory}
-        title="Notification history"
-        aria-label="Notification history"
-        data-testid="notif-history-toggle"
-      >
-        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-          <path d="M8 1.75a3.5 3.5 0 0 0-3.5 3.5c0 3-1.25 4-1.25 4h9.5s-1.25-1-1.25-4A3.5 3.5 0 0 0 8 1.75Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-          <path d="M6.75 12.25a1.25 1.25 0 0 0 2.5 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-      </button>
-
-      {#if onmessagesclick}
-        <!-- Messages → opens the dedicated Messages window (US-009). Always
-             available. Carries two badges: an unread-DM count (neutral) and a
-             distinct pending-request accent (warm) so requests read apart from
-             ordinary unread messages. Either badge dot appears only when its
-             count is > 0; the numeric pill shows when there are unread DMs. -->
-        <button
-          class="header-icon-button messages-toggle"
-          type="button"
-          onclick={onmessagesclick}
-          title="Messages"
-          aria-label={
-            messagesUnreadCount > 0 || unreadSummary.pendingRequests > 0
-              ? `Messages (${messagesUnreadCount} unread, ${unreadSummary.pendingRequests} requests)`
-              : 'Messages'
-          }
-          data-testid="messages-toggle"
-        >
-          <svg width="15" height="15" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-            <path d="M2.5 4.25A1.75 1.75 0 0 1 4.25 2.5h7.5a1.75 1.75 0 0 1 1.75 1.75v5A1.75 1.75 0 0 1 11.75 11H6.5l-3 2.25V11h-.25A1.75 1.75 0 0 1 2.5 9.25v-5Z" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-          {#if messagesUnreadCount > 0}
-            <span class="messages-badge" aria-hidden="true">
-              {messagesUnreadCount > 9 ? '9+' : messagesUnreadCount}
-            </span>
-          {/if}
-          {#if unreadSummary.pendingRequests > 0}
-            <span class="messages-request-dot" aria-hidden="true"></span>
-          {/if}
-        </button>
-      {/if}
-
+      <!-- Notifications now render inline as the popover's default body (the
+           bell + separate notification-history window were retired), and
+           messaging moved to the desktop view. This icon group keeps just the
+           meeting hook + the "open desktop view" gateway. -->
       {#if meetingsEnabled && onmeetingsclick}
         <!-- Discreet meeting hook → opens MeetingsWindow. State (detected /
              recording) is carried monochromatically (fill weight), not by a
@@ -955,19 +884,12 @@
         <SyncStats bind:this={statsEl} onhistory={() => invoke('open_activity_log')} />
       {/if}
 
-      <!-- Workspaces (Personal + companies) — the steady-state list.
-           Renders as soon as `list_syncable_workspaces` returns; null while
-           the first invocation is in flight. -->
-      {#if workspaces && workspaces.length > 0}
-        <WorkspaceList
-          {workspaces}
-          {cloudReachable}
-          {cloudError}
-          {manifestError}
-          hqFolderPath={config?.hqFolderPath ?? ''}
-          onrefresh={onworkspacesrefresh}
-        />
-      {/if}
+      <!-- Notifications — the popover's default body (in place of the old
+           companies/sources list, which now lives in the desktop view's
+           Sources tab). Surfaces recent DMs, shares, and new-file activity;
+           a tap opens the matching detail window. The inline feed loads its
+           own data and keeps itself fresh off DM/sync events. -->
+      <NotificationFeed />
 
       <!-- Sync button moved to the header (right-aligned). The body no
            longer hosts a full-width sync action — keeps the workspace list
@@ -1316,47 +1238,6 @@
     outline-offset: 2px;
     color: var(--popover-text-heading, #ffffff);
     border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
-  }
-
-  /* Messages icon — anchors its badges. The unread pill is neutral; the
-     request dot is a distinct warm accent so requests read apart from
-     ordinary unread DMs (matches the rail's request badge in MessagesShell). */
-  .messages-toggle {
-    position: relative;
-    overflow: visible;
-  }
-
-  .messages-badge {
-    position: absolute;
-    top: -3px;
-    right: -3px;
-    min-width: 0.875rem;
-    height: 0.875rem;
-    padding: 0 0.1875rem;
-    box-sizing: border-box;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    font-size: 0.5625rem;
-    font-weight: 700;
-    line-height: 1;
-    color: #ffffff;
-    background: var(--popover-accent, rgba(120, 170, 255, 0.95));
-    box-shadow: 0 0 0 1.5px var(--popover-bg, #14141a);
-    pointer-events: none;
-  }
-
-  .messages-request-dot {
-    position: absolute;
-    bottom: -2px;
-    right: -2px;
-    width: 0.5rem;
-    height: 0.5rem;
-    border-radius: 50%;
-    background: #ffb066;
-    box-shadow: 0 0 0 1.5px var(--popover-bg, #14141a);
-    pointer-events: none;
   }
 
   .header-inline-error {

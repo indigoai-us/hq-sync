@@ -5,9 +5,46 @@
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
+  import Conversation, {
+    type ConversationMessage,
+  } from '../src/components/messaging/Conversation.svelte';
+  import CreateChannel from '../src/components/messaging/CreateChannel.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
   import { popoverProps, bannerFixtures, workspaces, hqCliUpdateAvailable } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
+
+  // Fixture thread for ?view=conversation — exercises the copy-message toolbar
+  // and the copy-prompt button (the last inbound message carries an agent
+  // prompt). Times are passed in via ISO strings so the harness stays
+  // deterministic without Date.now().
+  const conversationMessages: ConversationMessage[] = [
+    {
+      eventId: 'm1',
+      fromPersonUid: 'prs_maya',
+      fromDisplayName: 'Maya Chen',
+      body: 'Morning! Did the conflict-versioning branch land?',
+      createdAt: '2026-06-10T16:02:00Z',
+      direction: 'in',
+    },
+    {
+      eventId: 'm2',
+      fromPersonUid: 'prs_me',
+      fromDisplayName: 'Corey Epstein',
+      body: 'Just merged it — running the e2e suite now.',
+      createdAt: '2026-06-10T16:04:00Z',
+      direction: 'out',
+    },
+    {
+      eventId: 'm3',
+      fromPersonUid: 'prs_maya',
+      fromDisplayName: 'Maya Chen',
+      body: 'Nice. Can you kick off the audit on the indigo repo?',
+      details: 'Repo: repos/private/indigo-app · branch: main',
+      prompt: '/run-project indigo-app --story audit-pass --headless',
+      createdAt: '2026-06-10T16:06:00Z',
+      direction: 'in',
+    },
+  ];
 
   // The Indigo workspace fixture drives the ?view=company desktop board preview.
   const indigoWorkspace = workspaces.find((w) => w.slug === 'indigo') ?? workspaces[0];
@@ -45,7 +82,9 @@
         ? 'desktop-alt'
         : view === 'permissions'
           ? 'meeting-permissions'
-          : 'main'
+          : view === 'conversation' || view === 'createchannel'
+            ? 'messages'
+            : 'main'
   );
   document.documentElement.dataset.forceTheme = theme;
 
@@ -68,6 +107,26 @@
   <BannerNotification />
 {:else if view === 'popover'}
   <Popover {...previewPopoverProps} />
+{:else if view === 'conversation'}
+  <!-- The shared messaging Conversation (desktop Messages styling via
+       data-window='messages'). Hover a bubble to reveal the copy-message
+       button; the last message carries an agent prompt → Copy prompt. -->
+  <div class="conversation-stage">
+    <Conversation
+      messages={conversationMessages}
+      showAuthors={true}
+      onsend={() => {}}
+      ontogglereaction={() => {}}
+    />
+  </div>
+{:else if view === 'createchannel'}
+  <!-- The New-channel modal (font-size pass). data-window='messages' so the
+       desktop tokens resolve. Companies/contacts come from Tauri commands that
+       the harness doesn't fully mock, so the dropdown + picker may be empty —
+       the type scale is what this view is for. -->
+  <div class="conversation-stage" style="justify-content: center; background: var(--bg, #161618);">
+    <CreateChannel onclose={() => {}} oncreated={() => {}} />
+  </div>
 {:else if view === 'company'}
   <!-- The desktop window's company page (default Board tab). Sized to the
        real desktop content area; data-window='desktop-alt' activates the
@@ -107,6 +166,19 @@
     box-sizing: border-box;
     min-height: 100vh;
     padding: 28px 32px;
+  }
+
+  /* Conversation preview: a fixed-width column with the messages-window
+     surface, so the thread + composer render at realistic proportions. The
+     component is column-flex and fills height, so the stage pins it. */
+  .conversation-stage {
+    box-sizing: border-box;
+    width: 460px;
+    height: 100vh;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg, #161618);
   }
 
   /* Banner preview: the real window is 366x104, pinned top-right over the

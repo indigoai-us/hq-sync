@@ -471,7 +471,7 @@
     margin: 0;
     color: var(--fg);
     font-family: var(--font-display);
-    font-size: 24px;
+    font-size: var(--text-lg);
     font-weight: 600;
     letter-spacing: -0.02em;
     line-height: 1.15;
@@ -912,7 +912,7 @@
     color: var(--fg);
     font-family:
       ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
-    font-size: 0.92em;
+    font-size: var(--text-base);
   }
 
   .markdown-body :global(pre) {

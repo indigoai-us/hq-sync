@@ -107,12 +107,20 @@ html[data-window='messages'] {
    * restrained, never shouting. Weight discipline (hq-console standard): body
    * 400, active-nav / labels 500, 600 reserved for genuine headings, KPI
    * numbers, and uppercase caps. Declared in px so sizes are exact. */
-  --text-micro: 10px; /* uppercase caps, eyebrows (tracked +0.08em) */
-  --text-xs: 11px; /* mono data values, dense secondary */
-  --text-sm: 12px; /* body-small, buttons, row meta */
-  --text-base: 13px; /* primary body / row labels */
-  --text-lg: 15px; /* panel headings (H1 within a pane) */
-  --text-kpi: 22px; /* big-number KPI / page display figures */
+  /* Two-size system. The scale collapsed from six near-duplicate steps
+     (10/11/12/13/15/22) to exactly TWO effective sizes: a 13px BODY and an
+     18px DISPLAY. The role tokens are kept (call sites + intent stay legible)
+     but every "small" role resolves to 13px and every "large" role to 18px.
+     Hierarchy below 18px is carried by WEIGHT, UPPERCASE + tracking, the
+     white-alpha colour tiers, and the mono family — never by another px step.
+     Eyebrows/caps read as labels because they're uppercase + tracked + muted,
+     not because they're smaller. */
+  --text-micro: 13px; /* uppercase caps, eyebrows (tracked +0.08em) — BODY size */
+  --text-xs: 13px; /* mono data values, dense secondary — BODY size */
+  --text-sm: 13px; /* body-small, buttons, row meta — BODY size */
+  --text-base: 13px; /* primary body / row labels — BODY size */
+  --text-lg: 18px; /* panel headings (H1 within a pane) — DISPLAY size */
+  --text-kpi: 18px; /* big-number KPI / page display figures — DISPLAY size */
 
   /* Type families. Inter for UI + body, Inter Tight for display headings,
      Geist Mono for data (IDs, paths, counts, versions). */
@@ -127,7 +135,7 @@ html[data-window='messages'] {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: var(--text-base);
   line-height: 1.35;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
