@@ -815,27 +815,24 @@
               hq CLI update available: v{hqCliUpdateAvailable.latest}
             </p>
             {#if hqCliUpdateError}
-              <p class="banner-body">Update failed. Run this in your terminal:</p>
+              <p class="banner-body">Update failed. Copy the command and run it in your terminal.</p>
             {:else if hqCliUpdateAvailable.local}
               <p class="banner-body">
-                You're on v{hqCliUpdateAvailable.local}. Update to the latest with:
+                You're on v{hqCliUpdateAvailable.local}. Copy the latest update command and run it in your terminal.
               </p>
             {:else}
-              <p class="banner-body">Update to the latest with:</p>
+              <p class="banner-body">Copy the update command and run it in your terminal.</p>
             {/if}
-            <div class="cli-cmd-row">
-              <code class="cli-cmd">{HQ_CLI_UPGRADE_CMD}</code>
-              <button
-                type="button"
-                class="cli-cmd-copy"
-                class:copied={hqCliCmdCopied}
-                onclick={copyHqCliCommand}
-                title="Copy the update command"
-                aria-label="Copy the hq CLI update command"
-              >
-                {hqCliCmdCopied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
+            <button
+              type="button"
+              class="cli-cmd-copy"
+              class:copied={hqCliCmdCopied}
+              onclick={copyHqCliCommand}
+              title="Copy the update command"
+              aria-label="Copy the hq CLI update command"
+            >
+              {hqCliCmdCopied ? 'Copied' : 'Copy command'}
+            </button>
           </div>
           <div class="banner-actions">
             {#if hqCliUpdateError}
@@ -1913,32 +1910,12 @@
     color: var(--popover-text, rgba(255, 255, 255, 0.86));
   }
 
-  /* The copyable one-liner row — monospace command + a compact Copy button.
-     The command box scrolls horizontally rather than wrapping so the exact
-     string stays selectable on the 320px popover. */
-  .cli-cmd-row {
-    display: flex;
-    align-items: stretch;
-    gap: 0.375rem;
-    margin-top: 0.25rem;
-  }
-
-  .cli-cmd {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow-x: auto;
-    white-space: nowrap;
-    padding: 0.25rem 0.4375rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.6875rem;
-    line-height: 1.4;
-    color: var(--popover-text, rgba(255, 255, 255, 0.86));
-    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
-    border-radius: 6px;
-  }
-
+  /* Compact copy affordance — a single "Copy command" button that writes the
+     exact upgrade one-liner to the clipboard. The inline scrolling command box
+     was dropped (DEV-1705 follow-up) to keep the notice compact. */
   .cli-cmd-copy {
+    align-self: flex-start;
+    margin-top: 0.375rem;
     flex-shrink: 0;
     font-size: 0.6875rem;
     font-family: inherit;

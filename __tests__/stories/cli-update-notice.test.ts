@@ -23,19 +23,21 @@ const mainRs = read('src-tauri/src/main.rs');
 const fixtures = read('dev-harness/fixtures.ts');
 const harness = read('dev-harness/Harness.svelte');
 
-describe('CLI-update notice: copyable one-liner', () => {
-  it('shows the exact npm install command and a copy affordance', () => {
+describe('CLI-update notice: compact copy-only affordance', () => {
+  it('copies the exact npm install command via a copy button, no inline code box', () => {
     const p = normalize(popover);
     // The literal command users are emailed — must match exactly.
     expect(popover).toContain(
       "const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';",
     );
-    // Rendered in the banner (copyable code element) + a Copy button.
-    expect(p).toContain('<code class="cli-cmd">{HQ_CLI_UPGRADE_CMD}</code>');
+    // Compact notice: the copy button copies the exact command string…
     expect(p).toContain('onclick={copyHqCliCommand}');
     expect(p).toContain('navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD)');
     // Copied→reset feedback, not a transient toast.
     expect(p).toContain('hqCliCmdCopied');
+    // …and the scrollable command display is gone (no inline code box).
+    expect(p).not.toContain('<code class="cli-cmd">');
+    expect(p).not.toContain('class="cli-cmd-row"');
   });
 });
 
