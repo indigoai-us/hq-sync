@@ -759,6 +759,24 @@
     }
   }
 
+  // Dismiss the hq CLI update notice for the current `latest`. Persists the
+  // dismissal per-version (backend writes `cliUpdateDismissedVersion` to
+  // menubar.json) so the banner stays hidden until a newer CLI version is
+  // published, then hides it locally. Optimistic: we null the banner first so
+  // the click feels instant; the persisted flag keeps it hidden across the
+  // on-focus `check_hq_cli_update` refresh and the 6h background check.
+  async function handleDismissHqCliUpdate() {
+    const latest = hqCliUpdateAvailable?.latest;
+    hqCliUpdateAvailable = null;
+    hqCliUpdateError = null;
+    if (!latest) return;
+    try {
+      await invoke('set_hq_cli_update_dismissed', { version: latest });
+    } catch (err) {
+      console.error('set_hq_cli_update_dismissed failed:', err);
+    }
+  }
+
   // Pull the current CLI-update state on demand instead of waiting for the
   // backend's fire-and-forget `hq-cli-update:available` event (launch+15s,
   // then every 6h). Without this the banner is blind whenever the event
@@ -1922,6 +1940,7 @@
       ondismissconflicts={handleDismissConflicts}
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
+      ondismisshqcliupdate={handleDismissHqCliUpdate}
       oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}

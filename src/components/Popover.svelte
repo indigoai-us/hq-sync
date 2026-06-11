@@ -180,6 +180,10 @@
     /** Run `npm install -g @indigoai-us/hq-cli@latest` via the Rust
      *  backend. App.svelte owns the in-flight + error state. */
     oninstallhqcliupdate?: () => void;
+    /** Dismiss the hq CLI update notice for the current `latest` version.
+     *  App.svelte persists the dismissal (per-version) and hides the banner;
+     *  it stays hidden until a newer CLI version is published. */
+    ondismisshqcliupdate?: () => void;
     /** Click handler for the unified Update pill. App.svelte dispatches
      *  to either `install_hq_core_update` (release) or
      *  `run_replace_from_staging` (staging) based on `coreState.channel`.
@@ -295,6 +299,7 @@
     ondismissconflicts,
     oninstallupdate,
     oninstallhqcliupdate,
+    ondismisshqcliupdate,
     oninstallcore,
     bindStatsRefresh,
     meetingsEnabled = false,
@@ -464,6 +469,22 @@
   // includes the install command + the raw stderr so Claude has enough
   // signal to diagnose the actual permission/network failure.
   const HQ_CLI_UPGRADE_CMD = 'npm install -g @indigoai-us/hq-cli@latest';
+
+  // The CLI-update banner shows the exact one-liner the "please update" emails
+  // tell users to run, with a copy affordance. This mirrors the
+  // CopyPromptButton copied→reset pattern (1.5s) so the surface is calm and
+  // consistent rather than a transient OS toast.
+  let hqCliCmdCopied = $state(false);
+  async function copyHqCliCommand() {
+    try {
+      await navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD);
+      hqCliCmdCopied = true;
+      setTimeout(() => (hqCliCmdCopied = false), 1500);
+    } catch (e) {
+      console.error('copy hq CLI command failed:', e);
+    }
+  }
+
   async function fixHqCliUpdateInHq() {
     const prompt = [
       'The hq CLI auto-update failed inside the HQ Sync menubar app.',
@@ -766,31 +787,55 @@
         </div>
       {/if}
 
-      <!-- hq CLI update banner — separate from the app updater. The
-           Update button shells out to `npm install -g @indigoai-us/hq-cli@latest`
-           in the Rust backend. If that errors (most commonly EACCES on a
-           system-prefix npm), the banner shows "Update failed" and the
-           CTA flips to "Fix this in HQ", which opens a Claude Code
-           session at the HQ folder via the `claude://code/new` deep
-           link (see fixHqCliUpdateInHq). -->
+      <!-- hq CLI update banner — separate from the app updater. Non-nagging:
+           it shows the exact one-liner the "please update your CLI" emails ask
+           users to run (copyable), is dismissible per-version (the × persists
+           a dismissal that stays hidden until a newer CLI version is
+           published), and clears itself once the CLI is current (the backend
+           check returns None → App.svelte nulls the state). The in-app Update
+           button is kept as a convenience; if its `npm install -g` errors
+           (most commonly EACCES on a system-prefix npm) the CTA flips to
+           "Fix this in HQ", which opens a Claude Code session at the HQ folder
+           via the `claude://code/new` deep link (see fixHqCliUpdateInHq). -->
 
       {#if hqCliUpdateAvailable}
-        <div class="banner banner-info banner-update">
+        <div class="banner banner-info banner-update banner-hq-cli">
+          {#if ondismisshqcliupdate}
+            <button
+              class="banner-dismiss"
+              onclick={ondismisshqcliupdate}
+              title="Dismiss until the next CLI release"
+              aria-label="Dismiss hq CLI update notice"
+            >
+              ×
+            </button>
+          {/if}
           <div class="banner-update-text">
             <p class="banner-title">
               hq CLI update available: v{hqCliUpdateAvailable.latest}
             </p>
             {#if hqCliUpdateError}
-              <p class="banner-body">Update failed</p>
+              <p class="banner-body">Update failed. Run this in your terminal:</p>
             {:else if hqCliUpdateAvailable.local}
               <p class="banner-body">
-                You're on v{hqCliUpdateAvailable.local}. Click Update to install the latest version.
+                You're on v{hqCliUpdateAvailable.local}. Update to the latest with:
               </p>
             {:else}
-              <p class="banner-body">
-                Click Update to install the latest version.
-              </p>
+              <p class="banner-body">Update to the latest with:</p>
             {/if}
+            <div class="cli-cmd-row">
+              <code class="cli-cmd">{HQ_CLI_UPGRADE_CMD}</code>
+              <button
+                type="button"
+                class="cli-cmd-copy"
+                class:copied={hqCliCmdCopied}
+                onclick={copyHqCliCommand}
+                title="Copy the update command"
+                aria-label="Copy the hq CLI update command"
+              >
+                {hqCliCmdCopied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
           </div>
           <div class="banner-actions">
             {#if hqCliUpdateError}
@@ -1830,6 +1875,93 @@
     align-items: center;
     justify-content: flex-end;
     gap: 0.375rem;
+  }
+
+  /* hq CLI update banner — needs a positioning context for the dismiss × and
+     a touch of right padding so the title never runs under it. */
+  .banner-hq-cli {
+    position: relative;
+    padding-right: 1.75rem;
+  }
+
+  /* Dismiss × — calm, low-contrast, top-right. Mirrors the muted-grey
+     no-severity-colour convention used across the popover banners. Generous
+     hit area without visual weight. */
+  .banner-dismiss {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.3125rem;
+    width: 1.25rem;
+    height: 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    font-size: 0.9375rem;
+    line-height: 1;
+    font-family: inherit;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    background: transparent;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background-color 0.12s ease, color 0.12s ease;
+  }
+
+  .banner-dismiss:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+  }
+
+  /* The copyable one-liner row — monospace command + a compact Copy button.
+     The command box scrolls horizontally rather than wrapping so the exact
+     string stays selectable on the 320px popover. */
+  .cli-cmd-row {
+    display: flex;
+    align-items: stretch;
+    gap: 0.375rem;
+    margin-top: 0.25rem;
+  }
+
+  .cli-cmd {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    padding: 0.25rem 0.4375rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    background: var(--popover-surface-strong, rgba(255, 255, 255, 0.16));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 6px;
+  }
+
+  .cli-cmd-copy {
+    flex-shrink: 0;
+    font-size: 0.6875rem;
+    font-family: inherit;
+    font-weight: 500;
+    padding: 0.25rem 0.5rem;
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    background: var(--popover-surface, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  }
+
+  .cli-cmd-copy:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.1));
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
+  }
+
+  .cli-cmd-copy.copied {
+    color: var(--popover-text, rgba(255, 255, 255, 0.86));
+    border-color: var(--popover-highlight, rgba(255, 255, 255, 0.34));
   }
 
   /* Live progress — replaces the SyncStats card while actively syncing.

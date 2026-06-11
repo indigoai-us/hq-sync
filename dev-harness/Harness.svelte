@@ -6,7 +6,7 @@
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import '../src/desktop-alt/styles/desktop-alt.css';
-  import { popoverProps, bannerFixtures, workspaces } from './fixtures';
+  import { popoverProps, bannerFixtures, workspaces, hqCliUpdateAvailable } from './fixtures';
   import { emit } from '@tauri-apps/api/event';
 
   // The Indigo workspace fixture drives the ?view=company desktop board preview.
@@ -22,13 +22,17 @@
   const view = params.get('view') ?? 'settings';
   const theme = params.get('theme') ?? 'dark';
   const bannerKind = params.get('kind') ?? 'share';
-  // ?state=error renders the "Sync initialized" notice banner (otherwise the
-  // popover mounts in its idle fixture state).
+  // ?state=error   renders the "Sync initialized" notice banner.
+  // ?state=cli-update renders the "hq CLI update available" banner (copyable
+  //                one-liner + dismiss ×) off a deliberately-stale CLI fixture.
+  // Otherwise the popover mounts in its idle fixture state.
   const stateOverride = params.get('state');
   const previewPopoverProps =
     stateOverride === 'error'
       ? { ...popoverProps, syncState: 'error' as const, errorMessage: 'failed to push indigo: exit 1', errorCompany: 'indigo' }
-      : popoverProps;
+      : stateOverride === 'cli-update'
+        ? { ...popoverProps, hqCliUpdateAvailable }
+        : popoverProps;
 
   // The banner reads its transparent-window CSS off html[data-window=dm-banner]
   // and renders only after a `banner:event`. Set the attr + emit the fixture
