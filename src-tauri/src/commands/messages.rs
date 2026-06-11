@@ -234,6 +234,44 @@ async fn get_json<T: serde::de::DeserializeOwned>(
     parse_body::<T>(resp, code).await
 }
 
+/// Like `get_json`, but a `404 Not Found` resolves to `T::default()` instead of
+/// an error. Used for optional collections (e.g. a channel roster) where the
+/// endpoint may not exist yet server-side — the caller renders an empty list
+/// rather than an alarming error banner. Any other non-success status still errors.
+async fn get_json_allow_404<T: serde::de::DeserializeOwned + Default>(
+    url: &str,
+    token: &str,
+    code: &str,
+) -> Result<T, String> {
+    let resp = build_client()
+        .get(url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| {
+            log(LOG_TAG, &format!("{code}_NETWORK_FAIL {e}"));
+            format!("Network error: {e}")
+        })?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        log(LOG_TAG, &format!("{code}_EMPTY_404 (treating as empty)"));
+        return Ok(T::default());
+    }
+    if !status.is_success() {
+        let server_msg = resp
+            .json::<serde_json::Value>()
+            .await
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string));
+        log(LOG_TAG, &format!("{code}_ERROR status={status} msg={server_msg:?}"));
+        return Err(server_msg
+            .unwrap_or_else(|| format!("Request failed (status {})", status.as_u16())));
+    }
+
+    parse_body::<T>(resp, code).await
+}
+
 /// Read a successful response body as text, then deserialize into `T`. On a
 /// decode failure we log a truncated copy of the RAW body (alongside the serde
 /// error) so a server↔client contract drift is diagnosable from
@@ -388,7 +426,7 @@ pub struct ChannelMember {
     pub role: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelMembersResponse {
     #[serde(default)]
@@ -547,7 +585,15 @@ pub async fn create_channel(
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_CREATE").await?;
     let url = format!("{base}/v1/notify/channels");
     let payload = build_create_payload(trimmed, &scope_norm, company, &invites);
-    let out: Channel = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_CREATE").await?;
+    // The server wraps the created channel in an envelope: `{"channel": {…}}`.
+    // Decoding into `Channel` directly failed with `missing field channelId` even
+    // though the channel WAS created — so the user saw an error, retried, and hit
+    // a 409 "name already taken". Decode the envelope (reuse `ChannelDetail`,
+    // whose `channel` is optional and other fields default) and unwrap it.
+    let detail: ChannelDetail = post_json(&url, &token, &payload, "MESSAGES_CHANNEL_CREATE").await?;
+    let out = detail
+        .channel
+        .ok_or_else(|| "Create response missing channel object".to_string())?;
     log(
         LOG_TAG,
         &format!("MESSAGES_CHANNEL_CREATE_OK id={} scope={scope_norm}", out.channel_id),
@@ -639,7 +685,10 @@ pub async fn list_channel_members(channel_id: String) -> Result<ChannelMembersRe
     }
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_MEMBERS").await?;
     let url = format!("{base}/v1/notify/channels/{}/members", esc_seg(id));
-    let out: ChannelMembersResponse = get_json(&url, &token, "MESSAGES_CHANNEL_MEMBERS").await?;
+    // Tolerate a 404 as an empty roster: the GET endpoint may be absent until the
+    // server deploy lands. An empty list renders far better than an error banner.
+    let out: ChannelMembersResponse =
+        get_json_allow_404(&url, &token, "MESSAGES_CHANNEL_MEMBERS").await?;
     log(
         LOG_TAG,
         &format!("MESSAGES_CHANNEL_MEMBERS_OK id={id} count={}", out.members.len()),
@@ -747,9 +796,10 @@ pub struct ReactionAggregate {
     pub reacted_by_me: bool,
 }
 
-/// The aggregate set for one message. The GET endpoint returns a bare array, so
-/// `fetch_reactions` deserializes into `Vec<ReactionAggregate>` directly; this
-/// wrapper is the per-message shape carried by the `message:reaction` event.
+/// The aggregate set for one message. The GET endpoint returns THIS object
+/// (`{messageScope, messageId, reactions: [...]}`), not a bare array, so
+/// `fetch_reactions` deserializes into `MessageReactions` and returns its
+/// `reactions`. This shape is also what the `message:reaction` event carries.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageReactions {
@@ -859,12 +909,15 @@ pub async fn fetch_reactions(
     }
     let (base, token) = auth_and_base("MESSAGES_REACTIONS_GET").await?;
     let url = build_reactions_url(&base, scope, id);
-    let out: Vec<ReactionAggregate> = get_json(&url, &token, "MESSAGES_REACTIONS_GET").await?;
+    // Server returns the `MessageReactions` envelope, not a bare array — decoding
+    // into `Vec<ReactionAggregate>` threw `invalid type: map, expected a sequence`
+    // on every message load. Decode the object and return its `reactions`.
+    let out: MessageReactions = get_json(&url, &token, "MESSAGES_REACTIONS_GET").await?;
     log(
         LOG_TAG,
-        &format!("MESSAGES_REACTIONS_GET_OK scope={scope} id={id} count={}", out.len()),
+        &format!("MESSAGES_REACTIONS_GET_OK scope={scope} id={id} count={}", out.reactions.len()),
     );
-    Ok(out)
+    Ok(out.reactions)
 }
 
 #[cfg(test)]
@@ -1009,6 +1062,38 @@ mod tests {
         assert_eq!(d.channel.expect("channel present").channel_id, "chn_1");
         assert_eq!(d.messages.len(), 1);
         assert_eq!(d.messages[0].direction, "in");
+    }
+
+    #[test]
+    fn create_channel_response_envelope_unwraps() {
+        // The create endpoint wraps the channel: `{"channel": {...}}` with no
+        // `messages`. `create_channel` decodes into `ChannelDetail` and unwraps
+        // `.channel`. A bare `Channel` decode here was the original bug (the
+        // server's `channelId` lives one level down), surfacing as
+        // "missing field channelId" even though the channel was created.
+        let json = r#"{ "channel": { "channelId": "chn_1", "name": "general", "scope": "company" } }"#;
+        let detail: ChannelDetail = serde_json::from_str(json).expect("envelope parses");
+        let channel = detail.channel.expect("channel present in create envelope");
+        assert_eq!(channel.channel_id, "chn_1");
+        assert!(detail.messages.is_empty());
+    }
+
+    #[test]
+    fn reactions_response_envelope_unwraps() {
+        // The GET reactions endpoint returns the `MessageReactions` object, not a
+        // bare array — decoding into `Vec<ReactionAggregate>` threw
+        // "invalid type: map, expected a sequence" on every message load.
+        let empty = r#"{ "messageScope": "chan:chn_1", "messageId": "m1", "reactions": [] }"#;
+        let r: MessageReactions = serde_json::from_str(empty).expect("empty envelope parses");
+        assert!(r.reactions.is_empty());
+
+        let one = r#"{ "messageScope": "chan:chn_1", "messageId": "m1",
+            "reactions": [ { "emoji": "👍", "count": 2, "reactedByMe": true } ] }"#;
+        let r: MessageReactions = serde_json::from_str(one).expect("one-emoji envelope parses");
+        assert_eq!(r.reactions.len(), 1);
+        assert_eq!(r.reactions[0].emoji, "👍");
+        assert_eq!(r.reactions[0].count, 2);
+        assert!(r.reactions[0].reacted_by_me);
     }
 
     #[test]
