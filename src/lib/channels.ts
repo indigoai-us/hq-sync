@@ -26,8 +26,8 @@ export type ChannelMembership = 'joined' | 'invited' | 'none' | string;
 export interface Channel {
   channelId: string;
   name: string;
-  /** "personal" | "company". */
-  scope: 'personal' | 'company' | string;
+  /** "personal" | "company" | "group". Group DMs are unnamed, participant-keyed. */
+  scope: 'personal' | 'company' | 'group' | string;
   companyUid?: string | null;
   /** Company display name (server-supplied for company channels), used for the
    * group header + scope chip. Falls back to companyUid when absent. */
@@ -56,22 +56,30 @@ export interface ChannelGroup {
   key: string;
   /** Header label shown above the group. */
   label: string;
-  /** "personal" | "company" — drives the header glyph. */
-  scope: 'personal' | 'company';
+  /** "personal" | "company" | "group" — drives the header glyph. */
+  scope: 'personal' | 'company' | 'group';
   /** companyUid for company groups (used to scope new-channel creation). */
   companyUid?: string | null;
   channels: Channel[];
 }
 
-/** Best display name for a channel — its `name`, `#`-stripped + trimmed. */
+/** Best display name for a channel — its `name`, `#`-stripped + trimmed. Group
+ * DMs are unnamed, so they fall back to a member-count label. */
 export function channelDisplayName(c: Channel): string {
-  return c.name.trim().replace(/^#+/, '') || c.channelId;
+  const trimmed = c.name.trim().replace(/^#+/, '');
+  if (trimmed) return trimmed;
+  if (c.scope === 'group') {
+    const n = c.memberCount ?? 0;
+    return n > 0 ? `Group · ${n}` : 'Group DM';
+  }
+  return c.channelId;
 }
 
-/** The scope chip text: a personal glyph for personal channels, else the
- * company name (falling back to the companyUid, then a generic label). */
+/** The scope chip text: a personal glyph for personal channels, "Group" for a
+ * group DM, else the company name (falling back to companyUid, then generic). */
 export function scopeChipLabel(c: Channel): string {
   if (c.scope === 'personal') return 'Personal';
+  if (c.scope === 'group') return 'Group';
   return c.companyName?.trim() || c.companyUid?.trim() || 'Company';
 }
 
@@ -117,12 +125,13 @@ export function groupChannels(
   const byName = (a: Channel, b: Channel): number =>
     channelDisplayName(a).toLowerCase().localeCompare(channelDisplayName(b).toLowerCase());
 
+  const groupDms = channels.filter((c) => c.scope === 'group').slice().sort(byName);
   const personal = channels.filter((c) => c.scope === 'personal').slice().sort(byName);
 
   // Bucket company channels by companyUid.
   const companyBuckets = new Map<string, Channel[]>();
   for (const c of channels) {
-    if (c.scope === 'personal') continue;
+    if (c.scope === 'personal' || c.scope === 'group') continue;
     const uid = (c.companyUid ?? '').trim() || '__unknown__';
     const bucket = companyBuckets.get(uid) ?? [];
     bucket.push(c);
@@ -138,6 +147,10 @@ export function groupChannels(
   };
 
   const groups: ChannelGroup[] = [];
+  // Group DMs first under a "Direct" header — the most conversational surface.
+  if (groupDms.length > 0) {
+    groups.push({ key: 'group', label: 'Direct', scope: 'group', channels: groupDms });
+  }
   if (personal.length > 0) {
     groups.push({ key: 'personal', label: 'Personal', scope: 'personal', channels: personal });
   }
