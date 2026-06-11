@@ -297,7 +297,16 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// path. No runner-behavior change for hq-sync; the `~6.3.5` -> `~6.4.0`
 /// bump keeps the menubar's npx pin on the same release train as hq-cli.
 /// See indigoai-us/hq-cloud#66.
-pub const HQ_CLOUD_VERSION: &str = "~6.4.0";
+///
+/// **6.5.0 (rescue classify-before-delete — no half-applied wipe)** — the
+/// `hq rescue` wipe-set classifier now classifies the ENTIRE wipe set
+/// read-only before any destructive apply, so a classifier error deletes
+/// nothing instead of stranding a half-applied HQ (the menubar drives
+/// `hq-rescue` via npx for the prod Update / Restore rescue flow, so it must
+/// ride this fix). Dry-run and the live run share one classification path.
+/// The `~6.4.0` -> `~6.5.0` bump keeps the menubar's npx pin on the same
+/// release train as hq-cli. See indigoai-us/hq-cloud#67 (DEV-1767).
+pub const HQ_CLOUD_VERSION: &str = "~6.5.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
