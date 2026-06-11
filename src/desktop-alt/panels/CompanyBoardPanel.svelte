@@ -234,7 +234,11 @@
       stories = await loadLocalProjectStories(project.prdPath);
     } catch (err) {
       console.error('get_local_project_prd failed:', err);
-      storiesError = 'Could not load this project’s stories.';
+      // Surface the underlying error, not just a generic line — the real cause
+      // (feature-gate rejection, a stale prdPath, or an unresolved HQ folder) is
+      // otherwise hidden, making this undiagnosable from the UI alone.
+      const detail = err instanceof Error ? err.message : String(err);
+      storiesError = `Could not load this project’s stories — ${detail}`;
       stories = [];
     } finally {
       storiesLoading = false;
