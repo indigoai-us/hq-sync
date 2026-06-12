@@ -14,6 +14,12 @@
     onclose: () => void;
   }
 
+  interface CommandPaletteSection {
+    id: 'actions' | 'navigate';
+    label: 'ACTIONS' | 'NAVIGATE';
+    items: CommandPaletteItem[];
+  }
+
   let { commands, onclose }: Props = $props();
   let query = $state('');
   let highlightedIndex = $state(0);
@@ -38,6 +44,22 @@
       fuzzyMatch(`${command.label} ${command.detail} ${command.shortcut ?? ''}`, query),
     ),
   );
+
+  function sectionId(command: CommandPaletteItem): CommandPaletteSection['id'] {
+    return command.id.startsWith('command-go-') ? 'navigate' : 'actions';
+  }
+
+  const commandSections = $derived.by((): CommandPaletteSection[] => {
+    const sections: CommandPaletteSection[] = [
+      { id: 'actions', label: 'ACTIONS', items: [] },
+      { id: 'navigate', label: 'NAVIGATE', items: [] },
+    ];
+    for (const command of filteredCommands) {
+      const target = sections.find((section) => section.id === sectionId(command));
+      target?.items.push(command);
+    }
+    return sections.filter((section) => section.items.length > 0);
+  });
 
   $effect(() => {
     if (highlightedIndex >= filteredCommands.length) {
@@ -118,30 +140,36 @@
     <h2 id="command-palette-title">Command palette</h2>
 
     <div id="command-palette-list" class="command-list" role="listbox" aria-label="Commands">
-      {#if filteredCommands.length > 0}
-        {#each filteredCommands as command, index (command.id)}
-          <button
-            id={command.id}
-            class:highlighted={index === highlightedIndex}
-            type="button"
-            role="option"
-            aria-selected={index === highlightedIndex}
-            onfocus={() => {
-              highlightedIndex = index;
-            }}
-            onmouseenter={() => {
-              highlightedIndex = index;
-            }}
-            onclick={() => void execute(command)}
-          >
-            <span class="command-copy">
-              <strong>{command.label}</strong>
-              <span>{command.detail}</span>
-            </span>
-            {#if command.shortcut}
-              <kbd>{command.shortcut}</kbd>
-            {/if}
-          </button>
+      {#if commandSections.length > 0}
+        {#each commandSections as section (section.id)}
+          <div class="command-section" role="presentation">
+            <div class="command-section-title">{section.label}</div>
+            {#each section.items as command (command.id)}
+              {@const index = filteredCommands.indexOf(command)}
+              <button
+                id={command.id}
+                class:highlighted={index === highlightedIndex}
+                type="button"
+                role="option"
+                aria-selected={index === highlightedIndex}
+                onfocus={() => {
+                  highlightedIndex = index;
+                }}
+                onmouseenter={() => {
+                  highlightedIndex = index;
+                }}
+                onclick={() => void execute(command)}
+              >
+                <span class="command-copy">
+                  <strong>{command.label}</strong>
+                  <span>{command.detail}</span>
+                </span>
+                {#if command.shortcut}
+                  <kbd>{command.shortcut}</kbd>
+                {/if}
+              </button>
+            {/each}
+          </div>
         {/each}
       {:else}
         <div class="command-empty" role="status">No commands found</div>
@@ -228,6 +256,21 @@
     overflow-y: auto;
     padding: 6px;
     scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  }
+
+  .command-section + .command-section {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+  }
+
+  .command-section-title {
+    padding: 5px 8px 4px;
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    line-height: 14px;
+    text-transform: uppercase;
   }
 
   .command-list button,

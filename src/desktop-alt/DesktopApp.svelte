@@ -15,6 +15,7 @@
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
   import {
+    COMPANY_SECTIONS,
     companyHotkey,
     DEFAULT_COMPANY_TAB,
     DEFAULT_LIBRARY_TAB,
@@ -224,14 +225,24 @@
           },
         ]
       : []),
-    ...companies.map((company, index) => ({
-      id: `command-go-company-${company.slug}`,
-      label: `Go to ${company.displayName}`,
-      detail: 'Show company workspace',
-      // Companies start at ⌘6 (after the five primary destinations).
-      shortcut: companyHotkey(index),
-      action: () => navigate({ kind: 'company', slug: company.slug }),
-    })),
+    ...companies.flatMap((company, index) => [
+      {
+        id: `command-go-company-${company.slug}`,
+        label: `Go to ${company.displayName}`,
+        detail: 'Show company overview',
+        // Companies start at ⌘6 (after the five primary destinations).
+        shortcut: companyHotkey(index),
+        action: () => navigate({ kind: 'company', slug: company.slug }),
+      },
+      ...COMPANY_SECTIONS.filter((section) => section.id !== DEFAULT_COMPANY_TAB).map(
+        (section) => ({
+          id: `command-go-company-${company.slug}-${section.id}`,
+          label: `Go to ${company.displayName} ${section.label}`,
+          detail: `Show ${company.displayName} ${section.label.toLowerCase()}`,
+          action: () => navigate({ kind: 'company', slug: company.slug, tab: section.id }),
+        }),
+      ),
+    ]),
   ]);
 
   // Plain-language error summary for the V4 title bar's error state.
