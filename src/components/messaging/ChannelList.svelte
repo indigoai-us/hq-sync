@@ -24,6 +24,8 @@
     // Open the create flow. `companyUid` is the group the "+ New channel" was
     // clicked under (null = top-level / Personal).
     oncreate: (companyUid: string | null) => void;
+    // Open the group-DM create flow (an unnamed, participant-keyed channel).
+    oncreategroup: () => void;
   }
 
   let {
@@ -34,6 +36,7 @@
     selectedId = null,
     onselect,
     oncreate,
+    oncreategroup,
   }: Props = $props();
 
   const groups = $derived(groupChannels(channels, companies));
@@ -43,6 +46,9 @@
   <div class="channel-rail-top">
     <button class="new-channel-btn" type="button" onclick={() => oncreate(null)}>
       + New channel
+    </button>
+    <button class="new-channel-btn new-group-btn" type="button" onclick={() => oncreategroup()}>
+      + New group DM
     </button>
   </div>
 
@@ -62,18 +68,30 @@
       <div class="channel-group">
         <div class="group-header">
           <span class="group-label">
-            {#if group.scope === 'personal'}
+            {#if group.scope === 'group'}
+              <span class="group-glyph" aria-hidden="true">⬡</span>
+            {:else if group.scope === 'personal'}
               <span class="group-glyph" aria-hidden="true">◐</span>
             {/if}
             {group.label}
           </span>
-          <button
-            class="group-add"
-            type="button"
-            title={`New channel in ${group.label}`}
-            aria-label={`New channel in ${group.label}`}
-            onclick={() => oncreate(group.companyUid ?? null)}
-          >+</button>
+          {#if group.scope === 'group'}
+            <button
+              class="group-add"
+              type="button"
+              title="New group DM"
+              aria-label="New group DM"
+              onclick={() => oncreategroup()}
+            >+</button>
+          {:else}
+            <button
+              class="group-add"
+              type="button"
+              title={`New channel in ${group.label}`}
+              aria-label={`New channel in ${group.label}`}
+              onclick={() => oncreate(group.companyUid ?? null)}
+            >+</button>
+          {/if}
         </div>
         <ul class="channel-list">
           {#each group.channels as ch (ch.channelId)}

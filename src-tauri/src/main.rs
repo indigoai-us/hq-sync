@@ -337,6 +337,7 @@ fn main() {
             commands::messages::list_channels,
             commands::messages::fetch_channel,
             commands::messages::create_channel,
+            commands::messages::create_group_dm,
             commands::messages::join_channel,
             commands::messages::invite_to_channel,
             commands::messages::send_channel_message,

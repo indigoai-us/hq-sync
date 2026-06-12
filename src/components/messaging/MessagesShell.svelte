@@ -114,6 +114,7 @@
   // Create-channel overlay (null = closed). Holds the preset company scope the
   // "+ New channel" affordance was clicked under (undefined slot = personal).
   let creatingChannel = $state(false);
+  let creatingGroupDm = $state(false);
   let createPresetCompany = $state<string | null>(null);
   // The signed-in caller's personUid — resolved lazily for the roster's
   // owner/self checks. `whoami`-style resolution lives in Rust; we read it from
@@ -403,6 +404,13 @@
 
   function openCreateChannel(companyUid: string | null): void {
     createPresetCompany = companyUid;
+    creatingGroupDm = false;
+    creatingChannel = true;
+  }
+
+  function openCreateGroupDm(): void {
+    createPresetCompany = null;
+    creatingGroupDm = true;
     creatingChannel = true;
   }
 
@@ -678,6 +686,7 @@
           selectedId={selectedChannel?.channelId ?? null}
           onselect={selectChannel}
           oncreate={openCreateChannel}
+          oncreategroup={openCreateGroupDm}
         />
       {/if}
     </div>
@@ -758,6 +767,7 @@
       onclose={() => (creatingChannel = false)}
       oncreated={handleChannelCreated}
       presetCompanyUid={createPresetCompany}
+      isGroupDm={creatingGroupDm}
     />
   {/if}
 </div>

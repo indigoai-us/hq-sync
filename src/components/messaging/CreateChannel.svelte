@@ -21,9 +21,13 @@
     // Optional preset scope (e.g. the user clicked "+ New channel" under a
     // company header). `companyUid` null → personal.
     presetCompanyUid?: string | null;
+    // Group-DM mode: an unnamed, participant-keyed channel. Hides the name +
+    // scope pickers and requires ≥2 invitees (the caller is the 3rd, added
+    // server-side). Submits via `create_group_dm`.
+    isGroupDm?: boolean;
   }
 
-  let { onclose, oncreated, presetCompanyUid = null }: Props = $props();
+  let { onclose, oncreated, presetCompanyUid = null, isGroupDm = false }: Props = $props();
 
   interface MembershipRow {
     companyUid: string;
@@ -46,7 +50,11 @@
 
   const isPersonal = $derived(scopeValue === 'personal');
 
-  const canCreate = $derived(name.trim().length > 0 && !creating);
+  // A group DM needs ≥2 other people (caller is the 3rd); a named channel needs
+  // a name. Either way, not while a create is already in flight.
+  const canCreate = $derived(
+    !creating && (isGroupDm ? invites.length >= 2 : name.trim().length > 0),
+  );
 
   async function loadCompanies(): Promise<void> {
     try {
@@ -81,21 +89,28 @@
   }
 
   async function create(): Promise<void> {
-    const trimmed = name.trim();
-    if (!trimmed || creating) return;
+    if (!canCreate) return;
     creating = true;
     createError = null;
     try {
-      const channel = await invoke<Channel>('create_channel', {
-        name: trimmed,
-        scope: isPersonal ? 'personal' : 'company',
-        companyUid: isPersonal ? null : scopeValue,
-        invite: invites.map((i) => i.personUid).filter((u): u is string => !!u),
-      });
+      const participantUids = invites
+        .map((i) => i.personUid)
+        .filter((u): u is string => !!u);
+      const channel = isGroupDm
+        ? await invoke<Channel>('create_group_dm', { participants: participantUids })
+        : await invoke<Channel>('create_channel', {
+            name: name.trim(),
+            scope: isPersonal ? 'personal' : 'company',
+            companyUid: isPersonal ? null : scopeValue,
+            invite: participantUids,
+          });
       oncreated(channel);
     } catch (err) {
-      createError = typeof err === 'string' ? err : 'Could not create the channel';
-      console.error('create-channel: create_channel failed', err);
+      const fallback = isGroupDm
+        ? 'Could not create the group'
+        : 'Could not create the channel';
+      createError = typeof err === 'string' ? err : fallback;
+      console.error('create-channel: create failed', err);
     } finally {
       creating = false;
     }
@@ -124,50 +139,57 @@
     class="create-sheet"
     role="dialog"
     aria-modal="true"
-    aria-label="New channel"
+    aria-label={isGroupDm ? 'New group DM' : 'New channel'}
     tabindex="-1"
     onclick={(e) => e.stopPropagation()}
     onkeydown={onBackdropKeydown}
   >
     <header class="create-header">
-      <h2>New channel</h2>
+      <h2>{isGroupDm ? 'New group DM' : 'New channel'}</h2>
       <button class="create-close" type="button" onclick={onclose} aria-label="Close">×</button>
     </header>
 
-    <div class="create-field">
-      <span class="create-label" id="channel-name-label">Name</span>
-      <div class="name-input-wrap">
-        <span class="name-hash" aria-hidden="true">#</span>
-        <input
-          class="name-input"
-          type="text"
-          bind:value={name}
-          onkeydown={onNameKeydown}
-          placeholder="general"
-          aria-labelledby="channel-name-label"
-          autocomplete="off"
-          spellcheck="false"
-        />
+    {#if !isGroupDm}
+      <div class="create-field">
+        <span class="create-label" id="channel-name-label">Name</span>
+        <div class="name-input-wrap">
+          <span class="name-hash" aria-hidden="true">#</span>
+          <input
+            class="name-input"
+            type="text"
+            bind:value={name}
+            onkeydown={onNameKeydown}
+            placeholder="general"
+            aria-labelledby="channel-name-label"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
       </div>
-    </div>
+
+      <div class="create-field">
+        <span class="create-label" id="channel-scope-label">Scope</span>
+        <select class="scope-select" bind:value={scopeValue} aria-labelledby="channel-scope-label">
+          <option value="personal">Personal</option>
+          {#each companies as co (co.companyUid)}
+            <option value={co.companyUid}>{co.companyName?.trim() || co.companyUid}</option>
+          {/each}
+        </select>
+        <p class="scope-hint">
+          {isPersonal
+            ? 'A personal channel — only people you invite can see it.'
+            : 'A company channel — discoverable by your teammates.'}
+        </p>
+      </div>
+    {/if}
 
     <div class="create-field">
-      <span class="create-label" id="channel-scope-label">Scope</span>
-      <select class="scope-select" bind:value={scopeValue} aria-labelledby="channel-scope-label">
-        <option value="personal">Personal</option>
-        {#each companies as co (co.companyUid)}
-          <option value={co.companyUid}>{co.companyName?.trim() || co.companyUid}</option>
-        {/each}
-      </select>
-      <p class="scope-hint">
-        {isPersonal
-          ? 'A personal channel — only people you invite can see it.'
-          : 'A company channel — discoverable by your teammates.'}
-      </p>
-    </div>
-
-    <div class="create-field">
-      <span class="create-label">Invite people <span class="optional">(optional)</span></span>
+      <span class="create-label">
+        {#if isGroupDm}People{:else}Invite people <span class="optional">(optional)</span>{/if}
+      </span>
+      {#if isGroupDm}
+        <p class="scope-hint">Add at least 2 people — you're all in one thread.</p>
+      {/if}
       <RecipientPicker
         bind:selected={invitePick}
         onselect={(r) => addInvite(r)}
@@ -197,7 +219,7 @@
         <span class="create-hint">⌘↵ to create</span>
       {/if}
       <button class="btn btn-send" type="button" onclick={create} disabled={!canCreate}>
-        {creating ? 'Creating…' : 'Create channel'}
+        {creating ? 'Creating…' : isGroupDm ? 'Create group' : 'Create channel'}
       </button>
     </div>
   </div>

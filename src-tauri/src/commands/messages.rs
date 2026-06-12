@@ -601,6 +601,51 @@ pub async fn create_channel(
     Ok(out)
 }
 
+/// Build the `POST /v1/notify/channels` body for a GROUP DM:
+/// `{ scope: "group", participants: [...] }` (no name). Pure → unit-testable.
+fn build_group_payload(participants: &[String]) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("scope".to_string(), serde_json::Value::String("group".to_string()));
+    obj.insert(
+        "participants".to_string(),
+        serde_json::Value::Array(
+            participants.iter().map(|p| serde_json::Value::String(p.clone())).collect(),
+        ),
+    );
+    serde_json::Value::Object(obj)
+}
+
+/// Tauri command: create or reopen a GROUP DM — an unnamed, participant-keyed
+/// channel. `POST /v1/notify/channels { scope:"group", participants }`. The
+/// caller is added server-side; the server dedupes by member set (idempotent)
+/// and requires ≥3 distinct people total. `participants` are personUids or
+/// emails (the server resolves emails). Returns the created/reopened `Channel`.
+#[tauri::command]
+pub async fn create_group_dm(participants: Vec<String>) -> Result<Channel, String> {
+    let cleaned: Vec<String> = participants
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if cleaned.len() < 2 {
+        return Err("A group DM needs at least 2 other people".to_string());
+    }
+
+    let (base, token) = auth_and_base("MESSAGES_GROUP_CREATE").await?;
+    let url = format!("{base}/v1/notify/channels");
+    let payload = build_group_payload(&cleaned);
+    // Same `{"channel": {…}}` envelope as create_channel — decode via ChannelDetail.
+    let detail: ChannelDetail = post_json(&url, &token, &payload, "MESSAGES_GROUP_CREATE").await?;
+    let out = detail
+        .channel
+        .ok_or_else(|| "Group create response missing channel object".to_string())?;
+    log(
+        LOG_TAG,
+        &format!("MESSAGES_GROUP_CREATE_OK id={} members={}", out.channel_id, cleaned.len()),
+    );
+    Ok(out)
+}
+
 /// Tauri command: join a channel the caller was invited to (or a discoverable
 /// company channel). `POST /v1/notify/channels/{id}/members` with no body —
 /// the server adds the authenticated caller. Returns the updated `Channel`.
@@ -1094,6 +1139,16 @@ mod tests {
         assert_eq!(r.reactions[0].emoji, "👍");
         assert_eq!(r.reactions[0].count, 2);
         assert!(r.reactions[0].reacted_by_me);
+    }
+
+    #[test]
+    fn group_payload_carries_scope_and_participants_no_name() {
+        let payload = build_group_payload(&["prs_a".to_string(), "prs_b".to_string()]);
+        assert_eq!(payload["scope"], "group");
+        assert_eq!(payload["participants"][0], "prs_a");
+        assert_eq!(payload["participants"][1], "prs_b");
+        // A group DM has no name field.
+        assert!(payload.get("name").is_none());
     }
 
     #[test]
