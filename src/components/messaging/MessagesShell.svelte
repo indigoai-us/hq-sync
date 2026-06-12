@@ -775,6 +775,7 @@
         {sending}
         {sendError}
         placeholder={`Message ${displayLabel(selected)}…`}
+        readonly={selected.source === 'agent'}
         onsend={sendReply}
         onopenthread={handleOpenDmThread}
         activeRootEventId={openThread?.scope === 'dm' ? openThread.rootEventId : null}

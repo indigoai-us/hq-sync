@@ -809,7 +809,12 @@
       onnavigate={(next) => navigate(fromV4Route(next))}
     />
 
-    {#if secondarySidebar}
+    <!-- Settings is reachable but its in-window surface (US-013) isn't wired
+         yet — the body shows the "Settings window" placeholder. Suppress its
+         secondary-sidebar rows so they don't render as dead clicks until the
+         page is mounted. (The route model still returns them, so the unit
+         tests in route.test.ts / v4-chrome.spec.ts stay green.) -->
+    {#if secondarySidebar && secondarySidebar.surface !== 'settings'}
       <V4SecondarySidebar
         header={secondarySidebar.header}
         headerTone={secondarySidebar.headerTone}

@@ -84,7 +84,10 @@ describe('desktop-alt V4 chrome (US-002)', () => {
 
     expect(desktopApp).toContain('<V4TitleBar');
     expect(desktopApp).toContain('<V4Sidebar');
-    expect(desktopApp).toContain('{#if secondarySidebar}');
+    // The secondary sidebar is composed conditionally; the settings surface is
+    // suppressed until its in-window page (US-013) is wired, so match the guard
+    // by prefix rather than the exact unconditional `{#if secondarySidebar}`.
+    expect(desktopApp).toContain('{#if secondarySidebar');
     expect(desktopApp).toContain('<V4SecondarySidebar');
     expect(desktopApp).not.toContain('DesktopSidebar');
   });

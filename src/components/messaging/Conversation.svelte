@@ -70,6 +70,11 @@
     // preview) simply omit the callback and no bar renders.
     reactions?: ReactionMap;
     ontogglereaction?: (messageId: string, emoji: string) => void;
+    // When true, the reply composer is hidden and a static note renders in its
+    // place. Used for read-only threads with no real recipient yet — e.g. the
+    // "Your agent" placeholder thread (agent send/receive is deferred to a
+    // later story behind the v4AgentThread flag).
+    readonly?: boolean;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -88,6 +93,7 @@
     activeRootEventId = null,
     reactions = {},
     ontogglereaction,
+    readonly = false,
   }: Props = $props();
 
   let replyText = $state('');
@@ -307,27 +313,33 @@
   {/each}
 </div>
 
-<div class="dm-reply">
-  <textarea
-    class="dm-reply-input"
-    bind:value={replyText}
-    onkeydown={onReplyKeydown}
-    {placeholder}
-    rows="3"
-    disabled={sending}
-    aria-label="Reply message"
-  ></textarea>
-  <div class="dm-reply-footer">
-    {#if sendError}
-      <span class="dm-reply-error" role="alert">{sendError}</span>
-    {:else}
-      <span class="dm-reply-hint">⌘↵ to send</span>
-    {/if}
-    <button class="btn btn-send" onclick={send} disabled={sending || replyText.trim().length === 0}>
-      {sending ? 'Sending…' : 'Send'}
-    </button>
+{#if readonly}
+  <div class="dm-reply dm-reply-readonly">
+    <span class="dm-reply-hint">Agent replies aren’t available yet.</span>
   </div>
-</div>
+{:else}
+  <div class="dm-reply">
+    <textarea
+      class="dm-reply-input"
+      bind:value={replyText}
+      onkeydown={onReplyKeydown}
+      {placeholder}
+      rows="3"
+      disabled={sending}
+      aria-label="Reply message"
+    ></textarea>
+    <div class="dm-reply-footer">
+      {#if sendError}
+        <span class="dm-reply-error" role="alert">{sendError}</span>
+      {:else}
+        <span class="dm-reply-hint">⌘↵ to send</span>
+      {/if}
+      <button class="btn btn-send" onclick={send} disabled={sending || replyText.trim().length === 0}>
+        {sending ? 'Sending…' : 'Send'}
+      </button>
+    </div>
+  </div>
+{/if}
 
 <style>
   /* ── Thread (scrollable conversation) ─────────────────────────────────── */
