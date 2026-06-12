@@ -14,7 +14,7 @@
    *                  (loaded lazily per project). A short "what's moving" list.
    *   3. Projects  — the full company-filtered project list (ProjectListView,
    *                  showCompany=false). Selecting a project opens the detail
-   *                  view (→ StoryKanban → StoryDetailPanel) with a back
+   *                  view (→ StoryKanban → StoryPanel) with a back
    *                  affordance, exactly like the old BoardPage flow.
    *
    * Load convention follows ActivityPanel: warm-read from the company store,

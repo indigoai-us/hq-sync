@@ -36,11 +36,11 @@ describe('desktop-alt company Goals view source contract (US-006)', () => {
 
   it('linked project chips drill into the existing project detail view', () => {
     expect(page).toContain("import ProjectDetailView from './ProjectDetailView.svelte'");
-    expect(page).toContain("import StoryDetailPanel from '../components/StoryDetailPanel.svelte'");
+    expect(page).toContain("import StoryPanel from '../v4/StoryPanel.svelte'");
     expect(page).toContain('onclick={() => openProject(project)}');
     expect(page).toContain('loadLocalProjectStories(project.prdPath)');
     expect(page).toContain('<ProjectDetailView');
-    expect(page).toContain('<StoryDetailPanel');
+    expect(page).toContain('<StoryPanel');
   });
 
   it('has the empty state for companies with no local goals file', () => {

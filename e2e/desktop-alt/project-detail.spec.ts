@@ -143,9 +143,9 @@ describe('desktop-alt project detail view source contract (US-009)', () => {
     expect(board).toContain('<ProjectDetailView');
     expect(board).toContain('onback={backToList}');
     expect(board).toContain('onselectStory={openStory}');
-    // Stories still load for the embedded board; story detail panel still wired.
+    // Stories still load for the embedded board; V4 story panel still wired.
     expect(board).toContain('loadLocalProjectStories');
-    expect(board).toContain('<StoryDetailPanel');
+    expect(board).toContain('<StoryPanel');
   });
 
   it('keeps the detail view token-driven (no hardcoded hex except shadow rgba)', () => {

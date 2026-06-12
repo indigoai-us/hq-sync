@@ -11,7 +11,7 @@ import { readRepoFile } from './harness';
  *   1. The local-projects adapter wraps get_local_company_goals.
  *   2. CompanyBoardPanel loads goals, filters projects to its slug, surfaces
  *      in-flight via the classifier, and drills into the Kanban via the detail
- *      view + StoryDetailPanel.
+ *      view + StoryPanel.
  *   3. CompanyPage defaults to the Overview section (V4 US-002), which hosts
  *      the board panel; the section list lives in route.ts.
  */
@@ -88,15 +88,16 @@ describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
 
   it('drills into the detail view → Kanban → story detail with a back affordance', () => {
     expect(panel).toContain("import ProjectDetailView from '../pages/ProjectDetailView.svelte'");
-    expect(panel).toContain("import StoryDetailPanel from '../components/StoryDetailPanel.svelte'");
+    expect(panel).toContain("import StoryPanel from '../v4/StoryPanel.svelte'");
     expect(panel).toContain('loadLocalProjectStories');
     expect(panel).toContain('<ProjectDetailView');
     expect(panel).toContain('onback={backToList}');
     expect(panel).toContain('onselectStory={openStory}');
-    expect(panel).toContain('<StoryDetailPanel');
+    expect(panel).toContain('<StoryPanel');
     expect(panel).toContain('story={selectedStory}');
     expect(panel).toContain('onclose={closeStory}');
     expect(panel).toContain('onselectDependency={selectStoryById}');
+    expect(panel).toContain('{onStoryPassesChange}');
     // The embedded Kanban (reachable from the detail view) is the drill target.
     const detail = readRepoFile('src/desktop-alt/pages/ProjectDetailView.svelte');
     expect(detail).toContain('import StoryKanban');

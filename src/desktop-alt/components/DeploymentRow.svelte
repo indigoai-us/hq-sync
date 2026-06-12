@@ -22,8 +22,10 @@
   let { deployment }: Props = $props();
 
   let expanded = $state(false);
+  let rollbackConfirm = $state(false);
 
   const stateLabel = $derived(deployment.state.charAt(0).toUpperCase() + deployment.state.slice(1));
+  const envLabel = $derived(environmentLabel(deployment));
   const detailId = $derived(`deploy-detail-${deployment.sub}`);
 
   async function openDeployment() {
@@ -32,11 +34,36 @@
 
   function toggleDetail() {
     expanded = !expanded;
+    rollbackConfirm = false;
+  }
+
+  function environmentLabel(entry: DeploymentEntry): string {
+    const source = `${entry.sub} ${entry.url}`.toLowerCase();
+    if (/\b(prod|production|www)\b/.test(source)) return 'prod';
+    if (/\b(stage|staging|test)\b/.test(source)) return 'staging';
+    if (/\b(dev|preview|pr-|branch)\b/.test(source)) return 'preview';
+    return 'env';
+  }
+
+  function beginRollback() {
+    expanded = true;
+    rollbackConfirm = true;
+  }
+
+  function cancelRollback() {
+    rollbackConfirm = false;
+  }
+
+  function confirmRollback() {
+    rollbackConfirm = false;
   }
 </script>
 
 <div class="deployment-row" class:is-open={expanded} aria-label={`${deployment.sub} deployment`}>
-  <span class={`status-dot ${deployment.state}`} title={stateLabel} aria-label={stateLabel}></span>
+  <span class="status-cell" title={stateLabel} aria-label={stateLabel}>
+    <span class={`status-dot ${deployment.state}`} aria-hidden="true"></span>
+    <span>{stateLabel}</span>
+  </span>
 
   <button
     class="subdomain-cell"
@@ -47,6 +74,7 @@
     onclick={toggleDetail}
   >
     <span class="subdomain" title={deployment.sub}>{deployment.sub}</span>
+    <span class="env-chip" title={`${envLabel} environment`}>{envLabel}</span>
     {#if deployment.pwd}
       <span class="lock-icon" title="Password locked" aria-label="Password locked"></span>
     {/if}
@@ -122,13 +150,43 @@
     <p class="detail-note">
       Managed via <code>hq-deploy</code> — run <code>/deploy</code> from your terminal to redeploy.
     </p>
+
+    <div class="detail-actions" aria-label={`${deployment.sub} deployment actions`}>
+      <button
+        class="action-button"
+        type="button"
+        title="Deploy from terminal: /deploy"
+        aria-label={`Deploy ${deployment.sub} from terminal: /deploy`}
+        disabled
+      >
+        Deploy
+      </button>
+      <button
+        class="action-button danger"
+        type="button"
+        aria-expanded={rollbackConfirm}
+        onclick={beginRollback}
+      >
+        Rollback
+      </button>
+    </div>
+
+    {#if rollbackConfirm}
+      <div class="rollback-confirm" role="alert">
+        <span>Rollback {deployment.sub} to the previous version?</span>
+        <div>
+          <button class="confirm-danger" type="button" onclick={confirmRollback}>Confirm</button>
+          <button class="cancel-button" type="button" onclick={cancelRollback}>Cancel</button>
+        </div>
+      </div>
+    {/if}
   </div>
 {/if}
 
 <style>
   .deployment-row {
     display: grid;
-    grid-template-columns: 14px 1.4fr 1fr auto auto auto;
+    grid-template-columns: 82px 1.4fr 1fr auto auto auto;
     align-items: center;
     gap: 12px;
     min-width: 0;
@@ -144,7 +202,20 @@
     background: var(--row-hover);
   }
 
+  .status-cell {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    color: var(--muted);
+    font-size: var(--text-base);
+    font-weight: 600;
+    line-height: 16px;
+    white-space: nowrap;
+  }
+
   .status-dot {
+    flex: 0 0 auto;
     width: 8px;
     height: 8px;
     border-radius: 999px;
@@ -167,7 +238,7 @@
 
   .subdomain-cell {
     display: grid;
-    grid-template-columns: minmax(0, auto) auto auto;
+    grid-template-columns: minmax(0, auto) auto auto auto;
     align-items: center;
     justify-content: start;
     gap: 5px 7px;
@@ -222,6 +293,21 @@
     font-size: var(--text-base);
     font-weight: 600;
     line-height: 18px;
+  }
+
+  .env-chip {
+    display: inline-grid;
+    place-items: center;
+    height: 18px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-subtle);
+    color: var(--muted-2);
+    font-size: var(--text-micro);
+    font-weight: 700;
+    line-height: 14px;
+    text-transform: uppercase;
   }
 
   .url {
@@ -396,7 +482,7 @@
     font-weight: 600;
     line-height: 14px;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
+    letter-spacing: 0;
   }
 
   .detail-field dd {
@@ -454,6 +540,78 @@
     font-size: var(--text-base);
   }
 
+  .detail-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .action-button,
+  .confirm-danger,
+  .cancel-button {
+    height: 30px;
+    min-width: 0;
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 600;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .action-button:disabled {
+    color: var(--muted-3);
+    background: var(--row-hover);
+    cursor: default;
+  }
+
+  .action-button.danger,
+  .confirm-danger {
+    border-color: rgba(239, 68, 68, 0.55);
+    color: var(--red);
+  }
+
+  .action-button.danger:hover,
+  .confirm-danger:hover {
+    background: rgba(239, 68, 68, 0.1);
+  }
+
+  .cancel-button:hover {
+    background: var(--row-hover);
+  }
+
+  .rollback-confirm {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+    padding: 10px 11px;
+    border: 1px solid rgba(239, 68, 68, 0.36);
+    border-radius: 7px;
+    background: rgba(239, 68, 68, 0.08);
+  }
+
+  .rollback-confirm span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--fg);
+    font-size: var(--text-base);
+    font-weight: 600;
+    line-height: 16px;
+  }
+
+  .rollback-confirm div {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
   @keyframes pulse {
     0%,
     100% {
@@ -469,8 +627,12 @@
 
   @media (max-width: 760px) {
     .deployment-row {
-      grid-template-columns: 14px minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr) auto;
       gap: 8px;
+    }
+
+    .status-cell {
+      display: none;
     }
 
     .last-deploy,
