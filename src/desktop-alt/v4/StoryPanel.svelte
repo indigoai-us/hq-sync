@@ -248,7 +248,7 @@
   .story-backdrop {
     position: fixed;
     inset: 0;
-    z-index: 40;
+    z-index: 90;
     background: rgba(0, 0, 0, 0.36);
   }
 
@@ -256,12 +256,12 @@
     position: fixed;
     inset-block: 0;
     inset-inline-end: 0;
-    z-index: 50;
+    z-index: 100;
     display: flex;
     width: min(420px, 100vw);
     flex-direction: column;
     border-left: 1px solid var(--v4-hairline);
-    background: var(--v4-surface);
+    background: var(--v4-raised);
     color: var(--v4-text-1);
     box-shadow: -20px 0 48px rgba(0, 0, 0, 0.32);
   }
@@ -508,5 +508,36 @@
 
   .panel-footer button:disabled {
     opacity: 0.52;
+  }
+
+  @media (max-width: 520px) {
+    .story-panel {
+      width: 100vw;
+      border-left: 0;
+    }
+
+    .panel-header {
+      align-items: flex-start;
+      padding: 16px;
+    }
+
+    .status-control {
+      margin-inline: 16px;
+    }
+
+    .panel-body {
+      padding: 16px;
+    }
+
+    .panel-footer {
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      padding: 12px 16px;
+    }
+
+    .footer-status {
+      flex-basis: 100%;
+      white-space: normal;
+    }
   }
 </style>

@@ -138,6 +138,7 @@
 
 <style>
   .story-kanban {
+    container: story-kanban / inline-size;
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
@@ -201,9 +202,9 @@
 
   .board-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(240px, 1fr));
+    grid-template-columns: repeat(4, minmax(160px, 1fr));
     gap: var(--space-4);
-    min-width: 960px;
+    min-width: 0;
     height: 100%;
   }
 
@@ -321,9 +322,9 @@
   /* Loading skeleton — neutral shimmer over the row surface. */
   .board-loading {
     display: grid;
-    grid-template-columns: repeat(4, minmax(240px, 1fr));
+    grid-template-columns: repeat(4, minmax(160px, 1fr));
     gap: var(--space-4);
-    min-width: 960px;
+    min-width: 0;
   }
 
   .skeleton-column {
@@ -370,6 +371,32 @@
     .skeleton-header,
     .skeleton-card {
       animation: none;
+    }
+  }
+
+  @container story-kanban (max-width: 760px) {
+    .board-toolbar {
+      justify-content: flex-start;
+    }
+
+    .board-scroll {
+      overflow: visible;
+    }
+
+    .board-grid,
+    .board-loading {
+      grid-template-columns: minmax(0, 1fr);
+      min-width: 0;
+      height: auto;
+    }
+
+    .kanban-column {
+      min-height: 0;
+    }
+
+    .column-body {
+      overflow: visible;
+      padding-right: 0;
     }
   }
 </style>

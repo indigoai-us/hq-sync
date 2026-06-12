@@ -30,12 +30,12 @@ export const emptyCompanyBoard = (): CompanyBoard => ({
 // Normalize a raw board payload (from invoke or the warm cache) into the four
 // always-present columns. Shared by the warm-read paint and the invoke commit
 // so both go through identical shaping.
-function shapeBoard(raw: CompanyBoard): CompanyBoard {
+function shapeBoard(raw: CompanyBoard | null | undefined): CompanyBoard {
   return {
-    inbox: raw.inbox ?? [],
-    doing: raw.doing ?? [],
-    review: raw.review ?? [],
-    done: raw.done ?? [],
+    inbox: raw?.inbox ?? [],
+    doing: raw?.doing ?? [],
+    review: raw?.review ?? [],
+    done: raw?.done ?? [],
   };
 }
 

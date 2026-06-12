@@ -364,8 +364,8 @@
     loadingChannels = true;
     channelsError = null;
     try {
-      const resp = await invoke<ChannelsResponse>('list_channels');
-      channels = resp.channels ?? [];
+      const resp = await invoke<ChannelsResponse | null>('list_channels');
+      channels = resp?.channels ?? [];
     } catch (err) {
       channelsError = typeof err === 'string' ? err : 'Could not load channels';
       channels = [];

@@ -89,8 +89,14 @@
       </button>
     {/each}
     {#if model.overflowCount > 0}
-      <button type="button" class="v4-row v4-more-row" onclick={() => go('companies')}>
-        {model.overflowCount} more…
+      <button
+        type="button"
+        class="v4-row v4-more-row"
+        data-testid="v4-more-companies"
+        aria-label={`View ${model.overflowCount} more companies`}
+        onclick={() => go('companies')}
+      >
+        View {model.overflowCount} more companies
       </button>
     {/if}
   </nav>

@@ -311,7 +311,6 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 .page {
   padding: 16px 22px;
   animation: pageEnter 260ms cubic-bezier(.2, .7, .2, 1);
-  will-change: transform;
 }
 
 @keyframes pageEnter {
@@ -384,3 +383,73 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 
 /* The V4 title bar and sidebars (src/desktop-alt/v4/) own their chrome styles;
    the old in-file titlebar/sidebar rules were removed with US-002. */
+
+@media (max-width: 720px) {
+  .desktop-body {
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .desktop-body > .v4-sidebar {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .desktop-body > .desktop-content {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .desktop-body > .v4-secondary {
+    grid-column: 2;
+    grid-row: 1;
+    flex: 0 0 auto;
+    width: 100%;
+    height: auto;
+    max-height: 132px;
+    padding: 10px;
+    border-right: none;
+    border-bottom: 1px solid var(--v4-hairline);
+    overflow: hidden;
+  }
+
+  .desktop-body > .v4-secondary + .desktop-content {
+    grid-row: 2;
+  }
+
+  .desktop-body > .v4-secondary .v4-context {
+    margin-bottom: 8px;
+  }
+
+  .desktop-body > .v4-secondary .v4-context-title,
+  .desktop-body > .v4-secondary .v4-context-meta {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .desktop-body > .v4-secondary .v4-menu {
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .desktop-body > .v4-secondary .v4-row {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+    padding: 0 9px;
+  }
+
+  .desktop-body > .v4-secondary .v4-spacer,
+  .desktop-body > .v4-secondary .v4-footer {
+    display: none;
+  }
+
+  .page {
+    padding: 14px 18px;
+  }
+}

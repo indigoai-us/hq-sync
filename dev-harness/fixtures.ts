@@ -1,8 +1,10 @@
 // Fixture props for rendering Popover in the browser preview harness.
 import type { Workspace } from '../src/lib/workspaces';
 
-export const workspaces: Workspace[] = [
-  {
+const minsAgo = (mins: number) => new Date(Date.now() - mins * 60 * 1000).toISOString();
+
+function workspace(overrides: Partial<Workspace>): Workspace {
+  return {
     slug: 'indigo',
     displayName: 'Indigo',
     kind: 'company',
@@ -12,48 +14,105 @@ export const workspaces: Workspace[] = [
     hasLocalFolder: true,
     localPath: '/Users/corey/Documents/HQ/companies/indigo',
     membershipStatus: 'active',
-    lastSyncedAt: new Date().toISOString(),
+    role: 'owner',
+    lastSyncedAt: minsAgo(7),
     brokenReason: null,
-  },
-  {
+    invitedBy: null,
+    invitedAt: null,
+    ...overrides,
+  };
+}
+
+export const workspaces: Workspace[] = [
+  workspace({
     slug: 'personal',
     displayName: 'Personal',
     kind: 'personal',
     state: 'personal',
     cloudUid: 'cmp_personal',
     bucketName: 'hq-vault-personal',
-    hasLocalFolder: true,
-    localPath: '/Users/corey/Documents/HQ/companies/personal',
-    membershipStatus: 'active',
-    lastSyncedAt: new Date().toISOString(),
-    brokenReason: null,
-  },
-  {
+    localPath: '/Users/corey/Documents/HQ/personal',
+    role: null,
+    lastSyncedAt: minsAgo(3),
+  }),
+  workspace({}),
+  workspace({
     slug: 'liverecover',
     displayName: 'LiveRecover',
-    kind: 'company',
-    state: 'cloud-only',
+    state: 'synced',
     cloudUid: 'cmp_liverecover',
     bucketName: 'hq-vault-liverecover',
+    localPath: '/Users/corey/Documents/HQ/companies/liverecover',
+    role: 'member',
+    lastSyncedAt: minsAgo(18),
+  }),
+  workspace({
+    slug: 'moonflow',
+    displayName: 'Moonflow',
+    cloudUid: 'cmp_moonflow',
+    bucketName: 'hq-vault-moonflow',
+    localPath: '/Users/corey/Documents/HQ/companies/moonflow',
+    role: 'admin',
+    lastSyncedAt: minsAgo(41),
+  }),
+  workspace({
+    slug: 'westbound',
+    displayName: 'Westbound',
+    state: 'cloud-only',
+    cloudUid: 'cmp_westbound',
+    bucketName: 'hq-vault-westbound',
     hasLocalFolder: false,
     localPath: null,
-    membershipStatus: 'active',
+    role: 'member',
     lastSyncedAt: null,
-    brokenReason: null,
-  },
-  {
+  }),
+  workspace({
     slug: 'holler-mgmt',
     displayName: 'Holler Mgmt',
-    kind: 'company',
     state: 'local-only',
     cloudUid: null,
     bucketName: null,
-    hasLocalFolder: true,
     localPath: '/Users/corey/Documents/HQ/companies/holler-mgmt',
     membershipStatus: null,
+    role: null,
     lastSyncedAt: null,
-    brokenReason: null,
-  },
+  }),
+  workspace({
+    slug: 'newco',
+    displayName: 'New Co',
+    state: 'local-only',
+    cloudUid: null,
+    bucketName: null,
+    localPath: '/Users/corey/Documents/HQ/companies/newco',
+    membershipStatus: null,
+    role: null,
+    lastSyncedAt: null,
+  }),
+  workspace({
+    slug: 'sender-agency',
+    displayName: 'Sender Agency',
+    state: 'cloud-only',
+    cloudUid: 'cmp_sender',
+    bucketName: 'hq-vault-sender',
+    hasLocalFolder: false,
+    localPath: null,
+    membershipStatus: 'pending',
+    role: null,
+    lastSyncedAt: null,
+    invitedBy: 'maya@getindigo.ai',
+    invitedAt: minsAgo(60 * 25),
+  }),
+  workspace({
+    slug: 'archive-labs',
+    displayName: 'Archive Labs',
+    state: 'broken',
+    cloudUid: 'cmp_archive_old',
+    bucketName: 'hq-vault-archive-old',
+    localPath: '/Users/corey/Documents/HQ/companies/archive-labs',
+    role: 'member',
+    lastSyncedAt: null,
+    brokenReason: 'manifest cloud_uid does not match the current vault membership',
+  }),
 ];
 
 export const coreState = {

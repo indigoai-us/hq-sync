@@ -10,6 +10,7 @@
     type Story,
     type StoryState,
   } from '../lib/projects-model';
+  import StoryPanel from '../v4/StoryPanel.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -42,16 +43,27 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let taskFilter = $state<TaskFilter>('all');
+  let selectedProjectId = $state<string | null>(null);
+  let selectedStoryId = $state<string | null>(null);
 
   const filteredRows = $derived(rows.filter((row) => matchesTaskFilter(row, taskFilter)));
   const groups = $derived.by(() => groupTasks(filteredRows));
   const openCount = $derived(rows.filter((row) => !row.story.passes).length);
+  const selectedTask = $derived(
+    selectedProjectId === null || selectedStoryId === null
+      ? null
+      : (rows.find(
+          (row) => row.project.id === selectedProjectId && row.story.id === selectedStoryId,
+        ) ?? null),
+  );
 
   $effect(() => {
     const activeSlug = slug;
     projects = [];
     rows = [];
     error = null;
+    selectedProjectId = null;
+    selectedStoryId = null;
 
     if (!activeSlug) {
       loading = false;
@@ -201,6 +213,43 @@
             ? 'p1'
             : 'all';
   }
+
+  function openTask(row: TaskRow): void {
+    selectedProjectId = row.project.id;
+    selectedStoryId = row.story.id;
+  }
+
+  function openTaskFromKey(event: KeyboardEvent, row: TaskRow): void {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openTask(row);
+  }
+
+  function closeTask(): void {
+    selectedProjectId = null;
+    selectedStoryId = null;
+  }
+
+  function selectStoryById(storyId: string): void {
+    if (!selectedProjectId) return;
+    if (rows.some((row) => row.project.id === selectedProjectId && row.story.id === storyId)) {
+      selectedStoryId = storyId;
+    }
+  }
+
+  function onStoryPassesChange(storyId: string, passes: boolean): void {
+    rows = rows.map((row) => {
+      if (row.project.id !== selectedProjectId || row.story.id !== storyId) return row;
+      const story = { ...row.story, passes };
+      const state: StoryState = passes ? 'complete' : row.state === 'complete' ? 'pending' : row.state;
+      return {
+        ...row,
+        story,
+        state,
+        group: taskGroupFor(story, state),
+      };
+    });
+  }
 </script>
 
 <section class="company-tasks" aria-labelledby="company-tasks-title" data-testid="company-tasks-page">
@@ -242,7 +291,15 @@
           </h3>
 
           {#each group.rows as row (row.project.id + row.story.id)}
-            <article class:done={row.story.passes} class="task-row" data-testid="task-row">
+            <button
+              type="button"
+              class:done={row.story.passes}
+              class="task-row"
+              data-testid="task-row"
+              aria-label={`Task ${row.story.id}: ${row.story.title}`}
+              onclick={() => openTask(row)}
+              onkeydown={(event) => openTaskFromKey(event, row)}
+            >
               <span class="priority-lane">{priorityLabel(row.story)}</span>
               <span class="id-lane">{row.story.id}</span>
               <strong class="title-lane">{row.story.title}</strong>
@@ -254,7 +311,7 @@
                   {completionMeta(row)}
                 {/if}
               </span>
-            </article>
+            </button>
           {/each}
         </section>
       {/each}
@@ -263,10 +320,20 @@
       </p>
     {/if}
   </div>
+
+  <StoryPanel
+    story={selectedTask?.story ?? null}
+    project={selectedTask?.project ?? null}
+    prdPath={selectedTask?.project.prdPath ?? ''}
+    onclose={closeTask}
+    onselectDependency={selectStoryById}
+    {onStoryPassesChange}
+  />
 </section>
 
 <style>
   .company-tasks {
+    container: company-tasks / inline-size;
     display: flex;
     flex-direction: column;
     gap: 22px;
@@ -356,9 +423,25 @@
     grid-template-columns: 34px 44px minmax(260px, 1fr) 140px 86px;
     column-gap: 18px;
     min-height: 37px;
+    width: 100%;
+    padding: 0;
+    border: 0;
     border-bottom: 1px solid var(--v4-rowline);
+    background: transparent;
     color: var(--v4-text-2);
+    font: inherit;
     font-size: 13px;
+    text-align: left;
+    cursor: default;
+  }
+
+  .task-row:hover {
+    background: var(--v4-control-faint);
+  }
+
+  .task-row:focus-visible {
+    outline: 1px solid var(--v4-focus);
+    outline-offset: -1px;
   }
 
   .task-row.done {
@@ -473,9 +556,75 @@
     margin: 4px 0 0;
   }
 
-  @media (max-width: 900px) {
-    .task-list {
-      overflow-x: auto;
+  @container company-tasks (max-width: 760px) {
+    .tasks-header {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .tasks-heading {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+
+    .tasks-header button {
+      align-self: flex-start;
+    }
+
+    .task-group,
+    .task-row,
+    .task-skeleton {
+      min-width: 0;
+    }
+
+    .task-group-title {
+      height: auto;
+      min-height: 30px;
+      padding: 8px 0;
+    }
+
+    .task-row {
+      grid-template-columns: 38px minmax(0, 1fr);
+      row-gap: 6px;
+      column-gap: 10px;
+      min-height: 0;
+      padding: 10px 0;
+    }
+
+    .priority-lane {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .id-lane {
+      grid-column: 1;
+      grid-row: 2;
+    }
+
+    .title-lane {
+      grid-column: 2;
+      grid-row: 1;
+      overflow: visible;
+      white-space: normal;
+      text-overflow: initial;
+    }
+
+    .project-chip {
+      grid-column: 2;
+      grid-row: 2;
+      justify-self: start;
+      max-width: 100%;
+      white-space: normal;
+    }
+
+    .assignee-lane {
+      grid-column: 2;
+      grid-row: 3;
+      justify-content: flex-start;
+      justify-self: start;
+      white-space: normal;
     }
   }
 </style>

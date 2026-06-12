@@ -1,6 +1,7 @@
 // Mock of @tauri-apps/api/core for the browser preview harness.
 // Returns plausible fixture data per command so components mount and render
 // without a Tauri backend. Design-only: no real side effects.
+import type { Workspace } from '../../src/lib/workspaces';
 
 const settings = {
   hqPath: '/Users/corey/Documents/HQ',
@@ -110,21 +111,134 @@ const COMPANY_PRDS: Record<string, unknown> = {
 
 type Handler = (args?: Record<string, unknown>) => unknown;
 
+function minutesAgo(mins: number): string {
+  return new Date(Date.now() - mins * 60 * 1000).toISOString();
+}
+
+function workspace(overrides: Partial<Workspace>): Workspace {
+  return {
+    slug: 'indigo',
+    displayName: 'Indigo',
+    kind: 'company',
+    state: 'synced',
+    cloudUid: 'cmp_indigo',
+    bucketName: 'hq-vault-indigo',
+    hasLocalFolder: true,
+    localPath: '/Users/corey/Documents/HQ/companies/indigo',
+    membershipStatus: 'active',
+    role: 'owner',
+    lastSyncedAt: minutesAgo(7),
+    brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
+    ...overrides,
+  };
+}
+
+const HARNESS_WORKSPACES: Workspace[] = [
+  workspace({
+    slug: 'personal',
+    displayName: 'Corey Epstein',
+    kind: 'personal',
+    state: 'personal',
+    cloudUid: 'cmp_personal',
+    bucketName: 'hq-vault-personal',
+    localPath: '/Users/corey/Documents/HQ/personal',
+    role: null,
+    lastSyncedAt: minutesAgo(3),
+  }),
+  workspace({}),
+  workspace({
+    slug: 'liverecover',
+    displayName: 'Liverecover',
+    cloudUid: 'cmp_liverecover',
+    bucketName: 'hq-vault-liverecover',
+    localPath: '/Users/corey/Documents/HQ/companies/liverecover',
+    role: 'member',
+    lastSyncedAt: minutesAgo(18),
+  }),
+  workspace({
+    slug: 'moonflow',
+    displayName: 'Moonflow',
+    cloudUid: 'cmp_moonflow',
+    bucketName: 'hq-vault-moonflow',
+    localPath: '/Users/corey/Documents/HQ/companies/moonflow',
+    role: 'admin',
+    lastSyncedAt: minutesAgo(41),
+  }),
+  workspace({
+    slug: 'westbound',
+    displayName: 'Westbound',
+    state: 'cloud-only',
+    cloudUid: 'cmp_westbound',
+    bucketName: 'hq-vault-westbound',
+    hasLocalFolder: false,
+    localPath: null,
+    role: 'member',
+    lastSyncedAt: null,
+  }),
+  workspace({
+    slug: 'holler-mgmt',
+    displayName: 'Holler Mgmt',
+    state: 'local-only',
+    cloudUid: null,
+    bucketName: null,
+    localPath: '/Users/corey/Documents/HQ/companies/holler-mgmt',
+    membershipStatus: null,
+    role: null,
+    lastSyncedAt: null,
+  }),
+  workspace({
+    slug: 'newco',
+    displayName: 'New Co',
+    state: 'local-only',
+    cloudUid: null,
+    bucketName: null,
+    localPath: '/Users/corey/Documents/HQ/companies/newco',
+    membershipStatus: null,
+    role: null,
+    lastSyncedAt: null,
+  }),
+  workspace({
+    slug: 'sender-agency',
+    displayName: 'Sender Agency',
+    state: 'cloud-only',
+    cloudUid: 'cmp_sender',
+    bucketName: 'hq-vault-sender',
+    hasLocalFolder: false,
+    localPath: null,
+    membershipStatus: 'pending',
+    role: null,
+    lastSyncedAt: null,
+    invitedBy: 'maya@getindigo.ai',
+    invitedAt: minutesAgo(60 * 25),
+  }),
+  workspace({
+    slug: 'archive-labs',
+    displayName: 'Archive Labs',
+    state: 'broken',
+    cloudUid: 'cmp_archive_old',
+    bucketName: 'hq-vault-archive-old',
+    localPath: '/Users/corey/Documents/HQ/companies/archive-labs',
+    role: 'member',
+    lastSyncedAt: null,
+    brokenReason: 'manifest cloud_uid does not match the current vault membership',
+  }),
+];
+
 const handlers: Record<string, Handler> = {
   // Company-board path (?view=company)
   list_syncable_workspaces: () => ({
-    workspaces: [
-      { slug: 'personal', displayName: 'Corey Epstein', kind: 'personal', state: 'personal', hasLocalFolder: true },
-      { slug: 'indigo', displayName: 'Indigo', kind: 'company', state: 'synced', hasLocalFolder: true },
-      { slug: 'liverecover', displayName: 'Liverecover', kind: 'company', state: 'synced', hasLocalFolder: true },
-      // A local-only company exercises the Sources tab's inline Connect button.
-      { slug: 'newco', displayName: 'New Co', kind: 'company', state: 'local-only', hasLocalFolder: true, cloudUid: null },
-    ],
+    workspaces: HARNESS_WORKSPACES,
     cloudReachable: true,
     error: null,
     hqFolderPath: '/Users/corey/Documents/HQ',
+    manifestError: null,
   }),
   connect_workspace_to_cloud: () => null,
+  get_sync_mode: (args) => ({
+    syncMode: args?.companySlug === 'liverecover' ? 'shared' : 'all',
+  }),
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
   get_local_company_goals: () => COMPANY_GOALS,

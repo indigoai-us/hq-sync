@@ -92,6 +92,19 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     expect(desktopApp).not.toContain('DesktopSidebar');
   });
 
+  it('the sidebar overflow row clearly opens the Companies overview', () => {
+    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
+    const harnessMocks = readRepoFile('dev-harness/mocks/core.ts');
+
+    expect(sidebar).toContain('data-testid="v4-more-companies"');
+    expect(sidebar).toContain('aria-label={`View ${model.overflowCount} more companies`}');
+    expect(sidebar).toContain('View {model.overflowCount} more companies');
+    expect(sidebar).toContain("onclick={() => go('companies')}");
+    expect(harnessMocks).toContain('const HARNESS_WORKSPACES');
+    expect(harnessMocks).toContain("slug: 'sender-agency'");
+    expect(harnessMocks).toContain("slug: 'archive-labs'");
+  });
+
   it('the old segmented-control navigation is gone from company and library pages', () => {
     const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
     const library = readRepoFile('src/desktop-alt/pages/LibraryPage.svelte');

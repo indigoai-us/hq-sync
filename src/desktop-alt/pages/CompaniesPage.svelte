@@ -277,6 +277,7 @@
 
 <style>
   .companies {
+    container: companies / inline-size;
     display: grid;
     gap: 16px;
     align-content: start;
@@ -540,6 +541,63 @@
   @media (prefers-reduced-motion: reduce) {
     .companies-skeleton-bar {
       animation: none;
+    }
+  }
+
+  @container companies (max-width: 520px) {
+    .companies-head {
+      display: none;
+    }
+
+    .companies-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 8px 12px;
+      padding: 12px 14px;
+    }
+
+    .companies-row.static {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .companies-row > .companies-lane:not(.sync),
+    .companies-chevron-slot {
+      display: none;
+    }
+
+    .companies-lane.sync {
+      justify-self: end;
+      max-width: 96px;
+      color: var(--v4-text-3);
+      font-size: 11px;
+      line-height: 1.3;
+      text-align: right;
+      white-space: normal;
+    }
+
+    .companies-name,
+    .companies-sub {
+      overflow: visible;
+      text-overflow: initial;
+      white-space: normal;
+    }
+
+    .companies-row-actions {
+      flex-wrap: wrap;
+      justify-content: flex-start;
+      margin-top: 8px;
+    }
+  }
+
+  @container companies (max-width: 340px) {
+    .companies-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .companies-lane.sync {
+      justify-self: start;
+      max-width: 100%;
+      text-align: left;
     }
   }
 </style>

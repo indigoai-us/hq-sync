@@ -4,6 +4,7 @@
   import {
     loadCompanyGoals,
     loadLocalProjects,
+    loadLocalProjectStories,
     type Objective,
   } from '../lib/local-projects';
   import {
@@ -12,7 +13,10 @@
     projectProgress,
     type Project,
     type ProjectListStatus,
+    type Story,
   } from '../lib/projects-model';
+  import ProjectDetailView from './ProjectDetailView.svelte';
+  import StoryPanel from '../v4/StoryPanel.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -40,6 +44,11 @@
   let projectFilter = $state<ProjectFilter>('all');
   let actionBusy = $state<string | null>(null);
   let actionMessage = $state<string | null>(null);
+  let selected = $state<Project | null>(null);
+  let stories = $state<Story[]>([]);
+  let storiesLoading = $state(false);
+  let storiesError = $state<string | null>(null);
+  let selectedStoryId = $state<string | null>(null);
 
   const companyProjects = $derived(
     projects
@@ -50,12 +59,21 @@
     companyProjects.filter((project) => matchesProjectFilter(project, projectFilter)),
   );
   const groups = $derived.by(() => groupProjectsByGoal(objectives, filteredCompanyProjects));
+  const selectedStory = $derived(
+    selectedStoryId === null
+      ? null
+      : (stories.find((story) => story.id === selectedStoryId) ?? null),
+  );
 
   $effect(() => {
     const activeSlug = slug;
     objectives = [];
     projects = [];
     error = null;
+    selected = null;
+    stories = [];
+    storiesError = null;
+    selectedStoryId = null;
 
     if (!activeSlug) {
       loading = false;
@@ -284,109 +302,217 @@
     if (status === 'archived') return 'idle';
     return 'idle';
   }
+
+  function selectStoryById(storyId: string): void {
+    if (stories.some((story) => story.id === storyId)) {
+      selectedStoryId = storyId;
+    }
+  }
+
+  function openStory(story: Story): void {
+    selectedStoryId = story.id;
+  }
+
+  function closeStory(): void {
+    selectedStoryId = null;
+  }
+
+  async function openProject(project: Project): Promise<void> {
+    selected = project;
+    stories = [];
+    storiesError = null;
+    selectedStoryId = null;
+
+    if (!project.prdPath) {
+      storiesLoading = false;
+      return;
+    }
+
+    storiesLoading = true;
+    try {
+      stories = await loadLocalProjectStories(project.prdPath);
+    } catch (err) {
+      console.error('get_local_project_prd failed:', err);
+      const detail = err instanceof Error ? err.message : String(err);
+      storiesError = `Could not load this project’s stories — ${detail}`;
+      stories = [];
+    } finally {
+      storiesLoading = false;
+    }
+  }
+
+  function openProjectFromKey(event: KeyboardEvent, project: Project): void {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    void openProject(project);
+  }
+
+  function backToProjects(): void {
+    selected = null;
+    stories = [];
+    storiesError = null;
+    selectedStoryId = null;
+  }
+
+  function onProjectStatusChange(projectId: string, status: string): void {
+    if (selected && selected.id === projectId) {
+      selected = { ...selected, status };
+    }
+    projects = projects.map((project) =>
+      project.id === projectId ? { ...project, status } : project,
+    );
+  }
+
+  function onStoryPassesChange(storyId: string, passes: boolean): void {
+    stories = stories.map((story) =>
+      story.id === storyId ? { ...story, passes } : story,
+    );
+    if (selected) {
+      const nextComplete = stories.filter((story) =>
+        story.id === storyId ? passes : story.passes,
+      ).length;
+      selected = { ...selected, storiesComplete: nextComplete };
+      projects = projects.map((project) =>
+        project.id === selected?.id ? { ...project, storiesComplete: nextComplete } : project,
+      );
+    }
+  }
 </script>
 
 <section class="company-projects" aria-labelledby="company-projects-title" data-testid="company-projects-page">
-  <header class="projects-header">
-    <div class="projects-heading">
-      <h2 id="company-projects-title">Projects</h2>
-      <span>
-        {filteredCompanyProjects.length} of {companyProjects.length} {companyProjects.length === 1 ? 'project' : 'projects'} · grouped by goal
-      </span>
-    </div>
-    <div class="project-actions" aria-label="Project actions">
-      {#if actionMessage}
-        <span class="action-status" role="status">{actionMessage}</span>
-      {/if}
-      <button type="button" onclick={cycleFilter}>Filter: {filterLabel(projectFilter)}</button>
-      <button type="button" onclick={() => void onnewproject?.()}>New project</button>
-    </div>
-  </header>
+  {#if selected}
+    <ProjectDetailView
+      project={selected}
+      {stories}
+      {storiesLoading}
+      {storiesError}
+      objectives={objectives}
+      onback={backToProjects}
+      onselectStory={openStory}
+      onStatusChange={onProjectStatusChange}
+    />
 
-  {#if error}
-    <div class="projects-error" role="alert">{error}</div>
-  {/if}
-
-  <div class="project-table" aria-busy={loading}>
-    <div class="project-table-head" aria-hidden="true">
-      <span>PROJECT</span>
-      <span>LEAD</span>
-      <span>PROGRESS</span>
-      <span>TARGET</span>
-      <span>STATUS</span>
-    </div>
-
-    {#if loading}
-      {#each [0, 1, 2, 3] as row (row)}
-        <div class="project-skeleton"></div>
-      {/each}
-    {:else if companyProjects.length === 0}
-      <div class="empty-state" data-testid="empty-projects-state">
-        <span>No projects yet</span>
-        <p>Projects will appear here after they sync into the local workspace.</p>
+    <StoryPanel
+      story={selectedStory}
+      project={selected}
+      prdPath={selected.prdPath}
+      onclose={closeStory}
+      onselectDependency={selectStoryById}
+      {onStoryPassesChange}
+    />
+  {:else}
+    <header class="projects-header">
+      <div class="projects-heading">
+        <h2 id="company-projects-title">Projects</h2>
+        <span>
+          {filteredCompanyProjects.length} of {companyProjects.length} {companyProjects.length === 1 ? 'project' : 'projects'} · grouped by goal
+        </span>
       </div>
-    {:else if filteredCompanyProjects.length === 0}
-      <div class="empty-state" data-testid="filtered-projects-empty-state">
-        <span>No projects match {filterLabel(projectFilter).toLowerCase()}</span>
-        <p>Change the filter to see the rest of this company’s projects.</p>
+      <div class="project-actions" aria-label="Project actions">
+        {#if actionMessage}
+          <span class="action-status" role="status">{actionMessage}</span>
+        {/if}
+        <button type="button" onclick={cycleFilter}>Filter: {filterLabel(projectFilter)}</button>
+        <button type="button" onclick={() => void onnewproject?.()}>New project</button>
       </div>
-    {:else}
-      {#each groups as group (group.key)}
-        <section class="project-group" aria-labelledby={`project-group-${group.key}`}>
-          <h3 id={`project-group-${group.key}`} class="project-group-title">
-            <span class={`status-dot ${group.tone}`} aria-hidden="true"></span>
-            <span>{group.label}</span>
-          </h3>
+    </header>
 
-          {#each group.projects as project, index (project.id)}
-            {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
-            {@const status = projectListStatus(project)}
-            {@const lead = leadLabel(project, index)}
-            <article class="project-row" data-testid="project-row">
-              <div class="project-main">
-                <strong>{projectDisplayName(project)}</strong>
-                <span>
-                  {startedLabel(project)}
-                  {#if group.noGoal && index === group.projects.length - 1}
-                    <button
-                      type="button"
-                      class="link-nudge"
-                      onclick={() => void requestLinkProject(project)}
-                      disabled={actionBusy !== null}
-                    >
-                      {actionBusy === `link-${project.id}` ? 'Opening…' : 'Link'}
-                    </button>
-                  {/if}
-                </span>
-              </div>
-              <div class="lead-cell">
-                {#if lead.length <= 2 && lead !== 'You'}
-                  <span class="avatar">{lead}</span>
-                {:else}
-                  <span>{lead}</span>
-                {/if}
-              </div>
-              <div class="progress-cell" aria-label={`${progress.percent}% complete`}>
-                <span class="progress-track" aria-hidden="true">
-                  <span class="progress-fill" style={`width: ${progress.percent}%`}></span>
-                </span>
-                <span>{progress.complete}/{progress.total}</span>
-              </div>
-              <div class="target-cell">{targetLabel(project)}</div>
-              <div class="status-cell">
-                <span class={`status-dot ${statusTone(status)}`} aria-hidden="true"></span>
-                <span>{statusLabel(status)}</span>
-              </div>
-            </article>
-          {/each}
-        </section>
-      {/each}
+    {#if error}
+      <div class="projects-error" role="alert">{error}</div>
     {/if}
-  </div>
+
+    <div class="project-table" aria-busy={loading}>
+      <div class="project-table-head" aria-hidden="true">
+        <span>PROJECT</span>
+        <span>LEAD</span>
+        <span>PROGRESS</span>
+        <span>TARGET</span>
+        <span>STATUS</span>
+      </div>
+
+      {#if loading}
+        {#each [0, 1, 2, 3] as row (row)}
+          <div class="project-skeleton"></div>
+        {/each}
+      {:else if companyProjects.length === 0}
+        <div class="empty-state" data-testid="empty-projects-state">
+          <span>No projects yet</span>
+          <p>Projects will appear here after they sync into the local workspace.</p>
+        </div>
+      {:else if filteredCompanyProjects.length === 0}
+        <div class="empty-state" data-testid="filtered-projects-empty-state">
+          <span>No projects match {filterLabel(projectFilter).toLowerCase()}</span>
+          <p>Change the filter to see the rest of this company’s projects.</p>
+        </div>
+      {:else}
+        {#each groups as group (group.key)}
+          <section class="project-group" aria-labelledby={`project-group-${group.key}`}>
+            <h3 id={`project-group-${group.key}`} class="project-group-title">
+              <span class={`status-dot ${group.tone}`} aria-hidden="true"></span>
+              <span>{group.label}</span>
+            </h3>
+
+            {#each group.projects as project, index (project.id)}
+              {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
+              {@const status = projectListStatus(project)}
+              {@const lead = leadLabel(project, index)}
+              <div
+                class="project-row"
+                data-testid="project-row"
+                role="button"
+                tabindex="0"
+                onclick={() => void openProject(project)}
+                onkeydown={(event) => openProjectFromKey(event, project)}
+              >
+                <div class="project-main">
+                  <strong>{projectDisplayName(project)}</strong>
+                  <span>
+                    {startedLabel(project)}
+                    {#if group.noGoal && index === group.projects.length - 1}
+                      <button
+                        type="button"
+                        class="link-nudge"
+                        onclick={(event) => {
+                          event.stopPropagation();
+                          void requestLinkProject(project);
+                        }}
+                        disabled={actionBusy !== null}
+                      >
+                        {actionBusy === `link-${project.id}` ? 'Opening…' : 'Link'}
+                      </button>
+                    {/if}
+                  </span>
+                </div>
+                <div class="lead-cell">
+                  {#if lead.length <= 2 && lead !== 'You'}
+                    <span class="avatar">{lead}</span>
+                  {:else}
+                    <span>{lead}</span>
+                  {/if}
+                </div>
+                <div class="progress-cell" aria-label={`${progress.percent}% complete`}>
+                  <span class="progress-track" aria-hidden="true">
+                    <span class="progress-fill" style={`width: ${progress.percent}%`}></span>
+                  </span>
+                  <span>{progress.complete}/{progress.total}</span>
+                </div>
+                <div class="target-cell">{targetLabel(project)}</div>
+                <div class="status-cell">
+                  <span class={`status-dot ${statusTone(status)}`} aria-hidden="true"></span>
+                  <span>{statusLabel(status)}</span>
+                </div>
+              </div>
+            {/each}
+          </section>
+        {/each}
+      {/if}
+    </div>
+  {/if}
 </section>
 
 <style>
   .company-projects {
+    container: company-projects / inline-size;
     display: flex;
     flex-direction: column;
     gap: 22px;
@@ -646,9 +772,76 @@
     opacity: 0.48;
   }
 
-  @media (max-width: 900px) {
-    .project-table {
-      overflow-x: auto;
+  @container company-projects (max-width: 560px) {
+    .projects-header {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+
+    .projects-heading {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+
+    .project-actions {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .action-status {
+      flex: 1 1 100%;
+      max-width: 100%;
+      white-space: normal;
+    }
+
+    .project-table-head {
+      display: none;
+    }
+
+    .project-group,
+    .project-row,
+    .project-skeleton {
+      min-width: 0;
+    }
+
+    .project-group-title {
+      height: auto;
+      min-height: 30px;
+      padding: 8px 0;
+    }
+
+    .project-row {
+      grid-template-columns: minmax(0, 1fr);
+      row-gap: 7px;
+      min-height: 0;
+      padding: 12px 0;
+    }
+
+    .project-main strong,
+    .project-main span {
+      overflow: visible;
+      text-overflow: initial;
+      white-space: normal;
+    }
+
+    .lead-cell,
+    .target-cell,
+    .status-cell,
+    .progress-cell {
+      align-self: start;
+    }
+
+    .progress-cell,
+    .status-cell {
+      min-width: 0;
+    }
+
+    .progress-track {
+      flex: 1 1 auto;
+      min-width: 64px;
+      max-width: 128px;
     }
   }
 </style>

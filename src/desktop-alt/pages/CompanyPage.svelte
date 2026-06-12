@@ -221,7 +221,6 @@
   .company-panel {
     min-width: 0;
     animation: panel-enter 220ms cubic-bezier(0.33, 1, 0.68, 1);
-    will-change: opacity, transform;
   }
 
   @keyframes panel-enter {

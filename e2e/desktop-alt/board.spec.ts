@@ -139,6 +139,15 @@ describe('desktop-alt story board (US-006)', () => {
     expect(kanban).toContain('skeleton-card');
   });
 
+  it('does not force a 960px-wide board inside V4 shell panes', () => {
+    const kanban = readRepoFile('src/desktop-alt/components/StoryKanban.svelte');
+
+    expect(kanban).toContain('grid-template-columns: repeat(4, minmax(160px, 1fr))');
+    expect(kanban).toContain('min-width: 0');
+    expect(kanban).toContain('@container story-kanban (max-width: 760px)');
+    expect(kanban).not.toContain('min-width: 960px');
+  });
+
   it('renders the list rows with id, state badge, priority, AC count, and onselect', () => {
     const list = readRepoFile('src/desktop-alt/components/StoryList.svelte');
 

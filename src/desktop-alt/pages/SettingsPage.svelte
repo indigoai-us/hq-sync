@@ -305,7 +305,7 @@
     overflow: hidden;
     border: 1px solid var(--v4-hairline);
     border-radius: 8px;
-    background: var(--v4-surface);
+    background: var(--v4-raised);
   }
 
   .setting-row {
