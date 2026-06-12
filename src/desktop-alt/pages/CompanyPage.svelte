@@ -3,6 +3,7 @@
   import type { Workspace } from '../../lib/workspaces';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
+  import CompanyGoalsPage from './CompanyGoalsPage.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
@@ -27,10 +28,9 @@
     `${summaryState.summary.board} board cards · ${summaryState.summary.activity.last7d} activity this week · ${summaryState.summary.deployments} deployments · ${summaryState.summary.secrets} secrets`,
   );
 
-  // Sections whose dedicated V4 views land in later stories (Goals US-006,
-  // Projects/Tasks US-007). The Overview board carries that data today.
+  // Sections whose dedicated V4 views land in later stories (Projects/Tasks
+  // US-007). The Overview board carries that data today.
   const PENDING_SECTIONS: Partial<Record<CompanyTab, string>> = {
-    goals: 'The dedicated Goals view is on its way. Goals live on the Overview for now.',
     projects: 'The dedicated Projects view is on its way. Projects live on the Overview for now.',
     tasks: 'The dedicated Tasks view is on its way. Stories live on the Overview for now.',
   };
@@ -53,30 +53,36 @@
 </script>
 
 <section class="company-page" aria-labelledby="company-page-title">
-  <header class="company-header">
-    <div class="company-heading">
-      <nav class="company-crumb" aria-label="Breadcrumb">
-        <span>Companies</span>
-        <span aria-hidden="true">›</span>
-        <span>{company.displayName}</span>
-      </nav>
-      <h1 id="company-page-title">{company.displayName}</h1>
-      <p>{subtitle}</p>
-      {#if summaryState.error}
-        <span class="summary-error">Summary unavailable. Showing zeros.</span>
-      {/if}
-    </div>
+  {#if tab === 'goals'}
+    <h1 id="company-page-title" class="visually-hidden">{company.displayName}</h1>
+  {:else}
+    <header class="company-header">
+      <div class="company-heading">
+        <nav class="company-crumb" aria-label="Breadcrumb">
+          <span>Companies</span>
+          <span aria-hidden="true">›</span>
+          <span>{company.displayName}</span>
+        </nav>
+        <h1 id="company-page-title">{company.displayName}</h1>
+        <p>{subtitle}</p>
+        {#if summaryState.error}
+          <span class="summary-error">Summary unavailable. Showing zeros.</span>
+        {/if}
+      </div>
 
-    <div class="company-actions" aria-label="Company actions">
-      <button type="button" onclick={openInBrowser}>Open in browser</button>
-      <button type="button" onclick={openInvite}>Invite</button>
-    </div>
-  </header>
+      <div class="company-actions" aria-label="Company actions">
+        <button type="button" onclick={openInBrowser}>Open in browser</button>
+        <button type="button" onclick={openInvite}>Invite</button>
+      </div>
+    </header>
+  {/if}
 
   {#key `${company.slug}:${tab}`}
     <div class="company-panel">
       {#if tab === 'overview'}
         <CompanyBoardPanel slug={company.slug} />
+      {:else if tab === 'goals'}
+        <CompanyGoalsPage slug={company.slug} />
       {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} />
       {:else if tab === 'deployments'}
@@ -98,6 +104,15 @@
   .company-page {
     display: grid;
     gap: 18px;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .company-header {

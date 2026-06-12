@@ -123,6 +123,7 @@ export interface Objective {
   owner?: string | null;
   keyResults: KeyResult[];
   initiativeIds: string[];
+  linearInitiativeId?: string | null;
 }
 
 /** One initiative from a company `board.json` `initiatives[]` entry. */
@@ -156,6 +157,8 @@ function toObjective(wire: Partial<Objective>): Objective {
     owner: typeof wire.owner === 'string' ? wire.owner : null,
     keyResults: Array.isArray(wire.keyResults) ? wire.keyResults : [],
     initiativeIds: Array.isArray(wire.initiativeIds) ? wire.initiativeIds : [],
+    linearInitiativeId:
+      typeof wire.linearInitiativeId === 'string' ? wire.linearInitiativeId : null,
   };
 }
 
