@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
     loadCompanyGoals,
     loadLocalProjects,
@@ -15,9 +17,11 @@
 
   interface Props {
     slug: string;
+    onnewproject?: () => void | Promise<void>;
   }
 
   type DotTone = 'ok' | 'warn' | 'error' | 'idle';
+  type ProjectFilter = 'all' | 'active' | 'needs-link';
 
   interface ProjectGroup {
     key: string;
@@ -27,19 +31,25 @@
     noGoal: boolean;
   }
 
-  let { slug }: Props = $props();
+  let { slug, onnewproject }: Props = $props();
 
   let objectives = $state<Objective[]>([]);
   let projects = $state<Project[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let projectFilter = $state<ProjectFilter>('all');
+  let actionBusy = $state<string | null>(null);
+  let actionMessage = $state<string | null>(null);
 
   const companyProjects = $derived(
     projects
       .filter((project) => project.company === slug)
       .sort((a, b) => projectDisplayName(a).localeCompare(projectDisplayName(b))),
   );
-  const groups = $derived.by(() => groupProjectsByGoal(objectives, companyProjects));
+  const filteredCompanyProjects = $derived(
+    companyProjects.filter((project) => matchesProjectFilter(project, projectFilter)),
+  );
+  const groups = $derived.by(() => groupProjectsByGoal(objectives, filteredCompanyProjects));
 
   $effect(() => {
     const activeSlug = slug;
@@ -113,6 +123,68 @@
     const ids = objectiveIds(objective);
     if (ids.size === 0) return false;
     return projectTokens(project).some((token) => ids.has(token));
+  }
+
+  function projectLinkedToAnyGoal(project: Project): boolean {
+    return objectives.some((objective) => projectMatchesObjective(project, objective));
+  }
+
+  function matchesProjectFilter(project: Project, filter: ProjectFilter): boolean {
+    if (filter === 'needs-link') return !projectLinkedToAnyGoal(project);
+    if (filter === 'active') {
+      const status = projectListStatus(project);
+      return status === 'live' || status === 'in-progress';
+    }
+    return true;
+  }
+
+  function filterLabel(filter: ProjectFilter): string {
+    if (filter === 'active') return 'Active';
+    if (filter === 'needs-link') return 'Needs link';
+    return 'All';
+  }
+
+  function cycleFilter() {
+    projectFilter =
+      projectFilter === 'all' ? 'active' : projectFilter === 'active' ? 'needs-link' : 'all';
+  }
+
+  async function requestLinkProject(project: Project) {
+    if (actionBusy) return;
+    const prompt = [
+      `/goals ${slug}`,
+      '',
+      `Link project "${projectDisplayName(project)}" to the right company goal.`,
+      `Project id: ${project.id}`,
+      project.prdPath ? `PRD: ${project.prdPath}` : null,
+      objectives.length > 0
+        ? ['Available goals:', ...objectives.map((goal) => `- ${goal.title || goal.id}`)].join('\n')
+        : 'No goals are currently synced; create the right goal first if needed.',
+      '',
+      'Update the local goal/project metadata so this project appears under the correct goal in HQ Sync.',
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n');
+    actionBusy = `link-${project.id}`;
+    actionMessage = null;
+    try {
+      const config: { hqFolderPath?: string } = await invoke<{ hqFolderPath?: string }>(
+        'get_config',
+      ).catch(() => ({}));
+      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      await invoke('open_claude_code_link', { url });
+      actionMessage = 'Opened in Claude Code.';
+    } catch (err) {
+      console.error('open_claude_code_link failed:', err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        actionMessage = 'Prompt copied.';
+      } catch {
+        actionMessage = 'Could not open Claude Code.';
+      }
+    } finally {
+      actionBusy = null;
+    }
   }
 
   function goalTone(objective: Objective): DotTone {
@@ -219,12 +291,15 @@
     <div class="projects-heading">
       <h2 id="company-projects-title">Projects</h2>
       <span>
-        {companyProjects.length} {companyProjects.length === 1 ? 'project' : 'projects'} · grouped by goal
+        {filteredCompanyProjects.length} of {companyProjects.length} {companyProjects.length === 1 ? 'project' : 'projects'} · grouped by goal
       </span>
     </div>
     <div class="project-actions" aria-label="Project actions">
-      <button type="button">Filter</button>
-      <button type="button">New project</button>
+      {#if actionMessage}
+        <span class="action-status" role="status">{actionMessage}</span>
+      {/if}
+      <button type="button" onclick={cycleFilter}>Filter: {filterLabel(projectFilter)}</button>
+      <button type="button" onclick={() => void onnewproject?.()}>New project</button>
     </div>
   </header>
 
@@ -250,6 +325,11 @@
         <span>No projects yet</span>
         <p>Projects will appear here after they sync into the local workspace.</p>
       </div>
+    {:else if filteredCompanyProjects.length === 0}
+      <div class="empty-state" data-testid="filtered-projects-empty-state">
+        <span>No projects match {filterLabel(projectFilter).toLowerCase()}</span>
+        <p>Change the filter to see the rest of this company’s projects.</p>
+      </div>
     {:else}
       {#each groups as group (group.key)}
         <section class="project-group" aria-labelledby={`project-group-${group.key}`}>
@@ -268,7 +348,14 @@
                 <span>
                   {startedLabel(project)}
                   {#if group.noGoal && index === group.projects.length - 1}
-                    <button type="button" class="link-nudge">Link</button>
+                    <button
+                      type="button"
+                      class="link-nudge"
+                      onclick={() => void requestLinkProject(project)}
+                      disabled={actionBusy !== null}
+                    >
+                      {actionBusy === `link-${project.id}` ? 'Opening…' : 'Link'}
+                    </button>
                   {/if}
                 </span>
               </div>
@@ -355,6 +442,16 @@
     gap: 12px;
   }
 
+  .action-status {
+    max-width: 150px;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: 11px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .project-actions button {
     height: 28px;
     padding: 0 12px;
@@ -365,6 +462,11 @@
     font: inherit;
     font-size: 13px;
     cursor: default;
+  }
+
+  .project-actions button:disabled,
+  .link-nudge:disabled {
+    opacity: 0.52;
   }
 
   .project-table {

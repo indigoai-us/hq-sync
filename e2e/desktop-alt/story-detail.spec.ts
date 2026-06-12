@@ -71,6 +71,11 @@ describe('desktop-alt story detail slide-over (US-008)', () => {
     expect(panel).toContain('{#each story.files as file (file)}');
     expect(panel).toContain('Open PRD');
     expect(panel).toContain('Run story');
+    expect(panel).toContain('onclick={() => void openPrd()}');
+    expect(panel).toContain('onclick={() => void runStory()}');
+    expect(panel).toContain("invoke('open_in_editor', { path: prdPath })");
+    expect(panel).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
+    expect(panel).toContain("invoke('open_claude_code_link', { url })");
   });
 
   it('keeps the panel token-driven (no hardcoded hex)', () => {

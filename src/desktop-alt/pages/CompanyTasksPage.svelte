@@ -18,6 +18,7 @@
 
   type DotTone = 'ok' | 'warn' | 'error' | 'idle';
   type TaskGroupKey = 'in-progress' | 'in-review' | 'todo' | 'done-recent';
+  type TaskFilter = 'all' | 'open' | 'mine' | 'p1';
 
   interface TaskRow {
     story: Story;
@@ -40,8 +41,10 @@
   let rows = $state<TaskRow[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let taskFilter = $state<TaskFilter>('all');
 
-  const groups = $derived.by(() => groupTasks(rows));
+  const filteredRows = $derived(rows.filter((row) => matchesTaskFilter(row, taskFilter)));
+  const groups = $derived.by(() => groupTasks(filteredRows));
   const openCount = $derived(rows.filter((row) => !row.story.passes).length);
 
   $effect(() => {
@@ -173,6 +176,31 @@
   function hash(value: string): number {
     return [...value].reduce((sum, char) => sum + char.charCodeAt(0), 0);
   }
+
+  function matchesTaskFilter(row: TaskRow, filter: TaskFilter): boolean {
+    if (filter === 'open') return !row.story.passes;
+    if (filter === 'mine') return row.assignee === 'You';
+    if (filter === 'p1') return priorityValue(row.story) === 1;
+    return true;
+  }
+
+  function filterLabel(filter: TaskFilter): string {
+    if (filter === 'open') return 'Open';
+    if (filter === 'mine') return 'Mine';
+    if (filter === 'p1') return 'P1';
+    return 'All';
+  }
+
+  function cycleFilter() {
+    taskFilter =
+      taskFilter === 'all'
+        ? 'open'
+        : taskFilter === 'open'
+          ? 'mine'
+          : taskFilter === 'mine'
+            ? 'p1'
+            : 'all';
+  }
 </script>
 
 <section class="company-tasks" aria-labelledby="company-tasks-title" data-testid="company-tasks-page">
@@ -180,10 +208,10 @@
     <div class="tasks-heading">
       <h2 id="company-tasks-title">Tasks</h2>
       <span>
-        {openCount} open across {projects.length} {projects.length === 1 ? 'project' : 'projects'} · stories from prd.json
+        {openCount} open · {filteredRows.length} shown across {projects.length} {projects.length === 1 ? 'project' : 'projects'}
       </span>
     </div>
-    <button type="button">Filter</button>
+    <button type="button" onclick={cycleFilter}>Filter: {filterLabel(taskFilter)}</button>
   </header>
 
   {#if error}
@@ -199,6 +227,11 @@
       <div class="empty-state" data-testid="empty-tasks-state">
         <span>No tasks yet</span>
         <p>Project stories will appear here after they sync into the local workspace.</p>
+      </div>
+    {:else if filteredRows.length === 0}
+      <div class="empty-state" data-testid="filtered-tasks-empty-state">
+        <span>No tasks match {filterLabel(taskFilter).toLowerCase()}</span>
+        <p>Change the filter to see the rest of this company’s stories.</p>
       </div>
     {:else}
       {#each groups as group (group.key)}

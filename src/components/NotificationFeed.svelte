@@ -14,7 +14,8 @@
   // the timeline directly as its default body — no separate window. The pure
   // grouping logic still lives in `../lib/notificationGroups` (shared with its
   // unit tests); this component owns the data load, the day/cluster rendering,
-  // and the row-tap routing into the DM/share detail windows.
+  // and the row-tap routing into the DM/share detail windows plus V4 desktop
+  // company Activity routes for synced-file rows.
 
   // ── Wire types (mirror the Rust structs, camelCase) ──────────────────────────
   interface ActivityEntry {
@@ -201,15 +202,18 @@
         await invoke('open_dm_detail', { event: it.dm });
       } else if (it.kind === 'share' && it.share) {
         await invoke('open_share_detail', { events: [it.share] });
+      } else if (it.kind === 'new-file' && it.file?.company) {
+        await invoke('open_desktop_alt_window', {
+          route: `company:${it.file.company}:activity`,
+        });
       }
-      // new-file rows have no detail window — the file is already in the synced
-      // folder; the row is informational.
     } catch (e) {
       console.error('notification-feed: open failed', e);
     }
   }
 
-  const clickable = (it: Item) => it.kind === 'dm' || it.kind === 'share';
+  const clickable = (it: Item) =>
+    it.kind === 'dm' || it.kind === 'share' || (it.kind === 'new-file' && Boolean(it.file?.company));
 
   // Load on mount, then keep the feed fresh by reloading when new content
   // arrives. A DM lands as `dm:unread-summary`; new files land at `sync:complete`.

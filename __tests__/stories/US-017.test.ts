@@ -16,10 +16,6 @@ const desktopStyle = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/styles/desktop-alt.css'),
   'utf8',
 );
-const syncHaltedCard = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/v4/SyncHaltedCard.svelte'),
-  'utf8',
-);
 
 describe('US-017: full-suite verification release guard', () => {
   it('documents the visual QA map and intentional deviations for the V4 PNG set', () => {
@@ -74,9 +70,13 @@ describe('US-017: full-suite verification release guard', () => {
   it('keeps the critical safety and secrets specs wired', () => {
     expect(secretsSpec).toContain('desktop-alt secrets never leak');
     expect(secretsSpec).toContain('metadata only');
-    expect(safetyFlows).toContain('SyncHaltedCard.svelte');
-    expect(safetyFlows).toContain('Abort sync');
-    expect(syncHaltedCard).not.toMatch(/sync anyway|force sync|override/i);
+    // V4 safety flows are handled inline (NeedsYouCard) rather than by dedicated
+    // pages; the spec asserts the real conflict/drift wiring and the abort-only
+    // guard (hard policy hq-sync-bulk-asymmetry-breaker-means-abort).
+    expect(safetyFlows).toContain('resolve_conflict');
+    expect(safetyFlows).toContain('restore_from_upstream');
+    expect(safetyFlows).toContain('hq-sync-bulk-asymmetry-breaker-means-abort');
+    expect(safetyFlows).toContain('Sync stopped because a conflict needs attention.');
   });
 
   it('keeps V4 styling isolated to desktop-alt while reusing popover tokens', () => {

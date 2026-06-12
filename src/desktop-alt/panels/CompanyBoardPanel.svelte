@@ -455,10 +455,6 @@
     {#if error}
       <div class="board-error" role="alert">{error}</div>
     {/if}
-    {#if boardState.error}
-      <div class="board-error" role="alert">Board summary unavailable. Showing local data.</div>
-    {/if}
-
     <section class="stat-strip" aria-label="Company overview stats">
       <div class="stat-item">
         <strong>{activeProjectCount}</strong>

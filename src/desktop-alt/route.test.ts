@@ -162,6 +162,31 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
     expect(resolvePendingDesktopRoute('bogus')).toBeNull();
     expect(resolvePendingDesktopRoute(null)).toBeNull();
   });
+
+  it('resolves deep links into company sections, library tabs, and settings tabs', () => {
+    expect(resolvePendingDesktopRoute('company:indigo:projects')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'projects',
+    });
+    expect(resolvePendingDesktopRoute('company/indigo/secrets')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'secrets',
+    });
+    expect(resolvePendingDesktopRoute('company:indigo:not-real')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+    });
+    expect(resolvePendingDesktopRoute('library:marketplace')).toEqual({
+      kind: 'library',
+      tab: 'marketplace',
+    });
+    expect(resolvePendingDesktopRoute('settings:meetings')).toEqual({
+      kind: 'settings',
+      tab: 'meetings',
+    });
+  });
 });
 
 describe('US-002 V4Sidebar payload narrowing', () => {
@@ -187,6 +212,7 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     expect(model?.surface).toBe('company');
     expect(model?.header).toBe('Indigo');
     expect(model?.headerTone).toBe('ok');
+    expect(model?.meta).toBe('Owner · synced just now');
     expect(model?.items.map((item) => item.label)).toEqual([
       'Overview',
       'Goals',

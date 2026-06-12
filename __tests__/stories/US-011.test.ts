@@ -96,7 +96,7 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(row).toContain('<span class="lock-icon" title="Password locked" aria-label="Password locked"></span>');
   });
 
-  it('renders toolbar state counts, disabled deploy affordance, and V4 deployment row actions', () => {
+  it('renders toolbar state counts, search, deploy workflow, and V4 deployment row actions', () => {
     const panel = normalize(deploymentsPanel);
     const row = normalize(deploymentRow);
 
@@ -106,10 +106,11 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(panel).toContain('<span><strong>{activeCount}</strong> active</span>');
     expect(panel).toContain('<span><strong>{deployingCount}</strong> deploying</span>');
     expect(panel).toContain('<span><strong>{pausedCount}</strong> paused</span>');
-    expect(panel).toContain('title="Deploy from terminal: /deploy"');
-    expect(panel).toContain('aria-label="Deploy from terminal: /deploy"');
-    expect(panel).toContain('<button class="toolbar-button" type="button" disabled title="Find deployments">');
-    expect(panel).toContain('{#each deployments as deployment, index (`${deployment.url}:${index}`)}');
+    expect(panel).toContain('bind:value={deploymentQuery}');
+    expect(panel).toContain('matchesDeploymentQuery(deployment, deploymentQuery)');
+    expect(panel).toContain("onclick={() => void openDeployWorkflow()}");
+    expect(panel).toContain("invoke('open_claude_code_link', { url })");
+    expect(panel).toContain('{#each filteredDeployments as deployment, index (`${deployment.url}:${index}`)}');
     expect(panel).toContain('<DeploymentRow {deployment} />');
     expect(row).toContain('grid-template-columns: 82px 1.4fr 1fr auto auto auto;');
     expect(row).toContain('const envLabel = $derived(environmentLabel(deployment))');

@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../../lib/workspaces';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
@@ -9,7 +11,6 @@
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
-  import { useCompanySummary } from '../lib/company-summary.svelte';
   import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
   interface Props {
@@ -20,15 +21,25 @@
      * Overview.
      */
     tab?: CompanyTab;
+    /** Open the V4 desktop Settings route from the company action row. */
+    onopencompanysettings?: () => void;
+    /** Switch to the Projects section before handing project creation to HQ. */
+    onopenprojects?: () => void;
   }
 
-  let { company, tab = DEFAULT_COMPANY_TAB }: Props = $props();
+  let {
+    company,
+    tab = DEFAULT_COMPANY_TAB,
+    onopencompanysettings,
+    onopenprojects,
+  }: Props = $props();
 
-  const summaryState = useCompanySummary({ slug: () => company.slug });
+  interface SettingsWire {
+    hqPath?: string | null;
+  }
 
-  const subtitle = $derived(
-    `${summaryState.summary.board} board cards · ${summaryState.summary.activity.last7d} activity this week · ${summaryState.summary.deployments} deployments · ${summaryState.summary.secrets} secrets`,
-  );
+  let actionError = $state<string | null>(null);
+  let newProjectBusy = $state(false);
 
   // HQ web console base. Same host the Meetings page links to for
   // "Open HQ Console Integrations" — the company console lives at /{slug}.
@@ -38,38 +49,68 @@
     return `${HQ_CONSOLE_BASE}/${encodeURIComponent(company.slug)}`;
   }
 
-  function openInBrowser() {
+  function openInvite() {
+    void openExternal(`${companyConsoleUrl()}/invite`);
+  }
+
+  function openCompanySettings() {
+    actionError = null;
+    if (onopencompanysettings) {
+      onopencompanysettings();
+      return;
+    }
     void openExternal(companyConsoleUrl());
   }
 
-  function openInvite() {
-    void openExternal(`${companyConsoleUrl()}/invite`);
+  async function startNewProject() {
+    if (newProjectBusy) return;
+    actionError = null;
+    newProjectBusy = true;
+    onopenprojects?.();
+
+    const prompt = [
+      `/plan ${company.slug} new project`,
+      '',
+      `Start a new HQ project for ${company.displayName}.`,
+      `Use company slug: ${company.slug}.`,
+      'Interview me only for the missing product decisions, then create the project PRD under this company and make sure it appears in the HQ Sync desktop Projects screen.',
+    ].join('\n');
+
+    try {
+      const settings = await invoke<SettingsWire>('get_settings').catch(() => ({ hqPath: null }));
+      const folder = settings.hqPath ?? company.localPath ?? '';
+      const url = buildClaudeCodeUrl({ folder, prompt });
+      await invoke('open_claude_code_link', { url });
+    } catch (err) {
+      console.error('open_claude_code_link for new project failed:', err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        actionError = 'Project prompt copied. Paste it into Claude Code to continue.';
+      } catch {
+        actionError = 'Could not open Claude Code. The Projects screen is open.';
+      }
+    } finally {
+      newProjectBusy = false;
+    }
   }
 </script>
 
 <section class="company-page" aria-labelledby="company-page-title">
-  {#if tab === 'goals'}
-    <h1 id="company-page-title" class="visually-hidden">{company.displayName}</h1>
-  {:else}
-    <header class="company-header">
-      <div class="company-heading">
-        <nav class="company-crumb" aria-label="Breadcrumb">
-          <span>Companies</span>
-          <span aria-hidden="true">›</span>
-          <span>{company.displayName}</span>
-        </nav>
-        <h1 id="company-page-title">{company.displayName}</h1>
-        <p>{subtitle}</p>
-        {#if summaryState.error}
-          <span class="summary-error">Summary unavailable. Showing zeros.</span>
-        {/if}
-      </div>
+  <h1 id="company-page-title" class="visually-hidden">{company.displayName}</h1>
 
-      <div class="company-actions" aria-label="Company actions">
-        <button type="button" onclick={openInBrowser}>Open in browser</button>
-        <button type="button" onclick={openInvite}>Invite</button>
-      </div>
-    </header>
+  <header class="company-actions-row">
+    <div></div>
+    <div class="company-actions" aria-label="Company actions">
+      <button type="button" onclick={openInvite}>Invite</button>
+      <button type="button" onclick={openCompanySettings}>Settings</button>
+      <button type="button" class="primary" onclick={() => void startNewProject()} disabled={newProjectBusy}>
+        {newProjectBusy ? 'Opening…' : 'New project'}
+      </button>
+    </div>
+  </header>
+
+  {#if actionError}
+    <p class="company-action-error" role="status">{actionError}</p>
   {/if}
 
   {#key `${company.slug}:${tab}`}
@@ -79,7 +120,7 @@
       {:else if tab === 'goals'}
         <CompanyGoalsPage slug={company.slug} />
       {:else if tab === 'projects'}
-        <CompanyProjectsPage slug={company.slug} />
+        <CompanyProjectsPage slug={company.slug} onnewproject={startNewProject} />
       {:else if tab === 'tasks'}
         <CompanyTasksPage slug={company.slug} />
       {:else if tab === 'activity'}
@@ -90,10 +131,6 @@
         <CompanyLibraryPanel slug={company.slug} />
       {:else if tab === 'secrets'}
         <SecretsPanel slug={company.slug} />
-      {:else}
-        <div class="section-pending">
-          <p>This section is on its way.</p>
-        </div>
       {/if}
     </div>
   {/key}
@@ -114,66 +151,12 @@
     white-space: nowrap;
   }
 
-  .company-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 20px;
-    min-width: 0;
-  }
-
-  .company-heading {
-    min-width: 0;
-  }
-
-  .company-crumb {
+  .company-actions-row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    max-width: 100%;
-    margin-bottom: 7px;
-    overflow: hidden;
-    color: var(--muted);
-    font-size: var(--text-base);
-    line-height: 16px;
-    white-space: nowrap;
-  }
-
-  .company-crumb span {
+    justify-content: space-between;
+    min-height: 30px;
     min-width: 0;
-  }
-
-  .company-crumb span:last-child {
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .company-header h1 {
-    margin: 0;
-    overflow: hidden;
-    color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 600;
-    line-height: 29px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .company-header p {
-    margin: 5px 0 0;
-    max-width: 100%;
-    overflow-wrap: anywhere;
-    color: var(--muted);
-    font-size: var(--text-base);
-    line-height: 18px;
-  }
-
-  .summary-error {
-    display: block;
-    margin-top: 5px;
-    color: var(--amber);
-    font-size: var(--text-base);
-    line-height: 16px;
   }
 
   .company-actions {
@@ -193,7 +176,7 @@
     color: var(--fg);
     font: inherit;
     font-size: var(--text-base);
-    font-weight: 600;
+    font-weight: 400;
     text-overflow: ellipsis;
     white-space: nowrap;
     cursor: default;
@@ -207,15 +190,27 @@
     transform: translateY(-1px);
   }
 
+  .company-actions button.primary {
+    border-color: transparent;
+    background: var(--v4-control-bg);
+    color: var(--v4-text-1);
+  }
+
   .company-actions button:active {
     transform: translateY(0);
     opacity: 0.72;
   }
 
-  .section-pending p {
-    margin: 0;
-    color: var(--muted-2);
-    font-size: var(--text-base);
+  .company-actions button:disabled {
+    transform: none;
+    opacity: 0.58;
+  }
+
+  .company-action-error {
+    margin: -10px 0 0;
+    color: var(--v4-text-2);
+    font-size: 11px;
+    line-height: 1.3;
   }
 
   .company-panel {
@@ -237,14 +232,6 @@
   }
 
   @media (max-width: 720px) {
-    .company-header {
-      flex-direction: column;
-    }
-
-    .company-header h1 {
-      white-space: normal;
-    }
-
     .company-actions {
       width: 100%;
     }

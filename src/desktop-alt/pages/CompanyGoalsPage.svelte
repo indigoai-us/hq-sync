@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
     loadCompanyGoals,
     loadLocalProjects,
@@ -39,6 +41,8 @@
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  let actionBusy = $state<string | null>(null);
+  let actionMessage = $state<string | null>(null);
 
   const companyProjects = $derived(projects.filter((project) => project.company === slug));
   const linkedProjectCount = $derived.by(() => {
@@ -219,6 +223,54 @@
     return `at risk — ${basis} · agent proposed ${proposals} new projects`;
   }
 
+  async function openHqPrompt(kind: string, prompt: string) {
+    if (actionBusy) return;
+    actionBusy = kind;
+    actionMessage = null;
+    try {
+      const config: { hqFolderPath?: string } = await invoke<{ hqFolderPath?: string }>(
+        'get_config',
+      ).catch(() => ({}));
+      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      await invoke('open_claude_code_link', { url });
+      actionMessage = 'Opened in Claude Code.';
+    } catch (err) {
+      console.error('open_claude_code_link failed:', err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        actionMessage = 'Prompt copied.';
+      } catch {
+        actionMessage = 'Could not open Claude Code.';
+      }
+    } finally {
+      actionBusy = null;
+    }
+  }
+
+  function newGoal() {
+    const prompt = [
+      `/goals ${slug}`,
+      '',
+      `Create a new measurable company goal for ${slug}.`,
+      'Interview me for the missing objective, owner, target quarter, and key results, then update the local company goals source so it appears in HQ Sync.',
+    ].join('\n');
+    void openHqPrompt('new-goal', prompt);
+  }
+
+  function reviewProposal(objective: Objective) {
+    const prompt = [
+      `/goals ${slug}`,
+      '',
+      `Review the agent proposal for this at-risk goal: ${objective.title || 'Untitled goal'}.`,
+      `Current note: ${riskNote(objective)}`,
+      objective.description ? `Goal description: ${objective.description}` : null,
+      'Recommend the projects or story changes that should bring the goal back on track, then write the approved updates into the local HQ project/goal files.',
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n');
+    void openHqPrompt(`review-${objective.id || objective.title}`, prompt);
+  }
+
   function selectStoryById(storyId: string): void {
     if (stories.some((story) => story.id === storyId)) {
       selectedStoryId = storyId;
@@ -319,7 +371,19 @@
           · linked to {linkedProjectCount} {linkedProjectCount === 1 ? 'project' : 'projects'}
         </span>
       </div>
-      <button type="button" class="new-goal-button">New goal</button>
+      <div class="goal-actions">
+        {#if actionMessage}
+          <span class="action-status" role="status">{actionMessage}</span>
+        {/if}
+        <button
+          type="button"
+          class="new-goal-button"
+          onclick={newGoal}
+          disabled={actionBusy !== null}
+        >
+          {actionBusy === 'new-goal' ? 'Opening…' : 'New goal'}
+        </button>
+      </div>
     </header>
 
     {#if error}
@@ -395,7 +459,13 @@
               <div class="risk-row" data-testid="at-risk-note">
                 <span class="status-dot warn" aria-hidden="true"></span>
                 <span>{riskNote(objective)}</span>
-                <button type="button">Review proposal</button>
+                <button
+                  type="button"
+                  onclick={() => reviewProposal(objective)}
+                  disabled={actionBusy !== null}
+                >
+                  {actionBusy === `review-${objective.id || objective.title}` ? 'Opening…' : 'Review proposal'}
+                </button>
               </div>
             {/if}
 
@@ -451,6 +521,7 @@
   .goals-header,
   .goal-card-header,
   .goal-title-row,
+  .goal-actions,
   .risk-row,
   .linked-row,
   .project-chips,
@@ -463,6 +534,21 @@
   .goals-header {
     justify-content: space-between;
     gap: 18px;
+  }
+
+  .goal-actions {
+    flex: 0 0 auto;
+    gap: 10px;
+  }
+
+  .action-status {
+    max-width: 160px;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: 11px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .goals-heading {
@@ -505,6 +591,11 @@
     font-weight: 400;
     line-height: 30px;
     cursor: default;
+  }
+
+  .new-goal-button:disabled,
+  .risk-row button:disabled {
+    opacity: 0.52;
   }
 
   .goals-error {
@@ -809,12 +900,14 @@
   @media (max-width: 720px) {
     .goals-header,
     .goal-card-header,
+    .goal-actions,
     .linked-row {
       align-items: flex-start;
       flex-direction: column;
     }
 
-    .new-goal-button {
+    .new-goal-button,
+    .goal-actions {
       width: 100%;
     }
   }

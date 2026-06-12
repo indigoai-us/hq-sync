@@ -71,9 +71,8 @@
     reactions?: ReactionMap;
     ontogglereaction?: (messageId: string, emoji: string) => void;
     // When true, the reply composer is hidden and a static note renders in its
-    // place. Used for read-only threads with no real recipient yet — e.g. the
-    // "Your agent" placeholder thread (agent send/receive is deferred to a
-    // later story behind the v4AgentThread flag).
+    // place. Used for read-only history or preview panes that have no writable
+    // recipient yet.
     readonly?: boolean;
   }
 
@@ -315,7 +314,7 @@
 
 {#if readonly}
   <div class="dm-reply dm-reply-readonly">
-    <span class="dm-reply-hint">Agent replies aren’t available yet.</span>
+    <span class="dm-reply-hint">Replies aren’t available in this preview.</span>
   </div>
 {:else}
   <div class="dm-reply">

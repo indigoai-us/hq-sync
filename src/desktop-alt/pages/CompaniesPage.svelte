@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import type { Workspace } from '../../lib/workspaces';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import {
     getCompaniesPageModel,
     type CompanySyncMode,
@@ -12,7 +13,7 @@
    * section 5, companies.png): a CONNECTED table (role / members / last
    * change / sync lanes, amber provisioning rows, red error rows with Retry)
    * and a NOT CONNECTED section (local directories → Connect via
-   * `connect_workspace_to_cloud`; pending invites → Accept / Decline).
+   * `connect_workspace_to_cloud`; pending invites → Open invite flow).
    *
    * Workspaces are prop-fed from DesktopApp's `list_syncable_workspaces`
    * load; per-company sync modes resolve lazily here via `get_sync_mode`
@@ -47,9 +48,11 @@
   let connectErrors = $state<Record<string, string>>({});
   // slug → resolved per-membership sync mode (get_sync_mode).
   let syncModes = $state<Record<string, CompanySyncMode>>({});
-  // Invites are accepted from the emailed magic link (the desktop app holds
-  // no invite token) — clicking Accept/Decline surfaces this note inline.
-  let inviteNotices = $state<Record<string, true>>({});
+  // Invites are accepted from the emailed magic link. The desktop membership
+  // row carries inviter/time metadata but not the one-time token, so this opens
+  // the real /accept workflow and asks the user for the link/token there.
+  let openingInvite = $state<string | null>(null);
+  let inviteNotices = $state<Record<string, string>>({});
 
   // One lazy get_sync_mode round-trip per synced company row. Non-reactive
   // guard so a re-render never re-requests a slug already in flight.
@@ -99,8 +102,40 @@
     }
   }
 
-  function handleInviteAction(slug: string) {
-    inviteNotices = { ...inviteNotices, [slug]: true };
+  async function handleInviteAction(row: (typeof model.notConnected)[number]) {
+    if (openingInvite) return;
+    openingInvite = row.slug;
+    inviteNotices = { ...inviteNotices, [row.slug]: '' };
+    const prompt = [
+      '[$accept](/Users/corey/Documents/HQ/.claude/skills/accept/SKILL.md)',
+      '',
+      `Help me accept the pending HQ company invite for ${row.name}.`,
+      `Company slug shown in HQ Sync: ${row.slug}.`,
+      `Invite context: ${row.sub}.`,
+      'The desktop app does not have the magic-link token. Ask me to paste the invite link or raw token, then complete the HQ accept flow.',
+    ].join('\n');
+
+    try {
+      const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
+        hqFolderPath: '',
+      }));
+      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      await invoke('open_claude_code_link', { url });
+      inviteNotices = { ...inviteNotices, [row.slug]: 'Opened invite flow in Claude Code.' };
+    } catch (err) {
+      console.error(`open invite flow (${row.slug}) failed:`, err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        inviteNotices = {
+          ...inviteNotices,
+          [row.slug]: 'Invite prompt copied. Paste it into Claude Code to continue.',
+        };
+      } catch {
+        inviteNotices = { ...inviteNotices, [row.slug]: 'Could not open invite flow.' };
+      }
+    } finally {
+      openingInvite = null;
+    }
   }
 
   function handleOpen(slug: string, open: boolean) {
@@ -193,10 +228,7 @@
                   <span class="companies-note">Connect failed — {row.note}</span>
                 {/if}
                 {#if row.kind === 'invite' && inviteNotices[row.slug]}
-                  <span class="companies-note">
-                    Invites are accepted from the emailed link — open your invite email to accept
-                    or decline.
-                  </span>
+                  <span class="companies-note">{inviteNotices[row.slug]}</span>
                 {/if}
               </span>
             </span>
@@ -211,21 +243,14 @@
                   >
                     {connecting.includes(row.slug) ? 'Connecting…' : 'Connect'}
                   </button>
-                {:else if action === 'accept'}
-                  <button
-                    type="button"
-                    class="companies-action primary"
-                    onclick={() => handleInviteAction(row.slug)}
-                  >
-                    Accept
-                  </button>
                 {:else}
                   <button
                     type="button"
-                    class="companies-action"
-                    onclick={() => handleInviteAction(row.slug)}
+                    class="companies-action primary"
+                    disabled={openingInvite !== null}
+                    onclick={() => void handleInviteAction(row)}
                   >
-                    Decline
+                    {openingInvite === row.slug ? 'Opening…' : 'Open invite'}
                   </button>
                 {/if}
               {/each}

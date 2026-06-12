@@ -112,17 +112,16 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     expect(itemMarkup).not.toMatch(/<span[^>]*>\s*Value\s*<\/span>|<input|<textarea/i);
   });
 
-  it('renders read-only toolbar affordances, exact doc note, and exact empty state', () => {
+  it('renders safe HQ workflow toolbar affordances, exact doc note, and exact empty state', () => {
     const panel = normalize(secretsPanel);
 
     expect(panel).toContain('Read-only metadata. Values are never sent to the client — use /hq-secrets to fetch a value.');
-    expect(panel).toContain('title="Export not available — use /hq-secrets exec"');
-    expect(panel).toContain('aria-label="Export not available — use /hq-secrets exec"');
-    expect(panel).toContain('> Export .env </button>');
-    expect(panel).toContain('title="Create from CLI: hq secrets set"');
-    expect(panel).toContain('aria-label="Create from CLI: hq secrets set"');
-    expect(panel).toContain('> New key </button>');
-    expect(panel.match(/type="button" disabled/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(panel).toContain("onclick={() => void openSecretsPrompt('export')}");
+    expect(panel).toContain("onclick={() => void openSecretsPrompt('new')}");
+    expect(panel).toContain('/hq-secrets ${slug}');
+    expect(panel).toContain("invoke('open_claude_code_link', { url })");
+    expect(panel).toContain("{actionBusy === 'export' ? 'Opening…' : 'Export .env'}");
+    expect(panel).toContain("{actionBusy === 'new' ? 'Opening…' : 'New key'}");
     expect(panel).toContain('<div class="empty-state">No secrets yet</div>');
   });
 
