@@ -4,6 +4,8 @@
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
+  import CompanyProjectsPage from './CompanyProjectsPage.svelte';
+  import CompanyTasksPage from './CompanyTasksPage.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
@@ -27,13 +29,6 @@
   const subtitle = $derived(
     `${summaryState.summary.board} board cards · ${summaryState.summary.activity.last7d} activity this week · ${summaryState.summary.deployments} deployments · ${summaryState.summary.secrets} secrets`,
   );
-
-  // Sections whose dedicated V4 views land in later stories (Projects/Tasks
-  // US-007). The Overview board carries that data today.
-  const PENDING_SECTIONS: Partial<Record<CompanyTab, string>> = {
-    projects: 'The dedicated Projects view is on its way. Projects live on the Overview for now.',
-    tasks: 'The dedicated Tasks view is on its way. Stories live on the Overview for now.',
-  };
 
   // HQ web console base. Same host the Meetings page links to for
   // "Open HQ Console Integrations" — the company console lives at /{slug}.
@@ -83,6 +78,10 @@
         <CompanyBoardPanel slug={company.slug} />
       {:else if tab === 'goals'}
         <CompanyGoalsPage slug={company.slug} />
+      {:else if tab === 'projects'}
+        <CompanyProjectsPage slug={company.slug} />
+      {:else if tab === 'tasks'}
+        <CompanyTasksPage slug={company.slug} />
       {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} />
       {:else if tab === 'deployments'}
@@ -93,7 +92,7 @@
         <SecretsPanel slug={company.slug} />
       {:else}
         <div class="section-pending">
-          <p>{PENDING_SECTIONS[tab] ?? 'This section is on its way.'}</p>
+          <p>This section is on its way.</p>
         </div>
       {/if}
     </div>
