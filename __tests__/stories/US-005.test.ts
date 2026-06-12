@@ -1,14 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
+// The V4 Home surface (HomePage + home-model + NeedsYouCard + ActivityDigest)
+// superseded the SyncPage/HeroStatus/SourcesList sources-table in US-003 of
+// the V4 redesign — same coverage (real sync state + events, no demo
+// fixtures), new contracts.
 const desktopApp = readFileSync(resolve(process.cwd(), 'src/desktop-alt/DesktopApp.svelte'), 'utf8');
-const syncPage = readFileSync(resolve(process.cwd(), 'src/desktop-alt/pages/SyncPage.svelte'), 'utf8');
-const heroStatus = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/HeroStatus.svelte'),
+const homePage = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/pages/HomePage.svelte'),
   'utf8',
 );
-const sourcesList = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/SourcesList.svelte'),
+const homeModel = readFileSync(resolve(process.cwd(), 'src/desktop-alt/v4/home-model.ts'), 'utf8');
+const activityDigest = readFileSync(
+  resolve(process.cwd(), 'src/desktop-alt/v4/ActivityDigest.svelte'),
   'utf8',
 );
 const syncModel = readFileSync(resolve(process.cwd(), 'src/desktop-alt/lib/sync-model.ts'), 'utf8');
@@ -26,7 +30,7 @@ function normalize(source: string): string {
   return source.replace(/\s+/g, ' ');
 }
 
-describe('US-005: Alt Sync page wires to real sync state and events', () => {
+describe('US-005: Alt Home surface wires to real sync state and events', () => {
   it('subscribes DesktopApp to the sync events that drive the popover', () => {
     for (const eventName of [
       'sync:progress',
@@ -36,6 +40,7 @@ describe('US-005: Alt Sync page wires to real sync state and events', () => {
       'sync:totals',
       'sync:fanout-plan',
       'sync:error',
+      'sync:conflict',
       'sync:personal-first-push-progress',
       'sync:personal-first-push-complete',
     ]) {
@@ -46,26 +51,28 @@ describe('US-005: Alt Sync page wires to real sync state and events', () => {
     expect(desktopApp).toContain("invoke<ActivityEntry[]>('get_activity_log')");
   });
 
-  it('wires quick actions to real Tauri commands and keeps Add source as Coming soon', () => {
+  it('wires the Home inline actions to real Tauri commands', () => {
     const app = normalize(desktopApp);
-    const hero = normalize(heroStatus);
 
     expect(app).toContain("await invoke('start_sync')");
+    expect(app).toContain("await invoke('cancel_sync')");
     expect(app).toContain("await invoke('open_settings_window')");
-    expect(hero).toContain('title="Coming soon"');
-    expect(hero).toContain('Sync all');
-    expect(hero).toContain('Settings');
-    expect(hero).toContain('Add source');
+    expect(app).toContain("await invoke('resolve_conflict', { path, strategy })");
+    expect(app).toContain("invoke('open_in_editor', { path })");
+    expect(app).toContain("await invoke('restore_from_upstream', {");
+    expect(app).toContain("invoke('open_drift_detail', { report })");
+    expect(app).toContain("await invoke('refresh_tokens')");
+    expect(app).toContain("invoke('open_activity_log')");
   });
 
-  it('renders sources, attention, and recent activity without demo fixtures', () => {
-    const combined = normalize(`${syncPage}\n${sourcesList}\n${syncModel}`);
+  it('renders health, needs-you, and digest from real state without demo fixtures', () => {
+    const combined = normalize(`${homePage}\n${activityDigest}\n${homeModel}\n${syncModel}`);
 
-    expect(combined).toContain('No syncable workspaces found.');
-    expect(combined).toContain('No sync events yet');
-    expect(combined).toContain('Reauth');
-    expect(combined).toContain('Paused');
-    expect(combined).toContain('Up to date');
+    expect(combined).toContain('Needs you');
+    expect(combined).toContain('Sync in progress');
+    expect(combined).toContain('Today across your companies');
+    expect(combined).toContain('Nothing yet today');
+    expect(combined).toContain('Technical details');
     expect(combined).not.toMatch(/Acme|Volta|Globex|Indigo demo|prototype/i);
   });
 

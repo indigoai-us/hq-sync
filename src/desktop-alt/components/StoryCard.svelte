@@ -237,7 +237,7 @@
     min-width: 0;
   }
 
-  /* Mirrors the established SourcesList progress-bar visual language. */
+  /* Mirrors the established desktop-alt progress-bar visual language. */
   .progress-track {
     flex: 1;
     height: 5px;

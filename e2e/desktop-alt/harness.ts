@@ -181,11 +181,13 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     this.assertDesktopAppRouteContracts();
 
     if (route === 'sync') {
+      // The legacy 'sync' route resolves to Home (US-002); the V4 Home surface
+      // superseded SyncPage in US-003.
       return {
         route,
-        text: sourceText('src/desktop-alt/pages/SyncPage.svelte', [
-          'aria-label="Sync"',
-          'Recent activity',
+        text: sourceText('src/desktop-alt/pages/HomePage.svelte', [
+          'aria-label="Home"',
+          '<ActivityDigest',
         ]),
         consoleErrors: [...this.consoleErrors],
       };

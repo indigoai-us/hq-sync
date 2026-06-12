@@ -5,7 +5,7 @@
   import { onMount } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
-  import SyncPage from './pages/SyncPage.svelte';
+  import HomePage from './pages/HomePage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MessagesPage from './pages/MessagesPage.svelte';
@@ -31,6 +31,7 @@
     type LibraryTab,
   } from './route';
   import { V4_CHROME_LAYOUT } from './v4/model';
+  import type { HomeConflict, HomeCoreState } from './v4/home-model';
   import V4Sidebar from './v4/V4Sidebar.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
   import V4TitleBar from './v4/V4TitleBar.svelte';
@@ -68,9 +69,7 @@
   // signal ModerationPanel itself gates on.
   let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>([]);
-  let workspacesCloudReachable = $state(true);
   let workspaceError = $state<string | null>(null);
-  let workspaceManifestError = $state<string | null>(null);
   let syncState = $state<SyncState>('idle');
   let syncProgress = $state<SyncProgress | null>(null);
   let syncFanoutTotal = $state(0);
@@ -87,6 +86,25 @@
     filesSkipped: number;
   } | null>(null);
   let syncErrorMessage = $state('');
+  // Company the failing run reported (when `sync:error` carried one) — drives
+  // the Home error card's "Sync failed for {company}" framing.
+  let syncErrorCompany = $state<string | null>(null);
+  // Epoch ms when the running sync started — Home's syncing meta line.
+  let syncStartedAt = $state<number | null>(null);
+  // Unresolved conflicts from the `sync:conflict` stream → Home's NEEDS YOU
+  // queue (Keep mine / Take theirs / Compare). Cleared when a new run starts —
+  // the runner re-emits anything still conflicted.
+  let homeConflicts = $state<HomeConflict[]>([]);
+  // Core drift snapshot (`check_core_state` + `core-state:changed`) → Home's
+  // drift card (Restore / Keep edit / View diff). `driftDismissed` is the
+  // session-local "Keep edit" ack; a fresh scan re-surfaces the card.
+  let coreState = $state<HomeCoreState | null>(null);
+  let driftDismissed = $state(false);
+  let driftRestoring = $state(false);
+  // Local hq-core version ("15.0.15") for Home's meta line; null = unreadable.
+  let hqVersion = $state<string | null>(null);
+  // `realtimeSync` preference (auto-sync cadence in Home's meta line).
+  let autoSyncOn = $state<boolean | null>(null);
   let statsBySlug = $state<Record<string, WorkspaceSyncStats>>({});
   let activity = $state<ActivityEntry[]>([]);
   let status = $state<SyncStatus | null>(null);
@@ -95,8 +113,6 @@
   // resolves, so the Sync surface shows skeletons instead of a 0/empty flash
   // during the initial fetch window.
   let ready = $state(false);
-  let actionMessage = $state('');
-  let actionError = $state('');
   let commandPaletteOpen = $state(false);
   let meetingEvents = $state<MeetingEvent[]>([]);
   let meetingCompanyNamesByUid = $state<Map<string, string>>(new Map());
@@ -117,13 +133,6 @@
     getDesktopSecondarySidebar(route, companies, { version: __APP_VERSION__ }),
   );
   const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles);
-  const indexedFiles = $derived(
-    syncPlanTotalFiles > 0
-      ? syncPlanTotalFiles
-      : syncTotalFiles > 0
-        ? syncTotalFiles
-        : Math.max(syncFilesProgressed, status?.pendingFiles ?? 0),
-  );
   const observedVaultBytes = $derived.by(() => {
     const activityBytes = activity.reduce((sum, entry) => sum + entry.bytes, 0);
     const workspaceBytes = Object.values(statsBySlug).reduce(
@@ -231,6 +240,11 @@
 
   const lastSyncLabel = $derived(formatRelativeTime(status?.lastSyncAt ?? null));
 
+  // Live transfer total for Home's syncing progress card.
+  const syncTransferredBytes = $derived(
+    Object.values(statsBySlug).reduce((sum, stats) => sum + stats.transferredBytes, 0),
+  );
+
   function navigate(nextRoute: DesktopRoute) {
     route = nextRoute;
   }
@@ -254,6 +268,11 @@
     syncPlanTotalFiles = 0;
     syncLastSummary = null;
     syncErrorMessage = '';
+    syncErrorCompany = null;
+    syncStartedAt = Date.now();
+    // The runner re-emits anything still conflicted; stale cards would offer
+    // actions against files the new run may have already reconciled.
+    homeConflicts = [];
     statsBySlug = {};
   }
 
@@ -266,16 +285,13 @@
     try {
       const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
       workspaces = result.workspaces;
-      workspacesCloudReachable = result.cloudReachable;
       workspaceError = result.error;
-      workspaceManifestError = result.manifestError;
       // Warm the company-tab preload cache for every known company once the real
       // slugs resolve. Idempotent + reconciles, so companies that appear on a
       // later refresh still get warmed; the 30s poll + focus listener wire once.
       startCompanyStore(getDesktopCompanies(result.workspaces).map((company) => company.slug));
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
-      workspacesCloudReachable = false;
       workspaceError = String(err);
     }
   }
@@ -310,8 +326,6 @@
 
   async function handleSyncAll() {
     if (syncState === 'syncing') return;
-    actionError = '';
-    actionMessage = '';
     resetRunState();
     try {
       await invoke('set_tray_state', { state: 'syncing' });
@@ -320,9 +334,91 @@
       console.error('start_sync failed:', err);
       syncState = 'error';
       syncErrorMessage = String(err);
-      actionError = 'Could not start sync.';
       await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
     }
+  }
+
+  // ── Home NEEDS YOU actions ─────────────────────────────────────────────────
+
+  async function handleResolveConflict(path: string, strategy: 'keep-local' | 'keep-remote') {
+    const conflict = homeConflicts.find((entry) => entry.path === path);
+    if (!conflict || conflict.status === 'resolving') return;
+    homeConflicts = homeConflicts.map((entry) =>
+      entry.path === path ? { ...entry, status: 'resolving' as const, error: undefined } : entry,
+    );
+    try {
+      await invoke('resolve_conflict', { path, strategy });
+      homeConflicts = homeConflicts.filter((entry) => entry.path !== path);
+    } catch (err) {
+      homeConflicts = homeConflicts.map((entry) =>
+        entry.path === path
+          ? { ...entry, status: 'error' as const, error: String(err) }
+          : entry,
+      );
+    }
+  }
+
+  function handleCompareConflict(path: string) {
+    void invoke('open_in_editor', { path }).catch((err) =>
+      console.error('open_in_editor failed:', err),
+    );
+  }
+
+  // Restore every USER-EDIT drifted core file from the scanned upstream
+  // target, then re-run the state check so the card reflects post-restore
+  // truth (same target-forwarding rationale as the popover's DriftDetail).
+  async function handleRestoreDrift() {
+    const report = coreState?.driftReport;
+    if (!report || driftRestoring) return;
+    driftRestoring = true;
+    try {
+      for (const entry of report.modified) {
+        await invoke('restore_from_upstream', {
+          path: entry.path,
+          expectedUpstreamSha: entry.gitShaUpstream,
+          targetRepo: report.targetRepo,
+          targetRef: report.targetRef,
+        });
+      }
+      coreState = await invoke<HomeCoreState | null>('check_core_state');
+    } catch (err) {
+      console.error('restore_from_upstream failed:', err);
+    } finally {
+      driftRestoring = false;
+    }
+  }
+
+  function handleKeepDrift() {
+    // Session-local ack — the next scan (`core-state:changed`) re-surfaces it.
+    driftDismissed = true;
+  }
+
+  function handleViewDrift() {
+    const report = coreState?.driftReport;
+    if (!report) return;
+    void invoke('open_drift_detail', { report }).catch((err) =>
+      console.error('open_drift_detail failed:', err),
+    );
+  }
+
+  // "Sign in again" on the Home error card: a silent token refresh fixes the
+  // common expired-session case in place (then retries the sync); if the
+  // refresh itself fails the session is truly gone, so open Settings where
+  // the account surface lives.
+  async function handleSignInAgain() {
+    try {
+      await invoke('refresh_tokens');
+      await handleSyncAll();
+    } catch (err) {
+      console.error('refresh_tokens failed:', err);
+      await handleOpenSettings();
+    }
+  }
+
+  function handleOpenActivityLog() {
+    void invoke('open_activity_log').catch((err) =>
+      console.error('open_activity_log failed:', err),
+    );
   }
 
   async function handleCancelSync() {
@@ -357,19 +453,11 @@
   }
 
   async function handleOpenSettings() {
-    actionError = '';
-    actionMessage = '';
     try {
       await invoke('open_settings_window');
     } catch (err) {
       console.error('open_settings_window failed:', err);
-      actionError = 'Could not open Settings.';
     }
-  }
-
-  function handleAddSource() {
-    actionError = '';
-    actionMessage = 'Coming soon.';
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -412,6 +500,23 @@
       .catch(() => {
         if (mounted) isAdmin = false;
       });
+    // Home meta-line + drift-card context. All best-effort: a failure leaves
+    // the corresponding line/card off rather than blocking the surface.
+    void invoke<string | null>('get_hq_version')
+      .then((version) => {
+        if (mounted) hqVersion = version;
+      })
+      .catch(() => undefined);
+    void invoke<{ realtimeSync?: boolean | null }>('get_settings')
+      .then((settings) => {
+        if (mounted) autoSyncOn = settings.realtimeSync ?? null;
+      })
+      .catch(() => undefined);
+    void invoke<HomeCoreState | null>('check_core_state')
+      .then((state) => {
+        if (mounted) coreState = state;
+      })
+      .catch(() => undefined);
     hydrateMeetingStatus();
     // Warm the Meetings singleton at app launch so its data is ready before the
     // user ever navigates to Meetings — the page then reads the warm store on
@@ -590,10 +695,34 @@
         }
         await refreshRealState();
       }),
+      // Conflict stream → Home's NEEDS YOU queue (dedupe by path; the same
+      // conflict can re-emit across fanout retries within one run).
+      listen<{ path: string; localHash: string; remoteHash: string; canAutoResolve: boolean }>(
+        'sync:conflict',
+        (event) => {
+          if (homeConflicts.some((entry) => entry.path === event.payload.path)) return;
+          homeConflicts = [
+            ...homeConflicts,
+            {
+              path: event.payload.path,
+              canAutoResolve: event.payload.canAutoResolve,
+              status: 'pending',
+              at: Date.now(),
+            },
+          ];
+        },
+      ),
+      // Background core-state scans (6h cadence + on-demand checks) keep the
+      // drift card honest; a fresh scan clears a session-local "Keep edit" ack.
+      listen<HomeCoreState | null>('core-state:changed', (event) => {
+        coreState = event.payload;
+        driftDismissed = false;
+      }),
       listen<{ company?: string; path: string; message: string }>('sync:error', async (event) => {
         syncState = 'error';
         syncProgress = null;
         syncErrorMessage = event.payload.message;
+        syncErrorCompany = event.payload.company ?? null;
         if (event.payload.company) {
           updateWorkspaceStats(event.payload.company, (stats) => ({
             ...stats,
@@ -687,28 +816,36 @@
         {#key routeKey}
           {#if route.kind === 'home'}
             <div class="page">
-              <SyncPage
-                {workspaces}
+              <HomePage
                 {syncState}
                 {ready}
+                {workspaces}
                 progress={syncProgress}
                 companies={syncCompanies}
+                {statsBySlug}
                 {status}
                 {daemon}
-                {indexedFiles}
-                {observedVaultBytes}
-                {statsBySlug}
-                cloudReachable={workspacesCloudReachable}
-                cloudError={workspaceError}
-                manifestError={workspaceManifestError}
                 {activity}
                 {syncErrorMessage}
-                onsync={handleSyncAll}
-                onsettings={handleOpenSettings}
-                onaddsource={handleAddSource}
-                onrefresh={loadWorkspaces}
-                {actionMessage}
-                {actionError}
+                {syncErrorCompany}
+                {syncFilesProgressed}
+                syncTotalFiles={effectiveTotalFiles}
+                transferredBytes={syncTransferredBytes}
+                {syncStartedAt}
+                {autoSyncOn}
+                {hqVersion}
+                conflicts={homeConflicts}
+                {coreState}
+                {driftDismissed}
+                {driftRestoring}
+                onresolveconflict={handleResolveConflict}
+                oncompareconflict={handleCompareConflict}
+                onrestoredrift={handleRestoreDrift}
+                onkeepdrift={handleKeepDrift}
+                onviewdrift={handleViewDrift}
+                onsignin={handleSignInAgain}
+                onretry={handleSyncAll}
+                onopenlog={handleOpenActivityLog}
               />
             </div>
           {:else if route.kind === 'companies'}
