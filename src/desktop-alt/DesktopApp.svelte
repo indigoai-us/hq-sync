@@ -11,6 +11,7 @@
   import MessagesPage from './pages/MessagesPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
   import CompaniesPage from './pages/CompaniesPage.svelte';
+  import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
@@ -31,6 +32,7 @@
     type CompanyTab,
     type DesktopRoute,
     type LibraryTab,
+    type SettingsTab,
   } from './route';
   import { V4_CHROME_LAYOUT } from './v4/model';
   import type { HomeConflict, HomeCoreState } from './v4/home-model';
@@ -449,8 +451,12 @@
       navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab });
     } else if (route.kind === 'library') {
       navigate({ kind: 'library', tab: id as LibraryTab });
+    } else if (route.kind === 'settings') {
+      // The Settings page renders all sections in one scroll; the secondary
+      // rows are a section index. Setting the tab drives both the active-row
+      // highlight and SettingsPage's scroll-into-view (US-013).
+      navigate({ kind: 'settings', tab: id as SettingsTab });
     }
-    // Settings sections all land on the same placeholder until US-013.
   }
 
   function handleSecondaryFooter() {
@@ -809,12 +815,7 @@
       onnavigate={(next) => navigate(fromV4Route(next))}
     />
 
-    <!-- Settings is reachable but its in-window surface (US-013) isn't wired
-         yet — the body shows the "Settings window" placeholder. Suppress its
-         secondary-sidebar rows so they don't render as dead clicks until the
-         page is mounted. (The route model still returns them, so the unit
-         tests in route.test.ts / v4-chrome.spec.ts stay green.) -->
-    {#if secondarySidebar && secondarySidebar.surface !== 'settings'}
+    {#if secondarySidebar}
       <V4SecondarySidebar
         header={secondarySidebar.header}
         headerTone={secondarySidebar.headerTone}
@@ -885,19 +886,9 @@
               <LibraryPage tab={libraryTab} />
             </div>
           {:else if route.kind === 'settings'}
-            <!-- Placeholder body until the in-window V4 Settings surface lands
-                 (US-013); preferences live in the settings window today. -->
-            <section class="page" aria-labelledby="desktop-page-title">
-              <div class="page-header">
-                <h1 id="desktop-page-title">Settings</h1>
-              </div>
-              <div class="placeholder-panel">
-                <p>Preferences live in the Settings window for now.</p>
-                <button type="button" class="companies-link" onclick={handleOpenSettings}>
-                  Open Settings window
-                </button>
-              </div>
-            </section>
+            <div class="page">
+              <SettingsPage activeTab={route.tab ?? 'sync'} />
+            </div>
           {:else if route.kind === 'messages'}
             <div class="messages-host">
               <MessagesPage />
@@ -965,25 +956,6 @@
      chrome components (title bar / sidebars) paint their own surfaces. */
   .desktop-shell {
     background: var(--v4-ground);
-  }
-
-  /* Transitional placeholder link row (Settings body) until US-013 lands the
-     in-window V4 Settings surface. */
-  .companies-link {
-    width: fit-content;
-    padding: 6px 10px;
-    border: 1px solid var(--v4-control-border);
-    border-radius: 6px;
-    background: var(--v4-control-faint);
-    color: var(--v4-text-1);
-    font: inherit;
-    font-size: 13px;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .companies-link:hover {
-    background: var(--v4-control-bg);
   }
 
   /* The Messages route hosts the full-bleed MessagesShell rather than the

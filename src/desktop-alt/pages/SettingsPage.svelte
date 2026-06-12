@@ -1,6 +1,11 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import type { SettingsTab } from '../route';
   import '../v4/tokens.css';
+
+  // The secondary sidebar drives which section is in view; this page renders all
+  // sections in one scroll and reacts to `activeTab` by scrolling it into view.
+  let { activeTab = 'sync' }: { activeTab?: SettingsTab } = $props();
 
   type Channel = 'stable' | 'beta' | 'alpha';
   type Platform = 'zoom' | 'meet' | 'teams' | 'slack' | 'webex';
@@ -63,6 +68,14 @@
 
   $effect(() => {
     void loadSettings();
+  });
+
+  // Scroll the active section into view when the sidebar selection changes (and
+  // once sections first render after load). No-op for the default top section.
+  $effect(() => {
+    const id = activeTab;
+    if (loading) return;
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
 
   async function loadSettings() {
