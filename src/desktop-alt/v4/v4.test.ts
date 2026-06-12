@@ -4,7 +4,6 @@ import {
   getV4SidebarModel,
   getV4TitleBarModel,
   V4_NAV_ITEMS,
-  V4_SIDEBAR_MAX_COMPANIES,
   v4CompanyDotTone,
   type V4Route,
   type V4SidebarModel,
@@ -131,7 +130,6 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
       ['cloud', 'Cloud Co', 'idle'],
       ['personal', 'Personal', 'ok'],
     ]);
-    expect(model.overflowCount).toBe(0);
   });
 
   it('maps workspace state to dot tone (gray dot = paused, red = broken)', () => {
@@ -142,26 +140,34 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
     expect(v4CompanyDotTone(company({ state: 'cloud-only' }))).toBe('idle');
   });
 
-  it('caps the visible list and reports the "N more…" overflow count', () => {
+  it('renders every workspace directly instead of truncating behind an overflow row', () => {
     const many = Array.from({ length: 9 }, (_, index) =>
       company({ slug: `co-${index}`, displayName: `Co ${index}` }),
     );
     const model = getV4SidebarModel({ kind: 'home' }, many);
 
-    expect(model.companies).toHaveLength(V4_SIDEBAR_MAX_COMPANIES);
-    expect(model.overflowCount).toBe(9 - V4_SIDEBAR_MAX_COMPANIES);
+    expect(model.companies).toHaveLength(9);
+    expect(model.companies.map((row) => row.slug)).toEqual([
+      'co-0',
+      'co-1',
+      'co-2',
+      'co-3',
+      'co-4',
+      'co-5',
+      'co-6',
+      'co-7',
+      'co-8',
+    ]);
   });
 
-  it('promotes an active overflow company into the visible window', () => {
+  it('keeps later companies selectable and active because every row renders', () => {
     const many = Array.from({ length: 9 }, (_, index) =>
       company({ slug: `co-${index}`, displayName: `Co ${index}` }),
     );
     const model = getV4SidebarModel({ kind: 'company', slug: 'co-8' }, many);
 
-    expect(model.companies).toHaveLength(V4_SIDEBAR_MAX_COMPANIES);
-    expect(model.companies.at(-1)?.slug).toBe('co-8');
-    expect(model.companies.at(-1)?.active).toBe(true);
-    expect(model.overflowCount).toBe(9 - V4_SIDEBAR_MAX_COMPANIES);
+    expect(model.companies).toHaveLength(9);
+    expect(model.companies.find((row) => row.slug === 'co-8')?.active).toBe(true);
     expect(activeRowCount(model)).toBe(1);
   });
 });

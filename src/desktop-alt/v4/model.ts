@@ -30,9 +30,6 @@ export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'library', label: 'Library' },
 ];
 
-/** Company rows shown before the "N more…" overflow row (chrome-master.png). */
-export const V4_SIDEBAR_MAX_COMPANIES = 5;
-
 /** Chrome metrics (SPEC section 4) — exported for shell composition in US-002. */
 export const V4_CHROME_LAYOUT = {
   titleBarHeightPx: 40,
@@ -59,8 +56,6 @@ export interface V4SidebarCompanyRow {
 export interface V4SidebarModel {
   nav: V4SidebarNavRow[];
   companies: V4SidebarCompanyRow[];
-  /** Companies beyond the visible window — renders as the "N more…" row. */
-  overflowCount: number;
   /** Settings highlights the footer, not a nav item (SPEC section 4). */
   settingsActive: boolean;
 }
@@ -82,31 +77,18 @@ export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
  * `list_syncable_workspaces` result. Invariant (locked by v4.test.ts):
  * EXACTLY ONE active row per sidebar — a nav item, a company row, or the
  * Settings footer. Company pages highlight the company row, not a nav item;
- * an active company that would fall into the "N more…" overflow is promoted
- * into the last visible slot so the active row is always visible; a company
- * route whose slug isn't in the list falls back to the Companies nav row.
+ * all local-first/cloud-visible companies render directly in the sidebar; a
+ * company route whose slug isn't in the list falls back to the Companies nav row.
  */
-export function getV4SidebarModel(
-  route: V4Route,
-  workspaces: Workspace[],
-  options: { maxCompanies?: number } = {},
-): V4SidebarModel {
-  const maxCompanies = options.maxCompanies ?? V4_SIDEBAR_MAX_COMPANIES;
+export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
   const settingsActive = route.kind === 'settings';
 
-  const allRows: V4SidebarCompanyRow[] = workspaces.map((workspace) => ({
+  const companies: V4SidebarCompanyRow[] = workspaces.map((workspace) => ({
     slug: workspace.slug,
     label: workspace.displayName,
     tone: v4CompanyDotTone(workspace),
     active: route.kind === 'company' && route.slug === workspace.slug,
   }));
-
-  let companies = allRows.slice(0, maxCompanies);
-  const hiddenActive = allRows.slice(maxCompanies).find((row) => row.active);
-  if (hiddenActive && companies.length > 0) {
-    companies = [...companies.slice(0, companies.length - 1), hiddenActive];
-  }
-  const overflowCount = Math.max(0, allRows.length - maxCompanies);
 
   const companyRowActive = companies.some((row) => row.active);
   // Company route with no matching row (e.g. not connected yet) → fall back
@@ -131,7 +113,6 @@ export function getV4SidebarModel(
       active: item.id === activeNavId,
     })),
     companies,
-    overflowCount,
     settingsActive,
   };
 }

@@ -92,14 +92,15 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     expect(desktopApp).not.toContain('DesktopSidebar');
   });
 
-  it('the sidebar overflow row clearly opens the Companies overview', () => {
+  it('the sidebar renders all companies directly instead of using an overflow row', () => {
     const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
     const harnessMocks = readRepoFile('dev-harness/mocks/core.ts');
 
-    expect(sidebar).toContain('data-testid="v4-more-companies"');
-    expect(sidebar).toContain('aria-label={`View ${model.overflowCount} more companies`}');
-    expect(sidebar).toContain('View {model.overflowCount} more companies');
-    expect(sidebar).toContain("onclick={() => go('companies')}");
+    expect(sidebar).toContain('class="v4-nav v4-company-nav"');
+    expect(sidebar).toContain('overflow-y: auto');
+    expect(sidebar).not.toContain('data-testid="v4-more-companies"');
+    expect(sidebar).not.toContain('model.overflowCount');
+    expect(sidebar).not.toContain('View {model.overflowCount} more companies');
     expect(harnessMocks).toContain('const HARNESS_WORKSPACES');
     expect(harnessMocks).toContain("slug: 'sender-agency'");
     expect(harnessMocks).toContain("slug: 'archive-labs'");
