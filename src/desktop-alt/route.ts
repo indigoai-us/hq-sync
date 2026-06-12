@@ -93,12 +93,15 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
 ];
 
 export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
-  // Personal is local-first (its state is 'personal', never 'synced'), so it
-  // gets a page whenever it's present; companies need a synced local vault.
+  // Desktop is local-first. If a company folder exists on this machine, it must
+  // be navigable even when it is not cloud-backed yet. Cloud-only memberships
+  // also stay visible so an invite/download state does not disappear from the
+  // desktop shell.
   return workspaces.filter(
     (workspace) =>
       workspace.kind === 'personal' ||
-      (workspace.kind === 'company' && workspace.state === 'synced'),
+      (workspace.kind === 'company' &&
+        (workspace.hasLocalFolder || workspace.state === 'cloud-only')),
   );
 }
 
@@ -278,13 +281,13 @@ export function getDesktopSecondarySidebar(
   if (route.kind === 'company') {
     const company = getDesktopActiveCompany(route, companies);
     if (!company) return null;
-    const lastSync = formatRelativeTime(company.lastSyncedAt);
+    const stateMeta = formatCompanyStateMeta(company);
     return {
       surface: 'company',
       header: company.displayName,
       headerTone: v4CompanyDotTone(company),
       meta:
-        [formatCompanyRole(company), lastSync ? `synced ${lastSync}` : 'synced just now']
+        [formatCompanyRole(company), stateMeta]
           .filter(Boolean)
           .join(' · ') || null,
       items: COMPANY_SECTIONS.map(({ id, label }) => ({ id, label })),
@@ -326,6 +329,27 @@ function formatCompanyRole(company: Workspace): string | null {
   const role = company.role?.trim();
   if (!role) return 'Member';
   return role.slice(0, 1).toUpperCase() + role.slice(1).toLowerCase();
+}
+
+function formatCompanyStateMeta(company: Workspace): string | null {
+  if (company.kind === 'personal') {
+    const lastSync = formatRelativeTime(company.lastSyncedAt);
+    return lastSync ? `synced ${lastSync}` : 'local vault';
+  }
+  switch (company.state) {
+    case 'synced': {
+      const lastSync = formatRelativeTime(company.lastSyncedAt);
+      return lastSync ? `synced ${lastSync}` : 'synced just now';
+    }
+    case 'local-only':
+      return 'local only';
+    case 'cloud-only':
+      return 'not on this Mac';
+    case 'broken':
+      return 'needs reconnect';
+    default:
+      return null;
+  }
 }
 
 /** Human relative timestamp ("just now", "5m ago") for status meta lines. */

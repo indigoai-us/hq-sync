@@ -39,7 +39,7 @@ function shapeBoard(raw: CompanyBoard): CompanyBoard {
   };
 }
 
-export function useCompanyBoard(options: { slug: () => string | null }) {
+export function useCompanyBoard(options: { slug: () => string | null; enabled?: () => boolean }) {
   let board = $state<CompanyBoard>(emptyCompanyBoard());
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -47,11 +47,12 @@ export function useCompanyBoard(options: { slug: () => string | null }) {
 
   $effect(() => {
     const slug = options.slug();
+    const enabled = options.enabled?.() ?? true;
     reloadToken;
     board = emptyCompanyBoard();
     error = null;
 
-    if (!slug) {
+    if (!slug || !enabled) {
       loading = false;
       return;
     }

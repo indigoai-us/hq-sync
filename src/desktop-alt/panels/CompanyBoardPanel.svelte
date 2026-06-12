@@ -49,9 +49,11 @@
   interface Props {
     /** The company/workspace slug this board is scoped to. */
     slug: string;
+    /** False for local folders that are not cloud-backed yet. */
+    cloudBacked?: boolean;
   }
 
-  let { slug }: Props = $props();
+  let { slug, cloudBacked = true }: Props = $props();
 
   interface InFlightDetail {
     storyTitle: string | null;
@@ -65,8 +67,8 @@
     tone: 'ok' | 'warn' | 'error' | 'idle';
   }
 
-  const summaryState = useCompanySummary({ slug: () => slug });
-  const boardState = useCompanyBoard({ slug: () => slug });
+  const summaryState = useCompanySummary({ slug: () => slug, enabled: () => cloudBacked });
+  const boardState = useCompanyBoard({ slug: () => slug, enabled: () => cloudBacked });
 
   // ---- data (projects + goals), scoped to `slug` ---------------------------
   let projects = $state<Project[]>([]);
@@ -452,6 +454,11 @@
       {onStoryPassesChange}
     />
   {:else}
+    {#if !cloudBacked}
+      <div class="board-note" role="status">
+        This company is local only. Local goals and projects are available; synced board activity appears after it is connected.
+      </div>
+    {/if}
     {#if error}
       <div class="board-error" role="alert">{error}</div>
     {/if}
@@ -605,6 +612,7 @@
       sans-serif;
   }
 
+  .board-note,
   .board-error {
     padding: 10px 12px;
     border: 1px solid rgba(254, 188, 46, 0.3);
@@ -614,6 +622,10 @@
     font-size: 13px;
     font-weight: 400;
     line-height: 1.35;
+  }
+
+  .board-note {
+    border-color: var(--v4-hairline);
   }
 
   .stat-strip {

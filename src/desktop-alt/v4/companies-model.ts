@@ -47,7 +47,7 @@ export interface NotConnectedCompanyRow {
   kind: 'local' | 'invite';
   /** Inline note (e.g. a failed Connect attempt) rendered under the sub. */
   note: string | null;
-  actions: Array<'connect' | 'open-invite'>;
+  actions: Array<'open' | 'connect' | 'open-invite'>;
 }
 
 export interface CompaniesPageModel {
@@ -170,10 +170,10 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
       notConnected.push({
         slug: workspace.slug,
         name: workspace.displayName,
-        sub: 'Local directory exists, not yet cloud-backed',
+        sub: 'Local directory exists · not cloud-backed',
         kind: 'local',
         note: connectErrors[workspace.slug] ?? null,
-        actions: ['connect'],
+        actions: ['open', 'connect'],
       });
       continue;
     }

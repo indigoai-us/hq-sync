@@ -51,7 +51,7 @@ describe('desktop-alt V4 Companies (US-004)', () => {
     const row = model.notConnected.find((entry) => entry.slug === 'holler-mgmt');
     expect(row).toBeDefined();
     expect(row?.kind).toBe('local');
-    expect(row?.actions).toEqual(['connect']);
+    expect(row?.actions).toEqual(['open', 'connect']);
     // The synced workspace stays in the CONNECTED table.
     expect(model.connected.map((entry) => entry.slug)).toEqual(['indigo']);
 
@@ -59,6 +59,8 @@ describe('desktop-alt V4 Companies (US-004)', () => {
     const companiesPage = readRepoFile('src/desktop-alt/pages/CompaniesPage.svelte');
     expect(companiesPage).toContain("await invoke('connect_workspace_to_cloud', { slug })");
     expect(companiesPage).toContain('Connect');
+    expect(companiesPage).toContain('Open');
+    expect(companiesPage).toContain('onclick={() => handleOpen(row.slug, true)}');
   });
 
   it('renders connection state lanes, provisioning rows, error rows with Retry, and invites', () => {
@@ -117,6 +119,8 @@ describe('desktop-alt V4 Companies (US-004)', () => {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     expect(desktopApp).toContain('<CompaniesPage');
     expect(desktopApp).toContain("onopencompany={(slug) => navigate({ kind: 'company', slug })}");
+    expect(desktopApp).toContain("company.state === 'synced' || company.state === 'cloud-only'");
+    expect(desktopApp).toContain('startCompanyStore(');
 
     const companiesPage = readRepoFile('src/desktop-alt/pages/CompaniesPage.svelte');
     expect(companiesPage).toContain(
