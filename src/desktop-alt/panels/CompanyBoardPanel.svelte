@@ -42,8 +42,8 @@
   import { useCompanySummary } from '../lib/company-summary.svelte';
   import ProjectListView from '../components/ProjectListView.svelte';
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
-  import StoryDetailPanel from '../components/StoryDetailPanel.svelte';
   import GoalCard from '../v4/GoalCard.svelte';
+  import StoryPanel from '../v4/StoryPanel.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -363,6 +363,21 @@
     selectedStoryId = null;
   }
 
+  function onStoryPassesChange(storyId: string, passes: boolean): void {
+    stories = stories.map((story) =>
+      story.id === storyId ? { ...story, passes } : story,
+    );
+    if (selected) {
+      const nextComplete = stories.filter((story) =>
+        story.id === storyId ? passes : story.passes,
+      ).length;
+      selected = { ...selected, storiesComplete: nextComplete };
+      projects = projects.map((project) =>
+        project.id === selected?.id ? { ...project, storiesComplete: nextComplete } : project,
+      );
+    }
+  }
+
   async function openProject(project: Project): Promise<void> {
     selected = project;
     stories = [];
@@ -422,15 +437,19 @@
       {stories}
       {storiesLoading}
       {storiesError}
+      {objectives}
       onback={backToList}
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
     />
 
-    <StoryDetailPanel
+    <StoryPanel
       story={selectedStory}
+      project={selected}
+      prdPath={selected.prdPath}
       onclose={closeStory}
       onselectDependency={selectStoryById}
+      {onStoryPassesChange}
     />
   {:else}
     {#if error}

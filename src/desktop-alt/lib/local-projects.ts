@@ -37,6 +37,8 @@ export interface LocalStoryWire {
   labels?: string[];
   dependsOn?: string[];
   notes?: string | null;
+  files?: string[];
+  model_hint?: string | null;
 }
 
 /** Raw `LocalProjectPrd` wire shape from `get_local_project_prd`. */
@@ -84,6 +86,9 @@ export function toStory(wire: LocalStoryWire): Story {
     priority: coercePriority(wire.priority),
     labels: wire.labels ?? [],
     dependsOn: wire.dependsOn ?? [],
+    notes: wire.notes ?? null,
+    files: wire.files ?? [],
+    model_hint: wire.model_hint ?? null,
   };
 }
 
@@ -194,6 +199,11 @@ export async function loadLocalProjectStories(prdPath: string): Promise<Story[]>
   // The Rust command param is `prd_path`; Tauri v2 exposes it camelCased.
   const prd = await invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
   return (prd?.userStories ?? []).map(toStory);
+}
+
+/** Load the raw PRD content needed by the project detail surface. */
+export async function loadLocalProjectPrd(prdPath: string): Promise<LocalProjectPrdWire> {
+  return invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
 }
 
 /**

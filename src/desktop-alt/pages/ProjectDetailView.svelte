@@ -20,7 +20,12 @@
    * write fails. Persistence + rollback live in `lib/projects-store.svelte.ts`.
    */
   import { onMount } from 'svelte';
-  import { loadLocalProjectReadme } from '../lib/local-projects';
+  import {
+    loadLocalProjectPrd,
+    loadLocalProjectReadme,
+    type LocalProjectPrdWire,
+    type Objective,
+  } from '../lib/local-projects';
   import { setProjectStatus } from '../lib/projects-store.svelte';
   import { renderMarkdown } from '../lib/markdown';
   import {
@@ -49,6 +54,8 @@
     onback: () => void;
     /** Open a story's detail panel. */
     onselectStory: (story: Story) => void;
+    /** Company objectives used for the goal chip + KR card. */
+    objectives?: Objective[];
     /**
      * Notify the caller a status persisted (US-010) so it can refresh its list.
      * Optional — the detail view persists + paints optimistically on its own.
@@ -63,12 +70,15 @@
     storiesError = null,
     onback,
     onselectStory,
+    objectives = [],
     onStatusChange,
   }: Props = $props();
 
   // ---- README load (sibling of the prd.json) -------------------------------
   let readme = $state<string | null>(null);
   let readmeLoading = $state(false);
+  let prd = $state<LocalProjectPrdWire | null>(null);
+  let prdLoading = $state(false);
 
   // Reload the README whenever the open project (its prdPath) changes.
   $effect(() => {
@@ -96,6 +106,31 @@
     };
   });
 
+  $effect(() => {
+    const prdPath = project.prdPath;
+    prd = null;
+    if (!prdPath) {
+      prdLoading = false;
+      return;
+    }
+    prdLoading = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const content = await loadLocalProjectPrd(prdPath);
+        if (!cancelled) prd = content;
+      } catch (err) {
+        console.error('get_local_project_prd failed:', err);
+        if (!cancelled) prd = null;
+      } finally {
+        if (!cancelled) prdLoading = false;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  });
+
   const hasPrd = $derived(Boolean(project.prdPath));
   const hasReadme = $derived(readme !== null && readme.trim() !== '');
   const readmeHtml = $derived(hasReadme ? renderMarkdown(readme as string) : '');
@@ -108,6 +143,24 @@
   // Computed from the loaded `stories` via classifyStories: the headline STORIES
   // tile shows complete/total + a progress bar; the others are live state counts.
   const classified = $derived(classifyStories(stories));
+  const linkedGoal = $derived(findLinkedGoal(project, objectives));
+  const keyResults = $derived(linkedGoal?.keyResults ?? []);
+  const prdDescription = $derived(prd?.description?.trim() || project.description);
+  const taskRail = $derived.by(() => {
+    const sections = [
+      { label: 'In progress', count: 0 },
+      { label: 'Blocked', count: 0 },
+      { label: 'To do', count: 0 },
+      { label: 'Done', count: 0 },
+    ];
+    for (const item of classified) {
+      if (item.state === 'in-progress') sections[0].count += 1;
+      else if (item.state === 'blocked') sections[1].count += 1;
+      else if (item.state === 'complete') sections[3].count += 1;
+      else sections[2].count += 1;
+    }
+    return sections;
+  });
   const kpi = $derived.by(() => {
     let inProgress = 0;
     let blocked = 0;
@@ -190,6 +243,49 @@
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
   });
+
+  function normalizeLink(value: string | null | undefined): string {
+    return (value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  }
+
+  function projectTokensForGoal(value: Project): string[] {
+    return [
+      value.id,
+      value.name,
+      value.title,
+      value.prdPath.split('/').filter(Boolean).at(-2),
+    ]
+      .map(normalizeLink)
+      .filter(Boolean);
+  }
+
+  function findLinkedGoal(value: Project, goals: Objective[]): Objective | null {
+    const projectTokens = new Set(projectTokensForGoal(value));
+    return (
+      goals.find((goal) => {
+        const goalTokens = [
+          goal.id,
+          goal.linearInitiativeId ?? undefined,
+          ...(goal.initiativeIds ?? []),
+        ]
+          .map(normalizeLink)
+          .filter(Boolean);
+        return goalTokens.some((token) => projectTokens.has(token));
+      }) ?? null
+    );
+  }
+
+  function formatKrValue(value: unknown, unit?: string): string {
+    if (value === null || value === undefined || value === '') return '—';
+    return `${value}${unit ?? ''}`;
+  }
+
+  function krProgress(current: unknown, target: unknown): number {
+    const currentNum = Number(current);
+    const targetNum = Number(target);
+    if (!Number.isFinite(currentNum) || !Number.isFinite(targetNum) || targetNum <= 0) return 0;
+    return Math.max(0, Math.min(100, Math.round((currentNum / targetNum) * 100)));
+  }
 </script>
 
 <section
@@ -282,6 +378,11 @@
           <span aria-hidden="true">▦</span> README
         </span>
       {/if}
+      {#if linkedGoal}
+        <span class="indicator goal-indicator" data-testid="detail-goal-chip">
+          <span aria-hidden="true">◎</span> {linkedGoal.title}
+        </span>
+      {/if}
     </div>
 
     <!-- KPI strip — editorial stat tiles computed from the loaded stories. -->
@@ -341,44 +442,75 @@
 
   <div class="detail-body">
     {#if tab === 'overview'}
-      <div class="overview" data-testid="detail-overview">
-        {#if readmeLoading}
-          <p class="muted-note">Loading README…</p>
-        {:else if hasReadme}
-          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-          <article
-            class="markdown-body"
-            data-testid="readme-markdown"
-          >{@html readmeHtml}</article>
-        {:else}
-          <div class="no-readme" data-testid="no-readme">
-            {#if project.description}
-              <section class="info-card">
-                <h2>Description</h2>
-                <p>{project.description}</p>
-              </section>
-            {/if}
-            <section class="info-card">
-              <h2>Project Info</h2>
+      <div class="overview detail-layout" data-testid="detail-overview">
+        <main class="detail-main">
+          <section class="info-card prd-card" data-testid="detail-prd-card">
+            <h2>PRD</h2>
+            {#if prdLoading}
+              <p class="muted-note">Loading PRD...</p>
+            {:else}
+              <p>{prdDescription || 'No PRD summary yet.'}</p>
               <dl class="info-list">
                 <div>
-                  <dt>Status</dt>
-                  <dd>{EDITABLE_PROJECT_STATUS_LABEL[currentStatus]}</dd>
+                  <dt>Stories</dt>
+                  <dd>{kpi.complete}/{kpi.total}</dd>
                 </div>
-                {#if project.company}
-                  <div>
-                    <dt>Company</dt>
-                    <dd>{project.company}</dd>
-                  </div>
-                {/if}
                 <div>
-                  <dt>PRD</dt>
-                  <dd>{hasPrd ? 'Yes' : 'Not yet created'}</dd>
+                  <dt>Branch</dt>
+                  <dd>{prd?.branchName ?? 'not set'}</dd>
                 </div>
               </dl>
+            {/if}
+          </section>
+
+          {#if linkedGoal}
+            <section class="info-card key-results-card" data-testid="detail-key-results">
+              <h2>Key results</h2>
+              <p class="goal-line">{linkedGoal.title}</p>
+              {#if keyResults.length === 0}
+                <p class="muted-note">No key results yet.</p>
+              {:else}
+                <div class="kr-list">
+                  {#each keyResults as kr, index (kr.id || index)}
+                    {@const progressValue = krProgress(kr.current, kr.target)}
+                    <div class="kr-row">
+                      <span>{kr.title || kr.metric || 'Key result'}</span>
+                      <strong>{formatKrValue(kr.current, kr.unit)} -> {formatKrValue(kr.target, kr.unit)}</strong>
+                      <span class="mini-track" aria-label={`${progressValue}% progress`}>
+                        <span style={`width: ${progressValue}%`}></span>
+                      </span>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
             </section>
-          </div>
-        {/if}
+          {/if}
+
+          {#if readmeLoading}
+            <p class="muted-note">Loading README...</p>
+          {:else if hasReadme}
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+            <article
+              class="markdown-body"
+              data-testid="readme-markdown"
+            >{@html readmeHtml}</article>
+          {:else if project.description}
+            <section class="info-card">
+              <h2>Description</h2>
+              <p>{project.description}</p>
+            </section>
+          {/if}
+        </main>
+
+        <aside class="task-rail" data-testid="detail-task-rail">
+          <h2>Tasks roll-up</h2>
+          {#each taskRail as item (item.label)}
+            <div class="rail-row">
+              <span>{item.label}</span>
+              <strong>{item.count}</strong>
+            </div>
+          {/each}
+        </aside>
       </div>
     {:else}
       <div class="board-tab" data-testid="detail-board">
@@ -945,5 +1077,142 @@
   .markdown-body :global(strong) {
     color: var(--fg);
     font-weight: 600;
+  }
+
+  .detail-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 220px;
+    gap: 16px;
+    align-items: start;
+    min-width: 0;
+  }
+
+  .detail-main {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+  }
+
+  .info-card,
+  .task-rail {
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface-raise);
+  }
+
+  .info-card h2,
+  .task-rail h2 {
+    margin: 0 0 8px;
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .info-card p,
+  .muted-note,
+  .goal-line {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-base);
+    line-height: 1.5;
+  }
+
+  .info-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin: 12px 0 0;
+  }
+
+  .info-list div {
+    min-width: 0;
+  }
+
+  .info-list dt {
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+    text-transform: uppercase;
+  }
+
+  .info-list dd {
+    margin: 3px 0 0;
+    overflow: hidden;
+    color: var(--fg);
+    font-size: var(--text-base);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .kr-list,
+  .task-rail {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .kr-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px 10px;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .kr-row span:first-child,
+  .rail-row span {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: var(--text-base);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .kr-row strong,
+  .rail-row strong {
+    color: var(--fg-data);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    font-weight: 500;
+  }
+
+  .mini-track {
+    grid-column: 1 / -1;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--row-active);
+  }
+
+  .mini-track span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--emerald);
+  }
+
+  .rail-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .rail-row:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  @media (max-width: 840px) {
+    .detail-layout {
+      grid-template-columns: minmax(0, 1fr);
+    }
   }
 </style>

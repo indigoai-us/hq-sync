@@ -12,7 +12,7 @@
     type Story,
   } from '../lib/projects-model';
   import ProjectDetailView from './ProjectDetailView.svelte';
-  import StoryDetailPanel from '../components/StoryDetailPanel.svelte';
+  import StoryPanel from '../v4/StoryPanel.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -272,6 +272,21 @@
       project.id === projectId ? { ...project, status } : project,
     );
   }
+
+  function onStoryPassesChange(storyId: string, passes: boolean): void {
+    stories = stories.map((story) =>
+      story.id === storyId ? { ...story, passes } : story,
+    );
+    if (selected) {
+      const nextComplete = stories.filter((story) =>
+        story.id === storyId ? passes : story.passes,
+      ).length;
+      selected = { ...selected, storiesComplete: nextComplete };
+      projects = projects.map((project) =>
+        project.id === selected?.id ? { ...project, storiesComplete: nextComplete } : project,
+      );
+    }
+  }
 </script>
 
 <section class="company-goals" aria-labelledby="company-goals-title" data-testid="company-goals-page">
@@ -281,15 +296,19 @@
       {stories}
       {storiesLoading}
       {storiesError}
+      objectives={objectives}
       onback={backToGoals}
       onselectStory={openStory}
       onStatusChange={onProjectStatusChange}
     />
 
-    <StoryDetailPanel
+    <StoryPanel
       story={selectedStory}
+      project={selected}
+      prdPath={selected.prdPath}
       onclose={closeStory}
       onselectDependency={selectStoryById}
+      {onStoryPassesChange}
     />
   {:else}
     <header class="goals-header">
