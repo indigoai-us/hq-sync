@@ -48,6 +48,8 @@ function workspace(overrides: Partial<Workspace>): Workspace {
     role: 'admin',
     lastSyncedAt: null,
     brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
     ...overrides,
   };
 }
@@ -146,6 +148,10 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(desktop).toContain("invoke<WorkspacesResult>('list_syncable_workspaces')");
     expect(workspaceSrc).toContain('role: string | null;');
     expect(rustWorkspaces).toContain('pub role: Option<String>');
-    expect(rustWorkspaces).toMatch(/let role = cloud_entity_for_slug[\s\S]*\.and_then\(\|m\| m\.role\.clone\(\)\)/);
+    // US-004 (V4) hoisted the per-slug membership lookup so role + invite
+    // metadata derive from one find — same propagation, new contract.
+    expect(rustWorkspaces).toMatch(
+      /let membership_for_slug = cloud_entity_for_slug[\s\S]*let role = membership_for_slug\.and_then\(\|m\| m\.role\.clone\(\)\)/,
+    );
   });
 });

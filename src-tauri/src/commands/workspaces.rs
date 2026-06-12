@@ -102,6 +102,13 @@ pub struct Workspace {
     pub last_synced_at: Option<String>,
     /// Human-readable diagnostic when state is Broken. UI surfaces in the tooltip.
     pub broken_reason: Option<String>,
+    /// Who created the membership invite (`invitedBy` on the vault membership
+    /// row — a `prs_*` person uid). Only meaningful while
+    /// `membership_status == "pending"`; the V4 Companies surface renders the
+    /// invite row from it.
+    pub invited_by: Option<String>,
+    /// ISO timestamp the invite was created (`invitedAt` on the membership row).
+    pub invited_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -797,18 +804,13 @@ where
         let local_path_str = Some(entry.path.to_string_lossy().to_string());
 
         let cloud_entity_for_slug = entities_by_slug.get(entry.slug.as_str()).copied();
-        let membership_status = cloud_entity_for_slug.and_then(|ent| {
-            memberships
-                .iter()
-                .find(|m| m.company_uid == ent.uid)
-                .map(|m| m.status.clone())
+        let membership_for_slug = cloud_entity_for_slug.and_then(|ent| {
+            memberships.iter().find(|m| m.company_uid == ent.uid)
         });
-        let role = cloud_entity_for_slug.and_then(|ent| {
-            memberships
-                .iter()
-                .find(|m| m.company_uid == ent.uid)
-                .and_then(|m| m.role.clone())
-        });
+        let membership_status = membership_for_slug.map(|m| m.status.clone());
+        let role = membership_for_slug.and_then(|m| m.role.clone());
+        let invited_by = membership_for_slug.and_then(|m| m.invited_by.clone());
+        let invited_at = membership_for_slug.and_then(|m| m.invited_at.clone());
 
         let (state, cloud_uid, bucket_name, broken_reason) = match (&entry.cloud_uid, cloud_entity_for_slug, cloud_reachable) {
             // Manifest says connected, cloud confirms (UIDs match) → Synced.
@@ -875,6 +877,8 @@ where
                 role,
                 last_synced_at: last_synced_lookup(&entry.slug),
                 broken_reason,
+                invited_by,
+                invited_at,
             },
         );
     }
@@ -908,6 +912,8 @@ where
                 role: mem.role.clone(),
                 last_synced_at: last_synced_lookup(&entity.slug),
                 broken_reason: None,
+                invited_by: mem.invited_by.clone(),
+                invited_at: mem.invited_at.clone(),
             },
         );
     }
@@ -935,6 +941,8 @@ where
         role: None,
         last_synced_at: last_synced_lookup("personal"),
         broken_reason: None,
+        invited_by: None,
+        invited_at: None,
     });
 
     ordered.extend(by_slug.into_values());
@@ -1238,6 +1246,8 @@ mod tests {
             // struct literal is complete.
             membership_key: Some(format!("{person_uid}#{company_uid}")),
             company_name: None,
+            invited_by: Some(person_uid.into()),
+            invited_at: Some("2026-03-01T00:00:00Z".into()),
         }
     }
 

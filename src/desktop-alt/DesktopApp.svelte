@@ -10,6 +10,7 @@
   import LibraryPage from './pages/LibraryPage.svelte';
   import MessagesPage from './pages/MessagesPage.svelte';
   import CompanyPage from './pages/CompanyPage.svelte';
+  import CompaniesPage from './pages/CompaniesPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
@@ -849,29 +850,16 @@
               />
             </div>
           {:else if route.kind === 'companies'}
-            <!-- Placeholder body until the V4 Companies overview lands (US-004);
-                 the destination + hotkey are part of the V4 IA now. -->
-            <section class="page" aria-labelledby="desktop-page-title">
-              <div class="page-header">
-                <h1 id="desktop-page-title">Companies</h1>
-              </div>
-              <div class="placeholder-panel">
-                {#if companies.length > 0}
-                  <p>Pick a company to open its workspace.</p>
-                  {#each companies as company (company.slug)}
-                    <button
-                      type="button"
-                      class="companies-link"
-                      onclick={() => navigate({ kind: 'company', slug: company.slug })}
-                    >
-                      {company.displayName}
-                    </button>
-                  {/each}
-                {:else}
-                  <p>No companies connected yet. Run a sync to connect your workspaces.</p>
-                {/if}
-              </div>
-            </section>
+            <div class="page">
+              <CompaniesPage
+                {workspaces}
+                {ready}
+                {autoSyncOn}
+                {workspaceError}
+                onopencompany={(slug) => navigate({ kind: 'company', slug })}
+                onrefresh={() => void loadWorkspaces()}
+              />
+            </div>
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
@@ -963,8 +951,8 @@
     background: var(--v4-ground);
   }
 
-  /* Transitional placeholder link rows (Companies / Settings bodies) until
-     US-004 / US-013 land their real V4 surfaces. */
+  /* Transitional placeholder link row (Settings body) until US-013 lands the
+     in-window V4 Settings surface. */
   .companies-link {
     width: fit-content;
     padding: 6px 10px;

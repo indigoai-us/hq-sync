@@ -24,6 +24,8 @@ function workspace(overrides: Partial<Workspace>): Workspace {
     membershipStatus: null,
     lastSyncedAt: null,
     brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
     ...overrides,
   };
 }

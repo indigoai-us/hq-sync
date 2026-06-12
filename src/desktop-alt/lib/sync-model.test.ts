@@ -23,6 +23,8 @@ const personalWorkspace: Workspace = {
   role: null,
   lastSyncedAt: null,
   brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
 };
 
 const companyWorkspace: Workspace = {
@@ -38,6 +40,8 @@ const companyWorkspace: Workspace = {
   role: 'member',
   lastSyncedAt: null,
   brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
 };
 
 function stats(overrides: Partial<WorkspaceSyncStats>): WorkspaceSyncStats {

@@ -23,6 +23,8 @@ const baseCompany: Workspace = {
   role: 'member',
   lastSyncedAt: null,
   brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
 };
 
 function company(overrides: Partial<Workspace>): Workspace {
