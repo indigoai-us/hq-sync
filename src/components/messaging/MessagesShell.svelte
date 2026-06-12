@@ -9,12 +9,10 @@
   //   │  Channels)   │                             │
   //   └──────────────┴─────────────────────────────┘
   //
-  // This story scaffolds all three segments. Direct Messages is functional:
-  // it lists the caller's contacts (derived from list_contacts — connections +
-  // company teammates) and, on click, loads that peer's thread into the shared
-  // <Conversation> component. Requests and Channels are present but scaffolded
-  // (empty/placeholder) — compose, request handling, and channels are later
-  // stories.
+  // Direct Messages, Requests, Channels, threads, reactions, and the "Your
+  // agent" handoff are wired through Tauri commands. This shell owns the data
+  // loading and hands the shared <Conversation/> primitive only presentation
+  // state plus callbacks.
   //
   // Visuals adopt the desktop "Company OS" design language: the standalone
   // Messages window consumes the SAME token layer as the desktop window via
@@ -29,6 +27,7 @@
   import '../../desktop-alt/styles/desktop-alt.css';
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
@@ -82,6 +81,11 @@
     pendingRequests: number;
   }
 
+  interface AppConfig {
+    personUid?: string | null;
+    hqFolderPath?: string | null;
+  }
+
   interface RequestsResponse {
     requests: DmRequest[];
     nextCursor?: string | null;
@@ -121,6 +125,7 @@
   // the unread summary path's identity if available, else leave null (the
   // roster degrades to server-enforced owner gating).
   let selfPersonUid = $state<string | null>(null);
+  let hqFolderPath = $state('');
 
   interface MembershipRow {
     companyUid: string;
@@ -150,7 +155,7 @@
 
   $effect(() => {
     const peer = selected;
-    if (!peer || peer.personUid.startsWith('email:')) {
+    if (!peer || peer.source === 'agent' || peer.personUid.startsWith('email:')) {
       // No durable conversation yet (compose-pending / unresolved email) → no
       // reactions surface.
       dmReactions?.dispose();
@@ -196,7 +201,7 @@
 
   // Open the thread for a DM root message. The reply recipient is the selected peer.
   function handleOpenDmThread(rootEventId: string): void {
-    if (!selected) return;
+    if (!selected || selected.source === 'agent') return;
     openThread = {
       rootEventId,
       scope: 'dm',
@@ -383,12 +388,14 @@
     }
   }
 
-  async function loadSelfPersonUid(): Promise<void> {
+  async function loadConfig(): Promise<void> {
     try {
-      const cfg = await invoke<{ personUid?: string | null }>('get_config');
+      const cfg = await invoke<AppConfig>('get_config');
       selfPersonUid = cfg?.personUid ?? null;
+      hqFolderPath = cfg?.hqFolderPath ?? '';
     } catch (err) {
-      // Non-fatal — the roster degrades to server-enforced owner gating.
+      // Non-fatal — the roster degrades to server-enforced owner gating, and
+      // agent handoff simply omits the folder until config loads.
       console.error('messages: get_config failed', err);
     }
   }
@@ -480,7 +487,7 @@
 
   function openAgentThread(): void {
     selected = {
-      personUid: selfPersonUid ?? 'agent:self',
+      personUid: 'agent:self',
       email: '',
       displayName: 'Your agent',
       companyUid: null,
@@ -492,7 +499,7 @@
         fromPersonUid: 'agent:self',
         fromEmail: '',
         fromDisplayName: 'Your agent',
-        body: 'I am watching your HQ workspace and will surface work that needs you here.',
+        body: 'Send me a prompt here and I will open a focused Claude Code session in your HQ workspace.',
         details: null,
         prompt: null,
         createdAt: new Date().toISOString(),
@@ -505,31 +512,81 @@
     openThread = null;
   }
 
+  function buildAgentPrompt(text: string): string {
+    return [
+      '[$startwork](/Users/corey/Documents/HQ/.claude/skills/startwork/SKILL.md)',
+      '',
+      'Continue from the HQ desktop Messages window.',
+      '',
+      text,
+    ].join('\n');
+  }
+
+  async function sendAgentPrompt(text: string): Promise<void> {
+    const prompt = buildAgentPrompt(text);
+    const url = buildClaudeCodeUrl({ folder: hqFolderPath, prompt });
+    await invoke('open_claude_code_link', { url });
+    messages = [
+      ...messages,
+      {
+        eventId: `agent-local-${messages.length}-${text.length}`,
+        fromPersonUid: 'me',
+        fromEmail: '',
+        fromDisplayName: 'You',
+        body: text,
+        details: null,
+        prompt,
+        createdAt: new Date().toISOString(),
+        direction: 'out',
+      },
+      {
+        eventId: `agent-opened-${Date.now()}`,
+        fromPersonUid: 'agent:self',
+        fromEmail: '',
+        fromDisplayName: 'Your agent',
+        body: 'Opened in Claude Code.',
+        details: hqFolderPath ? `Workspace: ${hqFolderPath}` : null,
+        prompt,
+        createdAt: new Date().toISOString(),
+        direction: 'in',
+      },
+    ];
+  }
+
   async function sendReply(text: string): Promise<void> {
     if (!text || sending || !selected) return;
     sending = true;
     sendError = null;
     try {
-      await invoke('send_dm', { toPersonUid: selected.personUid, body: text });
-      // Optimistic append — the durable copy lands in the mirror and shows on
-      // the next thread load.
-      messages = [
-        ...messages,
-        {
-          eventId: `local-${messages.length}-${text.length}`,
-          fromPersonUid: 'me',
-          fromEmail: '',
-          fromDisplayName: 'You',
-          body: text,
-          details: null,
-          prompt: null,
-          createdAt: new Date().toISOString(),
-          direction: 'out',
-        },
-      ];
+      if (selected.source === 'agent') {
+        await sendAgentPrompt(text);
+      } else {
+        await invoke('send_dm', { toPersonUid: selected.personUid, body: text });
+        // Optimistic append — the durable copy lands in the mirror and shows on
+        // the next thread load.
+        messages = [
+          ...messages,
+          {
+            eventId: `local-${messages.length}-${text.length}`,
+            fromPersonUid: 'me',
+            fromEmail: '',
+            fromDisplayName: 'You',
+            body: text,
+            details: null,
+            prompt: null,
+            createdAt: new Date().toISOString(),
+            direction: 'out',
+          },
+        ];
+      }
     } catch (err) {
-      sendError = typeof err === 'string' ? err : 'Failed to send message';
-      console.error('messages: send_dm failed', err);
+      sendError =
+        typeof err === 'string'
+          ? err
+          : selected.source === 'agent'
+            ? 'Failed to open Claude Code'
+            : 'Failed to send message';
+      console.error('messages: send failed', err);
     } finally {
       sending = false;
     }
@@ -598,7 +655,7 @@
     void loadUnreadSummary();
     void loadChannels();
     void loadCompanyLabels();
-    void loadSelfPersonUid();
+    void loadConfig();
     invoke('messages_window_ready');
 
     return () => {
@@ -783,13 +840,16 @@
         error={threadError}
         {sending}
         {sendError}
-        placeholder={`Message ${displayLabel(selected)}…`}
-        readonly={selected.source === 'agent'}
+        placeholder={
+          selected.source === 'agent'
+            ? 'Ask your agent to work on something…'
+            : `Message ${displayLabel(selected)}…`
+        }
         onsend={sendReply}
         onopenthread={handleOpenDmThread}
         activeRootEventId={openThread?.scope === 'dm' ? openThread.rootEventId : null}
-        reactions={dmReactions?.map ?? {}}
-        ontogglereaction={dmReactions ? dmReactions.toggle : undefined}
+        reactions={selected.source === 'agent' ? {} : (dmReactions?.map ?? {})}
+        ontogglereaction={selected.source === 'agent' ? undefined : dmReactions?.toggle}
       />
     {/if}
   </section>

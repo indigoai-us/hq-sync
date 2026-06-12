@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { companyStore } from '../lib/company-store.svelte';
   import DeploymentRow, {
     type DeploymentEntry,
@@ -16,10 +17,16 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  let deploymentQuery = $state('');
+  let deployBusy = $state(false);
+  let actionMessage = $state<string | null>(null);
 
   const activeCount = $derived(countByState('active'));
   const deployingCount = $derived(countByState('deploying'));
   const pausedCount = $derived(countByState('paused'));
+  const filteredDeployments = $derived(
+    deployments.filter((deployment) => matchesDeploymentQuery(deployment, deploymentQuery)),
+  );
 
   $effect(() => {
     reloadToken;
@@ -86,8 +93,49 @@
     return deployments.filter((deployment) => deployment.state === state).length;
   }
 
+  function matchesDeploymentQuery(deployment: DeploymentEntry, query: string): boolean {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return [deployment.sub, deployment.url, deployment.state, deployment.lastDeploy, deployment.ver]
+      .join(' ')
+      .toLowerCase()
+      .includes(q);
+  }
+
   function retry() {
     reloadToken += 1;
+  }
+
+  async function openDeployWorkflow(): Promise<void> {
+    if (deployBusy) return;
+    deployBusy = true;
+    actionMessage = null;
+
+    const prompt = [
+      `/deploy ${slug}`,
+      '',
+      `Help me deploy a result for company ${slug}.`,
+      'Confirm the artifact or path, then use the HQ deploy workflow and return the preview/share URL when it is ready.',
+    ].join('\n');
+
+    try {
+      const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
+        hqFolderPath: '',
+      }));
+      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      await invoke('open_claude_code_link', { url });
+      actionMessage = 'Opened deploy workflow.';
+    } catch (err) {
+      console.error('open_claude_code_link for deploy failed:', err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        actionMessage = 'Prompt copied. Paste it into Claude Code to continue.';
+      } catch {
+        actionMessage = 'Could not open Claude Code.';
+      }
+    } finally {
+      deployBusy = false;
+    }
   }
 </script>
 
@@ -104,20 +152,28 @@
         <span><strong>{deployingCount}</strong> deploying</span>
         <span><strong>{pausedCount}</strong> paused</span>
       </div>
-      <button class="toolbar-button" type="button" disabled title="Find deployments">
-        Find
-      </button>
+      <input
+        class="deploy-search"
+        bind:value={deploymentQuery}
+        type="search"
+        placeholder="Find"
+        aria-label="Find deployments"
+      />
       <button
         class="toolbar-button"
         type="button"
-        disabled
-        title="Deploy from terminal: /deploy"
-        aria-label="Deploy from terminal: /deploy"
+        onclick={() => void openDeployWorkflow()}
+        disabled={deployBusy}
+        title="Deploy with HQ"
       >
-        Deploy
+        {deployBusy ? 'Opening…' : 'Deploy'}
       </button>
     </div>
   </header>
+
+  {#if actionMessage}
+    <p class="action-status" role="status">{actionMessage}</p>
+  {/if}
 
   {#if error}
     <div class="deployments-error" role="alert">
@@ -151,11 +207,15 @@
             <span style={`width: ${92 - index * 9}%`}></span>
           {/each}
         </div>
-      {:else if deployments.length > 0}
+      {:else if filteredDeployments.length > 0}
         <div class="deployment-list">
-          {#each deployments as deployment, index (`${deployment.url}:${index}`)}
+          {#each filteredDeployments as deployment, index (`${deployment.url}:${index}`)}
             <DeploymentRow {deployment} />
           {/each}
+        </div>
+      {:else if deployments.length > 0}
+        <div class="empty-state" data-testid="filtered-deployments-empty-state">
+          No deployments match that search.
         </div>
       {:else}
         <div class="empty-state">No provisioned subdomains for this company.</div>
@@ -227,6 +287,7 @@
   }
 
   .toolbar-button,
+  .deploy-search,
   .deployments-error button {
     height: 30px;
     min-width: 0;
@@ -239,12 +300,36 @@
     font-size: var(--text-base);
     font-weight: 600;
     white-space: nowrap;
-    cursor: default;
+  }
+
+  .toolbar-button,
+  .deployments-error button {
+    cursor: pointer;
+  }
+
+  .deploy-search {
+    width: 116px;
+    color: var(--fg);
+    outline: none;
   }
 
   .toolbar-button:disabled {
     color: var(--muted-3);
     background: var(--row-hover);
+    cursor: default;
+  }
+
+  .toolbar-button:hover:not(:disabled),
+  .deploy-search:focus {
+    border-color: var(--border-strong);
+    background: var(--row-hover);
+  }
+
+  .action-status {
+    margin: -8px 0 0;
+    color: var(--muted-2);
+    font-size: var(--text-base);
+    line-height: 16px;
   }
 
   .deployments-error {

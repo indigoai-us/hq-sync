@@ -209,7 +209,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
       route,
       text: sourceText('src/desktop-alt/pages/CompanyPage.svelte', [
         'aria-labelledby="company-page-title"',
-        'Companies',
+        'New project',
         '<CompanyBoardPanel',
       ]),
       consoleErrors: [...this.consoleErrors],
@@ -271,7 +271,9 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     expect(route).toContain("case 'sync':");
     expect(desktopApp).toContain("route.kind === 'home'");
     expect(desktopApp).toContain("route.kind === 'meetings'");
-    expect(desktopApp).toContain('<CompanyPage company={activeCompany} tab={companyTab} />');
+    expect(desktopApp).toContain('<CompanyPage');
+    expect(desktopApp).toContain('company={activeCompany}');
+    expect(desktopApp).toContain('tab={companyTab}');
   }
 
   private assertSecretsSourceContracts(): void {

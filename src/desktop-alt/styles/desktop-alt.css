@@ -290,6 +290,10 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   overflow: hidden;
 }
 
+.desktop-content {
+  flex: 1 1 auto;
+}
+
 .desktop-main {
   flex-direction: column;
   width: 100%;

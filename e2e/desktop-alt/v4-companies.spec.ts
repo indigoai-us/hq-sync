@@ -92,10 +92,25 @@ describe('desktop-alt V4 Companies (US-004)', () => {
     expect(model.connected[0].sync).toBe('Auto · all paths');
     expect(model.connected[1].sub).toBe('provisioning cloud storage…');
 
-    // NOT CONNECTED: the invite row shows inviter context + Accept/Decline.
+    // NOT CONNECTED: the invite row shows inviter context + one honest handoff
+    // action. The desktop row does not carry the magic-link token, so it opens
+    // the /accept workflow instead of pretending Accept/Decline can run inline.
     const invite = model.notConnected.find((row) => row.kind === 'invite');
     expect(invite?.sub).toContain('Invite from geoff@westbound.co');
-    expect(invite?.actions).toEqual(['decline', 'accept']);
+    expect(invite?.actions).toEqual(['open-invite']);
+  });
+
+  it('wires pending invite rows to the real accept workflow handoff', () => {
+    const companiesPage = readRepoFile('src/desktop-alt/pages/CompaniesPage.svelte');
+    expect(companiesPage).toContain(
+      "import { buildClaudeCodeUrl } from '../../lib/claude-code-link'",
+    );
+    expect(companiesPage).toContain('[$accept](/Users/corey/Documents/HQ/.claude/skills/accept/SKILL.md)');
+    expect(companiesPage).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
+    expect(companiesPage).toContain("invoke('open_claude_code_link', { url })");
+    expect(companiesPage).toContain('Open invite');
+    expect(companiesPage).not.toContain('Accept</button>');
+    expect(companiesPage).not.toContain('Decline</button>');
   });
 
   it('DesktopApp mounts CompaniesPage on the companies route and the page footnote points at per-company settings', () => {

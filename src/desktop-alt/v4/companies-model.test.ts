@@ -155,7 +155,7 @@ describe('V4 Companies model (US-004)', () => {
     expect(model.notConnected[0].actions).toEqual(['connect']);
   });
 
-  it('renders pending invites with inviter context and Accept/Decline actions', () => {
+  it('renders pending invites with inviter context and the accept-flow handoff action', () => {
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 3600_000).toISOString();
     const model = getCompaniesPageModel({
       workspaces: [
@@ -176,7 +176,7 @@ describe('V4 Companies model (US-004)', () => {
     const invite = model.notConnected[0];
     expect(invite.kind).toBe('invite');
     expect(invite.sub).toBe('Invite from a teammate · invited 2d ago');
-    expect(invite.actions).toEqual(['decline', 'accept']);
+    expect(invite.actions).toEqual(['open-invite']);
   });
 
   it('shows a human-readable inviter verbatim when the row carries an email', () => {

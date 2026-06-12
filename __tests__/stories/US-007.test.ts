@@ -68,16 +68,14 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     });
 
     const page = normalize(companyPage);
-    expect(page).toContain('<span>Companies</span> <span aria-hidden="true">›</span> <span>{company.displayName}</span>');
-    expect(page).toContain('<h1 id="company-page-title">{company.displayName}</h1>');
-    expect(page).toContain('board cards ·');
-    expect(page).toContain('activity this week ·');
-    expect(page).toContain('deployments ·');
-    expect(page).toContain('secrets');
-    // US-001 wired these to the Tauri shell opener (HQ web console + invite).
+    expect(page).toContain('<h1 id="company-page-title" class="visually-hidden">{company.displayName}</h1>');
+    expect(page).toContain('<header class="company-actions-row">');
+    // Company actions are wired to the HQ web console, in-desktop Settings route,
+    // and the Claude Code /plan workflow.
     expect(page).toContain("import { open as openExternal } from '@tauri-apps/plugin-shell';");
-    expect(page).toContain('<button type="button" onclick={openInBrowser}>Open in browser</button>');
     expect(page).toContain('<button type="button" onclick={openInvite}>Invite</button>');
+    expect(page).toContain('<button type="button" onclick={openCompanySettings}>Settings</button>');
+    expect(page).toContain('onclick={() => void startNewProject()}');
 
     // The sections live in the V4 secondary sidebar — 8 of them, Overview
     // first/default, role surfaced in the header meta line.
@@ -93,7 +91,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     ]);
     const secondary = getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies);
     expect(secondary?.header).toBe('Acme Corp');
-    expect(secondary?.meta).toContain('admin');
+    expect(secondary?.meta).toContain('Admin');
     expect(secondary?.activeId).toBe('overview');
   });
 
@@ -105,7 +103,9 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(page).toContain('tab = DEFAULT_COMPANY_TAB');
     expect(page).not.toContain('CompanyTabs');
     expect(desktop).toContain("navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab })");
-    expect(desktop).toContain('<CompanyPage company={activeCompany} tab={companyTab} />');
+    expect(desktop).toContain('<CompanyPage');
+    expect(desktop).toContain('company={activeCompany}');
+    expect(desktop).toContain('tab={companyTab}');
 
     // The company page opens on the Overview board (company-scoped goals/
     // projects/in-flight via CompanyBoardPanel). The old flat vault BoardPanel
@@ -118,7 +118,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(page).toContain('<SecretsPanel slug={company.slug} />');
   });
 
-  it('wires summary counts plus workspace role propagation', () => {
+  it('wires company metadata plus workspace role propagation', () => {
     const page = normalize(companyPage);
     const summary = normalize(companySummary);
     const desktop = normalize(desktopApp);
@@ -126,8 +126,6 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     const rustWorkspaces = normalize(workspaceCommand);
     const rustDesktopAlt = normalize(desktopAltCommand);
     const rustMain = normalize(tauriMain);
-
-    expect(page).toContain('const summaryState = useCompanySummary({ slug: () => company.slug })');
 
     expect(emptyCompanySummary()).toEqual({
       board: 0,
@@ -144,6 +142,9 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(rustDesktopAlt).toContain('pub struct CompanySummary');
     expect(rustDesktopAlt).toContain('pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>');
     expect(rustMain).toContain('commands::desktop_alt::get_company_summary');
+    expect(page).toContain('onopencompanysettings?: () => void;');
+    expect(page).toContain('onopenprojects?: () => void;');
+    expect(page).toContain("const settings = await invoke<SettingsWire>('get_settings').catch(() => ({ hqPath: null }));");
 
     expect(desktop).toContain("invoke<WorkspacesResult>('list_syncable_workspaces')");
     expect(workspaceSrc).toContain('role: string | null;');

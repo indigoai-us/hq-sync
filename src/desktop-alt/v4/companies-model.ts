@@ -12,8 +12,9 @@ import { formatRelativeTime } from '../route';
  *    plus provisioning rows (amber dot, Connect in flight) and error rows
  *    (red dot + Retry, `state === 'broken'`).
  *  - NOT CONNECTED — local directories awaiting Connect
- *    (`connect_workspace_to_cloud`) and pending membership invites
- *    (Accept / Decline).
+ *    (`connect_workspace_to_cloud`) and pending membership invites (opened via
+ *    the `/accept` workflow because the desktop row has invite metadata, not the
+ *    magic-link token).
  */
 
 export type CompaniesDotTone = 'ok' | 'idle' | 'warn' | 'error';
@@ -46,7 +47,7 @@ export interface NotConnectedCompanyRow {
   kind: 'local' | 'invite';
   /** Inline note (e.g. a failed Connect attempt) rendered under the sub. */
   note: string | null;
-  actions: Array<'connect' | 'accept' | 'decline'>;
+  actions: Array<'connect' | 'open-invite'>;
 }
 
 export interface CompaniesPageModel {
@@ -160,7 +161,7 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
         sub: getInviteMetaLine(workspace),
         kind: 'invite',
         note: null,
-        actions: ['decline', 'accept'],
+        actions: ['open-invite'],
       });
       continue;
     }

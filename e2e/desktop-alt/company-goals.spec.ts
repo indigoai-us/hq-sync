@@ -31,6 +31,10 @@ describe('desktop-alt company Goals view source contract (US-006)', () => {
     expect(page).toContain('data-testid="linked-project-chip"');
     expect(page).toContain('data-testid="at-risk-note"');
     expect(page).toContain('Review proposal');
+    expect(page).toContain('onclick={() => reviewProposal(objective)}');
+    expect(page).toContain('onclick={newGoal}');
+    expect(page).toContain("invoke('open_claude_code_link', { url })");
+    expect(page).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
     expect(page).toContain('rgba(254, 188, 46, 0.3)');
   });
 

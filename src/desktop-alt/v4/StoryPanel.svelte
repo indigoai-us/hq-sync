@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { setStoryPasses } from '../lib/projects-store.svelte';
   import {
     projectDisplayName,
@@ -28,12 +30,16 @@
   let passesOverride = $state<boolean | null>(null);
   let saving = $state(false);
   let error = $state<string | null>(null);
+  let footerBusy = $state<'prd' | 'run' | null>(null);
+  let footerMessage = $state<string | null>(null);
 
   $effect(() => {
     void story?.id;
     void story?.passes;
     passesOverride = null;
     error = null;
+    footerBusy = null;
+    footerMessage = null;
     saving = false;
   });
 
@@ -65,6 +71,61 @@
 
   function toggleCriterion() {
     void setPasses(!currentPasses);
+  }
+
+  async function openPrd() {
+    if (!prdPath || footerBusy) return;
+    footerBusy = 'prd';
+    footerMessage = null;
+    try {
+      await invoke('open_in_editor', { path: prdPath });
+    } catch (err) {
+      console.error('open_in_editor failed:', err);
+      footerMessage = 'Could not open the PRD file.';
+    } finally {
+      footerBusy = null;
+    }
+  }
+
+  async function runStory() {
+    if (!story || footerBusy) return;
+    footerBusy = 'run';
+    footerMessage = null;
+    const projectName = project ? projectDisplayName(project) : 'the current project';
+    const prompt = [
+      `/run-project ${story.id}`,
+      '',
+      `Run story ${story.id}: ${story.title}`,
+      `Project: ${projectName}`,
+      prdPath ? `PRD: ${prdPath}` : null,
+      story.description ? `Description: ${story.description}` : null,
+      acItems.length > 0
+        ? ['Acceptance criteria:', ...acItems.map((item) => `- ${item}`)].join('\n')
+        : null,
+      '',
+      'Execute this story through the normal HQ project workflow, update the PRD/story state when done, and run the relevant checks before reporting back.',
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join('\n');
+
+    try {
+      const config: { hqFolderPath?: string } = await invoke<{ hqFolderPath?: string }>(
+        'get_config',
+      ).catch(() => ({}));
+      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      await invoke('open_claude_code_link', { url });
+      footerMessage = 'Story opened in Claude Code.';
+    } catch (err) {
+      console.error('open_claude_code_link failed:', err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        footerMessage = 'Story prompt copied.';
+      } catch {
+        footerMessage = 'Could not open Claude Code.';
+      }
+    } finally {
+      footerBusy = null;
+    }
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -172,8 +233,13 @@
     </div>
 
     <footer class="panel-footer">
-      <button type="button">Open PRD</button>
-      <button type="button" class="primary">Run story</button>
+      <div class="footer-status" role="status">{footerMessage ?? ''}</div>
+      <button type="button" onclick={() => void openPrd()} disabled={footerBusy !== null || !prdPath}>
+        {footerBusy === 'prd' ? 'Opening…' : 'Open PRD'}
+      </button>
+      <button type="button" class="primary" onclick={() => void runStory()} disabled={footerBusy !== null}>
+        {footerBusy === 'run' ? 'Opening…' : 'Run story'}
+      </button>
     </footer>
   </aside>
 {/if}
@@ -417,6 +483,17 @@
     border-top: 1px solid var(--v4-rowline);
   }
 
+  .footer-status {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--v4-text-3);
+    font-size: 11px;
+    line-height: 1.3;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .panel-footer button {
     padding: 0 11px;
     border: 1px solid var(--v4-hairline);
@@ -427,5 +504,9 @@
     border-color: transparent;
     background: var(--v4-control-bg);
     color: var(--v4-text-1);
+  }
+
+  .panel-footer button:disabled {
+    opacity: 0.52;
   }
 </style>

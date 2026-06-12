@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
   import { companyStore } from '../lib/company-store.svelte';
   import SecretEnvRow, { type SecretEnv, type SecretItem } from '../components/SecretEnvRow.svelte';
 
@@ -13,6 +14,8 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  let actionBusy = $state<'export' | 'new' | null>(null);
+  let actionMessage = $state<string | null>(null);
 
   const totalCount = $derived(secrets.reduce((total, secretEnv) => total + secretEnv.count, 0));
 
@@ -85,6 +88,46 @@
   function retry() {
     reloadToken += 1;
   }
+
+  async function openSecretsPrompt(mode: 'export' | 'new'): Promise<void> {
+    if (actionBusy) return;
+    actionBusy = mode;
+    actionMessage = null;
+
+    const prompt =
+      mode === 'export'
+        ? [
+            `/hq-secrets ${slug}`,
+            '',
+            `Help me export an environment file safely for company ${slug}.`,
+            'Use the HQ secrets workflow. Do not print secret values into chat; write the requested local artifact only after confirming the target environment and path.',
+          ].join('\n')
+        : [
+            `/hq-secrets ${slug}`,
+            '',
+            `Help me create or update a secret for company ${slug}.`,
+            'Ask for the key, environment, and value handling path, then use the HQ secrets workflow without echoing the value back.',
+          ].join('\n');
+
+    try {
+      const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
+        hqFolderPath: '',
+      }));
+      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
+      await invoke('open_claude_code_link', { url });
+      actionMessage = mode === 'export' ? 'Opened export workflow.' : 'Opened new-key workflow.';
+    } catch (err) {
+      console.error('open_claude_code_link for secrets failed:', err);
+      try {
+        await navigator.clipboard.writeText(prompt);
+        actionMessage = 'Prompt copied. Paste it into Claude Code to continue.';
+      } catch {
+        actionMessage = 'Could not open Claude Code.';
+      }
+    } finally {
+      actionBusy = null;
+    }
+  }
 </script>
 
 <section class="secrets-panel" aria-labelledby="secrets-panel-title">
@@ -103,22 +146,26 @@
     <button
       class="toolbar-button"
       type="button"
-      disabled
-      title="Export not available — use /hq-secrets exec"
-      aria-label="Export not available — use /hq-secrets exec"
+      onclick={() => void openSecretsPrompt('export')}
+      disabled={actionBusy !== null}
+      title="Export via HQ secrets workflow"
     >
-      Export .env
+      {actionBusy === 'export' ? 'Opening…' : 'Export .env'}
     </button>
     <button
       class="toolbar-button"
       type="button"
-      disabled
-      title="Create from CLI: hq secrets set"
-      aria-label="Create from CLI: hq secrets set"
+      onclick={() => void openSecretsPrompt('new')}
+      disabled={actionBusy !== null}
+      title="Create via HQ secrets workflow"
     >
-      New key
+      {actionBusy === 'new' ? 'Opening…' : 'New key'}
     </button>
   </div>
+
+  {#if actionMessage}
+    <p class="action-status" role="status">{actionMessage}</p>
+  {/if}
 
   {#if error}
     <div class="secrets-error" role="alert">
@@ -219,12 +266,25 @@
     font-size: var(--text-base);
     font-weight: 600;
     white-space: nowrap;
-    cursor: default;
+    cursor: pointer;
   }
 
   .toolbar-button:disabled {
     color: var(--muted-3);
     background: var(--row-hover);
+    cursor: default;
+  }
+
+  .toolbar-button:hover:not(:disabled) {
+    border-color: var(--border-strong);
+    background: var(--row-hover);
+  }
+
+  .action-status {
+    margin: -4px 0 0;
+    color: var(--muted-2);
+    font-size: var(--text-base);
+    line-height: 16px;
   }
 
   .secrets-error {

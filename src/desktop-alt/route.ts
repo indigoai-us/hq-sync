@@ -170,7 +170,27 @@ export function companyHotkey(index: number): string | undefined {
  * 'sync' deep-links — the pre-V4 home surface — land on Home.
  */
 export function resolvePendingDesktopRoute(name: string | null | undefined): DesktopRoute | null {
-  switch (name) {
+  const normalized = name?.trim().replace(/\//g, ':');
+  if (!normalized) return null;
+
+  const [kind, first, second] = normalized.split(':');
+
+  if (kind === 'company' && first) {
+    const tab = isCompanyTab(second) ? second : undefined;
+    return tab ? { kind: 'company', slug: first, tab } : { kind: 'company', slug: first };
+  }
+
+  if (kind === 'library') {
+    const tab = isLibraryTab(first) ? first : undefined;
+    return tab ? { kind: 'library', tab } : { kind: 'library' };
+  }
+
+  if (kind === 'settings') {
+    const tab = isSettingsTab(first) ? first : undefined;
+    return tab ? { kind: 'settings', tab } : { kind: 'settings' };
+  }
+
+  switch (normalized) {
     case 'home':
     case 'sync':
       return { kind: 'home' };
@@ -187,6 +207,18 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     default:
       return null;
   }
+}
+
+function isCompanyTab(value: string | undefined): value is CompanyTab {
+  return COMPANY_SECTIONS.some((section) => section.id === value);
+}
+
+function isLibraryTab(value: string | undefined): value is LibraryTab {
+  return LIBRARY_SECTIONS.some((section) => section.id === value);
+}
+
+function isSettingsTab(value: string | undefined): value is SettingsTab {
+  return SETTINGS_SECTIONS.some((section) => section.id === value);
 }
 
 /**
@@ -251,7 +283,10 @@ export function getDesktopSecondarySidebar(
       surface: 'company',
       header: company.displayName,
       headerTone: v4CompanyDotTone(company),
-      meta: [company.role, lastSync ? `synced ${lastSync}` : null].filter(Boolean).join(' · ') || null,
+      meta:
+        [formatCompanyRole(company), lastSync ? `synced ${lastSync}` : 'synced just now']
+          .filter(Boolean)
+          .join(' · ') || null,
       items: COMPANY_SECTIONS.map(({ id, label }) => ({ id, label })),
       activeId: route.tab ?? DEFAULT_COMPANY_TAB,
       footer: { label: 'Company settings', meta: 'sync rules · members · roles' },
@@ -284,6 +319,13 @@ export function getDesktopSecondarySidebar(
   }
 
   return null;
+}
+
+function formatCompanyRole(company: Workspace): string | null {
+  if (company.kind === 'personal') return 'Personal';
+  const role = company.role?.trim();
+  if (!role) return 'Member';
+  return role.slice(0, 1).toUpperCase() + role.slice(1).toLowerCase();
 }
 
 /** Human relative timestamp ("just now", "5m ago") for status meta lines. */

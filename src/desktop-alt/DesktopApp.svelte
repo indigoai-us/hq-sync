@@ -425,7 +425,7 @@
       await handleSyncAll();
     } catch (err) {
       console.error('refresh_tokens failed:', err);
-      await handleOpenSettings();
+      handleOpenSettings();
     }
   }
 
@@ -465,17 +465,12 @@
       navigate({ kind: 'library', tab: 'profile' });
       return;
     }
-    // Company settings (sync rules · members · roles) live in the settings
-    // window until US-013 brings them in-window.
-    void handleOpenSettings();
+    // Company settings live inside the V4 Settings route in the desktop app.
+    handleOpenSettings();
   }
 
-  async function handleOpenSettings() {
-    try {
-      await invoke('open_settings_window');
-    } catch (err) {
-      console.error('open_settings_window failed:', err);
-    }
+  function handleOpenSettings(tab?: SettingsTab) {
+    navigate({ kind: 'settings', tab });
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -914,7 +909,14 @@
             {/if}
           {:else if activeCompany}
             <div class="page">
-              <CompanyPage company={activeCompany} tab={companyTab} />
+              <CompanyPage
+                company={activeCompany}
+                tab={companyTab}
+                onopencompanysettings={() => handleOpenSettings()}
+                onopenprojects={() =>
+                  navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
+                }
+              />
             </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
