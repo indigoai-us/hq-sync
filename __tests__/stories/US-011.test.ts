@@ -34,7 +34,9 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     const panel = normalize(deploymentsPanel);
 
     expect(page).toContain("import DeploymentsPanel from '../panels/DeploymentsPanel.svelte'");
-    expect(page).toContain('<DeploymentsPanel slug={company.slug} />');
+    expect(page).toContain('<DeploymentsPanel slug={company.slug} {cloudBacked} />');
+    expect(page).toContain('const cloudBacked = $derived');
+    expect(panel).toContain('if (!slug || !cloudBacked)');
     expect(panel).toContain("void invoke<Partial<DeploymentEntry>[]>('get_company_deployments', { slug })");
     expect(panel).toContain('return () => { cancelled = true; };');
     expect(panel).toContain('function retry() { reloadToken += 1; }');

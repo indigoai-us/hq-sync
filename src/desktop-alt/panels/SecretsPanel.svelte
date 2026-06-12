@@ -6,9 +6,10 @@
 
   interface Props {
     slug: string;
+    cloudBacked?: boolean;
   }
 
-  let { slug }: Props = $props();
+  let { slug, cloudBacked = true }: Props = $props();
 
   let secrets = $state<SecretEnv[]>([]);
   let loading = $state(false);
@@ -24,7 +25,7 @@
     secrets = [];
     error = null;
 
-    if (!slug) {
+    if (!slug || !cloudBacked) {
       loading = false;
       return;
     }
@@ -147,7 +148,7 @@
       class="toolbar-button"
       type="button"
       onclick={() => void openSecretsPrompt('export')}
-      disabled={actionBusy !== null}
+      disabled={actionBusy !== null || !cloudBacked}
       title="Export via HQ secrets workflow"
     >
       {actionBusy === 'export' ? 'Opening…' : 'Export .env'}
@@ -156,7 +157,7 @@
       class="toolbar-button"
       type="button"
       onclick={() => void openSecretsPrompt('new')}
-      disabled={actionBusy !== null}
+      disabled={actionBusy !== null || !cloudBacked}
       title="Create via HQ secrets workflow"
     >
       {actionBusy === 'new' ? 'Opening…' : 'New key'}
@@ -165,6 +166,15 @@
 
   {#if actionMessage}
     <p class="action-status" role="status">{actionMessage}</p>
+  {/if}
+
+  {#if !cloudBacked}
+    <div class="secrets-error secrets-note" role="status">
+      <div>
+        <strong>Connect this company to manage secrets</strong>
+        <span>Secret metadata is available after the local company is cloud-backed.</span>
+      </div>
+    </div>
   {/if}
 
   {#if error}
@@ -298,6 +308,12 @@
     border-radius: 8px;
     background: rgba(245, 158, 11, 0.1);
     color: var(--amber);
+  }
+
+  .secrets-note {
+    border-color: var(--border);
+    background: var(--bg-raised);
+    color: var(--muted);
   }
 
   .secrets-error div {

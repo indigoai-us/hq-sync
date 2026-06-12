@@ -4,6 +4,7 @@
   import SyncStats from './SyncStats.svelte';
   import ConflictModal from './ConflictModal.svelte';
   import NotificationFeed from './NotificationFeed.svelte';
+  import WorkspaceList from './WorkspaceList.svelte';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import MeetingIcon from './MeetingIcon.svelte';
@@ -884,11 +885,25 @@
         <SyncStats bind:this={statsEl} onhistory={() => invoke('open_activity_log')} />
       {/if}
 
-      <!-- Notifications — the popover's default body (in place of the old
-           companies/sources list, which now lives in the desktop view's
-           Sources tab). Surfaces recent DMs, shares, and new-file activity;
-           a tap opens the matching detail window. The inline feed loads its
-           own data and keeps itself fresh off DM/sync events. -->
+      <!-- Local workspaces are the primary menubar surface. They stay visible
+           even for local-only companies so the app never feels like it forgot
+           the user's actual HQ folders. -->
+      {#if workspaces}
+        <WorkspaceList
+          {workspaces}
+          cloudReachable={cloudReachable}
+          cloudError={cloudError}
+          manifestError={manifestError}
+          hqFolderPath={config?.hqFolderPath ?? ''}
+          onrefresh={onworkspacesrefresh}
+        />
+      {/if}
+
+      <div class="popover-section-label">Recent activity</div>
+
+      <!-- Notifications — recent DMs, shares, and new-file activity. A tap
+           opens the matching detail window or desktop Activity route, while
+           grouped new-file rows still expand inline. -->
       <NotificationFeed />
 
       <!-- Sync button moved to the header (right-aligned). The body no
@@ -1382,6 +1397,15 @@
     background: rgba(255, 255, 255, 0.18);
   }
 
+  .popover-section-label {
+    color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
+    font-size: var(--text-xs, 0.6875rem);
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    line-height: 1;
+    margin-top: var(--space-1);
+    text-transform: uppercase;
+  }
 
   /* Footer — a calm grouped base. Horizontal inset is var(--space-3) (12px) so
      it lines up with the body, divider, and header; a small inner row gap gives

@@ -112,10 +112,10 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     // stays retired.
     expect(page).not.toContain('<BoardPanel slug={company.slug} />');
     expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
-    expect(page).toContain('<CompanyBoardPanel slug={company.slug} />');
-    expect(page).toContain('<ActivityPanel slug={company.slug} />');
-    expect(page).toContain('<DeploymentsPanel slug={company.slug} />');
-    expect(page).toContain('<SecretsPanel slug={company.slug} />');
+    expect(page).toContain('<CompanyBoardPanel slug={company.slug} {cloudBacked} />');
+    expect(page).toContain('<ActivityPanel slug={company.slug} {cloudBacked} />');
+    expect(page).toContain('<DeploymentsPanel slug={company.slug} {cloudBacked} />');
+    expect(page).toContain('<SecretsPanel slug={company.slug} {cloudBacked} />');
   });
 
   it('wires company metadata plus workspace role propagation', () => {

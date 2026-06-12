@@ -9,9 +9,10 @@
 
   interface Props {
     slug: string;
+    cloudBacked?: boolean;
   }
 
-  let { slug }: Props = $props();
+  let { slug, cloudBacked = true }: Props = $props();
 
   let deployments = $state<DeploymentEntry[]>([]);
   let loading = $state(false);
@@ -33,7 +34,7 @@
     deployments = [];
     error = null;
 
-    if (!slug) {
+    if (!slug || !cloudBacked) {
       loading = false;
       return;
     }
@@ -163,7 +164,7 @@
         class="toolbar-button"
         type="button"
         onclick={() => void openDeployWorkflow()}
-        disabled={deployBusy}
+        disabled={deployBusy || !cloudBacked}
         title="Deploy with HQ"
       >
         {deployBusy ? 'Opening…' : 'Deploy'}
@@ -173,6 +174,15 @@
 
   {#if actionMessage}
     <p class="action-status" role="status">{actionMessage}</p>
+  {/if}
+
+  {#if !cloudBacked}
+    <div class="deployments-error deployments-note" role="status">
+      <div>
+        <strong>Connect this company to deploy</strong>
+        <span>Local-only companies can be opened and planned, but deploy targets need a cloud-backed company.</span>
+      </div>
+    </div>
   {/if}
 
   {#if error}
@@ -343,6 +353,12 @@
     border-radius: 8px;
     background: rgba(245, 158, 11, 0.1);
     color: var(--amber);
+  }
+
+  .deployments-note {
+    border-color: var(--border);
+    background: var(--bg-raised);
+    color: var(--muted);
   }
 
   .deployments-error div {

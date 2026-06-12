@@ -19,7 +19,7 @@ export const emptyCompanySummary = (): CompanySummary => ({
   secrets: 0,
 });
 
-export function useCompanySummary(options: { slug: () => string | null }) {
+export function useCompanySummary(options: { slug: () => string | null; enabled?: () => boolean }) {
   let summary = $state<CompanySummary>(emptyCompanySummary());
   let loading = $state(false);
   let error = $state<string | null>(null);
@@ -41,6 +41,15 @@ export function useCompanySummary(options: { slug: () => string | null }) {
 
   $effect(() => {
     const slug = options.slug();
+    const enabled = options.enabled?.() ?? true;
+    if (!enabled) {
+      activeSlug = slug;
+      requestId += 1;
+      summary = emptyCompanySummary();
+      error = null;
+      loading = false;
+      return;
+    }
     if (slug === activeSlug) {
       return; // same company — keep the loaded summary, don't refetch/cancel
     }

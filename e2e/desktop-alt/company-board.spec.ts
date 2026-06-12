@@ -129,6 +129,6 @@ describe('desktop-alt board is the default company section (US-011 → V4 US-002
     expect(company).not.toContain('CompanyTabs');
     // Wired as the first branch in the panel switch.
     expect(company).toContain("{#if tab === 'overview'}");
-    expect(company).toContain('<CompanyBoardPanel slug={company.slug} />');
+    expect(company).toContain('<CompanyBoardPanel slug={company.slug} {cloudBacked} />');
   });
 });

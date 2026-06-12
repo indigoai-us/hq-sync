@@ -230,10 +230,10 @@ describe('desktop-alt Board surface (US-007)', () => {
     // Overview hosts CompanyBoardPanel as the first branch.
     expect(company).toContain("import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte'");
     expect(company).toContain("{#if tab === 'overview'}");
-    expect(company).toContain('<CompanyBoardPanel slug={company.slug} />');
+    expect(company).toContain('<CompanyBoardPanel slug={company.slug} {cloudBacked} />');
     // Other sections remain wired below it.
-    expect(company).toContain('<ActivityPanel slug={company.slug} />');
-    expect(company).toContain('<DeploymentsPanel slug={company.slug} />');
-    expect(company).toContain('<SecretsPanel slug={company.slug} />');
+    expect(company).toContain('<ActivityPanel slug={company.slug} {cloudBacked} />');
+    expect(company).toContain('<DeploymentsPanel slug={company.slug} {cloudBacked} />');
+    expect(company).toContain('<SecretsPanel slug={company.slug} {cloudBacked} />');
   });
 });

@@ -40,7 +40,9 @@ describe('US-012: Secrets panel reads metadata only with no plaintext values', (
     const panel = normalize(secretsPanel);
 
     expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
-    expect(page).toContain('<SecretsPanel slug={company.slug} />');
+    expect(page).toContain('<SecretsPanel slug={company.slug} {cloudBacked} />');
+    expect(page).toContain('const cloudBacked = $derived');
+    expect(panel).toContain('if (!slug || !cloudBacked)');
     expect(panel).toContain("void invoke<Partial<SecretEnv>[]>('get_company_secrets', { slug })");
     expect(panel).toContain('return () => { cancelled = true; };');
     expect(panel).toContain('function retry() { reloadToken += 1; }');

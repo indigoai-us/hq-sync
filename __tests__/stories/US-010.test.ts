@@ -30,7 +30,7 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
     const panel = normalize(activityPanel);
 
     expect(page).toContain("import ActivityPanel from '../panels/ActivityPanel.svelte'");
-    expect(page).toContain('<ActivityPanel slug={company.slug} />');
+    expect(page).toContain('<ActivityPanel slug={company.slug} {cloudBacked} />');
     expect(page).not.toContain('Activity panel - wired in US-010');
     expect(panel).toContain("void invoke<Partial<CompanyActivity>>('get_company_activity', { slug })");
     expect(panel).toContain('return () => { cancelled = true; };');

@@ -7,6 +7,7 @@
 
   interface Props {
     slug: string;
+    cloudBacked?: boolean;
   }
 
   interface ActivityStats {
@@ -42,7 +43,7 @@
     top: ActivityContributor[];
   }
 
-  let { slug }: Props = $props();
+  let { slug, cloudBacked = true }: Props = $props();
 
   const emptyStats = (): ActivityStats => ({
     files7: 0,
@@ -96,7 +97,7 @@
     activity = emptyActivity();
     error = null;
 
-    if (!slug) {
+    if (!slug || !cloudBacked) {
       loading = false;
       return;
     }
@@ -236,6 +237,15 @@
         <span>{error}</span>
       </div>
       <button type="button" onclick={retry}>Retry</button>
+    </div>
+  {/if}
+
+  {#if !cloudBacked}
+    <div class="activity-error activity-note" role="status">
+      <div>
+        <strong>Activity will appear after connect</strong>
+        <span>This company is local only, so there is no synced activity feed yet.</span>
+      </div>
     </div>
   {/if}
 
@@ -445,6 +455,12 @@
     border-radius: 8px;
     background: rgba(245, 158, 11, 0.1);
     color: var(--amber);
+  }
+
+  .activity-note {
+    border-color: var(--border);
+    background: var(--bg-raised);
+    color: var(--muted);
   }
 
   .activity-error div {

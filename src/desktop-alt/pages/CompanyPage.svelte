@@ -44,6 +44,11 @@
   // HQ web console base. Same host the Meetings page links to for
   // "Open HQ Console Integrations" — the company console lives at /{slug}.
   const HQ_CONSOLE_BASE = 'https://hq.getindigo.ai';
+  const cloudBacked = $derived(
+    company.state === 'synced' ||
+      company.state === 'cloud-only' ||
+      (company.kind === 'company' && Boolean(company.cloudUid)),
+  );
 
   function companyConsoleUrl(): string {
     return `${HQ_CONSOLE_BASE}/${encodeURIComponent(company.slug)}`;
@@ -116,7 +121,7 @@
   {#key `${company.slug}:${tab}`}
     <div class="company-panel">
       {#if tab === 'overview'}
-        <CompanyBoardPanel slug={company.slug} />
+        <CompanyBoardPanel slug={company.slug} {cloudBacked} />
       {:else if tab === 'goals'}
         <CompanyGoalsPage slug={company.slug} />
       {:else if tab === 'projects'}
@@ -124,13 +129,13 @@
       {:else if tab === 'tasks'}
         <CompanyTasksPage slug={company.slug} />
       {:else if tab === 'activity'}
-        <ActivityPanel slug={company.slug} />
+        <ActivityPanel slug={company.slug} {cloudBacked} />
       {:else if tab === 'deployments'}
-        <DeploymentsPanel slug={company.slug} />
+        <DeploymentsPanel slug={company.slug} {cloudBacked} />
       {:else if tab === 'library'}
         <CompanyLibraryPanel slug={company.slug} />
       {:else if tab === 'secrets'}
-        <SecretsPanel slug={company.slug} />
+        <SecretsPanel slug={company.slug} {cloudBacked} />
       {/if}
     </div>
   {/key}

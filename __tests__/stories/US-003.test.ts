@@ -122,10 +122,14 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
     expect(model.nav.every((row) => !row.active)).toBe(true);
 
-    // Globex is cloud-only (no synced local vault) → no desktop page.
-    expect(companies.find((company) => company.slug === 'globex')).toBeUndefined();
+    // Globex is cloud-only (no synced local vault) but still gets a desktop
+    // page so the user can see and act on the membership instead of losing it.
+    expect(companies.find((company) => company.slug === 'globex')).toMatchObject({
+      slug: 'globex',
+      state: 'cloud-only',
+    });
     expect(
       getDesktopActiveCompany({ kind: 'company', slug: 'globex' }, companies),
-    ).toBeNull();
+    ).toMatchObject({ slug: 'globex' });
   });
 });

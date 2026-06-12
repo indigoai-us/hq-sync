@@ -41,6 +41,19 @@ export const workspaces: Workspace[] = [
     lastSyncedAt: null,
     brokenReason: null,
   },
+  {
+    slug: 'holler-mgmt',
+    displayName: 'Holler Mgmt',
+    kind: 'company',
+    state: 'local-only',
+    cloudUid: null,
+    bucketName: null,
+    hasLocalFolder: true,
+    localPath: '/Users/corey/Documents/HQ/companies/holler-mgmt',
+    membershipStatus: null,
+    lastSyncedAt: null,
+    brokenReason: null,
+  },
 ];
 
 export const coreState = {

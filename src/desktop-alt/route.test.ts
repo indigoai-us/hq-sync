@@ -46,10 +46,15 @@ describe('US-002 V4 desktop routes', () => {
     expect(initialDesktopRoute).toEqual({ kind: 'home' });
   });
 
-  it('exposes synced companies plus the local-first personal page in desktop navigation', () => {
+  it('exposes local-first companies plus the personal page in desktop navigation', () => {
     const visible = getDesktopCompanies([
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
-      company({ slug: 'local', displayName: 'Local', state: 'local-only', cloudUid: null }),
+      company({
+        slug: 'local',
+        displayName: 'Local',
+        state: 'local-only',
+        cloudUid: null,
+      }),
       company({ slug: 'cloud', displayName: 'Cloud', state: 'cloud-only', hasLocalFolder: false }),
       company({ slug: 'broken', displayName: 'Broken', state: 'broken' }),
       {
@@ -61,9 +66,15 @@ describe('US-002 V4 desktop routes', () => {
       },
     ]);
 
-    // Synced companies get a page; non-synced companies don't; personal is
-    // local-first (state 'personal') and always navigable so it gets a board too.
-    expect(visible.map((workspace) => workspace.slug)).toEqual(['synced', 'personal']);
+    // Local folders get a page even before they are cloud-backed. Cloud-only
+    // memberships stay visible too, but show "not on this Mac" in the chrome.
+    expect(visible.map((workspace) => workspace.slug)).toEqual([
+      'synced',
+      'local',
+      'cloud',
+      'broken',
+      'personal',
+    ]);
   });
 
   it('declares the eight company sections in SPEC order with Overview first', () => {
@@ -228,6 +239,20 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
       label: 'Company settings',
       meta: 'sync rules · members · roles',
     });
+  });
+
+  it('labels local-only company pages honestly instead of pretending they just synced', () => {
+    const companies = [
+      company({
+        slug: 'holler-mgmt',
+        displayName: 'Holler Mgmt',
+        state: 'local-only',
+        cloudUid: null,
+        role: null,
+      }),
+    ];
+    const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'holler-mgmt' }, companies);
+    expect(model?.meta).toBe('Member · local only');
   });
 
   it('marks the routed company section active', () => {

@@ -303,7 +303,11 @@
       // Warm the company-tab preload cache for every known company once the real
       // slugs resolve. Idempotent + reconciles, so companies that appear on a
       // later refresh still get warmed; the 30s poll + focus listener wire once.
-      startCompanyStore(getDesktopCompanies(result.workspaces).map((company) => company.slug));
+      startCompanyStore(
+        getDesktopCompanies(result.workspaces)
+          .filter((company) => company.state === 'synced' || company.state === 'cloud-only' || Boolean(company.cloudUid))
+          .map((company) => company.slug),
+      );
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
       workspaceError = String(err);

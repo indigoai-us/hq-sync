@@ -132,8 +132,8 @@ describe('V4 Companies model (US-004)', () => {
     expect(model.notConnected).toHaveLength(1);
     const row = model.notConnected[0];
     expect(row.kind).toBe('local');
-    expect(row.sub).toBe('Local directory exists, not yet cloud-backed');
-    expect(row.actions).toEqual(['connect']);
+    expect(row.sub).toBe('Local directory exists · not cloud-backed');
+    expect(row.actions).toEqual(['open', 'connect']);
     expect(model.summary).toContain('1 available');
   });
 
@@ -152,7 +152,7 @@ describe('V4 Companies model (US-004)', () => {
     });
 
     expect(model.notConnected[0].note).toBe('vault unreachable');
-    expect(model.notConnected[0].actions).toEqual(['connect']);
+    expect(model.notConnected[0].actions).toEqual(['open', 'connect']);
   });
 
   it('renders pending invites with inviter context and the accept-flow handoff action', () => {

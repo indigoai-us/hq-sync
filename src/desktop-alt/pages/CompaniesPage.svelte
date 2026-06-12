@@ -234,7 +234,15 @@
             </span>
             <span class="companies-row-actions">
               {#each row.actions as action (action)}
-                {#if action === 'connect'}
+                {#if action === 'open'}
+                  <button
+                    type="button"
+                    class="companies-action"
+                    onclick={() => handleOpen(row.slug, true)}
+                  >
+                    Open
+                  </button>
+                {:else if action === 'connect'}
                   <button
                     type="button"
                     class="companies-action primary"
@@ -243,7 +251,7 @@
                   >
                     {connecting.includes(row.slug) ? 'Connecting…' : 'Connect'}
                   </button>
-                {:else}
+                {:else if action === 'open-invite'}
                   <button
                     type="button"
                     class="companies-action primary"
