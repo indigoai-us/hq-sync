@@ -35,6 +35,7 @@ describe('desktop-alt company goals adapter (US-011)', () => {
 
 describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
   const panel = readRepoFile('src/desktop-alt/panels/CompanyBoardPanel.svelte');
+  const goalCard = readRepoFile('src/desktop-alt/v4/GoalCard.svelte');
 
   it('takes a slug prop and follows the ActivityPanel load convention', () => {
     expect(panel).toContain('slug: string');
@@ -45,13 +46,13 @@ describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
     expect(panel).toContain('let error = $state<string | null>(null)');
   });
 
-  it('loads the company goals and renders objectives with optional KR bars', () => {
+  it('loads the company goals and renders objective cards through the V4 GoalCard', () => {
     expect(panel).toContain('loadCompanyGoals');
-    expect(panel).toContain('data-testid="goal-card"');
-    // KRs render only when present (board data is [] today → empty state).
-    expect(panel).toContain('objective.keyResults.length > 0');
-    expect(panel).toContain('data-testid="goal-key-results"');
-    expect(panel).toContain('krPercent');
+    expect(panel).toContain("import GoalCard from '../v4/GoalCard.svelte'");
+    expect(panel).toContain('<GoalCard');
+    expect(goalCard).toContain('data-testid="goal-card"');
+    expect(goalCard).toContain('keyResultLine(objective.keyResults)');
+    expect(goalCard).toContain('style={`width: ${progress}%`}');
     // Graceful empty state.
     expect(panel).toContain('No goals yet');
   });
@@ -68,6 +69,15 @@ describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
     expect(panel).toContain("entry.state === 'in-progress'");
     expect(panel).toContain('data-testid="inflight-list"');
     expect(panel).toContain('data-testid="inflight-row"');
+  });
+
+  it('renders the V4 in-flight table with goal chips, priority, AC progress, and status', () => {
+    expect(panel).toContain('data-testid="inflight-goal-chip"');
+    expect(panel).toContain('goalChip(project)');
+    expect(panel).toContain('priorityLabel(detail?.priority)');
+    expect(panel).toContain('class="ac-track"');
+    expect(panel).toContain('height: 3px');
+    expect(panel).toContain('rowStatus(project, detail)');
   });
 
   it('feeds the company-filtered projects to ProjectListView (showCompany off)', () => {
