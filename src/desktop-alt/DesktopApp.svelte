@@ -14,15 +14,26 @@
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore } from './lib/company-store.svelte';
   import {
-    DESKTOP_SHELL_LAYOUT,
+    companyHotkey,
+    DEFAULT_COMPANY_TAB,
+    DEFAULT_LIBRARY_TAB,
+    formatRelativeTime,
+    fromV4Route,
     getDesktopActiveCompany,
     getDesktopCompanies,
     getDesktopHotkeyRoute,
     getDesktopRouteKey,
+    getDesktopSecondarySidebar,
     initialDesktopRoute,
+    resolvePendingDesktopRoute,
+    type CompanyTab,
     type DesktopRoute,
+    type LibraryTab,
   } from './route';
-  import DesktopSidebar from './DesktopSidebar.svelte';
+  import { V4_CHROME_LAYOUT } from './v4/model';
+  import V4Sidebar from './v4/V4Sidebar.svelte';
+  import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
+  import V4TitleBar from './v4/V4TitleBar.svelte';
   import DesktopStatusBar from './DesktopStatusBar.svelte';
   import CommandPalette, {
     type CommandPaletteItem,
@@ -94,6 +105,17 @@
   const companies = $derived(getDesktopCompanies(workspaces));
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, companies));
+  const libraryTab = $derived<LibraryTab>(
+    route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
+  );
+  const companyTab = $derived<CompanyTab>(
+    route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
+  );
+  // Secondary (contextual) sidebar — only on company / library / settings
+  // surfaces (SPEC section 4); null hides the column entirely.
+  const secondarySidebar = $derived(
+    getDesktopSecondarySidebar(route, companies, { version: __APP_VERSION__ }),
+  );
   const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles);
   const indexedFiles = $derived(
     syncPlanTotalFiles > 0
@@ -140,18 +162,18 @@
       action: handleOpenSettings,
     },
     {
-      id: 'command-go-sync',
-      label: 'Go to Sync',
-      detail: 'Show sync overview',
+      id: 'command-go-home',
+      label: 'Go to Home',
+      detail: 'Sync health and activity',
       shortcut: '⌘1',
-      action: () => navigate({ kind: 'sync' }),
+      action: () => navigate({ kind: 'home' }),
     },
     {
-      id: 'command-go-meetings',
-      label: 'Go to Meetings',
-      detail: 'Show calendar and recordings',
+      id: 'command-go-companies',
+      label: 'Go to Companies',
+      detail: 'Connected companies overview',
       shortcut: '⌘2',
-      action: () => navigate({ kind: 'meetings' }),
+      action: () => navigate({ kind: 'companies' }),
     },
     {
       id: 'command-go-messages',
@@ -161,101 +183,53 @@
       action: () => navigate({ kind: 'messages' }),
     },
     {
-      id: 'command-go-skills',
-      label: 'Go to Skills',
-      detail: 'Browse skills',
+      id: 'command-go-meetings',
+      label: 'Go to Meetings',
+      detail: 'Show calendar and recordings',
       shortcut: '⌘4',
-      action: () => navigate({ kind: 'library', tab: 'skills' }),
+      action: () => navigate({ kind: 'meetings' }),
     },
     {
-      id: 'command-go-workers',
-      label: 'Go to Workers',
-      detail: 'Browse workers',
+      id: 'command-go-library',
+      label: 'Go to Library',
+      detail: 'Skills, workers, and the marketplace',
       shortcut: '⌘5',
-      action: () => navigate({ kind: 'library', tab: 'workers' }),
+      action: () => navigate({ kind: 'library' }),
     },
     {
-      id: 'command-go-installed',
-      label: 'Go to Installed',
-      detail: 'Marketplace packs installed in your HQ',
-      shortcut: '⌘6',
-      action: () => navigate({ kind: 'library', tab: 'installed' }),
+      id: 'command-go-settings',
+      label: 'Go to Settings',
+      detail: 'Sync preferences and account',
+      action: () => navigate({ kind: 'settings' }),
     },
-    {
-      id: 'command-go-marketplace',
-      label: 'Go to Marketplace',
-      detail: 'Discover and install skills and workers',
-      shortcut: '⌘7',
-      action: () => navigate({ kind: 'library', tab: 'marketplace' }),
-    },
-    {
-      id: 'command-go-profile',
-      label: 'Go to Profile',
-      detail: 'Your HQ profile and published work',
-      shortcut: '⌘8',
-      action: () => navigate({ kind: 'library', tab: 'profile' }),
-    },
+    // Admin-only (default-deny) — Moderation has no sidebar row in the V4 IA,
+    // so the palette is its navigation surface.
+    ...(isAdmin
+      ? [
+          {
+            id: 'command-go-moderation',
+            label: 'Go to Moderation',
+            detail: 'Review marketplace submissions',
+            action: () => navigate({ kind: 'moderation' }),
+          },
+        ]
+      : []),
     ...companies.map((company, index) => ({
       id: `command-go-company-${company.slug}`,
       label: `Go to ${company.displayName}`,
       detail: 'Show company workspace',
-      // Companies start at ⌘9 (after the 8 primary destinations); only ⌘9 is
-      // single-digit addressable.
-      shortcut: index < 1 ? `⌘${index + 9}` : undefined,
+      // Companies start at ⌘6 (after the five primary destinations).
+      shortcut: companyHotkey(index),
       action: () => navigate({ kind: 'company', slug: company.slug }),
     })),
   ]);
 
-  function formatRelative(iso: string | null): string | null {
-    if (!iso) return null;
-    const then = new Date(iso).getTime();
-    if (Number.isNaN(then)) return null;
-    const secs = Math.max(0, Math.round((Date.now() - then) / 1000));
-    if (secs < 60) return 'just now';
-    const mins = Math.round(secs / 60);
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.round(mins / 60);
-    if (hrs < 24) return `${hrs}h ago`;
-    return `${Math.round(hrs / 24)}d ago`;
-  }
+  // Plain-language error summary for the V4 title bar's error state.
+  const titleBarErrorSummary = $derived(
+    syncErrorMessage ? friendlySyncError(syncErrorMessage).summary : null,
+  );
 
-  // The always-visible sync verdict shown in the title bar: a tone (drives the
-  // status dot color), a one-word state, and a mono detail line.
-  const verdict = $derived.by(() => {
-    const total = companies.length;
-    if (syncState === 'syncing') {
-      const scope =
-        syncFanoutTotal > 0 ? `${syncFanoutDoneCount}/${syncFanoutTotal} companies` : 'workspaces';
-      return {
-        tone: 'syncing',
-        word: 'Syncing',
-        counts: syncProgress?.company ? `${syncProgress.company} · ${scope}` : scope,
-      };
-    }
-    if (syncState === 'error' || syncState === 'auth-error') {
-      return {
-        tone: 'error',
-        word: 'Sync error',
-        counts: syncErrorMessage
-          ? friendlySyncError(syncErrorMessage).summary
-          : 'check your connection',
-      };
-    }
-    if (syncState === 'conflict') {
-      return { tone: 'conflict', word: 'Needs attention', counts: 'resolve conflicts to continue' };
-    }
-    const pending = status?.pendingFiles ?? 0;
-    return {
-      tone: 'idle',
-      word: 'All synced',
-      counts:
-        pending > 0
-          ? `${pending} pending · ${total} watched`
-          : `${total} workspace${total === 1 ? '' : 's'} watched`,
-    };
-  });
-
-  const lastSyncLabel = $derived(formatRelative(status?.lastSyncAt ?? null));
+  const lastSyncLabel = $derived(formatRelativeTime(status?.lastSyncAt ?? null));
 
   function navigate(nextRoute: DesktopRoute) {
     route = nextRoute;
@@ -351,6 +325,37 @@
     }
   }
 
+  async function handleCancelSync() {
+    if (syncState !== 'syncing') return;
+    try {
+      await invoke('cancel_sync');
+    } catch (err) {
+      console.error('cancel_sync failed:', err);
+    }
+  }
+
+  // Secondary-sidebar row selection — the id is the section/tab for the
+  // current contextual surface (company / library / settings).
+  function handleSecondarySelect(id: string) {
+    if (route.kind === 'company') {
+      navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab });
+    } else if (route.kind === 'library') {
+      navigate({ kind: 'library', tab: id as LibraryTab });
+    }
+    // Settings sections all land on the same placeholder until US-013.
+  }
+
+  function handleSecondaryFooter() {
+    if (secondarySidebar?.surface === 'library') {
+      // "Publish a pack" — the Profile tab hosts publishing today.
+      navigate({ kind: 'library', tab: 'profile' });
+      return;
+    }
+    // Company settings (sync rules · members · roles) live in the settings
+    // window until US-013 brings them in-window.
+    void handleOpenSettings();
+  }
+
   async function handleOpenSettings() {
     actionError = '';
     actionMessage = '';
@@ -418,8 +423,11 @@
     // already-open case is handled live by the `desktop:navigate` listener below.
     void invoke<string | null>('desktop_alt_consume_pending_route')
       .then((pending) => {
-        if (mounted && pending === 'meetings') {
-          navigate({ kind: 'meetings' });
+        // Legacy aliases stay functional ('sync' → Home); unknown intents are
+        // ignored so a stale queue entry can't strand the window.
+        const pendingRoute = resolvePendingDesktopRoute(pending);
+        if (mounted && pendingRoute) {
+          navigate(pendingRoute);
         }
       })
       .catch(() => undefined);
@@ -611,8 +619,9 @@
       // specific screen. The fresh-window case is handled by the
       // `desktop_alt_consume_pending_route` consume above.
       listen<string>('desktop:navigate', (event) => {
-        if (event.payload === 'meetings') {
-          navigate({ kind: 'meetings' });
+        const nextRoute = resolvePendingDesktopRoute(event.payload);
+        if (nextRoute) {
+          navigate(nextRoute);
         }
       }),
     ]).then((offs) => {
@@ -637,50 +646,46 @@
 
 <div
   class="desktop-shell"
-  style={`--desktop-sidebar-width: ${DESKTOP_SHELL_LAYOUT.sidebarWidthPx}px; --desktop-titlebar-height: ${DESKTOP_SHELL_LAYOUT.titleBarHeightPx}px; --desktop-status-bar-height: ${DESKTOP_SHELL_LAYOUT.statusBarHeightPx}px;`}
+  style={`--desktop-titlebar-height: ${V4_CHROME_LAYOUT.titleBarHeightPx}px;`}
 >
-  <header class="desktop-titlebar" data-tauri-drag-region aria-label="Sync status">
-    <div class="titlebar-verdict">
-      <span class={`verdict-dot ${verdict.tone}`} aria-hidden="true"></span>
-      <span class="verdict-word">{verdict.word}</span>
-      <span class="verdict-counts">{verdict.counts}</span>
-    </div>
-    <div class="titlebar-spacer"></div>
-    <div class="titlebar-meta">
-      {#if lastSyncLabel}
-        <span>last sync <span class="meta-mono">{lastSyncLabel}</span></span>
-        <span class="titlebar-divider" aria-hidden="true"></span>
-      {/if}
-      <button
-        class="titlebar-sync-now"
-        type="button"
-        onclick={handleSyncAll}
-        disabled={syncState === 'syncing'}
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-          <path d="M21 3v5h-5" />
-        </svg>
-        {syncState === 'syncing' ? 'Syncing…' : 'Sync Now'}
-      </button>
-    </div>
-  </header>
+  <V4TitleBar
+    {syncState}
+    watchedCount={companies.length}
+    {lastSyncLabel}
+    syncingCompany={syncProgress?.company ?? null}
+    fanoutDone={syncFanoutDoneCount}
+    fanoutTotal={syncFanoutTotal}
+    errorSummary={titleBarErrorSummary}
+    onsync={handleSyncAll}
+    oncancel={handleCancelSync}
+    onretry={handleSyncAll}
+  />
 
   <div class="desktop-body">
-    <DesktopSidebar
+    <V4Sidebar
       {route}
-      {companies}
-      {isAdmin}
-      onnavigate={navigate}
-      onsearch={() => (commandPaletteOpen = true)}
-      onsettings={handleOpenSettings}
+      companies={workspaces}
+      onnavigate={(next) => navigate(fromV4Route(next))}
     />
+
+    {#if secondarySidebar}
+      <V4SecondarySidebar
+        header={secondarySidebar.header}
+        headerTone={secondarySidebar.headerTone}
+        meta={secondarySidebar.meta}
+        items={secondarySidebar.items}
+        activeId={secondarySidebar.activeId}
+        footer={secondarySidebar.footer}
+        onselect={handleSecondarySelect}
+        onfooterselect={handleSecondaryFooter}
+      />
+    {/if}
 
     <div class="desktop-content">
       <main class="desktop-main" aria-label="Desktop content">
         <div class="desktop-main-scroll">
         {#key routeKey}
-          {#if route.kind === 'sync'}
+          {#if route.kind === 'home'}
             <div class="page">
               <SyncPage
                 {workspaces}
@@ -706,14 +711,52 @@
                 {actionError}
               />
             </div>
+          {:else if route.kind === 'companies'}
+            <!-- Placeholder body until the V4 Companies overview lands (US-004);
+                 the destination + hotkey are part of the V4 IA now. -->
+            <section class="page" aria-labelledby="desktop-page-title">
+              <div class="page-header">
+                <h1 id="desktop-page-title">Companies</h1>
+              </div>
+              <div class="placeholder-panel">
+                {#if companies.length > 0}
+                  <p>Pick a company to open its workspace.</p>
+                  {#each companies as company (company.slug)}
+                    <button
+                      type="button"
+                      class="companies-link"
+                      onclick={() => navigate({ kind: 'company', slug: company.slug })}
+                    >
+                      {company.displayName}
+                    </button>
+                  {/each}
+                {:else}
+                  <p>No companies connected yet. Run a sync to connect your workspaces.</p>
+                {/if}
+              </div>
+            </section>
           {:else if route.kind === 'meetings'}
             <div class="page">
               <MeetingsPage />
             </div>
           {:else if route.kind === 'library'}
             <div class="page">
-              <LibraryPage tab={route.tab} />
+              <LibraryPage tab={libraryTab} />
             </div>
+          {:else if route.kind === 'settings'}
+            <!-- Placeholder body until the in-window V4 Settings surface lands
+                 (US-013); preferences live in the settings window today. -->
+            <section class="page" aria-labelledby="desktop-page-title">
+              <div class="page-header">
+                <h1 id="desktop-page-title">Settings</h1>
+              </div>
+              <div class="placeholder-panel">
+                <p>Preferences live in the Settings window for now.</p>
+                <button type="button" class="companies-link" onclick={handleOpenSettings}>
+                  Open Settings window
+                </button>
+              </div>
+            </section>
           {:else if route.kind === 'messages'}
             <div class="messages-host">
               <MessagesPage />
@@ -739,7 +782,7 @@
             {/if}
           {:else if activeCompany}
             <div class="page">
-              <CompanyPage company={activeCompany} />
+              <CompanyPage company={activeCompany} tab={companyTab} />
             </div>
           {:else}
             <section class="page" aria-labelledby="desktop-page-title">
@@ -777,6 +820,31 @@
 </div>
 
 <style>
+  /* V4 ground (SPEC section 2): the window + main content background. The V4
+     chrome components (title bar / sidebars) paint their own surfaces. */
+  .desktop-shell {
+    background: var(--v4-ground);
+  }
+
+  /* Transitional placeholder link rows (Companies / Settings bodies) until
+     US-004 / US-013 land their real V4 surfaces. */
+  .companies-link {
+    width: fit-content;
+    padding: 6px 10px;
+    border: 1px solid var(--v4-control-border);
+    border-radius: 6px;
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .companies-link:hover {
+    background: var(--v4-control-bg);
+  }
+
   /* The Messages route hosts the full-bleed MessagesShell rather than the
      padded, scrolling .page layout — it fills the content area and anchors the
      shell's absolutely-positioned host. */

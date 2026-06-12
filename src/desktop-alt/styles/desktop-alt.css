@@ -241,174 +241,25 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 .desktop-shell {
   display: grid;
   grid-template-rows:
-    var(--desktop-titlebar-height, 42px)
+    var(--desktop-titlebar-height, 40px)
     minmax(0, 1fr)
     var(--desktop-status-bar-height, 32px);
   width: 100%;
   height: 100%;
   min-width: 0;
-  /* Single-scroll guarantee: only leaf scrollers (.company-list,
-     .desktop-main-scroll) may scroll — every ancestor clips. */
+  /* Single-scroll guarantee: only leaf scrollers (.desktop-main-scroll) may
+     scroll — every ancestor clips. */
   overflow: hidden;
-  /* Monochrome liquid-glass ground — a subtle cool-dark gradient. */
-  background: var(--bg-gradient);
+  /* V4 ground (SPEC section 2) — DesktopApp also sets this on the shell. */
+  background: var(--v4-ground, #161618);
 }
 
-/* ---- Title bar: full-width top region with the always-visible sync verdict.
-   The macOS traffic lights (TitleBarStyle::Overlay) overlay its top-left, so it
-   carries a left inset to clear them. */
-.desktop-titlebar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: var(--desktop-titlebar-height, 42px);
-  padding: 0 14px 0 78px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-panel);
-}
-
-/* ---- Body: sidebar + content, between the title bar and live strip. */
+/* ---- Body: V4 primary sidebar (220px) + optional secondary sidebar (200px)
+   + content, between the title bar and live strip. The sidebars carry fixed
+   flex-basis widths in their own components, so the row is a simple flexbox. */
 .desktop-body {
-  display: grid;
-  grid-template-columns: var(--desktop-sidebar-width, 216px) minmax(0, 1fr);
+  display: flex;
   min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.desktop-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  width: var(--desktop-sidebar-width, 216px);
-  min-width: var(--desktop-sidebar-width, 216px);
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  padding: 12px 10px 10px;
-  border-right: 1px solid var(--border);
-  background: var(--surface-rail);
-  color: var(--muted-3);
-}
-
-/* Search affordance at the top of the rail. */
-.sidebar-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-raise);
-  color: var(--muted);
-  font: inherit;
-  text-align: left;
-  cursor: default;
-  transition: background-color 120ms ease;
-}
-
-.sidebar-search:hover {
-  background: rgba(255, 255, 255, 0.07);
-}
-
-.sidebar-search svg {
-  flex: 0 0 auto;
-  width: 13px;
-  height: 13px;
-  opacity: 0.7;
-}
-
-.sidebar-search .sidebar-search-label {
-  flex: 1;
-  font-size: var(--text-sm);
-  color: var(--muted);
-}
-
-.sidebar-title {
-  height: 22px;
-  padding: 0 8px;
-  color: var(--fg);
-  font-family: var(--font-display);
-  font-size: var(--text-base);
-  font-weight: 600;
-  line-height: 22px;
-  letter-spacing: -0.01em;
-}
-
-.sidebar-nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.sidebar-nav button {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  height: 28px;
-  min-width: 0;
-  /* Extra left inset opens a clear gap between the active "you are here" dot in
-     the gutter and the label text. */
-  padding: 0 8px 0 16px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  text-align: left;
-  cursor: default;
-  transition:
-    background-color 120ms cubic-bezier(.2, .7, .2, 1),
-    color 120ms cubic-bezier(.2, .7, .2, 1);
-}
-
-.sidebar-nav button:hover {
-  background: var(--row-hover);
-  color: var(--fg);
-}
-
-.sidebar-nav button.active {
-  background: var(--row-active);
-  color: var(--fg);
-  font-weight: 500;
-}
-
-/* "You are here" cue: a small accent dot in the gutter, not a side stripe. */
-.sidebar-nav button.active::before {
-  content: '';
-  position: absolute;
-  left: 6px;
-  top: 50%;
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: var(--accent);
-  transform: translateY(-50%);
-}
-
-.sidebar-nav span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.desktop-sidebar kbd {
-  flex: 0 0 auto;
-  color: currentColor;
-  font-family: var(--font-mono);
-  font-size: var(--text-micro);
-  opacity: 0.42;
-}
-
-.company-section {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
   min-height: 0;
   overflow: hidden;
 }
@@ -421,12 +272,6 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   line-height: 16px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.company-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
 }
 
 .empty-row {
@@ -479,10 +324,6 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sidebar-nav button {
-    transition: none;
-  }
-
   .page {
     animation: none;
     will-change: auto;
@@ -537,183 +378,5 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
   font-size: var(--text-xs);
 }
 
-/* ---- Title bar verdict (always-visible sync status). ------------------- */
-/* The whole title bar is a drag handle (data-tauri-drag-region on the header).
-   Child elements would otherwise swallow the drag, so every non-interactive
-   element falls through; only the Sync Now button opts back in. The real macOS
-   traffic lights (TitleBarStyle::Overlay) live in the 78px left inset — we draw
-   no fake dots, which previously clashed with them as offset "shadow" circles. */
-.desktop-titlebar > *,
-.desktop-titlebar .titlebar-verdict > *,
-.desktop-titlebar .titlebar-meta > * {
-  pointer-events: none;
-}
-
-.desktop-titlebar .titlebar-sync-now {
-  pointer-events: auto;
-}
-
-.titlebar-verdict {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.titlebar-verdict .verdict-dot {
-  flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--muted-2);
-}
-
-.titlebar-verdict .verdict-dot.syncing {
-  background: var(--blue);
-  animation: status-breathe 1.2s ease-in-out infinite;
-}
-.titlebar-verdict .verdict-dot.idle {
-  background: var(--emerald);
-}
-.titlebar-verdict .verdict-dot.error {
-  background: var(--red);
-}
-.titlebar-verdict .verdict-dot.conflict {
-  background: var(--amber);
-}
-
-.titlebar-verdict .verdict-word {
-  flex: 0 0 auto;
-  color: var(--fg);
-  font-size: var(--text-base);
-  font-weight: 500;
-}
-
-.titlebar-verdict .verdict-counts {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  letter-spacing: 0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.titlebar-spacer {
-  flex: 1;
-}
-
-.titlebar-meta {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: var(--text-xs);
-}
-
-.titlebar-meta .meta-mono {
-  font-family: var(--font-mono);
-  color: var(--fg-data);
-}
-
-.titlebar-divider {
-  width: 1px;
-  height: 14px;
-  background: var(--border-strong);
-}
-
-.titlebar-sync-now {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  background: var(--surface-raise);
-  color: var(--fg);
-  font: inherit;
-  font-size: var(--text-sm);
-  font-weight: 500;
-  cursor: default;
-  transition: background-color 120ms ease;
-}
-
-.titlebar-sync-now:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.09);
-}
-
-.titlebar-sync-now:disabled {
-  opacity: 0.55;
-}
-
-.titlebar-sync-now svg {
-  width: 13px;
-  height: 13px;
-}
-
-/* ---- Sidebar account chip (bottom of the rail). ----------------------- */
-.sidebar-account {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  width: 100%;
-  margin-top: auto;
-  padding: 8px;
-  border: 0;
-  border-top: 1px solid var(--border);
-  border-radius: 0 0 8px 8px;
-  background: transparent;
-  font: inherit;
-  text-align: left;
-  cursor: default;
-  transition: background-color 120ms ease;
-}
-
-.sidebar-account:hover {
-  background: var(--row-hover);
-}
-
-.sidebar-account .account-avatar svg {
-  color: var(--muted-2);
-}
-
-.sidebar-account .account-avatar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  width: 26px;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--surface-raise);
-  color: var(--fg);
-  font-size: var(--text-sm);
-  font-weight: 600;
-}
-
-.sidebar-account .account-meta {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  line-height: 1.3;
-}
-
-.sidebar-account .account-name {
-  overflow: hidden;
-  color: var(--fg);
-  font-size: var(--text-sm);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.sidebar-account .account-status {
-  overflow: hidden;
-  color: var(--muted-3);
-  font-family: var(--font-mono);
-  font-size: var(--text-micro);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* The V4 title bar and sidebars (src/desktop-alt/v4/) own their chrome styles;
+   the old in-file titlebar/sidebar rules were removed with US-002. */

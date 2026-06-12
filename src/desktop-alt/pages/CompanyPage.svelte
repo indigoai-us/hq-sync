@@ -3,36 +3,37 @@
   import type { Workspace } from '../../lib/workspaces';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
-  import CompanyTabs, { type CompanyTab } from '../components/CompanyTabs.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
   import { useCompanySummary } from '../lib/company-summary.svelte';
+  import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
   interface Props {
     company: Workspace;
+    /**
+     * Which of the eight company sections to show — driven by the V4 secondary
+     * sidebar (US-002); the in-page segmented control is gone. Defaults to
+     * Overview.
+     */
+    tab?: CompanyTab;
   }
 
-  let { company }: Props = $props();
+  let { company, tab = DEFAULT_COMPANY_TAB }: Props = $props();
 
-  let activeTab = $state<CompanyTab>('board');
-  let previousSlug = $state<string | null>(null);
   const summaryState = useCompanySummary({ slug: () => company.slug });
-
-  $effect(() => {
-    if (company.slug !== previousSlug) {
-      previousSlug = company.slug;
-      activeTab = 'board';
-    }
-  });
 
   const subtitle = $derived(
     `${summaryState.summary.board} board cards · ${summaryState.summary.activity.last7d} activity this week · ${summaryState.summary.deployments} deployments · ${summaryState.summary.secrets} secrets`,
   );
 
-  function selectTab(tab: CompanyTab) {
-    activeTab = tab;
-  }
+  // Sections whose dedicated V4 views land in later stories (Goals US-006,
+  // Projects/Tasks US-007). The Overview board carries that data today.
+  const PENDING_SECTIONS: Partial<Record<CompanyTab, string>> = {
+    goals: 'The dedicated Goals view is on its way. Goals live on the Overview for now.',
+    projects: 'The dedicated Projects view is on its way. Projects live on the Overview for now.',
+    tasks: 'The dedicated Tasks view is on its way. Stories live on the Overview for now.',
+  };
 
   // HQ web console base. Same host the Meetings page links to for
   // "Open HQ Console Integrations" — the company console lives at /{slug}.
@@ -72,25 +73,22 @@
     </div>
   </header>
 
-  <CompanyTabs
-    {activeTab}
-    summary={summaryState.summary}
-    role={company.role}
-    onselect={selectTab}
-  />
-
-  {#key `${company.slug}:${activeTab}`}
+  {#key `${company.slug}:${tab}`}
     <div class="company-panel">
-      {#if activeTab === 'board'}
+      {#if tab === 'overview'}
         <CompanyBoardPanel slug={company.slug} />
-      {:else if activeTab === 'activity'}
+      {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} />
-      {:else if activeTab === 'deployments'}
+      {:else if tab === 'deployments'}
         <DeploymentsPanel slug={company.slug} />
-      {:else if activeTab === 'library'}
+      {:else if tab === 'library'}
         <CompanyLibraryPanel slug={company.slug} />
-      {:else}
+      {:else if tab === 'secrets'}
         <SecretsPanel slug={company.slug} />
+      {:else}
+        <div class="section-pending">
+          <p>{PENDING_SECTIONS[tab] ?? 'This section is on its way.'}</p>
+        </div>
       {/if}
     </div>
   {/key}
@@ -198,6 +196,12 @@
   .company-actions button:active {
     transform: translateY(0);
     opacity: 0.72;
+  }
+
+  .section-pending p {
+    margin: 0;
+    color: var(--muted-2);
+    font-size: var(--text-base);
   }
 
   .company-panel {

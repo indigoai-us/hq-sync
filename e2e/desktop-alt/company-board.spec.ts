@@ -12,7 +12,8 @@ import { readRepoFile } from './harness';
  *   2. CompanyBoardPanel loads goals, filters projects to its slug, surfaces
  *      in-flight via the classifier, and drills into the Kanban via the detail
  *      view + StoryDetailPanel.
- *   3. CompanyTabs + CompanyPage have the Board tab as the first/default tab.
+ *   3. CompanyPage defaults to the Overview section (V4 US-002), which hosts
+ *      the board panel; the section list lives in route.ts.
  */
 
 describe('desktop-alt company goals adapter (US-011)', () => {
@@ -97,30 +98,26 @@ describe('desktop-alt CompanyBoardPanel source contract (US-011)', () => {
   });
 });
 
-describe('desktop-alt Board tab is first + default (US-011)', () => {
-  const tabs = readRepoFile('src/desktop-alt/components/CompanyTabs.svelte');
+describe('desktop-alt board is the default company section (US-011 → V4 US-002)', () => {
+  const route = readRepoFile('src/desktop-alt/route.ts');
   const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
 
-  it('CompanyTabs declares board in the union and as the FIRST tab', () => {
-    expect(tabs).toContain(
-      "export type CompanyTab = 'board' | 'activity' | 'deployments' | 'secrets'",
-    );
-    // Board is the first entry in the derived tabs array.
-    const tabsArrayStart = tabs.indexOf('const tabs = $derived([');
-    const boardIdx = tabs.indexOf("{ id: 'board' as const", tabsArrayStart);
-    const activityIdx = tabs.indexOf("{ id: 'activity' as const", tabsArrayStart);
-    expect(boardIdx).toBeGreaterThan(tabsArrayStart);
-    expect(boardIdx).toBeLessThan(activityIdx);
-    expect(tabs).toContain("{ id: 'board' as const, label: 'Board', count: summary.board }");
+  it('route.ts declares Overview FIRST among the eight company sections', () => {
+    expect(route).toContain("export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview'");
+    const sectionsStart = route.indexOf('export const COMPANY_SECTIONS');
+    const overviewIdx = route.indexOf("{ id: 'overview', label: 'Overview' }", sectionsStart);
+    const goalsIdx = route.indexOf("{ id: 'goals', label: 'Goals' }", sectionsStart);
+    expect(overviewIdx).toBeGreaterThan(sectionsStart);
+    expect(overviewIdx).toBeLessThan(goalsIdx);
   });
 
-  it('CompanyPage defaults to the Board tab on init and on slug change', () => {
+  it('CompanyPage defaults to Overview, which hosts CompanyBoardPanel', () => {
     expect(company).toContain("import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte'");
-    expect(company).toContain("let activeTab = $state<CompanyTab>('board')");
-    // The slug-change reset also returns to Board.
-    expect(company).toContain("activeTab = 'board'");
+    expect(company).toContain('tab = DEFAULT_COMPANY_TAB');
+    // The in-page segmented control is gone — the secondary sidebar drives it.
+    expect(company).not.toContain('CompanyTabs');
     // Wired as the first branch in the panel switch.
-    expect(company).toContain("{#if activeTab === 'board'}");
+    expect(company).toContain("{#if tab === 'overview'}");
     expect(company).toContain('<CompanyBoardPanel slug={company.slug} />');
   });
 });
