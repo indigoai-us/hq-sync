@@ -2263,6 +2263,8 @@ mod tests {
             role: None,
             last_synced_at: None,
             broken_reason: broken_reason.map(str::to_string),
+            invited_by: None,
+            invited_at: None,
         }
     }
 

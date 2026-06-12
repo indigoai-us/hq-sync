@@ -37,6 +37,8 @@ export interface LocalStoryWire {
   labels?: string[];
   dependsOn?: string[];
   notes?: string | null;
+  files?: string[];
+  model_hint?: string | null;
 }
 
 /** Raw `LocalProjectPrd` wire shape from `get_local_project_prd`. */
@@ -84,6 +86,9 @@ export function toStory(wire: LocalStoryWire): Story {
     priority: coercePriority(wire.priority),
     labels: wire.labels ?? [],
     dependsOn: wire.dependsOn ?? [],
+    notes: wire.notes ?? null,
+    files: wire.files ?? [],
+    model_hint: wire.model_hint ?? null,
   };
 }
 
@@ -123,6 +128,7 @@ export interface Objective {
   owner?: string | null;
   keyResults: KeyResult[];
   initiativeIds: string[];
+  linearInitiativeId?: string | null;
 }
 
 /** One initiative from a company `board.json` `initiatives[]` entry. */
@@ -156,6 +162,8 @@ function toObjective(wire: Partial<Objective>): Objective {
     owner: typeof wire.owner === 'string' ? wire.owner : null,
     keyResults: Array.isArray(wire.keyResults) ? wire.keyResults : [],
     initiativeIds: Array.isArray(wire.initiativeIds) ? wire.initiativeIds : [],
+    linearInitiativeId:
+      typeof wire.linearInitiativeId === 'string' ? wire.linearInitiativeId : null,
   };
 }
 
@@ -191,6 +199,11 @@ export async function loadLocalProjectStories(prdPath: string): Promise<Story[]>
   // The Rust command param is `prd_path`; Tauri v2 exposes it camelCased.
   const prd = await invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
   return (prd?.userStories ?? []).map(toStory);
+}
+
+/** Load the raw PRD content needed by the project detail surface. */
+export async function loadLocalProjectPrd(prdPath: string): Promise<LocalProjectPrdWire> {
+  return invoke<LocalProjectPrdWire>('get_local_project_prd', { prdPath });
 }
 
 /**

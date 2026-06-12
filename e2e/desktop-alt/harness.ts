@@ -181,11 +181,13 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     this.assertDesktopAppRouteContracts();
 
     if (route === 'sync') {
+      // The legacy 'sync' route resolves to Home (US-002); the V4 Home surface
+      // superseded SyncPage in US-003.
       return {
         route,
-        text: sourceText('src/desktop-alt/pages/SyncPage.svelte', [
-          'aria-label="Sync"',
-          'Recent activity',
+        text: sourceText('src/desktop-alt/pages/HomePage.svelte', [
+          'aria-label="Home"',
+          '<ActivityDigest',
         ]),
         consoleErrors: [...this.consoleErrors],
       };
@@ -208,7 +210,7 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
       text: sourceText('src/desktop-alt/pages/CompanyPage.svelte', [
         'aria-labelledby="company-page-title"',
         'Companies',
-        '<CompanyTabs',
+        '<CompanyBoardPanel',
       ]),
       consoleErrors: [...this.consoleErrors],
     };
@@ -263,10 +265,13 @@ export class DesktopAltHarness implements DesktopAltTestHarness {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const route = readRepoFile('src/desktop-alt/route.ts');
 
-    expect(route).toContain("export const initialDesktopRoute: DesktopRoute = { kind: 'sync' }");
-    expect(desktopApp).toContain("route.kind === 'sync'");
+    // V4 IA (US-002): Home is the initial surface; the legacy 'sync' pending-
+    // route alias stays functional by resolving to Home.
+    expect(route).toContain("export const initialDesktopRoute: DesktopRoute = { kind: 'home' }");
+    expect(route).toContain("case 'sync':");
+    expect(desktopApp).toContain("route.kind === 'home'");
     expect(desktopApp).toContain("route.kind === 'meetings'");
-    expect(desktopApp).toContain('<CompanyPage company={activeCompany} />');
+    expect(desktopApp).toContain('<CompanyPage company={activeCompany} tab={companyTab} />');
   }
 
   private assertSecretsSourceContracts(): void {

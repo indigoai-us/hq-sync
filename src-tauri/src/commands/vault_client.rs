@@ -139,6 +139,14 @@ pub struct MembershipInfo {
     /// `None` so existing callers keep working.
     #[serde(default)]
     pub company_name: Option<String>,
+    /// Person uid (`prs_*`) that created the invite. Present on every
+    /// invite-originated membership row in the live vault; surfaced for
+    /// pending invites on the V4 Companies overview.
+    #[serde(default)]
+    pub invited_by: Option<String>,
+    /// ISO timestamp the invite was created (`invitedAt` on the row).
+    #[serde(default)]
+    pub invited_at: Option<String>,
 }
 
 impl MembershipInfo {

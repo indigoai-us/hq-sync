@@ -135,9 +135,9 @@
       <span>{loading ? 'Loading' : `${deployments.length} total`}</span>
     </header>
 
-    <div class="deployment-table">
+      <div class="deployment-table">
       <div class="table-head" aria-hidden="true">
-        <span></span>
+        <span>Status</span>
         <span>Subdomain</span>
         <span>Last deploy</span>
         <span>Size</span>

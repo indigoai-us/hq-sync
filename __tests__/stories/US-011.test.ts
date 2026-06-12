@@ -89,12 +89,14 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(panel).toContain('pwd: entry.pwd === true');
     expect(row).toContain('<span class="url" title={deployment.url}>{deployment.url}</span>');
     expect(row).toContain('<span class="version" title={deployment.ver}>{deployment.ver}</span>');
-    expect(row).toContain('<span class={`status-dot ${deployment.state}`} title={stateLabel} aria-label={stateLabel}></span>');
+    expect(row).toContain('<span class="status-cell" title={stateLabel} aria-label={stateLabel}>');
+    expect(row).toContain('<span class={`status-dot ${deployment.state}`} aria-hidden="true"></span>');
+    expect(row).toContain('<span>{stateLabel}</span>');
     expect(row).toContain('{#if deployment.pwd}');
     expect(row).toContain('<span class="lock-icon" title="Password locked" aria-label="Password locked"></span>');
   });
 
-  it('renders toolbar state counts, disabled deploy affordance, and deployment rows with the prototype grid', () => {
+  it('renders toolbar state counts, disabled deploy affordance, and V4 deployment row actions', () => {
     const panel = normalize(deploymentsPanel);
     const row = normalize(deploymentRow);
 
@@ -109,7 +111,13 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(panel).toContain('<button class="toolbar-button" type="button" disabled title="Find deployments">');
     expect(panel).toContain('{#each deployments as deployment, index (`${deployment.url}:${index}`)}');
     expect(panel).toContain('<DeploymentRow {deployment} />');
-    expect(row).toContain('grid-template-columns: 14px 1.4fr 1fr auto auto auto;');
+    expect(row).toContain('grid-template-columns: 82px 1.4fr 1fr auto auto auto;');
+    expect(row).toContain('const envLabel = $derived(environmentLabel(deployment))');
+    expect(row).toContain('<span class="env-chip" title={`${envLabel} environment`}>{envLabel}</span>');
+    expect(row).toContain('<button class="action-button" type="button" title="Deploy from terminal: /deploy" aria-label={`Deploy ${deployment.sub} from terminal: /deploy`} disabled > Deploy </button>');
+    expect(row).toContain('<button class="action-button danger" type="button" aria-expanded={rollbackConfirm} onclick={beginRollback} > Rollback </button>');
+    expect(row).toContain('{#if rollbackConfirm}');
+    expect(row).toContain('<div class="rollback-confirm" role="alert">');
   });
 
   it('pulses deploying rows blue and counts deploying deployments in the toolbar', () => {

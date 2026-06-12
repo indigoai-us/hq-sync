@@ -29,6 +29,12 @@ export interface Story {
   labels: string[];
   /** IDs of stories this one depends on. */
   dependsOn: string[];
+  /** Optional implementation notes from prd.json. */
+  notes?: string | null;
+  /** Optional declared files from prd.json. */
+  files?: string[];
+  /** Optional model hint from prd.json. */
+  model_hint?: string | null;
 }
 
 /** A project, as surfaced by the get_company_projects Rust command. */

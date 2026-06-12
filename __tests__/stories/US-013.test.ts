@@ -66,8 +66,9 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     expect(app).toContain('action: handleSyncAll');
     expect(app).toContain("label: 'Open settings'");
     expect(app).toContain('action: handleOpenSettings');
-    expect(app).toContain("label: 'Go to Sync'");
-    expect(app).toContain("action: () => navigate({ kind: 'sync' })");
+    // V4 IA (US-002): the first navigation entry is Home (the old Sync surface).
+    expect(app).toContain("label: 'Go to Home'");
+    expect(app).toContain("action: () => navigate({ kind: 'home' })");
     expect(app).toContain("label: 'Go to Meetings'");
     expect(app).toContain("action: () => navigate({ kind: 'meetings' })");
     expect(app).toContain('label: `Go to ${company.displayName}`');

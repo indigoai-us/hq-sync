@@ -1,16 +1,15 @@
 import pkg from '../../package.json' with { type: 'json' };
 import type { Workspace } from '../../src/lib/workspaces';
 import {
-  DESKTOP_SHELL_LAYOUT,
   getDesktopCompanies,
   getDesktopActiveCompany,
   getDesktopHotkeyRoute,
   getDesktopRouteKey,
-  getDesktopSidebarRows,
   initialDesktopRoute,
   isDesktopRouteActive,
   type DesktopRoute,
 } from '../../src/desktop-alt/route';
+import { getV4SidebarModel, V4_CHROME_LAYOUT } from '../../src/desktop-alt/v4/model';
 
 function workspace(overrides: Partial<Workspace>): Workspace {
   return {
@@ -25,6 +24,8 @@ function workspace(overrides: Partial<Workspace>): Workspace {
     membershipStatus: null,
     lastSyncedAt: null,
     brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
     ...overrides,
   };
 }
@@ -53,58 +54,43 @@ const workspaces: Workspace[] = [
   }),
 ];
 
-describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K hotkeys', () => {
-  it('shows the 216px desktop sidebar with Sync, Meetings, the personal page, and company rows on mount', () => {
-    const companies = getDesktopCompanies(workspaces);
-    const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
-
-    // Window redesign (#175) added a titlebar and grew the status bar; assert
-    // the shipped layout contract.
-    expect(DESKTOP_SHELL_LAYOUT).toEqual({
-      sidebarWidthPx: 216,
-      titleBarHeightPx: 42,
-      statusBarHeightPx: 32,
+describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V4 IA since US-002)', () => {
+  it('shows the V4 sidebar with the five nav destinations and the COMPANIES section on mount', () => {
+    // The V4 window redesign (US-001/US-002) replaced the 216px rail + 42px
+    // titlebar with the 220px raised sidebar + 40px title bar + 200px
+    // contextual secondary sidebar.
+    expect(V4_CHROME_LAYOUT).toEqual({
+      titleBarHeightPx: 40,
+      primarySidebarWidthPx: 220,
+      secondarySidebarWidthPx: 200,
     });
     expect(pkg.version).toMatch(/^\d+\.\d+\.\d+/);
-    // The top-level Board surface was removed — the board lives on each
-    // company/personal page now. Top-level destinations are Sync (⌘1),
-    // Meetings (⌘2), Messages (⌘3, US-019), then the broken-out Library
-    // surface: Skills (⌘4), Workers (⌘5), Installed (⌘6), Marketplace (⌘7),
-    // Profile (⌘8); the personal page + synced companies follow from ⌘9 (only
-    // ⌘9 is single-digit addressable, so later company rows carry no hotkey).
-    expect(rows.map((row) => row.label)).toEqual([
-      'Sync',
-      'Meetings',
+
+    const model = getV4SidebarModel(initialDesktopRoute, workspaces);
+    expect(model.nav.map((row) => row.label)).toEqual([
+      'Home',
+      'Companies',
       'Messages',
-      'Skills',
-      'Workers',
-      'Installed',
-      'Marketplace',
-      'Profile',
+      'Meetings',
+      'Library',
+    ]);
+    // Home is the initial route and the only active row.
+    expect(model.nav.find((row) => row.active)?.id).toBe('home');
+    expect(model.companies.map((row) => row.label)).toEqual([
       'Personal',
       'Acme Corp',
+      'Globex',
     ]);
-    expect(rows.map((row) => row.shortcut)).toEqual([
-      '⌘1',
-      '⌘2',
-      '⌘3',
-      '⌘4',
-      '⌘5',
-      '⌘6',
-      '⌘7',
-      '⌘8',
-      '⌘9',
-      undefined,
-    ]);
-    expect(rows[0]).toMatchObject({ active: true, route: { kind: 'sync' } });
-    // Sync/Meetings are real pages — no active company resolves.
-    expect(getDesktopActiveCompany(initialDesktopRoute, companies)).toBeNull();
+    // The initial route is a non-company surface — no active company resolves.
+    expect(
+      getDesktopActiveCompany(initialDesktopRoute, getDesktopCompanies(workspaces)),
+    ).toBeNull();
   });
 
-  it('switches the main pane to Meetings when the user presses ⌘2', () => {
+  it('switches the main pane to Meetings when the user presses ⌘4', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
-      { key: '2', metaKey: true, ctrlKey: false },
+      { key: '4', metaKey: true, ctrlKey: false },
       companies,
     );
 
@@ -116,32 +102,30 @@ describe('US-003: Desktop-alt Svelte 5 app shell — sidebar, route state, ⌘K 
 
   it('gives personal a navigable page and marks a clicked company row active', () => {
     const companies = getDesktopCompanies(workspaces);
-    const rows = getDesktopSidebarRows(initialDesktopRoute, companies);
 
-    // Personal is local-first and now gets its own desktop page (⌘9, after the
-    // eight Sync/Meetings/Messages/Skills/Workers/Installed/Marketplace/Profile
-    // rows).
-    expect(rows.find((row) => row.label === 'Personal')).toMatchObject({
-      route: { kind: 'company', slug: 'personal' },
-      shortcut: '⌘9',
-    });
+    // Personal is local-first and keeps its own desktop page — first company
+    // hotkey (⌘6, after the five primary destinations).
+    expect(
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
+    ).toEqual({ kind: 'company', slug: 'personal' });
+    expect(
+      getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies),
+    ).toEqual({ kind: 'company', slug: 'acme' });
 
-    const acmeRow = rows.find((row) => row.label === 'Acme Corp');
-    expect(acmeRow?.route).toEqual({ kind: 'company', slug: 'acme' });
-
-    const nextRoute = acmeRow!.route;
-    const rowsAfterClick = getDesktopSidebarRows(nextRoute, companies);
-
+    const nextRoute: DesktopRoute = { kind: 'company', slug: 'acme' };
     expect(getDesktopRouteKey(nextRoute)).toBe('company:acme');
     expect(getDesktopActiveCompany(nextRoute, companies)).toMatchObject({ slug: 'acme' });
     expect(isDesktopRouteActive(nextRoute, { kind: 'company', slug: 'acme' })).toBe(true);
-    expect(rowsAfterClick.find((row) => row.label === 'Acme Corp')).toMatchObject({
-      active: true,
-      // Personal takes the single addressable company hotkey (⌘9); Acme is the
-      // second company so it is click-only.
-      shortcut: undefined,
-    });
+
+    // The sidebar highlights the clicked company row — and nothing else.
+    const model = getV4SidebarModel(nextRoute, workspaces);
+    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual(['acme']);
+    expect(model.nav.every((row) => !row.active)).toBe(true);
+
     // Globex is cloud-only (no synced local vault) → no desktop page.
-    expect(rowsAfterClick.find((row) => row.label === 'Globex')).toBeUndefined();
+    expect(companies.find((company) => company.slug === 'globex')).toBeUndefined();
+    expect(
+      getDesktopActiveCompany({ kind: 'company', slug: 'globex' }, companies),
+    ).toBeNull();
   });
 });

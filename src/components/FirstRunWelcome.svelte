@@ -26,7 +26,7 @@
     },
     {
       title: "We're syncing you now",
-      body: "Your first sync is already running. It includes HQ's built-in files, so the count can look big — that's normal, and it only happens once.",
+      body: "Your first sync is already running. Auto-sync is on for this first pass, and HQ's built-in files can make the count look big. That only happens once.",
     },
     {
       title: 'Find it anytime',
@@ -55,12 +55,16 @@
 </script>
 
 <div class="welcome-overlay" role="dialog" aria-modal="true" aria-label="Welcome to HQ Sync">
-  <div class="welcome-card">
+  <div class="welcome-card" data-testid="v4-first-run-card">
     <button class="close-btn" onclick={dismiss} aria-label="Dismiss welcome">×</button>
 
     <div class="welcome-body">
+      <span class="eyebrow">FIRST RUN</span>
       <h1>{slides[index].title}</h1>
       <p class="description">{slides[index].body}</p>
+      {#if index === 1}
+        <p class="auto-sync-note">One-time auto-sync notice</p>
+      {/if}
     </div>
 
     <div class="dots" aria-hidden="true">
@@ -92,13 +96,11 @@
     justify-content: center;
     box-sizing: border-box;
     padding: 1rem;
-    /* Scrim over the live popover so the running sync stays faintly visible
-       behind the card. */
-    background: var(--popover-bg, rgba(18, 18, 20, 0.82));
-    backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    -webkit-backdrop-filter: var(--popover-blur, blur(28px) saturate(1.45));
-    color: var(--popover-text, #e0e0e0);
-    border-radius: 18px;
+    background: color-mix(in srgb, var(--v4-bg, #111113) 88%, transparent);
+    backdrop-filter: blur(28px) saturate(1.2);
+    -webkit-backdrop-filter: blur(28px) saturate(1.2);
+    color: var(--v4-text-1, #f5f5f5);
+    border-radius: 14px;
   }
 
   .welcome-card {
@@ -108,7 +110,11 @@
     align-items: center;
     text-align: center;
     width: 100%;
-    max-width: 280px;
+    max-width: 300px;
+    padding: 18px;
+    border: 1px solid var(--v4-hairline, rgba(255, 255, 255, 0.12));
+    border-radius: 10px;
+    background: var(--v4-surface, rgba(255, 255, 255, 0.06));
   }
 
   .close-btn {
@@ -122,7 +128,7 @@
     justify-content: center;
     font-size: 1.1rem;
     line-height: 1;
-    color: var(--popover-text-muted, #a0a0b0);
+    color: var(--v4-text-3, #a0a0b0);
     background: transparent;
     border: none;
     border-radius: 6px;
@@ -130,8 +136,8 @@
   }
 
   .close-btn:hover {
-    color: var(--popover-text, #e0e0e0);
-    background: rgba(255, 255, 255, 0.08);
+    color: var(--v4-text-1, #e0e0e0);
+    background: var(--v4-control-bg, rgba(255, 255, 255, 0.08));
   }
 
   .welcome-body {
@@ -141,16 +147,24 @@
     justify-content: center;
   }
 
-  h1 {
-    font-size: 1.25rem;
+  .eyebrow,
+  .auto-sync-note {
+    color: var(--v4-text-3, #a0a0b0);
+    font-size: 0.6875rem;
     font-weight: 600;
-    color: #ffffff;
+    line-height: 1.2;
+  }
+
+  h1 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--v4-text-1, #ffffff);
     margin: 0 0 0.5rem 0;
   }
 
   .description {
     font-size: 0.8125rem;
-    color: #a0a0b0;
+    color: var(--v4-text-2, #c8c8d0);
     margin: 0;
     line-height: 1.45;
   }
@@ -165,12 +179,12 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.22);
+    background: var(--v4-rowline, rgba(255, 255, 255, 0.22));
     transition: background-color 0.15s ease;
   }
 
   .dot.active {
-    background: var(--popover-primary, #ffffff);
+    background: var(--v4-text-1, #ffffff);
   }
 
   .actions {
@@ -191,8 +205,8 @@
     font-size: 0.875rem;
     font-weight: 500;
     font-family: inherit;
-    color: var(--popover-primary-text, #111113);
-    background-color: var(--popover-primary, #ffffff);
+    color: var(--v4-bg, #111113);
+    background-color: var(--v4-text-1, #ffffff);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -200,7 +214,7 @@
   }
 
   .primary-btn:hover {
-    background-color: var(--popover-primary-hover, rgba(255, 255, 255, 0.9));
+    background-color: color-mix(in srgb, var(--v4-text-1, #ffffff) 90%, transparent);
   }
 
   .primary-btn:active {
@@ -213,16 +227,16 @@
     font-size: 0.875rem;
     font-weight: 500;
     font-family: inherit;
-    color: var(--popover-text, #e0e0e0);
+    color: var(--v4-text-1, #e0e0e0);
     background: transparent;
-    border: 1px solid var(--popover-border, rgba(255, 255, 255, 0.18));
+    border: 1px solid var(--v4-hairline, rgba(255, 255, 255, 0.18));
     border-radius: 8px;
     cursor: pointer;
     transition: background-color 0.15s ease;
   }
 
   .ghost-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--v4-control-bg, rgba(255, 255, 255, 0.08));
   }
 
   @media (prefers-color-scheme: light) {

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { onMount } from 'svelte';
   import {
@@ -96,6 +97,7 @@
   // (returns a ToastDescriptor next to the call that produced it); this page
   // only renders it. `null` = nothing to surface (no-op dedupe / missing bot).
   let toast = $state<ToastDescriptor | null>(null);
+  let meetingsFeatureEnabled = $state<boolean | null>(null);
   function flashToast(kind: 'info' | 'warn', text: string): void {
     toast = { kind, text };
     setTimeout(() => {
@@ -123,6 +125,13 @@
   }
 
   onMount(() => {
+    invoke<boolean>('meetings_feature_enabled')
+      .then((enabled) => {
+        meetingsFeatureEnabled = enabled;
+      })
+      .catch(() => {
+        meetingsFeatureEnabled = false;
+      });
     // The store is a module-level singleton started once at app launch from
     // DesktopApp.onMount. Calling it here too keeps the page self-sufficient
     // for isolated mounts (tests / direct nav); it's idempotent via an internal
@@ -134,7 +143,13 @@
   });
 </script>
 
-<div class="meetings" aria-label="Meetings">
+{#if meetingsFeatureEnabled === false}
+  <div class="meetings-feature-hidden" data-testid="meetings-feature-hidden" role="status">
+    Meetings are not available for this account.
+  </div>
+{/if}
+
+<div class="meetings" class:hidden-by-gate={meetingsFeatureEnabled === false} aria-label="Meetings">
   {#snippet iconCalendar()}
     <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <rect x="3" y="4" width="18" height="18" rx="2" />
@@ -305,6 +320,16 @@
 
 <style>
   .meetings { min-width: 0; }
+  .meetings.hidden-by-gate { display: none; }
+  .meetings-feature-hidden {
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--muted);
+    font-size: var(--text-base);
+    line-height: 18px;
+  }
 
   .page-header {
     display: flex;

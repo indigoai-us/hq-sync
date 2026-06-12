@@ -3,7 +3,8 @@ import { createDesktopAltHarness } from './live-driver';
 
 describe('desktop-alt smoke pages', () => {
   it.each([
-    ['sync', 'Sync'],
+    // The legacy 'sync' route resolves to the V4 Home surface (US-002/US-003).
+    ['sync', 'Home'],
     ['meetings', 'Meetings'],
     ['company', 'Companies'],
   ] as const)('renders %s without console errors', async (route, expectedMarker) => {

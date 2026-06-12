@@ -3,19 +3,15 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../src/lib/workspaces';
 import {
+  COMPANY_SECTIONS,
   getDesktopActiveCompany,
   getDesktopCompanies,
-  getDesktopSidebarRows,
-  initialDesktopRoute,
+  getDesktopSecondarySidebar,
 } from '../../src/desktop-alt/route';
 import { emptyCompanySummary } from '../../src/desktop-alt/lib/company-summary.svelte';
 
 const companyPage = readFileSync(
   resolve(process.cwd(), 'src/desktop-alt/pages/CompanyPage.svelte'),
-  'utf8',
-);
-const companyTabs = readFileSync(
-  resolve(process.cwd(), 'src/desktop-alt/components/CompanyTabs.svelte'),
   'utf8',
 );
 const companySummary = readFileSync(
@@ -52,29 +48,26 @@ function workspace(overrides: Partial<Workspace>): Workspace {
     role: 'admin',
     lastSyncedAt: null,
     brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
     ...overrides,
   };
 }
 
-describe('US-007: Company page shell — tabs + crumb + role pill', () => {
-  it('renders the company shell with the 4 tabs and the crumb when a sidebar company is selected', () => {
+describe('US-007: Company page shell — V4 sections + crumb (sections moved to the secondary sidebar in US-002)', () => {
+  it('renders the company shell with the crumb and the 8 sections when a sidebar company is selected', () => {
     const workspaces: Workspace[] = [
       workspace({ slug: 'personal', displayName: 'Personal', kind: 'personal', role: null }),
       workspace({ slug: 'acme', displayName: 'Acme Corp', role: 'admin' }),
     ];
     const companies = getDesktopCompanies(workspaces);
-    const acmeRow = getDesktopSidebarRows(initialDesktopRoute, companies).find(
-      (row) => row.label === 'Acme Corp',
-    );
 
-    expect(acmeRow?.route).toEqual({ kind: 'company', slug: 'acme' });
-    expect(getDesktopActiveCompany(acmeRow!.route, companies)).toMatchObject({
+    expect(getDesktopActiveCompany({ kind: 'company', slug: 'acme' }, companies)).toMatchObject({
       slug: 'acme',
       role: 'admin',
     });
 
     const page = normalize(companyPage);
-    const tabs = normalize(companyTabs);
     expect(page).toContain('<span>Companies</span> <span aria-hidden="true">›</span> <span>{company.displayName}</span>');
     expect(page).toContain('<h1 id="company-page-title">{company.displayName}</h1>');
     expect(page).toContain('board cards ·');
@@ -85,47 +78,55 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(page).toContain("import { open as openExternal } from '@tauri-apps/plugin-shell';");
     expect(page).toContain('<button type="button" onclick={openInBrowser}>Open in browser</button>');
     expect(page).toContain('<button type="button" onclick={openInvite}>Invite</button>');
-    // The board lives on the company page again (company-scoped): Board is the
-    // first/default tab, ahead of Activity / Deployments / Secrets.
-    expect(tabs).toContain("{ id: 'board' as const, label: 'Board', count: summary.board }");
-    expect(tabs).toContain("{ id: 'activity' as const, label: 'Activity', count: summary.activity.last7d }");
-    expect(tabs).toContain("{ id: 'deployments' as const, label: 'Deployments', count: summary.deployments }");
-    expect(tabs).toContain("{ id: 'secrets' as const, label: 'Secrets', count: summary.secrets }");
+
+    // The sections live in the V4 secondary sidebar — 8 of them, Overview
+    // first/default, role surfaced in the header meta line.
+    expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
+      'overview',
+      'goals',
+      'projects',
+      'tasks',
+      'activity',
+      'deployments',
+      'secrets',
+      'library',
+    ]);
+    const secondary = getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies);
+    expect(secondary?.header).toBe('Acme Corp');
+    expect(secondary?.meta).toContain('admin');
+    expect(secondary?.activeId).toBe('overview');
   });
 
-  it('moves the active tab indicator and swaps the selected panel when a tab is selected', () => {
+  it('swaps the selected panel when a section is selected from the secondary sidebar', () => {
     const page = normalize(companyPage);
-    const tabs = normalize(companyTabs);
+    const desktop = normalize(desktopApp);
 
-    expect(page).toContain("let activeTab = $state<CompanyTab>('board')");
-    expect(page).toContain('function selectTab(tab: CompanyTab) { activeTab = tab; }');
-    expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
-    expect(page).toContain('<CompanyTabs {activeTab} summary={summaryState.summary} role={company.role} onselect={selectTab} />');
-    expect(tabs).toContain('aria-selected={activeTab === tab.id}');
-    expect(tabs).toContain('class:active={activeTab === tab.id}');
-    expect(tabs).toContain('onclick={() => onselect(tab.id)}');
-    expect(tabs).toContain('.company-tabs button.active::after');
-    // The company page opens on the Board (company-scoped goals/projects/in-flight
-    // via CompanyBoardPanel). The old flat vault BoardPanel is retired.
+    // The route drives the section; the in-page segmented control is gone.
+    expect(page).toContain('tab = DEFAULT_COMPANY_TAB');
+    expect(page).not.toContain('CompanyTabs');
+    expect(desktop).toContain("navigate({ kind: 'company', slug: route.slug, tab: id as CompanyTab })");
+    expect(desktop).toContain('<CompanyPage company={activeCompany} tab={companyTab} />');
+
+    // The company page opens on the Overview board (company-scoped goals/
+    // projects/in-flight via CompanyBoardPanel). The old flat vault BoardPanel
+    // stays retired.
     expect(page).not.toContain('<BoardPanel slug={company.slug} />');
+    expect(page).toContain("import SecretsPanel from '../panels/SecretsPanel.svelte'");
     expect(page).toContain('<CompanyBoardPanel slug={company.slug} />');
     expect(page).toContain('<ActivityPanel slug={company.slug} />');
     expect(page).toContain('<DeploymentsPanel slug={company.slug} />');
     expect(page).toContain('<SecretsPanel slug={company.slug} />');
   });
 
-  it('resets to the board tab on company navigation and wires summary counts plus workspace role propagation', () => {
+  it('wires summary counts plus workspace role propagation', () => {
     const page = normalize(companyPage);
-    const tabs = normalize(companyTabs);
     const summary = normalize(companySummary);
     const desktop = normalize(desktopApp);
-    const workspace = normalize(workspaceTypes);
+    const workspaceSrc = normalize(workspaceTypes);
     const rustWorkspaces = normalize(workspaceCommand);
     const rustDesktopAlt = normalize(desktopAltCommand);
     const rustMain = normalize(tauriMain);
 
-    expect(page).toContain('let previousSlug = $state<string | null>(null)');
-    expect(page).toContain('if (company.slug !== previousSlug) { previousSlug = company.slug; activeTab = \'board\'; }');
     expect(page).toContain('const summaryState = useCompanySummary({ slug: () => company.slug })');
 
     expect(emptyCompanySummary()).toEqual({
@@ -145,11 +146,12 @@ describe('US-007: Company page shell — tabs + crumb + role pill', () => {
     expect(rustMain).toContain('commands::desktop_alt::get_company_summary');
 
     expect(desktop).toContain("invoke<WorkspacesResult>('list_syncable_workspaces')");
-    expect(workspace).toContain('role: string | null;');
+    expect(workspaceSrc).toContain('role: string | null;');
     expect(rustWorkspaces).toContain('pub role: Option<String>');
-    expect(rustWorkspaces).toMatch(/let role = cloud_entity_for_slug[\s\S]*\.and_then\(\|m\| m\.role\.clone\(\)\)/);
-    expect(page).toContain('role={company.role}');
-    expect(tabs).toContain("const roleLabel = $derived(role ? role : 'No role')");
-    expect(tabs).toContain('<span class="role-pill" title="Workspace role">{roleLabel}</span>');
+    // US-004 (V4) hoisted the per-slug membership lookup so role + invite
+    // metadata derive from one find — same propagation, new contract.
+    expect(rustWorkspaces).toMatch(
+      /let membership_for_slug = cloud_entity_for_slug[\s\S]*let role = membership_for_slug\.and_then\(\|m\| m\.role\.clone\(\)\)/,
+    );
   });
 });

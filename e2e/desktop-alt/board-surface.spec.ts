@@ -9,11 +9,7 @@ import {
   type Project,
   type StatusFilter,
 } from '../../src/desktop-alt/lib/projects-model';
-import {
-  getDesktopHotkeyRoute,
-  getDesktopSidebarRows,
-  type DesktopRoute,
-} from '../../src/desktop-alt/route';
+import { getDesktopHotkeyRoute, type DesktopRoute } from '../../src/desktop-alt/route';
 import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
 
@@ -44,6 +40,8 @@ function workspace(overrides: Partial<Workspace>): Workspace {
     role: 'member',
     lastSyncedAt: null,
     brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
     ...overrides,
   };
 }
@@ -74,22 +72,24 @@ const FIXTURE_PROJECTS: Project[] = [
 ];
 
 describe('desktop-alt Board surface (US-007)', () => {
-  it('has no top-level Board route — Sync ⌘1, Meetings ⌘2', () => {
+  it('has no top-level Board route — ⌘1 is Home in the V4 IA', () => {
     const companies = [workspace({ slug: 'indigo', displayName: 'Indigo' })];
-    const rows = getDesktopSidebarRows({ kind: 'sync' }, companies);
 
-    expect(rows.find((row) => row.label === 'Board')).toBeUndefined();
+    // No hotkey resolves to a 'board' kind anywhere on ⌘1–⌘9.
+    for (let key = 1; key <= 9; key += 1) {
+      const resolved = getDesktopHotkeyRoute(
+        { key: String(key), metaKey: true, ctrlKey: false },
+        companies,
+      );
+      expect(resolved?.kind).not.toBe('board');
+    }
 
-    // Sync + Meetings are the two top-level destinations.
-    expect(rows.find((r) => r.label === 'Sync')?.shortcut).toBe('⌘1');
-    expect(rows.find((r) => r.label === 'Meetings')?.shortcut).toBe('⌘2');
-
-    // ⌘1 maps to Sync; ⌘2 to Meetings.
+    // ⌘1 maps to Home; ⌘4 to Meetings (V4 order: Home/Companies/Messages/Meetings/Library).
     expect(
       getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'sync' } satisfies DesktopRoute);
+    ).toEqual({ kind: 'home' } satisfies DesktopRoute);
     expect(
-      getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'meetings' } satisfies DesktopRoute);
   });
 
@@ -148,25 +148,22 @@ describe('desktop-alt Board surface (US-007)', () => {
   it('removes the top-level Board route from DesktopApp and the sidebar', () => {
     const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
     const route = readRepoFile('src/desktop-alt/route.ts');
-    const sidebar = readRepoFile('src/desktop-alt/DesktopSidebar.svelte');
+    const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
 
-    // Route kind union no longer carries 'board' (Library was added alongside
-    // the Sync/Meetings primaries — see the Library surface; the admin-only
-    // Moderation route was added after it, default-deny — see the Moderation nav;
-    // and Messages (US-019) sits at ⌘3 right after Meetings — see route.ts).
-    expect(route).toContain(
-      "'sync' | 'meetings' | 'messages' | 'library' | 'moderation' | 'company'",
-    );
-    expect(route).not.toContain("kind: 'board' | 'sync'");
+    // Route kind union no longer carries 'board' (the V4 IA is Home /
+    // Companies / Messages / Meetings / Library plus settings, the default-deny
+    // moderation surface, and per-company routes — see route.ts).
+    expect(route).toContain("{ kind: 'home' | 'companies' | 'messages' | 'meetings' | 'moderation' }");
+    expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");
 
-    // No Board sidebar row; companies are split off by route kind (not a fixed
-    // index) so the optional Moderation primary row can't shift the slice and
-    // leak a company into the primary nav.
+    // No Board sidebar row; the V4 sidebar renders the five nav destinations
+    // and the COMPANIES section from the model, never a Board entry.
     expect(route).not.toContain("label: 'Board'");
-    expect(sidebar).toContain("rows.filter((row) => row.route.kind !== 'company')");
-    expect(sidebar).toContain("rows.filter((row) => row.route.kind === 'company')");
+    expect(sidebar).toContain('model.nav');
+    expect(sidebar).toContain('model.companies');
+    expect(sidebar).not.toContain('Board');
   });
 
   it('wires the project list: search, pills, group-by, rows, progress, drill-in', () => {
@@ -221,21 +218,20 @@ describe('desktop-alt Board surface (US-007)', () => {
     }
   });
 
-  it('restores the per-company Board tab as the first/default tab', () => {
-    const tabs = readRepoFile('src/desktop-alt/components/CompanyTabs.svelte');
+  it('keeps the board (Overview) as the default company section in the V4 IA', () => {
+    const route = readRepoFile('src/desktop-alt/route.ts');
     const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
 
-    // CompanyTab type includes 'board', and the Board tab is FIRST in the list.
-    expect(tabs).toContain("export type CompanyTab = 'board' | 'activity' | 'deployments' | 'secrets'");
-    expect(tabs).toContain("{ id: 'board' as const, label: 'Board', count: summary.board }");
+    // The in-page segmented control is gone (US-002); the eight company
+    // sections live in the secondary sidebar, with Overview the default.
+    expect(route).toContain("export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview'");
+    expect(company).not.toContain('CompanyTabs');
 
-    // The company page wires CompanyBoardPanel as the first branch and opens on
-    // the Board tab (both the init and the slug-change reset).
+    // Overview hosts CompanyBoardPanel as the first branch.
     expect(company).toContain("import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte'");
-    expect(company).toContain("let activeTab = $state<CompanyTab>('board')");
-    expect(company).toContain("activeTab = 'board'");
+    expect(company).toContain("{#if tab === 'overview'}");
     expect(company).toContain('<CompanyBoardPanel slug={company.slug} />');
-    // Other tabs remain wired below it.
+    // Other sections remain wired below it.
     expect(company).toContain('<ActivityPanel slug={company.slug} />');
     expect(company).toContain('<DeploymentsPanel slug={company.slug} />');
     expect(company).toContain('<SecretsPanel slug={company.slug} />');

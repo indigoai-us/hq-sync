@@ -166,8 +166,12 @@ class LiveDesktopAltHarness implements DesktopAltTestHarness {
       }
       await this.waitForText('Companies');
     } else {
-      await this.clickButtonWithText(route === 'sync' ? 'Sync' : 'Meetings');
-      await this.waitForText(route === 'sync' ? 'Recent activity' : 'Connected calendars');
+      // The V4 IA renamed the Sync destination to Home (US-002); the V4 Home
+      // surface renders the actor-grouped digest header (US-003).
+      await this.clickButtonWithText(route === 'sync' ? 'Home' : 'Meetings');
+      await this.waitForText(
+        route === 'sync' ? 'Today across your companies' : 'Connected calendars',
+      );
     }
 
     const text = await this.visibleText();

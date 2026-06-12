@@ -257,6 +257,14 @@
     />
   </div>
 
+  <section class="your-listings" data-testid="marketplace-your-listings">
+    <div>
+      <h2>YOUR LISTINGS</h2>
+      <p>Published packs you own will appear here with install metrics and review status.</p>
+    </div>
+    <span>{listings.filter((listing) => listing.author).length} tracked</span>
+  </section>
+
   {#if error}
     <div class="state-error" role="alert" data-testid="marketplace-error">{error}</div>
   {:else if loading}
@@ -398,6 +406,13 @@
         </p>
       </section>
 
+      <section class="detail-section readme-preview" data-testid="marketplace-readme-preview">
+        <h3 class="section-title">README preview</h3>
+        <p class="section-body">
+          {selected.summary ?? selected.contributes ?? 'No README preview is available for this listing yet.'}
+        </p>
+      </section>
+
       <!-- Install action + scope picker (US-009) -->
       <section class="detail-section" data-testid="marketplace-install-section">
         <h3 class="section-title">Install</h3>
@@ -486,6 +501,41 @@
     justify-content: space-between;
     gap: var(--space-3);
     min-width: 0;
+  }
+
+  .your-listings {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    min-width: 0;
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-subtle);
+  }
+
+  .your-listings div {
+    min-width: 0;
+  }
+
+  .your-listings h2,
+  .your-listings p {
+    margin: 0;
+  }
+
+  .your-listings h2 {
+    color: var(--muted-2);
+    font-size: var(--text-micro);
+    font-weight: 700;
+    line-height: 14px;
+  }
+
+  .your-listings p,
+  .your-listings span {
+    color: var(--muted);
+    font-size: var(--text-base);
+    line-height: 16px;
   }
 
   .count {
@@ -585,7 +635,7 @@
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-micro);
     font-weight: 600;
-    letter-spacing: 0.09em;
+    letter-spacing: 0;
     text-transform: uppercase;
   }
 

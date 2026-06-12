@@ -52,7 +52,7 @@
   import { type ReactionEvent, dmScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
 
-  type Segment = 'dms' | 'requests' | 'channels';
+  type Segment = 'all' | 'people' | 'requests' | 'channels';
 
   // A person the caller can DM (connection or company teammate). Mirrors the
   // Rust `Contact` wire shape (camelCase).
@@ -87,7 +87,7 @@
     nextCursor?: string | null;
   }
 
-  let segment = $state<Segment>('dms');
+  let segment = $state<Segment>('all');
 
   let contacts = $state<Contact[]>([]);
   let loadingContacts = $state(false);
@@ -250,7 +250,7 @@
       companyUid: null,
       source: null,
     };
-    segment = 'dms';
+    segment = 'people';
     selected = peer;
     threadError = null;
     sendError = null;
@@ -448,7 +448,7 @@
         companyUid: null,
         source: 'request',
       };
-      segment = 'dms';
+      segment = 'people';
       void selectContact(peer);
       // The new connection now appears as a contact — refresh the rail.
       void loadContacts();
@@ -476,6 +476,33 @@
     } finally {
       loadingThread = false;
     }
+  }
+
+  function openAgentThread(): void {
+    selected = {
+      personUid: selfPersonUid ?? 'agent:self',
+      email: '',
+      displayName: 'Your agent',
+      companyUid: null,
+      source: 'agent',
+    };
+    messages = [
+      {
+        eventId: 'agent-status',
+        fromPersonUid: 'agent:self',
+        fromEmail: '',
+        fromDisplayName: 'Your agent',
+        body: 'I am watching your HQ workspace and will surface work that needs you here.',
+        details: null,
+        prompt: null,
+        createdAt: new Date().toISOString(),
+        direction: 'in',
+      },
+    ];
+    threadError = null;
+    sendError = null;
+    loadingThread = false;
+    openThread = null;
   }
 
   async function sendReply(text: string): Promise<void> {
@@ -598,11 +625,19 @@
     <nav class="segments" aria-label="Message segments">
       <button
         class="segment"
-        class:active={segment === 'dms'}
+        class:active={segment === 'all'}
         type="button"
-        onclick={() => (segment = 'dms')}
+        onclick={() => (segment = 'all')}
       >
-        Direct Messages
+        All
+      </button>
+      <button
+        class="segment"
+        class:active={segment === 'people'}
+        type="button"
+        onclick={() => (segment = 'people')}
+      >
+        People
       </button>
       <button
         class="segment"
@@ -626,15 +661,27 @@
     </nav>
 
     <div class="rail-body">
-      {#if segment === 'dms'}
+      {#if segment === 'all' || segment === 'people'}
         {#if loadingContacts}
           <p class="rail-status">Loading conversations…</p>
         {:else if contactsError}
           <p class="rail-status rail-error" role="alert">{contactsError}</p>
-        {:else if contacts.length === 0}
-          <p class="rail-status">No conversations yet.</p>
         {:else}
           <ul class="contact-list">
+            <li>
+              <button
+                class="contact-row agent-row"
+                class:active={selected?.source === 'agent'}
+                type="button"
+                onclick={openAgentThread}
+              >
+                <span class="contact-avatar bolt-avatar" aria-hidden="true">⚡</span>
+                <span class="contact-meta">
+                  <span class="contact-name">Your agent</span>
+                  <span class="contact-sub">Watching for work that needs you</span>
+                </span>
+              </button>
+            </li>
             {#each contacts as c (c.personUid)}
               <li>
                 <button
@@ -654,6 +701,9 @@
               </li>
             {/each}
           </ul>
+          {#if contacts.length === 0}
+            <p class="rail-status">No conversations yet.</p>
+          {/if}
         {/if}
       {:else if segment === 'requests'}
         {#if loadingRequests}
@@ -734,6 +784,7 @@
         {sending}
         {sendError}
         placeholder={`Message ${displayLabel(selected)}…`}
+        readonly={selected.source === 'agent'}
         onsend={sendReply}
         onopenthread={handleOpenDmThread}
         activeRootEventId={openThread?.scope === 'dm' ? openThread.rootEventId : null}
@@ -796,7 +847,7 @@
   /* ── Left rail ──────────────────────────────────────────────────────── */
 
   .rail {
-    width: 240px;
+    width: 300px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -1012,6 +1063,16 @@
     font-size: var(--text-micro);
     font-weight: 600;
     letter-spacing: 0.02em;
+  }
+
+  .agent-row {
+    margin-bottom: var(--space-1);
+    border-bottom: 1px solid var(--border);
+  }
+
+  .bolt-avatar {
+    background: var(--accent-soft);
+    color: var(--fg);
   }
 
   .contact-meta {

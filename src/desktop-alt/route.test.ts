@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../lib/workspaces';
 import {
+  COMPANY_SECTIONS,
+  companyHotkey,
+  fromV4Route,
   getDesktopCompanies,
   getDesktopHotkeyRoute,
-  getDesktopSidebarRows,
+  getDesktopRouteKey,
+  getDesktopSecondarySidebar,
+  initialDesktopRoute,
   isDesktopRouteActive,
+  LIBRARY_SECTIONS,
+  resolvePendingDesktopRoute,
+  SETTINGS_SECTIONS,
   type DesktopRoute,
 } from './route';
 
@@ -21,6 +29,8 @@ const baseCompany: Workspace = {
   role: 'member',
   lastSyncedAt: null,
   brokenReason: null,
+  invitedBy: null,
+  invitedAt: null,
 };
 
 function company(overrides: Partial<Workspace>): Workspace {
@@ -31,7 +41,11 @@ function company(overrides: Partial<Workspace>): Workspace {
   };
 }
 
-describe('desktop-alt routes', () => {
+describe('US-002 V4 desktop routes', () => {
+  it('starts on Home — the exception surface', () => {
+    expect(initialDesktopRoute).toEqual({ kind: 'home' });
+  });
+
   it('exposes synced companies plus the local-first personal page in desktop navigation', () => {
     const visible = getDesktopCompanies([
       company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
@@ -52,145 +66,178 @@ describe('desktop-alt routes', () => {
     expect(visible.map((workspace) => workspace.slug)).toEqual(['synced', 'personal']);
   });
 
-  it('maps the five library hotkeys (⌘4–⌘8) to their tabs', () => {
-    const companies = getDesktopCompanies([
-      company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+  it('declares the eight company sections in SPEC order with Overview first', () => {
+    expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
+      'overview',
+      'goals',
+      'projects',
+      'tasks',
+      'activity',
+      'deployments',
+      'secrets',
+      'library',
     ]);
-
-    // Sync ⌘1 / Meetings ⌘2 / Messages ⌘3, then the broken-out library
-    // destinations at ⌘4–⌘8.
-    expect(getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'library',
-      tab: 'skills',
-    });
-    expect(getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'library',
-      tab: 'workers',
-    });
-    expect(getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'library',
-      tab: 'installed',
-    });
-    expect(getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'library',
-      tab: 'marketplace',
-    });
-    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'library',
-      tab: 'profile',
-    });
   });
 
-  it('maps company hotkeys at ⌘9 over the filtered synced company list', () => {
-    const companies = getDesktopCompanies([
-      company({ slug: 'unsynced', displayName: 'Unsynced', state: 'local-only' }),
-      company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+  it('declares the five library sections in SPEC order', () => {
+    expect(LIBRARY_SECTIONS.map((section) => section.id)).toEqual([
+      'skills',
+      'workers',
+      'installed',
+      'marketplace',
+      'profile',
     ]);
-
-    // Eight primary destinations (Sync, Meetings, Messages, Skills, Workers,
-    // Installed, Marketplace, Profile) consume ⌘1–⌘8, so companies start at ⌘9.
-    expect(getDesktopHotkeyRoute({ key: '9', metaKey: true, ctrlKey: false }, companies)).toEqual({
-      kind: 'company',
-      slug: 'synced',
-    });
   });
 
-  it('exposes the five library tabs as top-level sidebar rows with ⌘4–⌘8', () => {
-    const rows = getDesktopSidebarRows({ kind: 'sync' }, []);
-    const library = rows.filter((row) => row.route.kind === 'library');
-    expect(library.map((row) => [row.label, row.shortcut, row.route.tab])).toEqual([
-      ['Skills', '⌘4', 'skills'],
-      ['Workers', '⌘5', 'workers'],
-      ['Installed', '⌘6', 'installed'],
-      ['Marketplace', '⌘7', 'marketplace'],
-      ['Profile', '⌘8', 'profile'],
-    ]);
-    // The old single "Library" row is gone.
-    expect(rows.map((row) => row.label)).not.toContain('Library');
-  });
-
-  it('marks only the active library tab as current', () => {
-    const rows = getDesktopSidebarRows({ kind: 'library', tab: 'workers' }, []);
-    const active = rows.filter((row) => row.active).map((row) => row.label);
-    expect(active).toEqual(['Workers']);
-  });
-});
-
-describe('desktop-alt sidebar rows — admin-only Moderation entry', () => {
-  const route: DesktopRoute = { kind: 'sync' };
-  const synced = [company({ slug: 'synced', displayName: 'Synced', state: 'synced' })];
-
-  it('hides the Moderation row for a non-admin (default-deny)', () => {
-    const labelsDefault = getDesktopSidebarRows(route, synced).map((row) => row.label);
-    const labelsFalse = getDesktopSidebarRows(route, synced, { isAdmin: false }).map(
-      (row) => row.label,
+  it('keys company pages by slug only so section switches never remount the page', () => {
+    expect(getDesktopRouteKey({ kind: 'company', slug: 'indigo', tab: 'overview' })).toBe(
+      'company:indigo',
     );
-    // Default (no options) and explicit false both omit Moderation — the row
-    // only appears on an explicit true.
-    expect(labelsDefault).not.toContain('Moderation');
-    expect(labelsFalse).not.toContain('Moderation');
+    expect(getDesktopRouteKey({ kind: 'company', slug: 'indigo', tab: 'secrets' })).toBe(
+      'company:indigo',
+    );
+    expect(getDesktopRouteKey({ kind: 'library', tab: 'workers' })).toBe('library');
+    expect(getDesktopRouteKey({ kind: 'home' })).toBe('home');
   });
 
-  it('shows the Moderation row for an admin, after the standing primary rows', () => {
-    const rows = getDesktopSidebarRows(route, synced, { isAdmin: true });
-    const labels = rows.map((row) => row.label);
-    expect(labels).toContain('Moderation');
-    // Sits after the last primary library row (Profile) and before any company.
-    const moderationIndex = labels.indexOf('Moderation');
-    expect(moderationIndex).toBe(labels.indexOf('Profile') + 1);
-    expect(moderationIndex).toBeLessThan(labels.indexOf('Synced'));
-    // The Moderation row routes to the moderation kind and carries no hotkey
-    // (so company ⌘-hotkeys are unaffected by the admin gate).
-    const moderationRow = rows[moderationIndex];
-    expect(moderationRow.route).toEqual({ kind: 'moderation' });
-    expect(moderationRow.shortcut).toBeUndefined();
-  });
-
-  it('keeps company hotkeys at ⌘9 whether or not the admin row is present', () => {
-    const withAdmin = getDesktopSidebarRows(route, synced, { isAdmin: true });
-    const companyRow = withAdmin.find((row) => row.route.kind === 'company');
-    // The admin Moderation row carries no hotkey, so the company keeps ⌘9.
-    expect(companyRow?.shortcut).toBe('⌘9');
+  it('treats every section of a company as the same active sidebar destination', () => {
+    const overview: DesktopRoute = { kind: 'company', slug: 'indigo', tab: 'overview' };
+    const secrets: DesktopRoute = { kind: 'company', slug: 'indigo', tab: 'secrets' };
+    expect(isDesktopRouteActive(overview, secrets)).toBe(true);
+    expect(
+      isDesktopRouteActive(overview, { kind: 'company', slug: 'other', tab: 'overview' }),
+    ).toBe(false);
+    expect(isDesktopRouteActive({ kind: 'library' }, { kind: 'library', tab: 'profile' })).toBe(
+      true,
+    );
   });
 });
 
-describe('desktop-alt routes — Messages (US-019)', () => {
-  it('resolves the Messages route via ⌘3 and marks it active', () => {
-    expect(
-      getDesktopHotkeyRoute({ key: '3', metaKey: true, ctrlKey: false }, []),
-    ).toEqual({ kind: 'messages' });
-    expect(
-      getDesktopHotkeyRoute({ key: '3', metaKey: false, ctrlKey: true }, []),
-    ).toEqual({ kind: 'messages' });
+describe('US-002 hotkeys — ⌘1..9 over the V4 destinations', () => {
+  const companies = getDesktopCompanies([
+    company({ slug: 'first', displayName: 'First', state: 'synced' }),
+    company({ slug: 'second', displayName: 'Second', state: 'synced' }),
+  ]);
 
-    expect(isDesktopRouteActive({ kind: 'messages' }, { kind: 'messages' })).toBe(true);
-    expect(isDesktopRouteActive({ kind: 'library' }, { kind: 'messages' })).toBe(false);
+  it('maps ⌘1–⌘5 to the five primary destinations in sidebar order', () => {
+    const meta = (key: string) => getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
+    expect(meta('1')).toEqual({ kind: 'home' });
+    expect(meta('2')).toEqual({ kind: 'companies' });
+    expect(meta('3')).toEqual({ kind: 'messages' });
+    expect(meta('4')).toEqual({ kind: 'meetings' });
+    expect(meta('5')).toEqual({ kind: 'library' });
   });
 
-  it('includes a Messages sidebar row at ⌘3 ahead of the library tabs and companies', () => {
-    const companies = getDesktopCompanies([
-      company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
-    ]);
-    const rows = getDesktopSidebarRows({ kind: 'messages' }, companies);
+  it('maps ⌘6+ to companies in list order, ctrl works too, and unmodified keys do nothing', () => {
+    expect(
+      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
+    ).toEqual({ kind: 'company', slug: 'first' });
+    expect(
+      getDesktopHotkeyRoute({ key: '7', metaKey: false, ctrlKey: true }, companies),
+    ).toEqual({ kind: 'company', slug: 'second' });
+    // No company at ⌘8/⌘9 here → no route.
+    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toBeNull();
+    expect(getDesktopHotkeyRoute({ key: '1', metaKey: false, ctrlKey: false }, companies)).toBeNull();
+  });
 
-    const labelsAndShortcuts = rows.map((row) => ({
-      label: row.label,
-      shortcut: row.shortcut,
-    }));
-    expect(labelsAndShortcuts).toEqual([
-      { label: 'Sync', shortcut: '⌘1' },
-      { label: 'Meetings', shortcut: '⌘2' },
-      { label: 'Messages', shortcut: '⌘3' },
-      { label: 'Skills', shortcut: '⌘4' },
-      { label: 'Workers', shortcut: '⌘5' },
-      { label: 'Installed', shortcut: '⌘6' },
-      { label: 'Marketplace', shortcut: '⌘7' },
-      { label: 'Profile', shortcut: '⌘8' },
-      { label: 'Synced', shortcut: '⌘9' },
-    ]);
+  it('labels company hotkeys ⌘6–⌘9 and none past the ninth slot', () => {
+    expect(companyHotkey(0)).toBe('⌘6');
+    expect(companyHotkey(3)).toBe('⌘9');
+    expect(companyHotkey(4)).toBeUndefined();
+  });
+});
 
-    const messagesRow = rows.find((row) => row.label === 'Messages');
-    expect(messagesRow?.route).toEqual({ kind: 'messages' });
-    expect(messagesRow?.active).toBe(true);
+describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () => {
+  it("keeps the legacy 'sync' deep-link functional by landing it on Home", () => {
+    expect(resolvePendingDesktopRoute('sync')).toEqual({ kind: 'home' });
+  });
+
+  it('resolves the V4 destinations and rejects unknown intents', () => {
+    expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
+    expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
+    expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('companies')).toEqual({ kind: 'companies' });
+    expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
+    expect(resolvePendingDesktopRoute('settings')).toEqual({ kind: 'settings' });
+    expect(resolvePendingDesktopRoute('bogus')).toBeNull();
+    expect(resolvePendingDesktopRoute(null)).toBeNull();
+  });
+});
+
+describe('US-002 V4Sidebar payload narrowing', () => {
+  it('maps sidebar payloads onto the DesktopRoute union', () => {
+    expect(fromV4Route({ kind: 'company', slug: 'indigo' })).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+    });
+    expect(fromV4Route({ kind: 'settings' })).toEqual({ kind: 'settings' });
+    expect(fromV4Route({ kind: 'library' })).toEqual({ kind: 'library' });
+    // Unknown kinds land on Home, mirroring the sidebar model's fallback.
+    expect(fromV4Route({ kind: 'mystery' })).toEqual({ kind: 'home' });
+  });
+});
+
+describe('US-002 secondary sidebar — company / library / settings only', () => {
+  const companies = [
+    company({ slug: 'indigo', displayName: 'Indigo', state: 'synced', role: 'owner' }),
+  ];
+
+  it('shows the 8 company sections with Overview active on a fresh company route', () => {
+    const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
+    expect(model?.surface).toBe('company');
+    expect(model?.header).toBe('Indigo');
+    expect(model?.headerTone).toBe('ok');
+    expect(model?.items.map((item) => item.label)).toEqual([
+      'Overview',
+      'Goals',
+      'Projects',
+      'Tasks',
+      'Activity',
+      'Deployments',
+      'Secrets',
+      'Library',
+    ]);
+    expect(model?.activeId).toBe('overview');
+    expect(model?.footer).toEqual({
+      label: 'Company settings',
+      meta: 'sync rules · members · roles',
+    });
+  });
+
+  it('marks the routed company section active', () => {
+    const model = getDesktopSecondarySidebar(
+      { kind: 'company', slug: 'indigo', tab: 'deployments' },
+      companies,
+    );
+    expect(model?.activeId).toBe('deployments');
+  });
+
+  it('renders no secondary column for a company route with no connected workspace', () => {
+    expect(getDesktopSecondarySidebar({ kind: 'company', slug: 'ghost' }, companies)).toBeNull();
+  });
+
+  it('shows the five library sections with the routed tab active', () => {
+    const model = getDesktopSecondarySidebar({ kind: 'library', tab: 'marketplace' }, companies);
+    expect(model?.surface).toBe('library');
+    expect(model?.items.map((item) => item.id)).toEqual(LIBRARY_SECTIONS.map((s) => s.id));
+    expect(model?.activeId).toBe('marketplace');
+    expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.activeId).toBe('skills');
+  });
+
+  it('shows the settings sections with the gated Meetings note and a version meta', () => {
+    const model = getDesktopSecondarySidebar({ kind: 'settings' }, companies, {
+      version: '1.2.3',
+    });
+    expect(model?.surface).toBe('settings');
+    expect(model?.meta).toBe('HQ Sync v1.2.3');
+    expect(model?.items.map((item) => item.id)).toEqual(SETTINGS_SECTIONS.map((s) => s.id));
+    expect(model?.items.find((item) => item.id === 'meetings')?.note).toBe('gated');
+    expect(model?.activeId).toBe('sync');
+  });
+
+  it('has no secondary sidebar on Home, Companies, Messages, Meetings, or Moderation', () => {
+    for (const kind of ['home', 'companies', 'messages', 'meetings', 'moderation'] as const) {
+      expect(getDesktopSecondarySidebar({ kind }, companies)).toBeNull();
+    }
   });
 });

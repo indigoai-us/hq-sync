@@ -3,36 +3,32 @@
   import type { Workspace } from '../../lib/workspaces';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
-  import CompanyTabs, { type CompanyTab } from '../components/CompanyTabs.svelte';
+  import CompanyGoalsPage from './CompanyGoalsPage.svelte';
+  import CompanyProjectsPage from './CompanyProjectsPage.svelte';
+  import CompanyTasksPage from './CompanyTasksPage.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
   import { useCompanySummary } from '../lib/company-summary.svelte';
+  import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
 
   interface Props {
     company: Workspace;
+    /**
+     * Which of the eight company sections to show — driven by the V4 secondary
+     * sidebar (US-002); the in-page segmented control is gone. Defaults to
+     * Overview.
+     */
+    tab?: CompanyTab;
   }
 
-  let { company }: Props = $props();
+  let { company, tab = DEFAULT_COMPANY_TAB }: Props = $props();
 
-  let activeTab = $state<CompanyTab>('board');
-  let previousSlug = $state<string | null>(null);
   const summaryState = useCompanySummary({ slug: () => company.slug });
-
-  $effect(() => {
-    if (company.slug !== previousSlug) {
-      previousSlug = company.slug;
-      activeTab = 'board';
-    }
-  });
 
   const subtitle = $derived(
     `${summaryState.summary.board} board cards · ${summaryState.summary.activity.last7d} activity this week · ${summaryState.summary.deployments} deployments · ${summaryState.summary.secrets} secrets`,
   );
-
-  function selectTab(tab: CompanyTab) {
-    activeTab = tab;
-  }
 
   // HQ web console base. Same host the Meetings page links to for
   // "Open HQ Console Integrations" — the company console lives at /{slug}.
@@ -52,45 +48,52 @@
 </script>
 
 <section class="company-page" aria-labelledby="company-page-title">
-  <header class="company-header">
-    <div class="company-heading">
-      <nav class="company-crumb" aria-label="Breadcrumb">
-        <span>Companies</span>
-        <span aria-hidden="true">›</span>
-        <span>{company.displayName}</span>
-      </nav>
-      <h1 id="company-page-title">{company.displayName}</h1>
-      <p>{subtitle}</p>
-      {#if summaryState.error}
-        <span class="summary-error">Summary unavailable. Showing zeros.</span>
-      {/if}
-    </div>
+  {#if tab === 'goals'}
+    <h1 id="company-page-title" class="visually-hidden">{company.displayName}</h1>
+  {:else}
+    <header class="company-header">
+      <div class="company-heading">
+        <nav class="company-crumb" aria-label="Breadcrumb">
+          <span>Companies</span>
+          <span aria-hidden="true">›</span>
+          <span>{company.displayName}</span>
+        </nav>
+        <h1 id="company-page-title">{company.displayName}</h1>
+        <p>{subtitle}</p>
+        {#if summaryState.error}
+          <span class="summary-error">Summary unavailable. Showing zeros.</span>
+        {/if}
+      </div>
 
-    <div class="company-actions" aria-label="Company actions">
-      <button type="button" onclick={openInBrowser}>Open in browser</button>
-      <button type="button" onclick={openInvite}>Invite</button>
-    </div>
-  </header>
+      <div class="company-actions" aria-label="Company actions">
+        <button type="button" onclick={openInBrowser}>Open in browser</button>
+        <button type="button" onclick={openInvite}>Invite</button>
+      </div>
+    </header>
+  {/if}
 
-  <CompanyTabs
-    {activeTab}
-    summary={summaryState.summary}
-    role={company.role}
-    onselect={selectTab}
-  />
-
-  {#key `${company.slug}:${activeTab}`}
+  {#key `${company.slug}:${tab}`}
     <div class="company-panel">
-      {#if activeTab === 'board'}
+      {#if tab === 'overview'}
         <CompanyBoardPanel slug={company.slug} />
-      {:else if activeTab === 'activity'}
+      {:else if tab === 'goals'}
+        <CompanyGoalsPage slug={company.slug} />
+      {:else if tab === 'projects'}
+        <CompanyProjectsPage slug={company.slug} />
+      {:else if tab === 'tasks'}
+        <CompanyTasksPage slug={company.slug} />
+      {:else if tab === 'activity'}
         <ActivityPanel slug={company.slug} />
-      {:else if activeTab === 'deployments'}
+      {:else if tab === 'deployments'}
         <DeploymentsPanel slug={company.slug} />
-      {:else if activeTab === 'library'}
+      {:else if tab === 'library'}
         <CompanyLibraryPanel slug={company.slug} />
-      {:else}
+      {:else if tab === 'secrets'}
         <SecretsPanel slug={company.slug} />
+      {:else}
+        <div class="section-pending">
+          <p>This section is on its way.</p>
+        </div>
       {/if}
     </div>
   {/key}
@@ -100,6 +103,15 @@
   .company-page {
     display: grid;
     gap: 18px;
+  }
+
+  .visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .company-header {
@@ -198,6 +210,12 @@
   .company-actions button:active {
     transform: translateY(0);
     opacity: 0.72;
+  }
+
+  .section-pending p {
+    margin: 0;
+    color: var(--muted-2);
+    font-size: var(--text-base);
   }
 
   .company-panel {

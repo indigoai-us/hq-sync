@@ -1,0 +1,35 @@
+/* V4 design tokens — SPEC.md section 2, verbatim.
+ *
+ * Single source of truth for the V4 desktop-window redesign
+ * (docs/design/v4/SPEC.md). Every V4 component imports this file so the
+ * custom properties resolve wherever V4 chrome renders; Vite dedupes the
+ * import. Hierarchy is carried entirely by the three text grays; status
+ * colors are the ONLY color in the app, almost always as 6px dots.
+ * No purple anywhere (hard Indigo policy).
+ */
+:root {
+  /* surfaces */
+  --v4-ground: #161618; /* window + main content background */
+  --v4-raised: #1b1b1d; /* cards, primary sidebar */
+  --v4-inset: #19191b; /* secondary sidebar, inset panels, table containers */
+  --v4-hairline: rgba(255, 255, 255, 0.07); /* section borders, dividers */
+  --v4-rowline: rgba(255, 255, 255, 0.05); /* table row separators */
+
+  /* text — hierarchy is done entirely with these three grays */
+  --v4-text-1: #f2f2f3; /* primary */
+  --v4-text-2: #9a9aa0; /* secondary */
+  --v4-text-3: #5d5d63; /* tertiary / meta */
+
+  /* status — the ONLY color in the app, almost always as 6px dots */
+  --v4-ok: #30d158; /* ok / connected / running / on-track / success */
+  --v4-warn: #febc2e; /* needs attention / review / at-risk */
+  --v4-error: #ff453a; /* error / blocked / off-track; also destructive text actions */
+  --v4-unread: #0a84ff; /* unread dots + sent bubbles — Messages surfaces ONLY */
+  --v4-idle: #5d5d63; /* idle / paused / gated / backlog */
+
+  /* controls */
+  --v4-control-bg: rgba(255, 255, 255, 0.1); /* primary button fill */
+  --v4-control-border: rgba(255, 255, 255, 0.12); /* secondary button border */
+  --v4-control-faint: rgba(255, 255, 255, 0.06); /* chips, search field, segmented track */
+  --v4-active-row: rgba(255, 255, 255, 0.08); /* sidebar/list selection */
+}

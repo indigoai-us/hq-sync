@@ -79,21 +79,28 @@ describe('US-010: Activity panel reads company activity via Tauri command', () =
     expect(panel).toContain('{#if loading}');
     expect(panel).toContain('{:else if activity.sparkline.length > 0}');
     expect(panel).toContain('{:else if activity.top.length > 0}');
-    expect(panel).toContain('{:else if activity.recent.length > 0}');
+    expect(panel).toContain('{:else if recentGroups.length > 0}');
   });
 
-  it('renders top contributor bars and recent file rows from backend data', () => {
+  it('renders top contributor bars and the V4 actor-grouped recent feed from backend data', () => {
     const panel = normalize(activityPanel);
 
     expect(panel).toContain('const contributorMax = $derived(Math.max(1, ...activity.top.map((contributor) => contributor.edits)))');
     expect(panel).toContain('return `${(edits / contributorMax) * 100}%`;');
     expect(panel).toContain('<span class="contributor-fill" style={`width: ${contributorWidth(contributor.edits)}`} ></span>');
     expect(panel).toContain('{#each activity.top as contributor, index (`${contributor.who}:${index}`)}');
-    expect(panel).toContain('{#each activity.recent as entry, index (`${entry.file}:${index}`)}');
-    expect(panel).toContain('<span class="avatar" title={entry.who}>{initialFor(entry.who)}</span>');
+    expect(panel).toContain("let activityDirection = $state<ActivityDirection>('all')");
+    expect(panel).toContain('const filteredRecent = $derived(activity.recent.filter((entry) => matchesDirection(entry, activityDirection)))');
+    expect(panel).toContain('const recentGroups = $derived(groupRecentActivity(filteredRecent))');
+    expect(panel).toContain('class:is-active={activityDirection === \'outgoing\'}');
+    expect(panel).toContain('{#each recentGroups as group (`actor:${group.who}`)}');
+    expect(panel).toContain('<header class="actor-header">');
+    expect(panel).toContain('<span class="avatar" title={group.who}>{initialFor(group.who)}</span>');
+    expect(panel).toContain('{#each group.entries as entry, index (`${entry.file}:${entry.when}:${index}`)}');
+    expect(panel).toContain('<span class="verb-lane" title={entry.what}>{verbLane(entry.what)}</span>');
     expect(panel).toContain('<strong title={entry.file}>{entry.file}</strong>');
-    expect(panel).toContain('<span>{entry.who} · {entry.what}</span>');
-    expect(panel).toContain('<time>{entry.when}</time>');
+    expect(panel).toContain('<span>{entry.what}</span>');
+    expect(panel).toContain('<time class="date-chip">{dateChip(entry.when)}</time>');
     // US-012: the per-recent-row "Open" affordance is now a live Claude Code
     // drill-in (replacing the old `disabled` placeholder button), gated to
     // entries that actually name a file.

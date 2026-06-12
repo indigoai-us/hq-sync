@@ -70,6 +70,11 @@
     // preview) simply omit the callback and no bar renders.
     reactions?: ReactionMap;
     ontogglereaction?: (messageId: string, emoji: string) => void;
+    // When true, the reply composer is hidden and a static note renders in its
+    // place. Used for read-only threads with no real recipient yet — e.g. the
+    // "Your agent" placeholder thread (agent send/receive is deferred to a
+    // later story behind the v4AgentThread flag).
+    readonly?: boolean;
   }
 
   // `onreact` is part of the public API for a later story (reactions) but unused
@@ -88,6 +93,7 @@
     activeRootEventId = null,
     reactions = {},
     ontogglereaction,
+    readonly = false,
   }: Props = $props();
 
   let replyText = $state('');
@@ -139,6 +145,29 @@
     } catch {
       return '';
     }
+  }
+
+  function dayKey(iso: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return '';
+    return date.toDateString();
+  }
+
+  function formatDateSeparator(iso: string): string {
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }).format(new Date(iso));
+    } catch {
+      return '';
+    }
+  }
+
+  function startsNewDay(index: number): boolean {
+    if (index === 0) return true;
+    return dayKey(messages[index - 1]?.createdAt ?? '') !== dayKey(messages[index]?.createdAt ?? '');
   }
 
   // Short relative-time stamp for the "last {time}" reply affordance (US-022).
@@ -197,7 +226,12 @@
     <p class="dm-thread-status dm-thread-error" role="alert">{error}</p>
   {/if}
 
-  {#each messages as msg (msg.eventId)}
+  {#each messages as msg, index (msg.eventId)}
+    {#if startsNewDay(index)}
+      <div class="date-separator" aria-label={formatDateSeparator(msg.createdAt)}>
+        <span>{formatDateSeparator(msg.createdAt)}</span>
+      </div>
+    {/if}
     <div class="dm-msg dm-msg-{msg.direction}">
       {#if showAuthors && msg.direction === 'in'}
         <span class="dm-msg-author">{msg.fromDisplayName}</span>
@@ -271,32 +305,41 @@
         <span class="dm-msg-pending">{msg.pendingLabel || 'Pending'}</span>
       {:else}
         <span class="dm-msg-time">{formatTime(msg.createdAt)}</span>
+        {#if msg.direction === 'out'}
+          <span class="dm-msg-time">Delivered</span>
+        {/if}
       {/if}
     </div>
   {/each}
 </div>
 
-<div class="dm-reply">
-  <textarea
-    class="dm-reply-input"
-    bind:value={replyText}
-    onkeydown={onReplyKeydown}
-    {placeholder}
-    rows="3"
-    disabled={sending}
-    aria-label="Reply message"
-  ></textarea>
-  <div class="dm-reply-footer">
-    {#if sendError}
-      <span class="dm-reply-error" role="alert">{sendError}</span>
-    {:else}
-      <span class="dm-reply-hint">⌘↵ to send</span>
-    {/if}
-    <button class="btn btn-send" onclick={send} disabled={sending || replyText.trim().length === 0}>
-      {sending ? 'Sending…' : 'Send'}
-    </button>
+{#if readonly}
+  <div class="dm-reply dm-reply-readonly">
+    <span class="dm-reply-hint">Agent replies aren’t available yet.</span>
   </div>
-</div>
+{:else}
+  <div class="dm-reply">
+    <textarea
+      class="dm-reply-input"
+      bind:value={replyText}
+      onkeydown={onReplyKeydown}
+      {placeholder}
+      rows="3"
+      disabled={sending}
+      aria-label="Reply message"
+    ></textarea>
+    <div class="dm-reply-footer">
+      {#if sendError}
+        <span class="dm-reply-error" role="alert">{sendError}</span>
+      {:else}
+        <span class="dm-reply-hint">⌘↵ to send</span>
+      {/if}
+      <button class="btn btn-send" onclick={send} disabled={sending || replyText.trim().length === 0}>
+        {sending ? 'Sending…' : 'Send'}
+      </button>
+    </div>
+  </div>
+{/if}
 
 <style>
   /* ── Thread (scrollable conversation) ─────────────────────────────────── */
@@ -334,7 +377,7 @@
   .dm-msg {
     display: flex;
     flex-direction: column;
-    max-width: 80%;
+    max-width: min(80%, 420px);
   }
 
   .dm-msg-in {
@@ -357,7 +400,7 @@
   .dm-bubble {
     position: relative;
     padding: 0.5rem 0.75rem;
-    border-radius: 12px;
+    border-radius: 16px;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -457,6 +500,23 @@
     padding: 0.0625rem 0.4375rem;
     border-radius: 999px;
     margin: 0.1875rem 0.25rem 0;
+  }
+
+  .date-separator {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.5rem 0;
+    color: var(--popover-text-muted, #8a8a98);
+    font-size: 0.6875rem;
+  }
+
+  .date-separator::before,
+  .date-separator::after {
+    content: '';
+    height: 1px;
+    flex: 1;
+    background: var(--popover-divider, rgba(255, 255, 255, 0.08));
   }
 
   /* ── Thread reply-count affordance (US-022) ───────────────────────────── */
@@ -637,7 +697,7 @@
 
   :global([data-window='messages']) .dm-bubble {
     padding: var(--space-2) var(--space-3);
-    border-radius: var(--radius-md);
+    border-radius: 16px;
     border: 1px solid var(--border);
   }
 

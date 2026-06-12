@@ -19,6 +19,12 @@ export interface Workspace {
   // Diagnostic when state is 'broken'. Surfaced in the row tooltip + Connect
   // button hint. Always null for non-broken states.
   brokenReason: string | null;
+  // Invite metadata from the vault membership row (`invitedBy` is a prs_*
+  // person uid, `invitedAt` an ISO timestamp). Only meaningful while
+  // membershipStatus === 'pending' — the V4 Companies overview renders the
+  // NOT CONNECTED invite row from them.
+  invitedBy: string | null;
+  invitedAt: string | null;
 }
 
 // Mirrors src-tauri/src/commands/workspaces.rs::WorkspacesResult.

@@ -28,6 +28,13 @@
     edits: number;
   }
 
+  type ActivityDirection = 'all' | 'incoming' | 'outgoing';
+
+  interface ActivityGroup {
+    who: string;
+    entries: ActivityEntry[];
+  }
+
   interface CompanyActivity {
     stats: ActivityStats;
     sparkline: number[];
@@ -55,6 +62,7 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
+  let activityDirection = $state<ActivityDirection>('all');
 
   // HQ root for the Claude Code drill-in (US-012). Loaded lazily via get_config
   // (same command App.svelte uses; Tauri caches the read). Empty until loaded —
@@ -79,7 +87,9 @@
 
   const sparklineMax = $derived(Math.max(1, ...activity.sparkline));
   const contributorMax = $derived(Math.max(1, ...activity.top.map((contributor) => contributor.edits)));
-  const recentCount = $derived(activity.recent.length);
+  const filteredRecent = $derived(activity.recent.filter((entry) => matchesDirection(entry, activityDirection)));
+  const recentGroups = $derived(groupRecentActivity(filteredRecent));
+  const recentCount = $derived(filteredRecent.length);
 
   $effect(() => {
     reloadToken;
@@ -167,6 +177,43 @@
 
   function initialFor(who: string): string {
     return who.trim().charAt(0).toUpperCase() || '?';
+  }
+
+  function groupRecentActivity(entries: ActivityEntry[]): ActivityGroup[] {
+    const groups = new Map<string, ActivityEntry[]>();
+    for (const entry of entries) {
+      const who = entry.who.trim() || 'Unknown';
+      groups.set(who, [...(groups.get(who) ?? []), entry]);
+    }
+    return Array.from(groups, ([who, entries]) => ({ who, entries }));
+  }
+
+  function matchesDirection(entry: ActivityEntry, direction: ActivityDirection): boolean {
+    return direction === 'all' || activityEntryDirection(entry) === direction;
+  }
+
+  function activityEntryDirection(entry: ActivityEntry): Exclude<ActivityDirection, 'all'> {
+    const text = `${entry.what} ${entry.file}`.toLowerCase();
+    if (/\b(received|pulled|download|incoming|cloud|remote|restored)\b/.test(text)) {
+      return 'incoming';
+    }
+    return 'outgoing';
+  }
+
+  function verbLane(what: string): string {
+    const text = what.toLowerCase();
+    if (/\b(delete|remove|missing)\b/.test(text)) return 'DEL';
+    if (/\b(create|add|new)\b/.test(text)) return 'ADD';
+    if (/\b(sync|push|pull|receive|restore)\b/.test(text)) return 'SYNC';
+    return 'UPD';
+  }
+
+  function dateChip(when: string): string {
+    const trimmed = when.trim();
+    if (!trimmed) return 'Recent';
+    if (/today|now|minute|hour/i.test(trimmed)) return 'Today';
+    if (/yesterday/i.test(trimmed)) return 'Yesterday';
+    return trimmed.split(',')[0] ?? trimmed;
   }
 
   function retry() {
@@ -272,8 +319,36 @@
 
   <section class="activity-card recent-card" aria-labelledby="recent-files-title" aria-busy={loading}>
     <header class="card-header">
-      <h3 id="recent-files-title">Recent files</h3>
-      <span>{recentCount} of {activity.stats.files7}</span>
+      <div class="recent-heading">
+        <h3 id="recent-files-title">Recent files</h3>
+        <span>{recentCount} of {activity.stats.files7}</span>
+      </div>
+      <div class="direction-toggle" aria-label="Activity direction">
+        <button
+          type="button"
+          class:is-active={activityDirection === 'all'}
+          aria-pressed={activityDirection === 'all'}
+          onclick={() => (activityDirection = 'all')}
+        >
+          All
+        </button>
+        <button
+          type="button"
+          class:is-active={activityDirection === 'outgoing'}
+          aria-pressed={activityDirection === 'outgoing'}
+          onclick={() => (activityDirection = 'outgoing')}
+        >
+          Out
+        </button>
+        <button
+          type="button"
+          class:is-active={activityDirection === 'incoming'}
+          aria-pressed={activityDirection === 'incoming'}
+          onclick={() => (activityDirection = 'incoming')}
+        >
+          In
+        </button>
+      </div>
     </header>
 
     {#if loading}
@@ -282,31 +357,34 @@
           <span style={`width: ${92 - index * 7}%`}></span>
         {/each}
       </div>
-    {:else if activity.recent.length > 0}
+    {:else if recentGroups.length > 0}
       <div class="recent-list" data-testid="activity-recent-list">
-        {#each activity.recent as entry, index (`${entry.file}:${index}`)}
-          <div class="recent-row" data-testid="activity-row">
-            <span class="avatar" title={entry.who}>{initialFor(entry.who)}</span>
-            <div class="recent-copy">
-              <strong title={entry.file}>{entry.file}</strong>
-              <span>{entry.who} · {entry.what}</span>
-            </div>
-            <time>{entry.when}</time>
-            <!--
-              Drill-in (US-012): the only path the activity data carries is
-              `entry.file`, so the entry drills into that file via the shared
-              Claude Code link util — same mechanism as the story-files
-              affordance. We surface it only for entries that actually name a
-              file (the normalizer falls back to "Untitled file" when absent).
-            -->
-            {#if entry.file && entry.file !== 'Untitled file'}
-              <OpenFileInClaudeCode
-                file={entry.file}
-                folder={hqFolderPath}
-                label="Open"
-              />
-            {/if}
-          </div>
+        {#each recentGroups as group (`actor:${group.who}`)}
+          <section class="actor-group" aria-label={`${group.who} activity`}>
+            <header class="actor-header">
+              <span class="avatar" title={group.who}>{initialFor(group.who)}</span>
+              <strong>{group.who}</strong>
+              <span>{group.entries.length} changes</span>
+            </header>
+
+            {#each group.entries as entry, index (`${entry.file}:${entry.when}:${index}`)}
+              <div class="recent-row" data-testid="activity-row">
+                <span class="verb-lane" title={entry.what}>{verbLane(entry.what)}</span>
+                <div class="recent-copy">
+                  <strong title={entry.file}>{entry.file}</strong>
+                  <span>{entry.what}</span>
+                </div>
+                <time class="date-chip">{dateChip(entry.when)}</time>
+                {#if entry.file && entry.file !== 'Untitled file'}
+                  <OpenFileInClaudeCode
+                    file={entry.file}
+                    folder={hqFolderPath}
+                    label="Open"
+                  />
+                {/if}
+              </div>
+            {/each}
+          </section>
         {/each}
       </div>
     {:else}
@@ -449,6 +527,47 @@
     white-space: nowrap;
   }
 
+  .recent-heading {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .direction-toggle {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-subtle);
+  }
+
+  .direction-toggle button {
+    height: 24px;
+    min-width: 34px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .direction-toggle button.is-active {
+    background: var(--row-active);
+    color: var(--fg);
+  }
+
+  .direction-toggle button:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+
   .sparkline-wrap {
     flex: 0 0 auto;
     color: var(--muted-3);
@@ -539,9 +658,50 @@
     display: grid;
   }
 
+  .actor-group {
+    display: grid;
+    border-top: 1px solid var(--border);
+  }
+
+  .actor-group:first-child {
+    border-top: 0;
+  }
+
+  .actor-header {
+    display: grid;
+    grid-template-columns: 28px minmax(0, auto) 1fr;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    padding: 10px 13px 8px;
+    background: var(--bg-subtle);
+  }
+
+  .actor-header strong,
+  .actor-header span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .actor-header strong {
+    color: var(--fg);
+    font-size: var(--text-base);
+    font-weight: 600;
+    line-height: 18px;
+  }
+
+  .actor-header span:last-child {
+    justify-self: end;
+    color: var(--muted);
+    font-size: var(--text-base);
+    line-height: 16px;
+  }
+
   .recent-row {
     display: grid;
-    grid-template-columns: 28px minmax(0, 1fr) auto auto;
+    grid-template-columns: 44px minmax(0, 1fr) auto auto;
     align-items: center;
     gap: 10px;
     min-width: 0;
@@ -551,6 +711,20 @@
 
   .recent-row:first-child {
     border-top: 0;
+  }
+
+  .verb-lane {
+    display: inline-grid;
+    place-items: center;
+    width: 44px;
+    height: 22px;
+    border-radius: 5px;
+    background: var(--row-hover);
+    color: var(--muted-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 700;
+    line-height: 14px;
   }
 
   .avatar {
@@ -590,13 +764,17 @@
   }
 
   .recent-copy span,
-  .recent-row time {
+  .date-chip {
     color: var(--muted);
     font-size: var(--text-base);
     line-height: 16px;
   }
 
-  .recent-row time {
+  .date-chip {
+    padding: 3px 7px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-subtle);
     font-family: var(--font-mono);
     white-space: nowrap;
   }
@@ -681,7 +859,11 @@
     }
 
     .recent-row {
-      grid-template-columns: 28px minmax(0, 1fr) auto;
+      grid-template-columns: 44px minmax(0, 1fr) auto;
+    }
+
+    .direction-toggle {
+      width: max-content;
     }
 
     .recent-row :global(.open-claude-btn) {
