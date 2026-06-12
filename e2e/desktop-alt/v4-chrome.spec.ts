@@ -84,6 +84,8 @@ describe('desktop-alt V4 chrome (US-002)', () => {
 
     expect(desktopApp).toContain('<V4TitleBar');
     expect(desktopApp).toContain('<V4Sidebar');
+    expect(desktopApp).toContain('{companies}');
+    expect(desktopApp).not.toContain('companies={workspaces}');
     // The secondary sidebar is composed conditionally; the settings surface is
     // suppressed until its in-window page (US-013) is wired, so match the guard
     // by prefix rather than the exact unconditional `{#if secondarySidebar}`.
@@ -97,6 +99,7 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     const harnessMocks = readRepoFile('dev-harness/mocks/core.ts');
 
     expect(sidebar).toContain('class="v4-nav v4-company-nav"');
+    expect(sidebar).toContain('flex: 1 1 auto');
     expect(sidebar).toContain('overflow-y: auto');
     expect(sidebar).not.toContain('data-testid="v4-more-companies"');
     expect(sidebar).not.toContain('model.overflowCount');

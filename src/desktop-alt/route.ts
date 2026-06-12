@@ -95,13 +95,11 @@ export const SETTINGS_SECTIONS: ReadonlyArray<{
 export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
   // Desktop is local-first. If a company folder exists on this machine, it must
   // be navigable even when it is not cloud-backed yet. Cloud-only memberships
-  // also stay visible so an invite/download state does not disappear from the
-  // desktop shell.
+  // also stay visible so an invite/download state does not disappear. The
+  // backend command is already the visibility boundary for desktop workspaces,
+  // so do not second-guess it with one stale/missing metadata flag.
   return workspaces.filter(
-    (workspace) =>
-      workspace.kind === 'personal' ||
-      (workspace.kind === 'company' &&
-        (workspace.hasLocalFolder || workspace.state === 'cloud-only')),
+    (workspace) => workspace.kind === 'personal' || workspace.kind === 'company',
   );
 }
 

@@ -810,7 +810,7 @@
   <div class="desktop-body">
     <V4Sidebar
       {route}
-      companies={workspaces}
+      {companies}
       onnavigate={(next) => navigate(fromV4Route(next))}
     />
 

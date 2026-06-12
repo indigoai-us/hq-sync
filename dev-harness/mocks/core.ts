@@ -224,6 +224,20 @@ const HARNESS_WORKSPACES: Workspace[] = [
     lastSyncedAt: null,
     brokenReason: 'manifest cloud_uid does not match the current vault membership',
   }),
+  ...Array.from({ length: 15 }, (_, index) =>
+    workspace({
+      slug: `local-company-${index + 1}`,
+      displayName: `Local Company ${index + 1}`,
+      state: 'local-only',
+      cloudUid: null,
+      bucketName: null,
+      hasLocalFolder: index % 3 !== 0,
+      localPath: `/Users/corey/Documents/HQ/companies/local-company-${index + 1}`,
+      membershipStatus: null,
+      role: null,
+      lastSyncedAt: null,
+    }),
+  ),
 ];
 
 const handlers: Record<string, Handler> = {

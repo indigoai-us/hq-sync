@@ -48,7 +48,12 @@ describe('US-002 V4 desktop routes', () => {
 
   it('exposes local-first companies plus the personal page in desktop navigation', () => {
     const visible = getDesktopCompanies([
-      company({ slug: 'synced', displayName: 'Synced', state: 'synced' }),
+      company({
+        slug: 'synced',
+        displayName: 'Synced',
+        state: 'synced',
+        hasLocalFolder: false,
+      }),
       company({
         slug: 'local',
         displayName: 'Local',
@@ -67,7 +72,8 @@ describe('US-002 V4 desktop routes', () => {
     ]);
 
     // Local folders get a page even before they are cloud-backed. Cloud-only
-    // memberships stay visible too, but show "not on this Mac" in the chrome.
+    // memberships stay visible too. A stale/missing hasLocalFolder flag must
+    // not erase a workspace returned by the backend.
     expect(visible.map((workspace) => workspace.slug)).toEqual([
       'synced',
       'local',
