@@ -318,7 +318,26 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// this — it's the surface that was stuck. The `~6.5.0` -> `~6.6.0` bump keeps
 /// the npx pin on the same release train as hq-cli. See
 /// indigoai-us/hq-cloud#70 (DEV-1768).
-pub const HQ_CLOUD_VERSION: &str = "~6.6.0";
+///
+/// **6.7.x (machine-identity auth for company agents)** — rides along on the
+/// jump to the 6.8 line; additive, gated auth mode that does not change the
+/// human-Cognito menubar flow. See indigoai-us/hq-cloud#71/#72.
+///
+/// **6.8.0 (op-lock waits for a live holder instead of refusing fast)** — the
+/// per-HQ-root operation mutex (sync/rescue/reindex) now WAITS and acquires the
+/// instant the holder releases, instead of exiting 17. This is the surface that
+/// matters for DEV-1772 (feedback_28a1833f): the menubar instant-sync one-shot
+/// (`hq-sync-runner --companies`, which DOES take the lock — the `--watch`
+/// daemon is exempt) used to collide with the frequent ~1-min reindex hook,
+/// exit 17, and silently die. With this pin it WAITS out the short reindex and
+/// proceeds. The wait is bounded only by this command's existing 1-hour HARD
+/// timeout (not idle-based, see `SYNC_TIMEOUT`), so a long wait is safely
+/// capped and never killed by silence; the runner's stderr-only "Waiting for …"
+/// line never pollutes the ndjson stdout stream. Scripts can bound the wait
+/// with `HQ_OP_LOCK_TIMEOUT=<secs>` (0 = refuse immediately). The `~6.6.0` ->
+/// `~6.8.0` bump keeps the npx pin on the same release train as hq-cli. See
+/// indigoai-us/hq-cloud#73 (DEV-1772).
+pub const HQ_CLOUD_VERSION: &str = "~6.8.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
