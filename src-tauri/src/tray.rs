@@ -167,6 +167,7 @@ pub fn meetings_set_prompt_badge(app: AppHandle, count: usize) {
 /// `Prompt` reuses the idle icon bytes as a placeholder. The visual
 /// differentiation between Idle and Prompt comes from the tooltip text
 /// ("Meeting Detected") until a designer badge composite is created.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn icon_for_state(state: TrayState) -> Image<'static> {
     static ICON_IDLE: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_SYNCING: OnceLock<Image<'static>> = OnceLock::new();
@@ -198,19 +199,26 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     .clone()
 }
 
-/// Swap the tray icon for `state`, re-asserting the macOS template flag.
+/// Swap the tray affordance for `state`.
 ///
-/// `icon_as_template(true)` is set once at build time, but on macOS every
-/// `set_icon(...)` installs a fresh NSImage whose `isTemplate` defaults to NO —
-/// silently dropping the template flag. Our glyphs are white-on-alpha (correct
-/// for a template, where macOS uses only the alpha shape and recolours it dark
-/// on a light menu bar / light on a dark one); once the flag is lost the raw
-/// white pixels get drawn, leaving the icon invisible/white on a light menu bar.
-/// Re-applying the flag after each swap keeps the glyph adapting to the menu-bar
-/// appearance for the life of the process.
+/// On macOS we intentionally use a native text status item (`HQ`) instead of a
+/// PNG template glyph. The template image path has proven unreliable on recent
+/// macOS builds: the NSStatusItem exists, but the glyph can paint too dark or
+/// disappear entirely. A native title keeps the menu-bar launcher visible.
 fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, state: TrayState) {
-    let _ = tray.set_icon(Some(icon_for_state(state)));
-    let _ = tray.set_icon_as_template(true);
+    #[cfg(target_os = "macos")]
+    {
+        let _ = tray.set_icon(None);
+        let _ = tray.set_title(Some(TRAY_TITLE));
+        let _ = state;
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = tray.set_icon(Some(icon_for_state(state)));
+        let _ = tray.set_icon_as_template(true);
+        let _ = tray.set_title(Some(TRAY_TITLE));
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +235,7 @@ const MENU_QUIT: &str = "quit";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TRAY_ID: &str = "hq-sync-tray";
+const TRAY_TITLE: &str = "HQ";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Setup
@@ -259,10 +268,18 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .item(&quit)
         .build()?;
 
-    // Build tray icon
-    let tray = TrayIconBuilder::with_id(TRAY_ID)
+    // Build tray icon. macOS uses a native text status item for reliability;
+    // other platforms keep the PNG icon path.
+    #[cfg(target_os = "macos")]
+    let tray_builder = TrayIconBuilder::with_id(TRAY_ID);
+
+    #[cfg(not(target_os = "macos"))]
+    let tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon_for_state(TrayState::Idle))
-        .icon_as_template(true)
+        .icon_as_template(true);
+
+    let tray_builder = tray_builder
+        .title(TRAY_TITLE)
         .tooltip("HQ Sync — Idle")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -283,7 +300,9 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                     _ => {}
                 }
             }
-        })
+        });
+
+    let tray = tray_builder
         .on_tray_icon_event({
             let app_handle = app.clone();
             move |_tray, event| {
@@ -302,11 +321,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     log("tray", "tray icon built");
 
-    // macOS Tahoe/Sequoia: SystemUIServer can silently fail to render a
-    // newly-registered NSStatusItem — especially after app updates.
-    // Toggling visibility forces re-registration with the system process.
-    tray.set_visible(false).ok();
-    tray.set_visible(true).ok();
+    // Give macOS one explicit post-build image/title pass. Avoid the old
+    // hide/show workaround here: `set_visible(false)` removes the NSStatusItem,
+    // and if re-adding fails silently the app is alive with no menu-bar affordance.
+    set_state_icon(&tray, TrayState::Idle);
 
     // Hide the popover when the user clicks away. `window.hide()` preserves
     // the renderer state (DOM, Svelte stores, listeners), so re-showing is
@@ -603,10 +621,10 @@ pub fn get_current_state() -> TrayState {
 // macOS tray re-assertion (Tahoe/Sequoia workaround)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Force the tray icon to re-register with macOS SystemUIServer.
+/// Force the tray icon contents to be re-applied to macOS SystemUIServer.
 ///
 /// macOS Tahoe (26.x) and Sequoia (15.x) can silently prevent
-/// NSStatusItem rendering after app updates or preference corruption.
+/// NSStatusItem image rendering after app updates or preference corruption.
 /// This is a widespread OS-level regression affecting Tauri (#13770),
 /// Electron (#44817), Maccy, BetterDisplay, and other menubar apps.
 ///
@@ -619,7 +637,6 @@ fn reassert_tray(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(tray) = handle.tray_by_id(TRAY_ID) {
-            let _ = tray.set_visible(false);
             let _ = tray.set_visible(true);
             let state = get_current_state();
             set_state_icon(&tray, state);
@@ -786,6 +803,11 @@ mod tests {
     #[test]
     fn test_tray_id_constant() {
         assert_eq!(TRAY_ID, "hq-sync-tray");
+    }
+
+    #[test]
+    fn test_tray_title_constant() {
+        assert_eq!(TRAY_TITLE, "HQ");
     }
 
     #[test]
