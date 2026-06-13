@@ -30,16 +30,31 @@ describe('desktop-alt V4 settings and first-run (US-013)', () => {
     }
   });
 
-  it('renders the V4 section index with scroll anchors and gated annotations', () => {
-    expect(page).toContain("id: 'sync', label: 'Sync'");
-    expect(page).toContain("id: 'notifications', label: 'Notifications'");
-    expect(page).toContain("id: 'updates', label: 'Updates'");
-    expect(page).toContain("id: 'general', label: 'General'");
-    expect(page).toContain("id: 'meetings', label: 'Meetings'");
-    expect(page).toContain('scrollIntoView({ block: \'start\', behavior: \'smooth\' })');
+  it('renders the section anchors, scroll behavior, and gated annotations', () => {
+    // SettingsPage renders every section inline (one scroll) and scrolls the
+    // active one into view; the secondary sidebar provides the section index.
+    for (const [id, label] of [
+      ['sync', 'Sync'],
+      ['notifications', 'Notifications'],
+      ['updates', 'Updates'],
+      ['general', 'General'],
+      ['meetings', 'Meetings'],
+    ]) {
+      expect(page).toContain(`id="${id}"`);
+      expect(page).toContain(`<h2>${label}</h2>`);
+    }
+    expect(page).toContain("scrollIntoView({ behavior: 'smooth', block: 'start' })");
     expect(page).toContain('class="setting-row gated-row"');
     expect(page).toContain('@getindigo.ai only');
     expect(page).toContain('<em>Gated</em>');
+  });
+
+  it('styles toggles as macOS green-fill pills (the one sanctioned control color)', () => {
+    // SPEC §5/§6: setting toggles use a 26×16 pill, green when on — not the
+    // default native checkbox. Locks the appearance:none pill + green fill.
+    expect(page).toContain("input[type='checkbox']");
+    expect(page).toContain('appearance: none');
+    expect(page).toContain('var(--v4-ok)');
   });
 
   it('restyles first-run and keeps the one-time auto-sync notice explicit', () => {

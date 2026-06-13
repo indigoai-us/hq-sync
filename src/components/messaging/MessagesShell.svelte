@@ -828,9 +828,13 @@
       </button>
     </header>
 
+    <!-- Filter row — one horizontal line of quiet text tabs. All/People/Channels
+         are the primary scope triad; Requests is demoted to the row end behind a
+         hairline. No purple dot, no pill, no track. Active = brighter text +
+         a colorless underline. State is unchanged: same Segment union + handlers. -->
     <nav class="segments" aria-label="Message segments">
       <button
-        class="segment"
+        class="seg"
         class:active={segment === 'all'}
         type="button"
         onclick={() => (segment = 'all')}
@@ -838,7 +842,7 @@
         All
       </button>
       <button
-        class="segment"
+        class="seg"
         class:active={segment === 'people'}
         type="button"
         onclick={() => (segment = 'people')}
@@ -846,23 +850,23 @@
         People
       </button>
       <button
-        class="segment"
+        class="seg"
+        class:active={segment === 'channels'}
+        type="button"
+        onclick={() => (segment = 'channels')}
+      >
+        Channels
+      </button>
+      <button
+        class="seg seg-requests"
         class:active={segment === 'requests'}
         type="button"
         onclick={() => (segment = 'requests')}
       >
         Requests
         {#if pendingRequests > 0}
-          <span class="segment-badge">{pendingRequests}</span>
+          <span class="filter-count">{pendingRequests}</span>
         {/if}
-      </button>
-      <button
-        class="segment"
-        class:active={segment === 'channels'}
-        type="button"
-        onclick={() => (segment = 'channels')}
-      >
-        Channels
       </button>
     </nav>
 
@@ -1078,7 +1082,7 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
-    padding: var(--space-4) var(--space-4) var(--space-3);
+    padding: var(--space-4) var(--space-4) var(--space-2);
     flex-shrink: 0;
   }
 
@@ -1107,80 +1111,77 @@
 
   .new-message-btn:hover {
     background: var(--row-hover);
-    border-color: var(--accent);
+    border-color: var(--blue);
   }
 
   .new-message-btn:focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid var(--blue);
     outline-offset: 1px;
   }
 
+  /* Quiet text-tab filter row — one horizontal line of minimal labels.
+     Active = brighter text (--fg) + weight 500 + a thin colorless underline
+     drawn as an inset box-shadow (adds no height, never shifts the baseline).
+     Three grays + a neutral count chip. No pills, no track, no purple dot.
+     Uses only tokens resolvable in this cascade (popover.css + desktop-alt.css). */
   .segments {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 0 var(--space-3) var(--space-3);
+    align-items: center;
+    gap: var(--space-5);
+    padding: 0 var(--space-4) var(--space-2);
     flex-shrink: 0;
   }
 
-  .segment {
+  .seg {
     position: relative;
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    width: 100%;
-    height: 30px;
-    text-align: left;
-    padding: 0 var(--space-2) 0 calc(var(--space-3) + 6px);
     border: none;
-    border-radius: 6px;
     background: transparent;
+    padding: var(--space-1) 0;
     color: var(--muted);
     font-family: var(--font-sans);
-    font-size: var(--text-base);
+    font-size: var(--text-micro);
     font-weight: 400;
+    letter-spacing: 0.04em;
+    line-height: 1.2;
     cursor: pointer;
-    transition:
-      background-color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1),
-      color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
+    white-space: nowrap;
+    transition: color 0.12s cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
-  .segment:hover {
-    background: var(--row-hover);
+  .seg:hover {
     color: var(--fg);
   }
 
-  /* Active nav cue mirrors the desktop sidebar: a restrained row-active surface
-     plus a 4px Indigo dot in the left gutter — not a filled accent pill. */
-  .segment.active {
-    background: var(--row-active);
+  /* Active cue: brighter text + a 1.5px underline as an inset shadow. Colorless
+     on purpose — maximum calm; this is the kill of the old violet --accent dot. */
+  .seg.active {
     color: var(--fg);
     font-weight: 500;
+    box-shadow: inset 0 -1.5px 0 currentColor;
   }
 
-  .segment.active::before {
-    content: '';
-    position: absolute;
-    left: var(--space-2);
-    top: 50%;
-    width: 4px;
-    height: 4px;
-    margin-top: -2px;
-    border-radius: 999px;
-    background: var(--accent);
-  }
-
-  .segment:focus-visible {
+  .seg:focus-visible {
     outline: 2px solid var(--blue);
-    outline-offset: -2px;
+    outline-offset: 2px;
+    border-radius: 2px;
   }
 
-  /* Request count: a subtle neutral pill that marks state (count), not
-     decoration. Monospace tabular numerals, no stoplight color. */
-  .segment-badge {
+  /* Requests demoted to the row end, separated by a hairline so the All/People/
+     Channels triad reads as the primary scope switch and Requests as a quiet
+     secondary 'incoming' affordance. Behavior is identical to the old 4th tab. */
+  .seg-requests {
     margin-left: auto;
-    min-width: 18px;
-    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding-left: var(--space-4);
+    border-left: 1px solid var(--border);
+  }
+
+  /* Neutral count chip — state, not decoration. Tabular monospace, no color. */
+  .filter-count {
+    min-width: 16px;
+    height: 15px;
     padding: 0 var(--space-1);
     box-sizing: border-box;
     display: inline-flex;
@@ -1257,7 +1258,7 @@
     bottom: 7px;
     width: 2px;
     border-radius: 999px;
-    background: var(--accent);
+    background: var(--blue);
   }
 
   .contact-row:focus-visible {
@@ -1288,7 +1289,7 @@
   }
 
   .bolt-avatar {
-    background: var(--accent-soft);
+    background: var(--surface-raise);
     color: var(--fg);
   }
 

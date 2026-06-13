@@ -19,14 +19,13 @@
 
   type DotTone = 'ok' | 'warn' | 'error' | 'idle';
   type TaskGroupKey = 'in-progress' | 'in-review' | 'todo' | 'done-recent';
-  type TaskFilter = 'all' | 'open' | 'mine' | 'p1';
+  type TaskFilter = 'all' | 'open' | 'p1';
 
   interface TaskRow {
     story: Story;
     project: Project;
     state: StoryState;
     group: TaskGroupKey;
-    assignee: string;
   }
 
   interface TaskGroup {
@@ -85,9 +84,9 @@
         );
         if (cancelled) return;
         projects = companyProjects;
-        rows = storySets.flatMap(({ project, stories }, projectIndex) =>
-          classifyStories(stories).map(({ story, state }, storyIndex) =>
-            toTaskRow(project, story, state, projectIndex, storyIndex),
+        rows = storySets.flatMap(({ project, stories }) =>
+          classifyStories(stories).map(({ story, state }) =>
+            toTaskRow(project, story, state),
           ),
         );
       } catch (err) {
@@ -107,19 +106,12 @@
     };
   });
 
-  function toTaskRow(
-    project: Project,
-    story: Story,
-    state: StoryState,
-    projectIndex: number,
-    storyIndex: number,
-  ): TaskRow {
+  function toTaskRow(project: Project, story: Story, state: StoryState): TaskRow {
     return {
       project,
       story,
       state,
       group: taskGroupFor(story, state),
-      assignee: assigneeLabel(story, projectIndex, storyIndex),
     };
   }
 
@@ -162,56 +154,31 @@
     return words.length > 2 ? words.slice(0, 2).join(' ') : name;
   }
 
-  function assigneeLabel(story: Story, projectIndex: number, storyIndex: number): string {
-    const raw = [story.title, story.description, ...story.labels].join(' ').toLowerCase();
-    if (raw.includes('you') || raw.includes('manual') || (projectIndex + storyIndex) % 5 === 1) {
-      return 'You';
-    }
-    if ((projectIndex + storyIndex) % 5 === 3) return initials(story.title);
-    return 'Agent';
-  }
-
-  function initials(value: string): string {
-    const parts = value.match(/[A-Za-z0-9]+/g) ?? [];
-    return parts
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join('');
-  }
+  // prd.json carries no assignee/owner field and no per-story completion
+  // timestamp (`passes` is a boolean). So every story is genuinely unassigned
+  // until a person or an agent picks it up, and a completed story has no
+  // recorded time. Show the truth rather than inventing an owner from row
+  // position or a completion time from a string hash.
+  const UNASSIGNED = 'Unassigned';
 
   function completionMeta(row: TaskRow): string {
-    if (!row.story.passes) return row.assignee;
-    const hours = 2 + (Math.abs(hash(row.story.id)) % 7);
-    return `passed ${hours}h ago`;
-  }
-
-  function hash(value: string): number {
-    return [...value].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+    return row.story.passes ? 'Done' : UNASSIGNED;
   }
 
   function matchesTaskFilter(row: TaskRow, filter: TaskFilter): boolean {
     if (filter === 'open') return !row.story.passes;
-    if (filter === 'mine') return row.assignee === 'You';
     if (filter === 'p1') return priorityValue(row.story) === 1;
     return true;
   }
 
   function filterLabel(filter: TaskFilter): string {
     if (filter === 'open') return 'Open';
-    if (filter === 'mine') return 'Mine';
     if (filter === 'p1') return 'P1';
     return 'All';
   }
 
   function cycleFilter() {
-    taskFilter =
-      taskFilter === 'all'
-        ? 'open'
-        : taskFilter === 'open'
-          ? 'mine'
-          : taskFilter === 'mine'
-            ? 'p1'
-            : 'all';
+    taskFilter = taskFilter === 'all' ? 'open' : taskFilter === 'open' ? 'p1' : 'all';
   }
 
   function openTask(row: TaskRow): void {
@@ -304,13 +271,7 @@
               <span class="id-lane">{row.story.id}</span>
               <strong class="title-lane">{row.story.title}</strong>
               <span class="project-chip">{projectChip(row.project)}</span>
-              <span class="assignee-lane">
-                {#if row.assignee.length <= 2 && row.assignee !== 'You'}
-                  <span class="avatar">{row.assignee}</span>
-                {:else}
-                  {completionMeta(row)}
-                {/if}
-              </span>
+              <span class="assignee-lane">{completionMeta(row)}</span>
             </button>
           {/each}
         </section>
@@ -487,18 +448,6 @@
   .assignee-lane {
     justify-content: flex-end;
     color: var(--v4-text-2);
-  }
-
-  .avatar {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
-    font-size: var(--text-base);
   }
 
   .status-dot {

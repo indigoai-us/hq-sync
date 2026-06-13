@@ -96,10 +96,14 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     expect(desktopApp).toContain('renderCompanies = nextCompanies');
     expect(desktopApp).toContain('renderWorkspaceCount = nextCompanies.length');
     expect(desktopApp).toContain('writeCachedWorkspaces(result.workspaces)');
-    expect(desktopApp).toContain('window.location.reload()');
+    // The chrome refreshes reactively from renderCompanies / renderWorkspaceCount,
+    // so the desktop must NOT hard-reload the document or remount the chrome on a
+    // workspace-list change — that mid-paint reload was the blank/freeze
+    // (see desktop-render-stability.spec.ts).
+    expect(desktopApp).not.toContain('window.location.reload()');
     expect(desktopApp).toContain('companies={renderCompanies}');
     expect(desktopApp).toContain('workspaceCount={renderWorkspaceCount}');
-    expect(desktopApp).toContain('{#key renderWorkspaceCount}');
+    expect(desktopApp).not.toContain('{#key renderWorkspaceCount}');
     expect(desktopApp).not.toContain('chromeReady');
     expect(desktopApp).not.toContain('companies={workspaces}');
     // The secondary sidebar is composed conditionally; the settings surface is

@@ -246,39 +246,32 @@
     return sections;
   }
 
-  function leadLabel(project: Project, index: number): string {
-    const raw = [project.id, project.name, project.title, project.description]
-      .join(' ')
-      .toLowerCase();
-    if (raw.includes('you') || raw.includes('corey') || index % 5 === 1) return 'You';
-    if (index % 5 === 2) return initials(projectDisplayName(project));
-    return 'Agent';
-  }
-
-  function initials(value: string): string {
-    const parts = value.match(/[A-Za-z0-9]+/g) ?? [];
-    return parts
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase())
-      .join('');
+  // prd.json carries no project lead/owner field, so a project is unassigned
+  // until a person or an agent is recorded as leading it. Show that honestly
+  // instead of inventing a You/Agent/teammate from list position.
+  function leadLabel(): string {
+    return 'Unassigned';
   }
 
   function startedLabel(project: Project): string {
     const total = project.storiesTotal === 1 ? '1 story' : `${project.storiesTotal} stories`;
-    return `started ${startedDay(project.id)} · ${total}`;
+    const started = formatProjectDate(project.createdAt);
+    return started ? `started ${started} · ${total}` : total;
   }
 
-  function startedDay(seed: string): string {
-    const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
-    const hash = [...seed].reduce((sum, char) => sum + char.charCodeAt(0), 0);
-    return days[Math.abs(hash) % days.length];
+  // Real project start = its createdAt timestamp (when known), formatted as a
+  // short calendar date — not a weekday hashed from the project id.
+  function formatProjectDate(iso: string | null | undefined): string | null {
+    if (!iso) return null;
+    const time = Date.parse(iso);
+    if (!Number.isFinite(time)) return null;
+    return new Date(time).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
-  function targetLabel(project: Project): string {
-    const hash = [...project.id].reduce((sum, char) => sum + char.charCodeAt(0), 0);
-    const day = 18 + (Math.abs(hash) % 21);
-    if (day <= 30) return `Jun ${day}`;
-    return `Jul ${day - 30}`;
+  // prd.json has no target/due date, so there is nothing real to show here. An
+  // em dash reads as "no target set" instead of a date hashed from the id.
+  function targetLabel(): string {
+    return '—';
   }
 
   function statusLabel(status: ProjectListStatus): string {
@@ -456,7 +449,7 @@
             {#each group.projects as project, index (project.id)}
               {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
               {@const status = projectListStatus(project)}
-              {@const lead = leadLabel(project, index)}
+              {@const lead = leadLabel()}
               <div
                 class="project-row"
                 data-testid="project-row"
@@ -484,20 +477,14 @@
                     {/if}
                   </span>
                 </div>
-                <div class="lead-cell">
-                  {#if lead.length <= 2 && lead !== 'You'}
-                    <span class="avatar">{lead}</span>
-                  {:else}
-                    <span>{lead}</span>
-                  {/if}
-                </div>
+                <div class="lead-cell"><span>{lead}</span></div>
                 <div class="progress-cell" aria-label={`${progress.percent}% complete`}>
                   <span class="progress-track" aria-hidden="true">
                     <span class="progress-fill" style={`width: ${progress.percent}%`}></span>
                   </span>
                   <span>{progress.complete}/{progress.total}</span>
                 </div>
-                <div class="target-cell">{targetLabel(project)}</div>
+                <div class="target-cell">{targetLabel()}</div>
                 <div class="status-cell">
                   <span class={`status-dot ${statusTone(status)}`} aria-hidden="true"></span>
                   <span>{statusLabel(status)}</span>
@@ -731,18 +718,6 @@
 
   .status-dot.idle {
     background: var(--v4-idle);
-  }
-
-  .avatar {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
-    font-size: var(--text-base);
   }
 
   .projects-error,
