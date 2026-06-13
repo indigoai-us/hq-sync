@@ -15,6 +15,7 @@
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
   import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
+  import { openAgentWorkflow } from './lib/agent-workflow';
   import {
     COMPANY_SECTIONS,
     LIBRARY_SECTIONS,
@@ -228,6 +229,24 @@
       label: 'Open settings',
       detail: 'Open sync settings',
       action: handleOpenSettings,
+    },
+    {
+      id: 'command-deploy',
+      label: activeCompany ? `Deploy a result for ${activeCompany.displayName}` : 'Deploy a result',
+      detail: 'Open the HQ deploy workflow in Claude Code',
+      action: () => runDesktopWorkflow('deploy'),
+    },
+    {
+      id: 'command-share',
+      label: 'Share a file',
+      detail: 'Mint an encrypted single-use share link',
+      action: () => runDesktopWorkflow('share'),
+    },
+    {
+      id: 'command-run-worker',
+      label: activeCompany ? `Run a worker for ${activeCompany.displayName}` : 'Run a worker',
+      detail: 'Hand work to a specialized agent',
+      action: () => runDesktopWorkflow('run-worker'),
     },
     {
       id: 'command-go-home',
@@ -598,6 +617,76 @@
 
   function handleOpenSettings(tab?: SettingsTab) {
     navigate({ kind: 'settings', tab });
+  }
+
+  // ── Agent-handoff actions (the hq-* ACTIONS in the ⌘K palette) ─────────────
+  // Each opens a Claude Code session cwd'd into HQ with a prepared prompt for
+  // the matching hq-* skill. The desktop is a viewer; the agent does the work —
+  // so these hand off rather than re-implement deploy/share/run in the app.
+  // Company-scoped verbs target the company currently on screen when there is
+  // one (activeCompany), otherwise stay general so the agent can ask.
+
+  type DesktopWorkflow = 'deploy' | 'share' | 'run-worker';
+
+  let actionToast = $state<{ text: string; tone: 'ok' | 'warn' } | null>(null);
+  let actionToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function flashToast(text: string, tone: 'ok' | 'warn') {
+    actionToast = { text, tone };
+    if (actionToastTimer !== null) clearTimeout(actionToastTimer);
+    actionToastTimer = setTimeout(() => {
+      actionToast = null;
+      actionToastTimer = null;
+    }, 5000);
+  }
+
+  function dismissToast() {
+    if (actionToastTimer !== null) clearTimeout(actionToastTimer);
+    actionToastTimer = null;
+    actionToast = null;
+  }
+
+  function desktopWorkflowPrompt(kind: DesktopWorkflow): { prompt: string; label: string } {
+    const slug = activeCompany?.slug ?? null;
+    const forCompany = slug ? ` for ${slug}` : '';
+    switch (kind) {
+      case 'deploy':
+        return {
+          label: 'deploy workflow',
+          prompt: [
+            slug ? `/deploy ${slug}` : '/deploy',
+            '',
+            `Help me deploy or share a result${forCompany}.`,
+            'Confirm the artifact or path, run the HQ deploy workflow, and return the preview/share URL when it is ready.',
+          ].join('\n'),
+        };
+      case 'share':
+        return {
+          label: 'share workflow',
+          prompt: [
+            '/hq-share',
+            '',
+            'Help me securely share a file from my HQ vault.',
+            'Ask which path and which recipients, then mint the encrypted single-use share link.',
+          ].join('\n'),
+        };
+      case 'run-worker':
+        return {
+          label: 'worker run',
+          prompt: [
+            '/run',
+            '',
+            `Help me run a worker${forCompany}.`,
+            'List the available workers and their skills, then run the one I choose.',
+          ].join('\n'),
+        };
+    }
+  }
+
+  async function runDesktopWorkflow(kind: DesktopWorkflow) {
+    const { prompt, label } = desktopWorkflowPrompt(kind);
+    const result = await openAgentWorkflow(prompt, label);
+    flashToast(result.message, result.ok ? 'ok' : 'warn');
   }
 
   function handleKeydown(event: KeyboardEvent) {
@@ -1085,6 +1174,14 @@
   {#if commandPaletteOpen}
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />
   {/if}
+
+  {#if actionToast}
+    <div class={`action-toast ${actionToast.tone}`} role="status">
+      <span class="toast-dot" aria-hidden="true"></span>
+      <span class="toast-text">{actionToast.text}</span>
+      <button class="toast-dismiss" type="button" aria-label="Dismiss" onclick={dismissToast}>×</button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1102,5 +1199,80 @@
     width: 100%;
     height: 100%;
     min-height: 0;
+  }
+
+  /* Transient confirmation for the hq-* palette actions (Deploy / Share / Run a
+     worker). Floats above the status bar; status carried by a 6px dot per the
+     V4 convention (green = opened in Claude Code, amber = prompt copied as a
+     fallback). Auto-dismisses; the × dismisses early. */
+  .action-toast {
+    position: fixed;
+    right: 16px;
+    bottom: 38px;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    max-width: min(420px, calc(100vw - 32px));
+    padding: 9px 10px 9px 12px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 8px;
+    background: var(--v4-raised);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  }
+
+  .toast-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--v4-idle);
+  }
+
+  .action-toast.ok .toast-dot {
+    background: var(--v4-ok);
+  }
+
+  .action-toast.warn .toast-dot {
+    background: var(--v4-warn);
+  }
+
+  .toast-text {
+    min-width: 0;
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    line-height: 17px;
+  }
+
+  .toast-dismiss {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--v4-text-3);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .toast-dismiss:hover {
+    background: var(--v4-active-row);
+    color: var(--v4-text-1);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .action-toast {
+      animation: action-toast-in 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+  }
+
+  @keyframes action-toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
   }
 </style>

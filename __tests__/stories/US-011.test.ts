@@ -111,16 +111,24 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(panel).toContain('bind:value={deploymentQuery}');
     expect(panel).toContain('matchesDeploymentQuery(deployment, deploymentQuery)');
     expect(panel).toContain("onclick={() => void openDeployWorkflow()}");
-    expect(panel).toContain("invoke('open_claude_code_link', { url })");
+    // Deploy hands off through the shared agent-workflow helper (which preserves
+    // the buildClaudeCodeUrl + open_claude_code_link + clipboard contract).
+    expect(panel).toContain("import { openAgentWorkflow } from '../lib/agent-workflow'");
+    expect(panel).toContain("openAgentWorkflow(prompt, 'deploy workflow')");
     expect(panel).toContain('{#each filteredDeployments as deployment, index (`${deployment.url}:${index}`)}');
     expect(panel).toContain('<DeploymentRow {deployment} />');
     expect(row).toContain('grid-template-columns: 82px 1.4fr 1fr auto auto auto;');
     expect(row).toContain('const envLabel = $derived(environmentLabel(deployment))');
     expect(row).toContain('<span class="env-chip" title={`${envLabel} environment`}>{envLabel}</span>');
-    expect(row).toContain('<button class="action-button" type="button" title="Deploy from terminal: /deploy" aria-label={`Deploy ${deployment.sub} from terminal: /deploy`} disabled > Deploy </button>');
-    expect(row).toContain('<button class="action-button danger" type="button" aria-expanded={rollbackConfirm} onclick={beginRollback} > Rollback </button>');
-    expect(row).toContain('{#if rollbackConfirm}');
-    expect(row).toContain('<div class="rollback-confirm" role="alert">');
+    // The dead per-row controls (permanently-disabled Deploy + the no-op
+    // Rollback whose Confirm reverted nothing) were removed for honesty; the
+    // detail now carries only the calm hq-deploy note. See deployments-actions
+    // spec for the full honesty contract.
+    expect(row).not.toContain('rollbackConfirm');
+    expect(row).not.toMatch(/>\s*Rollback\s*</);
+    expect(row).not.toContain('title="Deploy from terminal: /deploy"');
+    expect(row).toContain('class="detail-note"');
+    expect(row).toContain('Managed via');
   });
 
   it('pulses deploying rows blue and counts deploying deployments in the toolbar', () => {

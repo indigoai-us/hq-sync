@@ -10,6 +10,7 @@ describe('desktop-alt company work actions are functional', () => {
   const messages = readRepoFile('src/components/messaging/MessagesShell.svelte');
   const deployments = readRepoFile('src/desktop-alt/panels/DeploymentsPanel.svelte');
   const secrets = readRepoFile('src/desktop-alt/panels/SecretsPanel.svelte');
+  const agentWorkflow = readRepoFile('src/desktop-alt/lib/agent-workflow.ts');
 
   it('wires Projects filtering and unlinked-project Link handoff', () => {
     expect(projects).toContain("type ProjectFilter = 'all' | 'active' | 'needs-link'");
@@ -72,10 +73,26 @@ describe('desktop-alt company work actions are functional', () => {
     expect(deployments).toContain('bind:value={deploymentQuery}');
     expect(deployments).toContain('matchesDeploymentQuery(deployment, deploymentQuery)');
     expect(deployments).toContain("onclick={() => void openDeployWorkflow()}");
-    expect(deployments).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
-    expect(deployments).toContain("invoke('open_claude_code_link', { url })");
+    // Deploy now routes through the shared agent-handoff helper rather than
+    // re-inlining the link build; the helper preserves the buildClaudeCodeUrl +
+    // open_claude_code_link contract (asserted below).
+    expect(deployments).toContain("import { openAgentWorkflow } from '../lib/agent-workflow'");
+    expect(deployments).toContain("openAgentWorkflow(prompt, 'deploy workflow')");
     expect(deployments).toContain('data-testid="filtered-deployments-empty-state"');
     expect(deployments).not.toContain('title="Deploy from terminal: /deploy"');
+  });
+
+  it('centralizes the agent-handoff in one helper (buildClaudeCodeUrl + open_claude_code_link + clipboard fallback)', () => {
+    // The single desktop-side "hand this to an agent" path. Reuses the shared
+    // claude-code-link util + the dedicated Tauri command (NOT plugin-shell),
+    // and never dead-ends — it copies the prompt when the deep-link can't open.
+    expect(agentWorkflow).toContain(
+      "import { buildClaudeCodeUrl } from '../../lib/claude-code-link'",
+    );
+    expect(agentWorkflow).toContain("buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt })");
+    expect(agentWorkflow).toContain("invoke('open_claude_code_link', { url })");
+    expect(agentWorkflow).toContain('navigator.clipboard.writeText(prompt)');
+    expect(agentWorkflow).not.toContain("from '@tauri-apps/plugin-shell'");
   });
 
   it('wires Secrets export and new-key controls to the HQ secrets workflow', () => {

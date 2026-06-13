@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import { openAgentWorkflow } from '../lib/agent-workflow';
   import { companyStore } from '../lib/company-store.svelte';
   import DeploymentRow, {
     type DeploymentEntry,
@@ -119,24 +119,12 @@
       'Confirm the artifact or path, then use the HQ deploy workflow and return the preview/share URL when it is ready.',
     ].join('\n');
 
-    try {
-      const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
-        hqFolderPath: '',
-      }));
-      const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
-      await invoke('open_claude_code_link', { url });
-      actionMessage = 'Opened deploy workflow.';
-    } catch (err) {
-      console.error('open_claude_code_link for deploy failed:', err);
-      try {
-        await navigator.clipboard.writeText(prompt);
-        actionMessage = 'Prompt copied. Paste it into Claude Code to continue.';
-      } catch {
-        actionMessage = 'Could not open Claude Code.';
-      }
-    } finally {
-      deployBusy = false;
-    }
+    // Single shared agent-handoff path (get_config → buildClaudeCodeUrl →
+    // open_claude_code_link → clipboard fallback) used by every hq-* desktop
+    // action; surfaces the plain-language result inline.
+    const result = await openAgentWorkflow(prompt, 'deploy workflow');
+    actionMessage = result.message;
+    deployBusy = false;
   }
 </script>
 

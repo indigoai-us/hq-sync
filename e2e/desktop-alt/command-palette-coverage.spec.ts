@@ -38,6 +38,39 @@ describe('desktop-alt command palette coverage', () => {
     expect(desktopApp).toContain("navigate({ kind: 'settings', tab: section.id })");
   });
 
+  it('fills the ACTIONS section with the hq-* verbs (deploy / share / run worker)', () => {
+    // The palette is the keyboard surface for hq-* actions, not just nav. Each
+    // action hands off to the agent through the shared helper; their ids do NOT
+    // start with command-go-, so CommandPalette files them under ACTIONS.
+    expect(desktopApp).toContain("import { openAgentWorkflow } from './lib/agent-workflow'");
+    expect(desktopApp).toContain("id: 'command-deploy'");
+    expect(desktopApp).toContain("id: 'command-share'");
+    expect(desktopApp).toContain("id: 'command-run-worker'");
+    expect(desktopApp).toContain("runDesktopWorkflow('deploy')");
+    expect(desktopApp).toContain("runDesktopWorkflow('share')");
+    expect(desktopApp).toContain("runDesktopWorkflow('run-worker')");
+    // The prompts target the real hq-* skills.
+    expect(desktopApp).toContain('/hq-share');
+    expect(desktopApp).toMatch(/\/deploy/);
+    expect(desktopApp).toMatch(/'\/run'/);
+  });
+
+  it('surfaces a transient toast for action feedback (no silent clipboard fallback)', () => {
+    expect(desktopApp).toContain('function flashToast');
+    expect(desktopApp).toContain('result.ok ?');
+    expect(desktopApp).toContain('class={`action-toast ${actionToast.tone}`}');
+    // Status carried by a dot using the V4 status tokens (green ok / amber warn).
+    expect(desktopApp).toContain('var(--v4-ok)');
+    expect(desktopApp).toContain('var(--v4-warn)');
+  });
+
+  it('CommandPalette files non-navigate ids under the ACTIONS section', () => {
+    const palette = readRepoFile('src/desktop-alt/components/CommandPalette.svelte');
+    expect(palette).toContain("command.id.startsWith('command-go-') ? 'navigate' : 'actions'");
+    expect(palette).toContain("label: 'ACTIONS'");
+    expect(palette).toContain("label: 'NAVIGATE'");
+  });
+
   it('the section tables it enumerates carry every routable tab', () => {
     // Guards against the tables being trimmed without the palette noticing —
     // these are the SPEC-ordered sub-surfaces the palette promises to reach.
