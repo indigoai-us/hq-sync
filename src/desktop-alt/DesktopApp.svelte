@@ -17,9 +17,12 @@
   import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
   import {
     COMPANY_SECTIONS,
+    LIBRARY_SECTIONS,
+    SETTINGS_SECTIONS,
     companyHotkey,
     DEFAULT_COMPANY_TAB,
     DEFAULT_LIBRARY_TAB,
+    DEFAULT_SETTINGS_TAB,
     formatRelativeTime,
     fromV4Route,
     getDesktopActiveCompany,
@@ -261,12 +264,28 @@
       shortcut: '⌘5',
       action: () => navigate({ kind: 'library' }),
     },
+    ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
+      (section) => ({
+        id: `command-go-library-${section.id}`,
+        label: `Go to Library ${section.label}`,
+        detail: `Show ${section.label.toLowerCase()} in the library`,
+        action: () => navigate({ kind: 'library', tab: section.id }),
+      }),
+    ),
     {
       id: 'command-go-settings',
       label: 'Go to Settings',
       detail: 'Sync preferences and account',
       action: () => navigate({ kind: 'settings' }),
     },
+    ...SETTINGS_SECTIONS.filter((section) => section.id !== DEFAULT_SETTINGS_TAB).map(
+      (section) => ({
+        id: `command-go-settings-${section.id}`,
+        label: `Go to Settings ${section.label}`,
+        detail: `Open ${section.label.toLowerCase()} settings`,
+        action: () => navigate({ kind: 'settings', tab: section.id }),
+      }),
+    ),
     // Admin-only (default-deny) — Moderation has no sidebar row in the V4 IA,
     // so the palette is its navigation surface.
     ...(isAdmin
