@@ -117,6 +117,17 @@ pub struct Contact {
     pub last_activity_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_dm_at: Option<String>,
+    /// Optional server-supplied conversation preview fields. The current server
+    /// may omit them; preserving them here keeps the desktop rail from dropping
+    /// richer contact payloads as the API evolves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_body: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_preview: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_direction: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -997,7 +1008,9 @@ mod tests {
             "source": "company",
             "lastMessageAt": "2026-06-12T01:02:03Z",
             "lastActivityAt": "2026-06-11T01:02:03Z",
-            "lastDmAt": "2026-06-10T01:02:03Z"
+            "lastDmAt": "2026-06-10T01:02:03Z",
+            "lastMessageBody": "latest text",
+            "lastMessageDirection": "out"
         }"#;
         let c: Contact = serde_json::from_str(json).expect("Contact parses");
         assert_eq!(c.email, "a@b.com");
@@ -1006,6 +1019,8 @@ mod tests {
         assert_eq!(c.last_message_at.as_deref(), Some("2026-06-12T01:02:03Z"));
         assert_eq!(c.last_activity_at.as_deref(), Some("2026-06-11T01:02:03Z"));
         assert_eq!(c.last_dm_at.as_deref(), Some("2026-06-10T01:02:03Z"));
+        assert_eq!(c.last_message_body.as_deref(), Some("latest text"));
+        assert_eq!(c.last_message_direction.as_deref(), Some("out"));
     }
 
     #[test]

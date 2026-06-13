@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { sortContactsByRecentActivity, type ContactRecencyFields } from './contact-order';
+import {
+  contactPreviewAt,
+  contactPreviewText,
+  mergeContactPreviews,
+  previewFromMessages,
+  sortContactsByRecentActivity,
+  type ContactPreviewFields,
+  type ContactRecencyFields,
+} from './contact-order';
 
 const contact = (
   personUid: string,
   displayName: string,
-  overrides: Partial<ContactRecencyFields> = {},
-): ContactRecencyFields => ({
+  overrides: Partial<ContactPreviewFields> = {},
+): ContactPreviewFields => ({
   personUid,
   displayName,
   email: `${personUid}@example.com`,
@@ -55,5 +63,82 @@ describe('sortContactsByRecentActivity', () => {
     ]);
 
     expect(sorted.map((c) => c.displayName)).toEqual(['Ada', 'Alan', 'Grace']);
+  });
+});
+
+describe('conversation previews', () => {
+  it('merges latest notification body onto the matching contact', () => {
+    const [row] = mergeContactPreviews(
+      [contact('prs_alan', 'Alan', { email: 'alan@example.com' }) as ContactPreviewFields],
+      [
+        {
+          fromPersonUid: 'prs_alan',
+          fromEmail: 'alan@example.com',
+          body: '  Latest\nmessage  body ',
+          createdAt: '2026-06-13T10:00:00Z',
+        },
+      ],
+    );
+
+    expect(contactPreviewText(row)).toBe('Latest message body');
+    expect(contactPreviewAt(row)).toBe('2026-06-13T10:00:00Z');
+  });
+
+  it('keeps inbox-preview rows sorted by their preview timestamp after hydration', () => {
+    const rows = mergeContactPreviews(
+      [
+        contact('prs_old', 'Old', {
+          lastMessageAt: '2026-06-09T10:00:00Z',
+          lastMessageBody: 'Old thread',
+        }),
+        contact('prs_new', 'New'),
+      ],
+      [
+        {
+          fromPersonUid: 'prs_new',
+          body: 'Fresh inbox',
+          createdAt: '2026-06-13T10:00:00Z',
+        },
+      ],
+    );
+
+    expect(sortContactsByRecentActivity(rows).map((c) => c.personUid)).toEqual([
+      'prs_new',
+      'prs_old',
+    ]);
+  });
+
+  it('keeps a newer server-provided contact preview over older history', () => {
+    const [row] = mergeContactPreviews(
+      [
+        contact('prs_ada', 'Ada', {
+          lastMessageAt: '2026-06-13T11:00:00Z',
+          lastMessageBody: 'Server wins',
+          lastMessageDirection: 'out',
+        }) as ContactPreviewFields,
+      ],
+      [
+        {
+          fromPersonUid: 'prs_ada',
+          body: 'Older inbox copy',
+          createdAt: '2026-06-13T10:00:00Z',
+        },
+      ],
+    );
+
+    expect(contactPreviewText(row)).toBe('You: Server wins');
+  });
+
+  it('builds a preview from the newest loaded thread message', () => {
+    const preview = previewFromMessages([
+      { body: 'Older', createdAt: '2026-06-13T10:00:00Z', direction: 'in' },
+      { body: 'Newest', createdAt: '2026-06-13T11:00:00Z', direction: 'out' },
+    ]);
+
+    expect(preview).toEqual({
+      body: 'Newest',
+      createdAt: '2026-06-13T11:00:00Z',
+      direction: 'out',
+    });
   });
 });

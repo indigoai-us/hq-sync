@@ -37,7 +37,12 @@
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
   import {
+    contactPreviewAt,
+    contactPreviewText,
+    mergeContactPreviews,
+    previewFromMessages,
     sortContactsByRecentActivity,
+    type ContactPreviewFields,
     type ContactRecencyFields,
     type ConversationEventRecencyFields,
   } from './contact-order';
@@ -61,7 +66,7 @@
 
   // A person the caller can DM (connection or company teammate). Mirrors the
   // Rust `Contact` wire shape (camelCase).
-  interface Contact extends ContactRecencyFields {
+  interface Contact extends ContactRecencyFields, ContactPreviewFields {
     personUid: string;
     email: string;
     displayName: string;
@@ -70,6 +75,13 @@
     lastMessageAt?: string | null;
     lastActivityAt?: string | null;
     lastDmAt?: string | null;
+    lastMessageBody?: string | null;
+    lastMessagePreview?: string | null;
+    lastMessageText?: string | null;
+    lastMessageDirection?: string | null;
+    previewBody?: string | null;
+    previewAt?: string | null;
+    previewDirection?: string | null;
   }
 
   interface ContactsResponse {
@@ -139,6 +151,8 @@
   // roster degrades to server-enforced owner gating).
   let selfPersonUid = $state<string | null>(null);
   let hqFolderPath = $state('');
+  let previewHydrationRun = 0;
+  const PREVIEW_HYDRATION_LIMIT = 40;
 
   interface MembershipRow {
     companyUid: string;
@@ -331,6 +345,90 @@
     return name.slice(0, 2).toUpperCase();
   }
 
+  function contactSubline(c: Contact): string | null {
+    return contactPreviewText(c) ?? c.email?.trim() ?? null;
+  }
+
+  function formatContactTime(c: Contact): string | null {
+    const value = contactPreviewAt(c);
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const startYesterday = startToday - 24 * 60 * 60 * 1000;
+    const time = date.getTime();
+
+    if (time >= startToday) {
+      return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+    }
+    if (time >= startYesterday) return 'Yesterday';
+    if (date.getFullYear() === now.getFullYear()) {
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+    return date.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+  }
+
+  function applyContactPreview(personUid: string, preview: {
+    body: string;
+    createdAt: string | null;
+    direction: string | null;
+  }): void {
+    contacts = sortContactsByRecentActivity(
+      contacts.map((contact) =>
+        contact.personUid === personUid
+          ? {
+              ...contact,
+              previewBody: preview.body,
+              previewAt: preview.createdAt ?? contact.previewAt ?? contact.lastMessageAt ?? null,
+              previewDirection: preview.direction,
+              lastMessageAt: preview.createdAt ?? contact.lastMessageAt ?? null,
+            }
+          : contact,
+      ),
+    );
+  }
+
+  function shouldHydratePreview(c: Contact): boolean {
+    if (c.source === 'agent' || c.personUid.startsWith('email:')) return false;
+    if (contactPreviewText(c)) return false;
+    return Boolean(contactPreviewAt(c));
+  }
+
+  async function hydrateContactPreviews(seed: Contact[]): Promise<void> {
+    const run = ++previewHydrationRun;
+    const queue = seed.filter(shouldHydratePreview).slice(0, PREVIEW_HYDRATION_LIMIT);
+    const workerCount = Math.min(4, queue.length);
+    if (workerCount === 0) return;
+
+    await Promise.all(
+      Array.from({ length: workerCount }, async () => {
+        while (queue.length > 0) {
+          if (run !== previewHydrationRun) return;
+          const contact = queue.shift();
+          if (!contact) return;
+          try {
+            const resp = await invoke<ThreadResponse>('fetch_dm_thread', {
+              withPersonUid: contact.personUid,
+              limit: 1,
+            });
+            const preview = previewFromMessages(resp.messages ?? []);
+            if (preview && run === previewHydrationRun) {
+              applyContactPreview(contact.personUid, preview);
+            }
+          } catch (err) {
+            console.error('messages: preview hydration failed', contact.personUid, err);
+          }
+        }
+      }),
+    );
+  }
+
   async function loadContacts(): Promise<void> {
     loadingContacts = true;
     contactsError = null;
@@ -339,7 +437,12 @@
         invoke<ContactsResponse>('list_contacts'),
         loadContactHistoryEvents(),
       ]);
-      contacts = sortContactsByRecentActivity(resp.contacts ?? [], historyEvents);
+      const nextContacts = sortContactsByRecentActivity(
+        mergeContactPreviews(resp.contacts ?? [], historyEvents),
+        historyEvents,
+      );
+      contacts = nextContacts;
+      void hydrateContactPreviews(nextContacts);
     } catch (err) {
       contactsError = typeof err === 'string' ? err : 'Could not load conversations';
       contacts = [];
@@ -506,6 +609,8 @@
       });
       // Server returns newest-first; render chronologically (oldest → newest).
       messages = [...(resp.messages ?? [])].reverse();
+      const preview = previewFromMessages(resp.messages ?? []);
+      if (preview) applyContactPreview(c.personUid, preview);
     } catch (err) {
       threadError = typeof err === 'string' ? err : 'Could not load this conversation';
       messages = [];
@@ -612,7 +717,13 @@
         contacts = sortContactsByRecentActivity(
           contacts.map((contact) =>
             contact.personUid === selected?.personUid
-              ? { ...contact, lastMessageAt: sentAt }
+              ? {
+                  ...contact,
+                  lastMessageAt: sentAt,
+                  previewBody: text,
+                  previewAt: sentAt,
+                  previewDirection: 'out',
+                }
               : contact,
           ),
         );
@@ -784,12 +895,20 @@
                   class:active={selected?.personUid === c.personUid}
                   type="button"
                   onclick={() => selectContact(c)}
+                  title={contactSubline(c) ? `${displayLabel(c)} — ${contactSubline(c)}` : displayLabel(c)}
                 >
                   <span class="contact-avatar" aria-hidden="true">{initials(c)}</span>
                   <span class="contact-meta">
-                    <span class="contact-name">{displayLabel(c)}</span>
-                    {#if c.email}
-                      <span class="contact-sub">{c.email}</span>
+                    <span class="contact-top">
+                      <span class="contact-name">{displayLabel(c)}</span>
+                      {#if formatContactTime(c)}
+                        <time class="contact-time" datetime={contactPreviewAt(c) ?? undefined}>
+                          {formatContactTime(c)}
+                        </time>
+                      {/if}
+                    </span>
+                    {#if contactSubline(c)}
+                      <span class="contact-sub">{contactSubline(c)}</span>
                     {/if}
                   </span>
                 </button>
@@ -1177,9 +1296,19 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    flex: 1;
+  }
+
+  .contact-top {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-width: 0;
   }
 
   .contact-name {
+    flex: 1;
+    min-width: 0;
     font-size: var(--text-base);
     font-weight: 600;
     color: var(--fg);
@@ -1188,8 +1317,15 @@
     white-space: nowrap;
   }
 
+  .contact-time {
+    flex-shrink: 0;
+    font-size: var(--text-micro);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
   .contact-sub {
-    font-family: var(--font-mono);
+    font-family: var(--font-sans);
     font-size: var(--text-micro);
     color: var(--muted);
     overflow: hidden;

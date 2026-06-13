@@ -418,7 +418,7 @@ const handlers: Record<string, Handler> = {
   get_unread_summary: () => ({ unreadDms: 2, pendingRequests: 2 }),
   list_contacts: () => ({
     contacts: [
-      { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z' },
+      { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z', lastMessageBody: 'Please do — I’m restyling it to match the desktop view right now.', lastMessageDirection: 'out' },
       { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', source: 'company' },
       { personUid: 'prs_alan', email: 'alan@example.com', displayName: 'Alan Turing', companyUid: null, source: 'connection' },
       { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-08T19:43:10.000Z' },
@@ -432,14 +432,35 @@ const handlers: Record<string, Handler> = {
   }),
   fetch_dm_thread: (args) => {
     const peer = String(args?.withPersonUid ?? 'prs_ada');
-    const name = peer === 'prs_grace' ? 'Grace Hopper' : peer === 'prs_alan' ? 'Alan Turing' : 'Ada Lovelace';
-    const email = peer === 'prs_grace' ? 'grace@getindigo.ai' : peer === 'prs_alan' ? 'alan@example.com' : 'ada@getindigo.ai';
+    const people: Record<string, { name: string; email: string; latest: string }> = {
+      prs_ada: {
+        name: 'Ada Lovelace',
+        email: 'ada@getindigo.ai',
+        latest: 'Please do — I’m restyling it to match the desktop view right now.',
+      },
+      prs_grace: {
+        name: 'Grace Hopper',
+        email: 'grace@getindigo.ai',
+        latest: 'Pushed the conflict-versioning notes — take a look when you get a sec?',
+      },
+      prs_alan: {
+        name: 'Alan Turing',
+        email: 'alan@example.com',
+        latest: 'Meeting recap is synced to the Liverecover folder.',
+      },
+      prs_katherine: {
+        name: 'Katherine Johnson',
+        email: 'katherine@getindigo.ai',
+        latest: 'Orbit math notes are ready for review.',
+      },
+    };
+    const person = people[peer] ?? people.prs_ada;
     return {
       messages: [
-        { eventId: 'm1', fromPersonUid: peer, fromDisplayName: name, fromEmail: email, body: 'Hey — did the Phase 1 backend land in prod?', createdAt: '2026-06-09T19:40:00.000Z', direction: 'in' },
+        { eventId: 'm1', fromPersonUid: peer, fromDisplayName: person.name, fromEmail: person.email, body: 'Hey — did the Phase 1 backend land in prod?', createdAt: '2026-06-09T19:40:00.000Z', direction: 'in' },
         { eventId: 'm2', fromPersonUid: 'prs_me', fromDisplayName: 'You', fromEmail: 'me@coreyepstein.com', body: 'Yep, just went live. Connection routes are up and the send path is verified.', createdAt: '2026-06-09T19:41:00.000Z', direction: 'out' },
-        { eventId: 'm3', fromPersonUid: peer, fromDisplayName: name, fromEmail: email, body: 'Amazing. Want me to take the Messages window for a spin?', createdAt: '2026-06-09T19:42:30.000Z', direction: 'in' },
-        { eventId: 'm4', fromPersonUid: 'prs_me', fromDisplayName: 'You', fromEmail: 'me@coreyepstein.com', body: 'Please do — I’m restyling it to match the desktop view right now.', createdAt: '2026-06-09T19:43:10.000Z', direction: 'out' },
+        { eventId: 'm3', fromPersonUid: peer, fromDisplayName: person.name, fromEmail: person.email, body: 'Amazing. Want me to take the Messages window for a spin?', createdAt: '2026-06-09T19:42:30.000Z', direction: 'in' },
+        { eventId: 'm4', fromPersonUid: peer === 'prs_katherine' ? peer : 'prs_me', fromDisplayName: peer === 'prs_katherine' ? person.name : 'You', fromEmail: peer === 'prs_katherine' ? person.email : 'me@coreyepstein.com', body: person.latest, createdAt: '2026-06-09T19:43:10.000Z', direction: peer === 'prs_katherine' ? 'in' : 'out' },
       ],
       nextCursor: null,
     };
