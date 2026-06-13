@@ -88,6 +88,28 @@ describe('desktop-alt Deployments panel actions (US-011)', () => {
     expect(caps).not.toMatch(/redeploy|trigger_deploy/);
   });
 
+  it('carries no dead or no-op action controls in the row detail (honesty)', () => {
+    const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
+
+    // The old per-row "Rollback" presented a destructive confirm whose Confirm
+    // handler was a pure no-op (it just closed the dialog) — a control that
+    // implied a revert happened when nothing did. It is gone entirely, along
+    // with the permanently-disabled dead "Deploy" button. The honest actionable
+    // path is the panel-level Deploy (which opens the hq-deploy agent workflow).
+    expect(row).not.toContain('rollbackConfirm');
+    expect(row).not.toMatch(/function (beginRollback|cancelRollback|confirmRollback)/);
+    expect(row).not.toMatch(/>\s*Rollback\s*</);
+    // No permanently-disabled action button masquerading as a control.
+    expect(row).not.toMatch(/<button[^>]*\sdisabled[^>]*>[\s\S]*?Deploy/);
+    expect(row).not.toContain('class="detail-actions"');
+    expect(row).not.toContain('class="rollback-confirm"');
+
+    // The calm note still points at the real, working entry points.
+    expect(row).toContain('class="detail-note"');
+    expect(row).toContain('Managed via');
+    expect(row).toContain('deploy workflow');
+  });
+
   it('gives the drill-in proper affordances (cursor, hover, focus ring)', () => {
     const row = readRepoFile('src/desktop-alt/components/DeploymentRow.svelte');
     const styleBlock = row.split('<style>')[1] ?? '';

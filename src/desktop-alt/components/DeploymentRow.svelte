@@ -22,7 +22,6 @@
   let { deployment }: Props = $props();
 
   let expanded = $state(false);
-  let rollbackConfirm = $state(false);
 
   const stateLabel = $derived(deployment.state.charAt(0).toUpperCase() + deployment.state.slice(1));
   const envLabel = $derived(environmentLabel(deployment));
@@ -34,7 +33,6 @@
 
   function toggleDetail() {
     expanded = !expanded;
-    rollbackConfirm = false;
   }
 
   function environmentLabel(entry: DeploymentEntry): string {
@@ -43,19 +41,6 @@
     if (/\b(stage|staging|test)\b/.test(source)) return 'staging';
     if (/\b(dev|preview|pr-|branch)\b/.test(source)) return 'preview';
     return 'env';
-  }
-
-  function beginRollback() {
-    expanded = true;
-    rollbackConfirm = true;
-  }
-
-  function cancelRollback() {
-    rollbackConfirm = false;
-  }
-
-  function confirmRollback() {
-    rollbackConfirm = false;
   }
 </script>
 
@@ -148,38 +133,9 @@
     </dl>
 
     <p class="detail-note">
-      Managed via <code>hq-deploy</code> — run <code>/deploy</code> from your terminal to redeploy.
+      Managed via <code>hq-deploy</code> — use the <code>Deploy</code> button above (it opens the
+      HQ deploy workflow) or run <code>/deploy</code> from your terminal.
     </p>
-
-    <div class="detail-actions" aria-label={`${deployment.sub} deployment actions`}>
-      <button
-        class="action-button"
-        type="button"
-        title="Deploy from terminal: /deploy"
-        aria-label={`Deploy ${deployment.sub} from terminal: /deploy`}
-        disabled
-      >
-        Deploy
-      </button>
-      <button
-        class="action-button danger"
-        type="button"
-        aria-expanded={rollbackConfirm}
-        onclick={beginRollback}
-      >
-        Rollback
-      </button>
-    </div>
-
-    {#if rollbackConfirm}
-      <div class="rollback-confirm" role="alert">
-        <span>Rollback {deployment.sub} to the previous version?</span>
-        <div>
-          <button class="confirm-danger" type="button" onclick={confirmRollback}>Confirm</button>
-          <button class="cancel-button" type="button" onclick={cancelRollback}>Cancel</button>
-        </div>
-      </div>
-    {/if}
   </div>
 {/if}
 
@@ -538,78 +494,6 @@
     color: var(--muted-2);
     font-family: var(--font-mono);
     font-size: var(--text-base);
-  }
-
-  .detail-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .action-button,
-  .confirm-danger,
-  .cancel-button {
-    height: 30px;
-    min-width: 0;
-    padding: 0 11px;
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    background: transparent;
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-base);
-    font-weight: 600;
-    white-space: nowrap;
-    cursor: pointer;
-  }
-
-  .action-button:disabled {
-    color: var(--muted-3);
-    background: var(--row-hover);
-    cursor: default;
-  }
-
-  .action-button.danger,
-  .confirm-danger {
-    border-color: rgba(239, 68, 68, 0.55);
-    color: var(--red);
-  }
-
-  .action-button.danger:hover,
-  .confirm-danger:hover {
-    background: rgba(239, 68, 68, 0.1);
-  }
-
-  .cancel-button:hover {
-    background: var(--row-hover);
-  }
-
-  .rollback-confirm {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    min-width: 0;
-    padding: 10px 11px;
-    border: 1px solid rgba(239, 68, 68, 0.36);
-    border-radius: 7px;
-    background: rgba(239, 68, 68, 0.08);
-  }
-
-  .rollback-confirm span {
-    min-width: 0;
-    overflow-wrap: anywhere;
-    color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 600;
-    line-height: 16px;
-  }
-
-  .rollback-confirm div {
-    display: flex;
-    align-items: center;
-    gap: 7px;
   }
 
   @keyframes pulse {
