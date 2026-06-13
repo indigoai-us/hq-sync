@@ -14,7 +14,7 @@
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
-  import { startCompanyStore } from './lib/company-store.svelte';
+  import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
   import {
     COMPANY_SECTIONS,
     companyHotkey,
@@ -66,13 +66,6 @@
   import './styles/desktop-alt.css';
 
   const WORKSPACE_CACHE_KEY = 'hq-sync.desktop.workspaces.v1';
-  const WORKSPACE_RELOAD_KEY = 'hq-sync.desktop.workspaces.reload-signature';
-
-  function workspaceSignature(items: Workspace[]): string {
-    return items
-      .map((workspace) => `${workspace.slug}:${workspace.displayName}:${workspace.state}`)
-      .join('|');
-  }
 
   function readCachedWorkspaces(): Workspace[] {
     try {
@@ -176,6 +169,11 @@
   const watchedWorkspaceCount = $derived(shellCompanies.length);
   const routeKey = $derived(getDesktopRouteKey(route));
   const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
+  // Point the company-store's background poll at whichever company is on screen,
+  // so it re-fetches only the open company instead of all of them every 30s.
+  $effect(() => {
+    setActiveCompany(activeCompany?.slug ?? null);
+  });
   const libraryTab = $derived<LibraryTab>(
     route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
   );
@@ -350,6 +348,12 @@
   }
 
   function queueDesktopRenderAudit() {
+    // Dev-only instrumentation: the backend `desktop_alt_dev_audit_render`
+    // command no-ops unless HQ_DEV_AUDIT_DESKTOP_RENDER=1, so in a production
+    // build these timers only burn `document.body.textContent` scans + IPC for
+    // nothing. Gate the whole thing out of prod (import.meta.env.DEV is false
+    // in the Tauri release build, true under `vite`/`tauri dev`).
+    if (!import.meta.env.DEV) return;
     if (desktopRenderAuditQueued) return;
     desktopRenderAuditQueued = true;
     for (const delayMs of [250, 1_000, 3_000, 7_000]) {
@@ -385,23 +389,17 @@
     try {
       const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
       const nextCompanies = getDesktopCompanies(result.workspaces);
-      const previousSignature = workspaceSignature(renderCompanies);
-      const nextSignature = workspaceSignature(nextCompanies);
       workspaces = result.workspaces;
       companies = nextCompanies;
       renderCompanies = nextCompanies;
       renderWorkspaceCount = nextCompanies.length;
       workspaceError = result.error;
       writeCachedWorkspaces(result.workspaces);
-      if (
-        nextSignature &&
-        previousSignature !== nextSignature &&
-        window.sessionStorage.getItem(WORKSPACE_RELOAD_KEY) !== nextSignature
-      ) {
-        window.sessionStorage.setItem(WORKSPACE_RELOAD_KEY, nextSignature);
-        window.location.reload();
-        return;
-      }
+      // The chrome (V4Sidebar / V4TitleBar / DesktopStatusBar) consumes
+      // renderCompanies + renderWorkspaceCount reactively ($derived / $props),
+      // so the reassignments above refresh it on their own. We deliberately do
+      // NOT reload the document or remount the chrome on a workspace-list change:
+      // a full reload mid-paint is what blanked/froze the desktop on focus/sync.
       // Warm the company-tab preload cache for every known company once the real
       // slugs resolve. Idempotent + reconciles, so companies that appear on a
       // later refresh still get warmed; the 30s poll + focus listener wire once.
@@ -907,29 +905,25 @@
   data-workspace-count={renderWorkspaceCount}
   style={`--desktop-titlebar-height: ${V4_CHROME_LAYOUT.titleBarHeightPx}px;`}
 >
-  {#key renderWorkspaceCount}
-    <V4TitleBar
-      {syncState}
-      watchedCount={renderWorkspaceCount}
-      {lastSyncLabel}
-      syncingCompany={syncProgress?.company ?? null}
-      fanoutDone={syncFanoutDoneCount}
-      fanoutTotal={syncFanoutTotal}
-      errorSummary={titleBarErrorSummary}
-      onsync={handleSyncAll}
-      oncancel={handleCancelSync}
-      onretry={handleSyncAll}
-    />
-  {/key}
+  <V4TitleBar
+    {syncState}
+    watchedCount={renderWorkspaceCount}
+    {lastSyncLabel}
+    syncingCompany={syncProgress?.company ?? null}
+    fanoutDone={syncFanoutDoneCount}
+    fanoutTotal={syncFanoutTotal}
+    errorSummary={titleBarErrorSummary}
+    onsync={handleSyncAll}
+    oncancel={handleCancelSync}
+    onretry={handleSyncAll}
+  />
 
   <div class="desktop-body">
-    {#key renderWorkspaceCount}
-      <V4Sidebar
-        {route}
-        companies={renderCompanies}
-        onnavigate={(next) => navigate(fromV4Route(next))}
-      />
-    {/key}
+    <V4Sidebar
+      {route}
+      companies={renderCompanies}
+      onnavigate={(next) => navigate(fromV4Route(next))}
+    />
 
     {#if secondarySidebar}
       <V4SecondarySidebar
@@ -1058,18 +1052,16 @@
     </div>
   </div>
 
-  {#key renderWorkspaceCount}
-    <DesktopStatusBar
-      version={__APP_VERSION__}
-      state={syncState}
-      progress={syncProgress}
-      filesProgressed={syncFilesProgressed}
-      totalFiles={effectiveTotalFiles}
-      workspaceCount={renderWorkspaceCount}
-      observedBytes={observedVaultBytes}
-      {nextMeetingLabel}
-    />
-  {/key}
+  <DesktopStatusBar
+    version={__APP_VERSION__}
+    state={syncState}
+    progress={syncProgress}
+    filesProgressed={syncFilesProgressed}
+    totalFiles={effectiveTotalFiles}
+    workspaceCount={renderWorkspaceCount}
+    observedBytes={observedVaultBytes}
+    {nextMeetingLabel}
+  />
 
   {#if commandPaletteOpen}
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />

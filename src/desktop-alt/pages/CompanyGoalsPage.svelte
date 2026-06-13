@@ -214,13 +214,15 @@
   }
 
   function riskNote(objective: Objective): string {
+    // The at-risk basis is real — derived from a flat/at-risk/blocked KR status
+    // (or the objective's own description). We deliberately do NOT append a
+    // fabricated proposal-count tail: no such store exists, so claiming the
+    // agent already drafted N projects would invent activity that never happened.
     const flat = objective.keyResults.find((kr) => {
       const status = (kr.status ?? '').toLowerCase().replace(/[_\s]+/g, '-');
       return status === 'at-risk' || status === 'flat' || status === 'blocked';
     });
-    const basis = flat ? `${keyResultName(flat)} KR flat` : objective.description || 'progress needs attention';
-    const proposals = Math.max(1, Math.min(2, linkedProjects(objective).length || 2));
-    return `at risk — ${basis} · agent proposed ${proposals} new projects`;
+    return `at risk — ${flat ? `${keyResultName(flat)} KR flat` : objective.description || 'progress needs attention'}`;
   }
 
   async function openHqPrompt(kind: string, prompt: string) {
@@ -261,7 +263,7 @@
     const prompt = [
       `/goals ${slug}`,
       '',
-      `Review the agent proposal for this at-risk goal: ${objective.title || 'Untitled goal'}.`,
+      `This goal is flagged at risk: ${objective.title || 'Untitled goal'}.`,
       `Current note: ${riskNote(objective)}`,
       objective.description ? `Goal description: ${objective.description}` : null,
       'Recommend the projects or story changes that should bring the goal back on track, then write the approved updates into the local HQ project/goal files.',

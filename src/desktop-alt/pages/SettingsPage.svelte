@@ -306,7 +306,54 @@
   input,
   select {
     min-width: 0;
-    accent-color: var(--v4-text-1);
+  }
+
+  /* macOS-style toggle pill — the one place green is allowed as a control fill
+     (SPEC §5/§6: "26×16 pills, on = green fill — the one non-dot color
+     exception, matching macOS"). The track is tokenized; the knob is a fixed
+     white-with-shadow, a deliberate platform-convention value like the green. */
+  input[type='checkbox'] {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    flex-shrink: 0;
+    width: 26px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--v4-control-bg);
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  input[type='checkbox']::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform 0.15s ease;
+  }
+
+  input[type='checkbox']:checked {
+    background: var(--v4-ok);
+  }
+
+  input[type='checkbox']:checked::after {
+    transform: translateX(10px);
+  }
+
+  input[type='checkbox']:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  input[type='checkbox']:focus-visible {
+    outline: 1.5px solid var(--v4-text-2);
+    outline-offset: 2px;
   }
 
   input:not([type='checkbox']),

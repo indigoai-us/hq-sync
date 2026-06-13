@@ -22,7 +22,7 @@ describe('desktop-alt company work actions are functional', () => {
   });
 
   it('wires Tasks filtering instead of leaving the Filter button inert', () => {
-    expect(tasks).toContain("type TaskFilter = 'all' | 'open' | 'mine' | 'p1'");
+    expect(tasks).toContain("type TaskFilter = 'all' | 'open' | 'p1'");
     expect(tasks).toContain('const filteredRows = $derived');
     expect(tasks).toContain('matchesTaskFilter(row, taskFilter)');
     expect(tasks).toContain('function cycleFilter()');

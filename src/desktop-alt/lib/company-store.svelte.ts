@@ -18,10 +18,11 @@ const POLL_INTERVAL_MS = 30_000;
 // blocking `get_company_*` invoke on mount, which is what made the screen sit
 // on a skeleton for 5-10s every time. This module loads all four datasets for
 // every known company ONCE at app launch (startCompanyStore, called from
-// DesktopApp.loadWorkspaces once the real slugs are known) and keeps them warm
-// with a 30s poll + focus refresh. Panels read the warm value synchronously on
-// mount (instant paint), still run their own invoke to revalidate, and write
-// the fresh result back here.
+// DesktopApp.loadWorkspaces once the real slugs are known) for an instant first
+// navigation, then keeps ONLY the company currently on screen fresh with a 30s
+// poll + focus refresh (the active slug is set via setActiveCompany). Panels
+// read the warm value synchronously on mount (instant paint), still run their
+// own invoke to revalidate, and write the fresh result back here.
 //
 // Unlike meetings-store these caches are intentionally NON-reactive plain Maps:
 // the panels keep ownership of their own invoke + local $state (so the story
@@ -43,6 +44,10 @@ const secretsBySlug = new Map<string, Partial<SecretEnv>[]>();
 // Slugs we warm + poll. Reconciled on every startCompanyStore call so companies
 // that appear after the first workspace load still get warmed.
 let warmSlugs: string[] = [];
+
+// The company currently on screen. Only this slug is re-polled in the
+// background; navigating away stops re-fetching the company you left.
+let activeSlug: string | null = null;
 
 let started = false;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -83,10 +88,23 @@ async function loadCompany(slug: string): Promise<void> {
   ]);
 }
 
-function refreshAll(): void {
-  for (const slug of warmSlugs) {
-    void loadCompany(slug);
-  }
+// Background refresh targets ONLY the company the user is currently viewing.
+// The launch warm (startCompanyStore) primes every company once for an instant
+// first navigation; after that, re-polling all N companies every 30s + on every
+// window focus was ~5 fetches × N of pure waste (the open company is the only
+// one whose freshness the user can see). The companies you left are revalidated
+// by each panel's own on-mount invoke the next time you open them.
+function refreshActive(): void {
+  if (activeSlug) void loadCompany(activeSlug);
+}
+
+/**
+ * Tell the store which company is currently on screen. The 30s poll + focus
+ * refresh follow this slug; passing null (or leaving a company) stops the
+ * background re-fetch entirely until the next company is opened.
+ */
+export function setActiveCompany(slug: string | null): void {
+  activeSlug = slug && slug.trim() ? slug : null;
 }
 
 /**
@@ -122,8 +140,8 @@ export function startCompanyStore(slugs: string[]): void {
   if (started) return;
   started = true;
 
-  pollTimer = setInterval(refreshAll, POLL_INTERVAL_MS);
-  window.addEventListener('focus', refreshAll);
+  pollTimer = setInterval(refreshActive, POLL_INTERVAL_MS);
+  window.addEventListener('focus', refreshActive);
 }
 
 /**
@@ -135,8 +153,9 @@ export function stopCompanyStore(): void {
     clearInterval(pollTimer);
     pollTimer = null;
   }
-  window.removeEventListener('focus', refreshAll);
+  window.removeEventListener('focus', refreshActive);
   warmSlugs = [];
+  activeSlug = null;
   started = false;
 }
 
