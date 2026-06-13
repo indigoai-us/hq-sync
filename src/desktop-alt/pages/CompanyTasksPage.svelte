@@ -371,7 +371,7 @@
   .tasks-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.2;
   }
@@ -379,7 +379,7 @@
   .tasks-heading span,
   .tasks-footnote {
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.25;
   }
 
@@ -391,7 +391,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: default;
   }
 
@@ -412,7 +412,7 @@
     border-radius: 6px;
     background: var(--v4-control-faint);
     color: var(--v4-text-3);
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     text-transform: uppercase;
@@ -430,7 +430,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     text-align: left;
     cursor: default;
   }
@@ -460,14 +460,14 @@
   .priority-lane,
   .id-lane {
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
   }
 
   .title-lane {
     align-self: center;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 400;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -480,7 +480,7 @@
     border-radius: 4px;
     background: var(--v4-control-bg);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     text-overflow: ellipsis;
   }
 
@@ -498,7 +498,7 @@
     border-radius: 50%;
     background: var(--v4-control-bg);
     color: var(--v4-text-1);
-    font-size: 10px;
+    font-size: var(--text-base);
   }
 
   .status-dot {
@@ -531,7 +531,7 @@
     border-radius: 6px;
     background: var(--v4-inset);
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .empty-state span {

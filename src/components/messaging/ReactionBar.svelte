@@ -95,7 +95,7 @@
     background: rgba(255, 255, 255, 0.06);
     color: var(--popover-text, #e0e0e0);
     font-family: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     line-height: 1;
     cursor: pointer;
     transition: background-color 0.12s ease, border-color 0.12s ease;
@@ -120,7 +120,7 @@
   }
 
   .reaction-emoji {
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     line-height: 1;
   }
 
@@ -160,12 +160,12 @@
   }
 
   .reaction-add-glyph {
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     line-height: 1;
   }
 
   .reaction-add-plus {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 1;
   }

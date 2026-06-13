@@ -5,7 +5,7 @@
   /**
    * V4 actor-grouped activity digest — "Today across your companies"
    * (home-healthy.png). Each group is a card: avatar initials, a narrative
-   * headline ("Geoff added 2 files to hpo"), an 11px meta line, and a
+   * headline ("Geoff added 2 files to hpo"), a muted meta line, and a
    * chevron toggle that expands per-file rows. File verb lanes (ADD/UPD/DEL)
    * are gray text-2 — NOT colored (story AC; SPEC: status colors are dots).
    * The quiet "raw event log →" link opens the Recent Changes window.
@@ -97,7 +97,7 @@
   .v4-digest-title {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -106,7 +106,7 @@
   .v4-digest-tools {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
   }
 
@@ -133,7 +133,7 @@
   .v4-digest-empty p {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .v4-digest-list {
@@ -176,7 +176,7 @@
     border-radius: 50%;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1;
     place-items: center;
@@ -192,7 +192,7 @@
   .v4-digest-headline {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -202,7 +202,7 @@
   .v4-digest-meta {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -211,7 +211,7 @@
   .v4-chevron {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
     line-height: 1;
     transition: transform 120ms ease;
   }
@@ -244,7 +244,7 @@
   .v4-file-verb {
     flex: 0 0 30px;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     letter-spacing: 0.04em;
   }
@@ -254,7 +254,7 @@
     min-width: 0;
     flex: 1 1 auto;
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -262,6 +262,6 @@
   .v4-file-size {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
   }
 </style>

@@ -1258,7 +1258,7 @@
   .header-inline-error {
     margin: -0.1875rem 1rem 0.5rem 1rem;
     color: var(--popover-notice-strong, #ffffff);
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     line-height: 1.35;
     white-space: nowrap;
     overflow: hidden;
@@ -1399,7 +1399,7 @@
 
   .popover-section-label {
     color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
-    font-size: var(--text-xs, 0.6875rem);
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.05em;
     line-height: 1;
@@ -1525,7 +1525,7 @@
     width: 100%;
     margin: 0;
     padding: 0.4375rem 0 0.4375rem var(--space-1);
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
   }
 
@@ -1566,7 +1566,7 @@
      primary action treatment) but pill-shaped + smaller, since it lives
      inline next to the version label rather than as a banner-level CTA. */
   .footer-hq-version-pill {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-family: inherit;
     font-weight: 600;
     padding: 0.1875rem 0.5rem;
@@ -1617,7 +1617,7 @@
      smaller than the base pill: a compact numeric chip beside the white
      Update pill. `tabular-nums` keeps 1- and 2-digit counts from jiggling. */
   .footer-hq-version-pill-count {
-    font-size: 0.625rem;
+    font-size: var(--text-base);
     padding: 0.125rem 0.375rem;
     min-width: 1.25rem;
     text-align: center;
@@ -1639,7 +1639,7 @@
   /* Inline result chip rendered next to the pill after a rescue run. Small,
      non-clickable, hover surfaces the log tail via the parent's `title=`. */
   .footer-hq-version-result {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-family: inherit;
     white-space: nowrap;
     flex-shrink: 0;
@@ -1698,7 +1698,7 @@
 
   .banner-title {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
     line-height: 1.3;
@@ -1706,7 +1706,7 @@
 
   .banner-body {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
     line-height: 1.4;
   }
@@ -1729,7 +1729,7 @@
   }
 
   .banner-update-button {
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     font-family: inherit;
     font-weight: 600;
     padding: 0.3125rem 0.75rem;
@@ -1799,7 +1799,7 @@
     align-items: center;
     justify-content: center;
     padding: 0;
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     line-height: 1;
     font-family: inherit;
     color: var(--popover-text-muted, rgba(255, 255, 255, 0.52));
@@ -1822,7 +1822,7 @@
     align-self: flex-start;
     margin-top: 0.375rem;
     flex-shrink: 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-family: inherit;
     font-weight: 500;
     padding: 0.25rem 0.5rem;
@@ -1866,7 +1866,7 @@
 
   .live-line {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     line-height: 1.35;
     color: var(--popover-text, #e0e0e0);
     display: flex;
@@ -1877,14 +1877,14 @@
 
   .live-line.muted {
     color: var(--popover-text-muted, #a0a0b0);
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
   }
 
   /* Workspace label — line 1 of the standardized 3-line live-progress
      card. Prominent so the user can see at a glance which workspace is
      currently syncing. Same visual weight as SyncStats' stat-value. */
   .live-workspace {
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
   }
@@ -1913,7 +1913,7 @@
   /* Summary line — "Last sync · X files · Y MB" */
   .summary-line {
     margin: 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
     line-height: 1.4;
   }

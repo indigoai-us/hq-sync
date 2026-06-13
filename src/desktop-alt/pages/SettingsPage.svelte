@@ -228,7 +228,7 @@
   .page-header p {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.25;
   }
@@ -243,7 +243,7 @@
 
   h1 {
     margin: 2px 0 0;
-    font-size: 18px;
+    font-size: var(--text-lg);
     font-weight: 500;
   }
 
@@ -291,7 +291,7 @@
 
   strong {
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
   }
 
@@ -299,7 +299,7 @@
   .setting-row div span,
   .error {
     color: var(--v4-text-3);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.35;
   }
 
@@ -317,7 +317,7 @@
     background: var(--v4-inset);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .gated-row em {
@@ -325,7 +325,7 @@
     border: 1px solid var(--v4-hairline);
     border-radius: 999px;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-style: normal;
   }
 
@@ -347,7 +347,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .platforms button.active {

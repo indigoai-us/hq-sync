@@ -298,7 +298,7 @@
   .companies-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.3;
   }
@@ -306,7 +306,7 @@
   .companies-summary {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.4;
   }
@@ -314,7 +314,7 @@
   .companies-error {
     margin: 0;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.4;
     overflow-wrap: anywhere;
   }
@@ -344,7 +344,7 @@
   .companies-head {
     border-bottom: 1px solid var(--v4-hairline);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -409,7 +409,7 @@
 
   .companies-name {
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.3;
     overflow: hidden;
@@ -419,7 +419,7 @@
 
   .companies-sub {
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.4;
     overflow: hidden;
@@ -429,7 +429,7 @@
 
   .companies-note {
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.4;
     overflow-wrap: anywhere;
     white-space: normal;
@@ -437,7 +437,7 @@
 
   .companies-lane {
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -455,7 +455,7 @@
 
   .companies-chevron-slot {
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
     text-align: right;
   }
 
@@ -463,7 +463,7 @@
     margin: 0;
     padding: 14px 16px;
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .companies-row-actions {
@@ -481,7 +481,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     white-space: nowrap;
@@ -505,7 +505,7 @@
   .companies-footnote {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.4;
   }
@@ -570,7 +570,7 @@
       justify-self: end;
       max-width: 96px;
       color: var(--v4-text-3);
-      font-size: 11px;
+      font-size: var(--text-base);
       line-height: 1.3;
       text-align: right;
       white-space: normal;

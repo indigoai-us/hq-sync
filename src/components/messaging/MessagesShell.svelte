@@ -1042,7 +1042,7 @@
 
 <style>
   /* The Messages window adopts the desktop "Company OS" language: monochrome
-     glass surfaces layered by alpha, ONE 13px type size with 11px monospace
+     glass surfaces layered by alpha, ONE 13px body size with monospace
      ALL-CAPS micro-labels, hierarchy by weight + the grey/white split, hairline
      borders, square-ish corners, and the Indigo accent reserved for the
      active/selected row + focus ring only. Tokens come from the shared desktop

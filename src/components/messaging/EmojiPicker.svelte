@@ -107,7 +107,7 @@
     border: none;
     border-radius: 8px;
     background: transparent;
-    font-size: 1.125rem;
+    font-size: var(--text-lg);
     line-height: 1;
     cursor: pointer;
     transition: background-color 0.1s ease, transform 0.06s ease;

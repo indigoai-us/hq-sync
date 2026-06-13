@@ -5,7 +5,7 @@
 
   /**
    * V4 inline-action card — the NEEDS YOU queue unit (home-healthy.png) and
-   * the error card (home-error.png). Raised surface, 13px title, 11px sub,
+   * the error card (home-error.png). Raised surface, compact title + sub,
    * a right-aligned action row (one primary fill, secondary outline, quiet
    * text actions), and an optional extra region (the error card's collapsible
    * "Technical details" inset renders through the snippet).
@@ -82,7 +82,7 @@
   .v4-card-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
     overflow-wrap: anywhere;
@@ -91,7 +91,7 @@
   .v4-card-sub {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.4;
   }
@@ -110,7 +110,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     white-space: nowrap;

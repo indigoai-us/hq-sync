@@ -619,7 +619,7 @@
     border-radius: 6px;
     background: var(--v4-inset);
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
   }
@@ -652,7 +652,7 @@
   .stat-item strong {
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.15;
     text-overflow: ellipsis;
@@ -662,7 +662,7 @@
   .stat-item span {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     text-overflow: ellipsis;
@@ -687,7 +687,7 @@
   .section-header h2 {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.25;
     letter-spacing: 0;
@@ -696,7 +696,7 @@
   .section-header span {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.25;
   }
@@ -710,7 +710,7 @@
     border-radius: 8px;
     background: var(--v4-inset);
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
     text-align: center;
@@ -718,14 +718,14 @@
 
   .empty-state span {
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
   }
 
   .empty-state p {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
   }
 
@@ -741,7 +741,7 @@
     min-width: 760px;
     border-collapse: collapse;
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     table-layout: fixed;
   }
@@ -750,7 +750,7 @@
     padding: 0 0 9px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     text-align: left;
@@ -822,14 +822,14 @@
 
   .story-button span {
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.25;
   }
 
   .story-button small {
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
   }
@@ -852,7 +852,7 @@
     border-radius: 4px;
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     text-overflow: ellipsis;
@@ -862,7 +862,7 @@
   .muted,
   .priority-cell {
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
   }
@@ -873,7 +873,7 @@
     align-items: center;
     gap: 10px;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     font-variant-numeric: tabular-nums;
@@ -898,7 +898,7 @@
     align-items: center;
     gap: 7px;
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
   }

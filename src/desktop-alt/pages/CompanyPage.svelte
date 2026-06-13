@@ -214,7 +214,7 @@
   .company-action-error {
     margin: -10px 0 0;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.3;
   }
 

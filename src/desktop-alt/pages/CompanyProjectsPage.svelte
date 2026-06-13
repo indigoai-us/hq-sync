@@ -553,14 +553,14 @@
   .projects-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.2;
   }
 
   .projects-heading span {
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.25;
   }
 
@@ -573,7 +573,7 @@
     max-width: 150px;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -587,7 +587,7 @@
     background: var(--v4-control-bg);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     cursor: default;
   }
 
@@ -612,7 +612,7 @@
     padding-bottom: 10px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: 10px;
+    font-size: var(--text-base);
     line-height: 1.2;
     letter-spacing: 0;
   }
@@ -626,7 +626,7 @@
     height: 38px;
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     text-transform: uppercase;
@@ -636,7 +636,7 @@
     min-height: 54px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .project-main {
@@ -647,7 +647,7 @@
     display: block;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -661,7 +661,7 @@
     margin-top: 2px;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -674,7 +674,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 11px;
+    font-size: var(--text-base);
     cursor: default;
   }
 
@@ -689,7 +689,7 @@
     gap: 10px;
     align-self: center;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
   }
 
   .progress-track {
@@ -742,7 +742,7 @@
     border-radius: 50%;
     background: var(--v4-control-bg);
     color: var(--v4-text-1);
-    font-size: 10px;
+    font-size: var(--text-base);
   }
 
   .projects-error,
@@ -752,7 +752,7 @@
     border-radius: 6px;
     background: var(--v4-inset);
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .empty-state span {

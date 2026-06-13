@@ -107,7 +107,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -120,7 +120,7 @@
     align-items: center;
     gap: 7px;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
   }
@@ -151,7 +151,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
     text-overflow: ellipsis;
@@ -184,7 +184,7 @@
   .progress-number,
   .goal-counts {
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.25;
     font-variant-numeric: tabular-nums;

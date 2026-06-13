@@ -316,7 +316,7 @@
   .home-title {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.3;
   }
@@ -324,7 +324,7 @@
   .home-meta {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.4;
   }
@@ -340,7 +340,7 @@
     gap: 7px;
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -388,13 +388,13 @@
 
   .home-progress-headline {
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
   }
 
   .home-progress-meta {
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
   }
 
   .home-progress-track {
@@ -471,7 +471,7 @@
     flex: 0 0 auto;
     min-width: 110px;
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
   }
 
   .home-fanout-name.active {
@@ -487,7 +487,7 @@
     overflow: hidden;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -503,7 +503,7 @@
     background: none;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 11px;
+    font-size: var(--text-base);
     cursor: pointer;
   }
 
@@ -524,7 +524,7 @@
   .home-tech-line {
     margin: 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.5;
     overflow-wrap: anywhere;
   }

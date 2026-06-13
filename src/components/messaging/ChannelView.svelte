@@ -342,14 +342,14 @@
   }
 
   .channel-hash {
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-muted, #8a8a98);
   }
 
   .channel-title h2 {
     margin: 0;
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
     overflow: hidden;
@@ -362,7 +362,7 @@
     align-items: center;
     gap: 0.1875rem;
     flex-shrink: 0;
-    font-size: 0.625rem;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.02em;
     padding: 0.125rem 0.4375rem;
@@ -377,7 +377,7 @@
   }
 
   .scope-glyph {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     line-height: 1;
   }
 
@@ -388,7 +388,7 @@
     background: rgba(255, 255, 255, 0.05);
     color: var(--popover-text, #d8d8e0);
     font-family: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 500;
     padding: 0.25rem 0.5rem;
     border-radius: 7px;
@@ -411,7 +411,7 @@
 
   .join-text {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--popover-text-muted, #b8b8c4);
   }
@@ -423,7 +423,7 @@
 
   .join-error {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     color: #ff9b9b;
   }
 
@@ -433,7 +433,7 @@
     align-self: flex-start;
     padding: 0.4375rem 0.875rem;
     border-radius: 7px;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     border: none;

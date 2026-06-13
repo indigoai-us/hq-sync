@@ -50,11 +50,15 @@ textarea {
   --popover-progress-fill: #ffffff;
   --popover-blur: blur(28px) saturate(1.45);
 
-  /* ---- Type scale (320px popover, ratio ~1.15) ---------------------- */
-  --text-xs: 0.6875rem; /* 11px — descriptions, paths, pill + section labels */
-  --text-sm: 0.75rem; /* 12px — secondary buttons, version values */
-  --text-base: 0.8125rem; /* 13px — row labels, body */
-  --text-lg: 0.9375rem; /* 15px — screen titles, primary status line */
+  /* ---- Type scale ---------------------------------------------------- */
+  /* Match the desktop app: one body size and one display size. Hierarchy is
+     carried by weight, uppercase/tracking, mono, and text color. */
+  --text-xs: 13px;
+  --text-sm: 13px;
+  --text-base: 13px;
+  --text-micro: 13px;
+  --text-lg: 18px;
+  --text-kpi: 18px;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
 
   /* ---- Spacing scale (4px base) ------------------------------------ */

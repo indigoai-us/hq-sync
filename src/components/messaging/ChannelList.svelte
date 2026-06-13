@@ -140,7 +140,7 @@
     background: rgba(120, 170, 255, 0.16);
     color: #dce8ff;
     font-family: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     font-weight: 600;
     padding: 0.375rem 0.5rem;
     border-radius: 7px;
@@ -154,7 +154,7 @@
 
   .rail-status {
     margin: 0.5rem 0.625rem;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
   }
 
@@ -169,14 +169,14 @@
 
   .segment-empty-title {
     margin: 0 0 0.375rem;
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text, #e8e8ee);
   }
 
   .segment-empty-sub {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     line-height: 1.45;
     color: var(--popover-text-muted, #8a8a98);
   }
@@ -199,7 +199,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
-    font-size: 0.625rem;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -210,7 +210,7 @@
   }
 
   .group-glyph {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     line-height: 1;
     color: #c0a8ff;
   }
@@ -220,7 +220,7 @@
     border: none;
     background: transparent;
     color: var(--popover-text-muted, #8a8a98);
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     line-height: 1;
     cursor: pointer;
     padding: 0 0.25rem;
@@ -267,13 +267,13 @@
 
   .channel-hash {
     flex-shrink: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-muted, #8a8a98);
   }
 
   .channel-name {
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--popover-text, #e8e8ee);
     overflow: hidden;
@@ -285,7 +285,7 @@
   .scope-chip {
     flex-shrink: 0;
     margin-left: auto;
-    font-size: 0.5625rem;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.02em;
     padding: 0.0625rem 0.375rem;
@@ -306,7 +306,7 @@
   .invited-chip {
     flex-shrink: 0;
     margin-left: auto;
-    font-size: 0.5625rem;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.02em;
     text-transform: uppercase;
@@ -326,7 +326,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 999px;
-    font-size: 0.5625rem;
+    font-size: var(--text-base);
     font-weight: 700;
     line-height: 1;
     background: rgba(120, 170, 255, 0.32);

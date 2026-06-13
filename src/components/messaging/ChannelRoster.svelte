@@ -251,7 +251,7 @@
 
   .roster-header h2 {
     margin: 0;
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
   }
@@ -260,7 +260,7 @@
     border: none;
     background: transparent;
     color: var(--popover-text-muted, #a0a0b0);
-    font-size: 1.25rem;
+    font-size: var(--text-lg);
     line-height: 1;
     cursor: pointer;
     padding: 0 0.25rem;
@@ -278,7 +278,7 @@
     background: rgba(120, 170, 255, 0.16);
     color: #dce8ff;
     font-family: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     font-weight: 600;
     padding: 0.3125rem 0.625rem;
     border-radius: 7px;
@@ -306,14 +306,14 @@
   }
 
   .invite-error {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     color: #ff9b9b;
     margin-right: auto;
   }
 
   .roster-status {
     margin: 0.5rem 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
   }
 
@@ -353,7 +353,7 @@
   }
 
   .member-name {
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--popover-text, #e8e8ee);
     overflow: hidden;
@@ -362,7 +362,7 @@
   }
 
   .member-role {
-    font-size: 0.5625rem;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.03em;
     text-transform: uppercase;
@@ -380,7 +380,7 @@
     background: rgba(255, 107, 107, 0.12);
     color: #ffb0b0;
     font-family: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     padding: 0.1875rem 0.5rem;
     border-radius: 6px;
@@ -401,7 +401,7 @@
     align-items: center;
     padding: 0.3125rem 0.75rem;
     border-radius: 7px;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     cursor: pointer;
     border: none;

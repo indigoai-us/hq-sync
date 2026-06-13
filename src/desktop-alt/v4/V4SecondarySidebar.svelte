@@ -4,8 +4,8 @@
 
   /**
    * V4 secondary (contextual) sidebar — SPEC section 4 + chrome-master.png:
-   * 200px, inset background, hairline right border. Header (14px/500 name +
-   * optional 6px status dot), 11px meta line, contextual menu rows, footer
+   * 200px, inset background, hairline right border. Header + meta line share
+   * the same 13px body size; hierarchy comes from weight and text color.
    * with hairline top border. Exactly one active row, driven by `activeId`.
    * Only rendered on surfaces that need it (company / library / settings).
    */
@@ -13,7 +13,7 @@
     header: string;
     /** Optional status dot beside the header (company pages). */
     headerTone?: V4DotTone | null;
-    /** 11px context line, e.g. "Owner · 3 members · synced just now". */
+    /** Context line, e.g. "Owner · 3 members · synced just now". */
     meta?: string | null;
     items: V4SecondaryItem[];
     activeId: string | null;
@@ -111,7 +111,7 @@
     overflow: hidden;
     min-width: 0;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.3;
     text-overflow: ellipsis;
@@ -144,7 +144,7 @@
   .v4-context-meta {
     margin: 4px 0 0;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.4;
   }
@@ -167,7 +167,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     text-align: left;
@@ -196,7 +196,7 @@
   .v4-row-note {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
   }
 
   .v4-spacer {
@@ -225,7 +225,7 @@
 
   .v4-footer-label {
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
   }
@@ -234,7 +234,7 @@
     overflow: hidden;
     max-width: 100%;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;

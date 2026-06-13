@@ -151,7 +151,7 @@
 
   .v4-sentence {
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     white-space: nowrap;
@@ -161,7 +161,7 @@
     overflow: hidden;
     min-width: 0;
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     text-overflow: ellipsis;
@@ -176,7 +176,7 @@
     background: transparent;
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     cursor: pointer;

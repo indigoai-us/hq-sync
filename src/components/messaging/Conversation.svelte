@@ -365,7 +365,7 @@
 
   .dm-thread-status {
     margin: 0 auto;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
   }
 
@@ -390,7 +390,7 @@
   }
 
   .dm-msg-author {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-muted, #a0a0b0);
     margin: 0 0.25rem 0.125rem;
@@ -466,7 +466,7 @@
 
   .dm-bubble-body {
     margin: 0;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     line-height: 1.45;
     color: var(--popover-text, #e8e8ee);
     white-space: pre-wrap;
@@ -474,7 +474,7 @@
   }
 
   .dm-bubble-details {
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--popover-text, #e0e0e0);
     background: rgba(0, 0, 0, 0.18);
@@ -486,13 +486,13 @@
   }
 
   .dm-msg-time {
-    font-size: 0.625rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #8a8a98);
     margin: 0.125rem 0.25rem 0;
   }
 
   .dm-msg-pending {
-    font-size: 0.625rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: #ffd9b0;
     background: rgba(255, 176, 102, 0.18);
@@ -507,7 +507,7 @@
     gap: 0.5rem;
     margin: 0.5rem 0;
     color: var(--popover-text-muted, #8a8a98);
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
   }
 
   .date-separator::before,
@@ -535,7 +535,7 @@
     background: rgba(120, 170, 255, 0.12);
     color: #bcd4ff;
     font-family: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 1;
     cursor: pointer;
@@ -571,7 +571,7 @@
     align-self: flex-start;
     padding: 0.3125rem 0.625rem;
     border-radius: 6px;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 500;
     cursor: pointer;
     border: none;
@@ -609,7 +609,7 @@
     background: rgba(255, 255, 255, 0.04);
     color: var(--popover-text, #e0e0e0);
     font-family: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     line-height: 1.4;
   }
 
@@ -630,12 +630,12 @@
   }
 
   .dm-reply-hint {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
   }
 
   .dm-reply-error {
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     color: #ff9b9b;
     word-break: break-word;
   }

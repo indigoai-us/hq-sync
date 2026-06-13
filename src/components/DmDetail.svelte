@@ -227,7 +227,7 @@
 
   .detail-header h1 {
     margin: 0;
-    font-size: 1rem;
+    font-size: var(--text-lg);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
     overflow: hidden;
@@ -237,7 +237,7 @@
 
   .detail-count {
     margin-left: auto;
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
     white-space: nowrap;
   }
@@ -250,7 +250,7 @@
   }
 
   .detail-empty p {
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
     margin: 0;
   }

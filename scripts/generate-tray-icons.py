@@ -1,138 +1,87 @@
 #!/usr/bin/env python3
 """Generate tray icon PNGs for HQ Sync menubar app.
 
-Creates 4 states (idle, syncing, error, conflict) at @1x (22x22) and @2x (44x44).
-Icons are monochrome black on transparent — macOS treats them as template images
-and auto-inverts for dark mode.
+Creates 4 tray-state PNGs from the official HQ SVG mark at @1x (38x22) and
+@2x (76x44). Icons are monochrome black on transparent; macOS treats them as
+template images and auto-inverts for light/dark menu bars.
 """
 
-from PIL import Image, ImageDraw
+from PIL import Image
 import os
+import shutil
+import subprocess
+import tempfile
 
 ICON_DIR = os.path.join(os.path.dirname(__file__), "..", "src-tauri", "icons")
+SOURCE_SVG = os.path.join(ICON_DIR, "source", "HQ.svg")
+STATE_NAMES = ("tray-idle", "tray-syncing", "tray-error", "tray-conflict")
+CANVAS_1X = (38, 22)
+CANVAS_2X = (76, 44)
 
 
-def draw_h_letterform(draw, size):
-    """Draw a simple geometric 'H' letterform centered in the icon."""
-    # Proportional sizing
-    s = size
-    pad = max(2, s // 5)
-    stroke = max(2, s // 8)
-    half = s // 2
+def render_source_svg():
+    """Rasterize the source SVG with macOS' built-in image renderer."""
+    if not os.path.exists(SOURCE_SVG):
+        raise FileNotFoundError(f"Missing source SVG: {SOURCE_SVG}")
+    if not shutil.which("sips"):
+        raise RuntimeError("sips is required to rasterize SVG tray icons on macOS")
 
-    # Left vertical bar
-    draw.rectangle([pad, pad, pad + stroke - 1, s - pad - 1], fill="black")
-    # Right vertical bar
-    draw.rectangle([s - pad - stroke, pad, s - pad - 1, s - pad - 1], fill="black")
-    # Horizontal crossbar
-    draw.rectangle([pad, half - stroke // 2, s - pad - 1, half + stroke // 2], fill="black")
-
-
-def draw_sync_arrows(draw, size):
-    """Draw circular arrow overlay (two curved arrows) for syncing state."""
-    s = size
-    cx, cy = s // 2, s // 2
-    r = max(3, s // 3)
-
-    # Draw two small arrow indicators at top-right and bottom-left
-    arrow_size = max(2, s // 8)
-
-    # Top arc arrow (right side)
-    for i in range(max(2, r)):
-        angle_offset = i * 0.15
-        x = int(cx + r * 0.7 + arrow_size * 0.3)
-        y = int(cy - r * 0.3 + i)
-        if 0 <= x < s and 0 <= y < s:
-            draw.point((x, y), fill="black")
-
-    # Small arrows as triangles
-    # Top-right arrow
-    ax, ay = cx + r, cy - arrow_size
-    draw.polygon([(ax, ay), (ax + arrow_size, ay + arrow_size // 2), (ax, ay + arrow_size)], fill="black")
-    # Bottom-left arrow
-    ax, ay = cx - r, cy + arrow_size
-    draw.polygon([(ax, ay), (ax - arrow_size, ay - arrow_size // 2), (ax, ay - arrow_size)], fill="black")
-
-    # Arc segments (simplified as lines)
-    import math
-    for angle in range(0, 180, 8):
-        rad = math.radians(angle)
-        x = int(cx + r * math.cos(rad))
-        y = int(cy - r * math.sin(rad))
-        if 0 <= x < s and 0 <= y < s:
-            draw.point((x, y), fill="black")
-    for angle in range(180, 360, 8):
-        rad = math.radians(angle)
-        x = int(cx + r * math.cos(rad))
-        y = int(cy - r * math.sin(rad))
-        if 0 <= x < s and 0 <= y < s:
-            draw.point((x, y), fill="black")
+    tmpdir = tempfile.TemporaryDirectory()
+    path = os.path.join(tmpdir.name, "hq-source.png")
+    subprocess.run(
+        ["sips", "-s", "format", "png", SOURCE_SVG, "--out", path],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return tmpdir, Image.open(path).convert("RGBA")
 
 
-def draw_dot_badge(draw, size, color):
-    """Draw a small colored dot badge in the bottom-right corner."""
-    s = size
-    dot_r = max(2, s // 6)
-    cx = s - dot_r - 1
-    cy = s - dot_r - 1
-    draw.ellipse([cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r], fill=color)
+def make_template_logo(source, canvas_size):
+    """Fit the HQ logo into a menu-bar canvas and convert it to template black."""
+    canvas_w, canvas_h = canvas_size
+    padding_y = max(1, round(canvas_h * 0.09))
+    max_h = canvas_h - padding_y * 2
+    max_w = canvas_w
+    src_w, src_h = source.size
+    scale = min(max_w / src_w, max_h / src_h)
+    logo_w = max(1, round(src_w * scale))
+    logo_h = max(1, round(src_h * scale))
+    logo = source.resize((logo_w, logo_h), Image.Resampling.LANCZOS)
+
+    alpha = logo.getchannel("A")
+    template_logo = Image.new("RGBA", logo.size, (0, 0, 0, 0))
+    template_logo.putalpha(alpha)
+
+    img = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    img.alpha_composite(
+        template_logo,
+        ((canvas_w - logo_w) // 2, (canvas_h - logo_h) // 2),
+    )
+    return img
 
 
-def generate_icon(name, size, draw_fn):
+def generate_icon(source, name, canvas_size):
     """Generate a single icon PNG."""
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw_fn(draw, size)
+    img = make_template_logo(source, canvas_size)
     path = os.path.join(ICON_DIR, name)
     img.save(path, "PNG")
-    print(f"  Created {name} ({size}x{size})")
-
-
-def make_idle(draw, size):
-    draw_h_letterform(draw, size)
-
-
-def make_syncing(draw, size):
-    draw_h_letterform(draw, size)
-    draw_sync_arrows(draw, size)
-
-
-def make_error(draw, size):
-    draw_h_letterform(draw, size)
-    draw_dot_badge(draw, size, "black")  # monochrome — macOS template will handle coloring
-
-
-def make_conflict(draw, size):
-    draw_h_letterform(draw, size)
-    # Amber/conflict: use a slightly different badge — a small diamond shape
-    s = size
-    dot_r = max(2, s // 6)
-    cx = s - dot_r - 1
-    cy = s - dot_r - 1
-    draw.polygon([
-        (cx, cy - dot_r),
-        (cx + dot_r, cy),
-        (cx, cy + dot_r),
-        (cx - dot_r, cy),
-    ], fill="black")
+    print(f"  Created {name} ({canvas_size[0]}x{canvas_size[1]})")
 
 
 def main():
     os.makedirs(ICON_DIR, exist_ok=True)
-    print("Generating tray icons...")
+    print(f"Generating tray icons from {SOURCE_SVG}...")
 
-    states = {
-        "tray-idle": make_idle,
-        "tray-syncing": make_syncing,
-        "tray-error": make_error,
-        "tray-conflict": make_conflict,
-    }
+    tmpdir, source = render_source_svg()
+    try:
+        for name in STATE_NAMES:
+            generate_icon(source, f"{name}.png", CANVAS_1X)
+            generate_icon(source, f"{name}@2x.png", CANVAS_2X)
+    finally:
+        tmpdir.cleanup()
 
-    for name, draw_fn in states.items():
-        generate_icon(f"{name}.png", 22, draw_fn)
-        generate_icon(f"{name}@2x.png", 44, draw_fn)
-
-    print("Done! 8 tray icons generated.")
+    print("Done. 8 tray icons generated.")
 
 
 if __name__ == "__main__":

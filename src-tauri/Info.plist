@@ -22,6 +22,8 @@
 -->
 <plist version="1.0">
 <dict>
+    <key>LSUIElement</key>
+    <true/>
     <key>NSMicrophoneUsageDescription</key>
     <string>HQ Sync uses the microphone to detect when you join a meeting and (with your opt-in) to capture your audio for the transcript.</string>
 </dict>

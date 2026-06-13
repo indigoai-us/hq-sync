@@ -51,7 +51,7 @@ export interface NotConnectedCompanyRow {
 }
 
 export interface CompaniesPageModel {
-  /** 11px line under the view title. */
+  /** Muted line under the view title. */
   summary: string;
   connected: ConnectedCompanyRow[];
   notConnected: NotConnectedCompanyRow[];

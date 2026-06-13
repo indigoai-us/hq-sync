@@ -290,7 +290,7 @@
     background: rgba(255, 255, 255, 0.06);
     color: var(--popover-text, #d8d8e0);
     font-family: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     font-weight: 600;
     padding: 0.25rem 0.625rem;
     border-radius: 7px;
@@ -304,7 +304,7 @@
 
   .thread-title {
     margin: 0;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-heading, #ffffff);
     overflow: hidden;
@@ -324,7 +324,7 @@
   }
 
   .thread-root-author {
-    font-size: 0.6875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     color: var(--popover-text-muted, #a0a0b0);
   }
@@ -338,7 +338,7 @@
 
   .thread-root-body {
     margin: 0;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     line-height: 1.45;
     color: var(--popover-text, #e8e8ee);
     white-space: pre-wrap;
@@ -347,7 +347,7 @@
 
   .thread-root-details {
     margin-top: 0.5rem;
-    font-size: 0.8125rem;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--popover-text, #e0e0e0);
     background: rgba(0, 0, 0, 0.18);
@@ -359,7 +359,7 @@
   }
 
   .thread-root-label {
-    font-size: 0.625rem;
+    font-size: var(--text-base);
     font-weight: 600;
     letter-spacing: 0.02em;
     color: var(--popover-text-muted, #8a8a98);
@@ -368,7 +368,7 @@
 
   .thread-root-status {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-base);
     color: var(--popover-text-muted, #a0a0b0);
   }
 

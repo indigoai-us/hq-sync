@@ -292,7 +292,7 @@
   .section-title-row span {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -303,7 +303,7 @@
     margin: 6px 0 10px;
     overflow-wrap: anywhere;
     color: var(--v4-text-1);
-    font-size: 15px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.3;
   }
@@ -324,7 +324,7 @@
     border-radius: 6px;
     background: var(--v4-inset);
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
   }
 
   .icon-button {
@@ -335,7 +335,7 @@
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 17px;
+    font-size: var(--text-base);
   }
 
   .icon-button:hover {
@@ -362,7 +362,7 @@
     background: transparent;
     color: var(--v4-text-3);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .status-control button.active {
@@ -373,7 +373,7 @@
   .error {
     margin: 10px 18px 0;
     color: var(--v4-error);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .panel-body {
@@ -400,7 +400,7 @@
 
   .section p {
     color: var(--v4-text-2);
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.45;
   }
 
@@ -450,7 +450,7 @@
     border-radius: 5px;
     background: transparent;
     color: var(--v4-ok);
-    font-size: 12px;
+    font-size: var(--text-base);
   }
 
   .ac-list button.checked {
@@ -471,7 +471,7 @@
     overflow: hidden;
     color: var(--v4-text-2);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 11px;
+    font-size: var(--text-base);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -488,7 +488,7 @@
     min-width: 0;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.3;
     text-overflow: ellipsis;
     white-space: nowrap;

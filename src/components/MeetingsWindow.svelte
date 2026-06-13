@@ -1616,7 +1616,7 @@
     background: #18181b;
     color: #f4f4f5;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    font-size: 13px;
+    font-size: var(--text-base);
     overflow: hidden;
   }
   :global(html[data-window='meetings-window'] #app) {
@@ -1643,7 +1643,7 @@
     color: #f4f4f5;
     border-radius: 6px;
     padding: 7px 10px;
-    font-size: 12px;
+    font-size: var(--text-base);
     outline: none;
   }
   .url-input:focus {
@@ -1663,7 +1663,7 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 6px;
     padding: 7px 8px;
-    font-size: 12px;
+    font-size: var(--text-base);
     cursor: pointer;
   }
   .url-invite-company:focus {
@@ -1680,7 +1680,7 @@
     border: 1px solid rgba(255, 255, 255, 0.20);
     border-radius: 6px;
     padding: 7px 12px;
-    font-size: 12px;
+    font-size: var(--text-base);
     cursor: pointer;
   }
   .url-invite-btn:hover:not(:disabled) {
@@ -1698,7 +1698,7 @@
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.10);
     color: #f4f4f5;
-    font-size: 11px;
+    font-size: var(--text-base);
   }
   /* Warn — yellow, used for recoverable user-facing failures (per HQ
      policy: avoid red error states for things the user can retry). Same
@@ -1735,7 +1735,7 @@
   }
   .active-meetings-label {
     margin: 0 0 2px;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 600;
     color: #a1a1aa;
     letter-spacing: 0.05em;
@@ -1767,12 +1767,12 @@
     flex: 1;
   }
   .active-platform {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
     color: #fafafa;
   }
   .active-status {
-    font-size: 11px;
+    font-size: var(--text-base);
     color: rgba(250, 250, 250, 0.62);
     display: inline-flex;
     align-items: center;
@@ -1804,7 +1804,7 @@
   .active-company {
     flex: 0 0 auto;
     max-width: 160px;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-family: inherit;
     padding: 5px 22px 5px 9px;
     background: rgba(255, 255, 255, 0.06);
@@ -1834,7 +1834,7 @@
   }
   .active-action {
     flex: 0 0 auto;
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 500;
     padding: 5px 11px;
     background: rgba(255, 255, 255, 0.08);
@@ -1869,7 +1869,7 @@
   .meetings-error {
     margin: 0;
     color: #a1a1aa;
-    font-size: 12px;
+    font-size: var(--text-base);
     text-align: center;
     padding: 20px 0;
   }
@@ -1879,7 +1879,7 @@
 
   .day-heading {
     margin: 14px 0 6px;
-    font-size: 10px;
+    font-size: var(--text-base);
     font-weight: 600;
     color: #a1a1aa;
     text-transform: uppercase;
@@ -1915,12 +1915,12 @@
     gap: 1px;
   }
   .event-time {
-    font-size: 10px;
+    font-size: var(--text-base);
     color: #a1a1aa;
     line-height: 1.2;
   }
   .event-title {
-    font-size: 12px;
+    font-size: var(--text-base);
     color: #f4f4f5;
     white-space: nowrap;
     overflow: hidden;
@@ -1976,13 +1976,13 @@
   .meetings-empty-title {
     margin: 0;
     color: #f4f4f5;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
   }
   .meetings-empty-copy {
     margin: 0;
     color: #a1a1aa;
-    font-size: 12px;
+    font-size: var(--text-base);
     max-width: 280px;
     line-height: 1.4;
   }
@@ -1993,7 +1993,7 @@
     border: 1px solid rgba(255, 255, 255, 0.20);
     border-radius: 6px;
     padding: 7px 14px;
-    font-size: 12px;
+    font-size: var(--text-base);
     cursor: pointer;
   }
   .meetings-empty-btn:hover {
@@ -2054,7 +2054,7 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     background: rgba(255, 255, 255, 0.03);
     color: #d4d4d8;
-    font-size: 11px;
+    font-size: var(--text-base);
     cursor: pointer;
   }
   .filter-trigger:hover {
@@ -2088,7 +2088,7 @@
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: transparent;
     color: #a1a1aa;
-    font-size: 10px;
+    font-size: var(--text-base);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     cursor: pointer;
@@ -2106,7 +2106,7 @@
     padding-top: 8px;
   }
   .filter-group-label {
-    font-size: 10px;
+    font-size: var(--text-base);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: #71717a;
@@ -2114,7 +2114,7 @@
     padding: 0 6px;
   }
   .filter-group-empty {
-    font-size: 11px;
+    font-size: var(--text-base);
     color: #52525b;
     margin: 0;
     padding: 0 6px;
@@ -2136,7 +2136,7 @@
     accent-color: #e4e4e7;
   }
   .filter-option-label {
-    font-size: 12px;
+    font-size: var(--text-base);
     color: #d4d4d8;
     flex: 1;
     overflow: hidden;
@@ -2150,7 +2150,7 @@
     border-radius: 3px;
     background: rgba(255, 255, 255, 0.06);
     color: #a1a1aa;
-    font-size: 9px;
+    font-size: var(--text-base);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
@@ -2236,7 +2236,7 @@
     cursor: default;
     background: transparent;
     border-color: transparent;
-    font-size: 12px;
+    font-size: var(--text-base);
   }
   /* Open-in-browser — discreet so the eye lands on the primary state
      button first. Identical box size, just lower base contrast. */

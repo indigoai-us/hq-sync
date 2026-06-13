@@ -119,7 +119,7 @@
 
 <style>
   /* Desktop "Company OS" language: a hairline-bordered card (deliberately NOT a
-     chat bubble) over a low-fill surface, one 13px size + 11px monospace caps
+     chat bubble) over a low-fill surface, one 13px body size with monospace caps
      for the avatar + email, accent reserved for the primary Accept CTA + focus
      ring. Decline is neutral; Block carries --red only to MARK the destructive
      action, never decoration. No side-stripe borders. Tokens come from the

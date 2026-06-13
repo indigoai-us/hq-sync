@@ -163,7 +163,7 @@
 
 <style>
   /* Desktop "Company OS" language: monochrome glass sheet, hairline borders,
-     one 13px size + 11px monospace caps for the field label, accent reserved
+     one 13px body size with monospace caps for the field label, accent reserved
      for the primary Send CTA + focus ring. The "not connected" / "blocked"
      notes mark state via copy + a neutral (or restrained --red) surface — no
      side-stripe border, no amber/orange decoration. Tokens come from the
@@ -215,7 +215,7 @@
     border: none;
     background: transparent;
     color: var(--muted);
-    font-size: 1.25rem;
+    font-size: var(--text-lg);
     line-height: 1;
     cursor: pointer;
     padding: 0 var(--space-1);

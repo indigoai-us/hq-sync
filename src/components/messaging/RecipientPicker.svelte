@@ -218,7 +218,7 @@
 
 <style>
   /* Desktop "Company OS" language: hairline-bordered input + dropdown over a
-     low-fill surface, one 13px size with 11px monospace caps for group headings
+     low-fill surface, one 13px body size with monospace caps for group headings
      and the not-connected tag, accent reserved for the active/hovered option +
      focus ring. Tokens come from the shared desktop alias layer
      (desktop-alt.css). */

@@ -545,7 +545,7 @@
     max-width: 160px;
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.25;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -561,7 +561,7 @@
   .goals-heading h2 {
     margin: 0;
     color: var(--v4-text-1);
-    font-size: 14px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.2;
   }
@@ -571,7 +571,7 @@
   .goals-footnote {
     overflow: hidden;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -587,7 +587,7 @@
     background: var(--v4-control-bg);
     color: var(--v4-text-1);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 30px;
     cursor: default;
@@ -604,7 +604,7 @@
     border-radius: 6px;
     background: var(--v4-inset);
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
   }
@@ -644,7 +644,7 @@
     margin: 0;
     overflow: hidden;
     color: var(--v4-text-1);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -655,7 +655,7 @@
     flex: 0 0 auto;
     gap: 7px;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
   }
@@ -694,7 +694,7 @@
     padding: 0 0 9px;
     border-bottom: 1px solid var(--v4-rowline);
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     text-align: left;
@@ -719,7 +719,7 @@
     border-bottom: 1px solid var(--v4-rowline);
     overflow: hidden;
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.25;
     text-overflow: ellipsis;
@@ -733,7 +733,7 @@
 
   .kr-table td.kr-empty {
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
     text-align: center;
   }
 
@@ -743,7 +743,7 @@
     align-items: center;
     gap: 10px;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     font-variant-numeric: tabular-nums;
@@ -768,7 +768,7 @@
     min-height: 25px;
     padding-top: 1px;
     color: var(--v4-text-2);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.25;
   }
@@ -788,7 +788,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     cursor: default;
   }
@@ -800,7 +800,7 @@
   .linked-row > span {
     flex: 0 0 auto;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
     text-transform: uppercase;
@@ -824,7 +824,7 @@
     background: var(--v4-control-faint);
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     text-overflow: ellipsis;
@@ -850,7 +850,7 @@
     border-radius: 8px;
     background: var(--v4-inset);
     color: var(--v4-text-3);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.35;
     text-align: center;
@@ -858,7 +858,7 @@
 
   .empty-state span {
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
   }
 

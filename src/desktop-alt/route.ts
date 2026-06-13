@@ -79,7 +79,7 @@ export const LIBRARY_SECTIONS: ReadonlyArray<{ id: LibraryTab; label: string }> 
   { id: 'profile', label: 'Profile' },
 ];
 
-/** Settings secondary-sidebar rows; Meetings carries the 11px "gated" note. */
+/** Settings secondary-sidebar rows; Meetings carries the muted gated note. */
 export const SETTINGS_SECTIONS: ReadonlyArray<{
   id: SettingsTab;
   label: string;

@@ -127,7 +127,7 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
 export interface V4SecondaryItem {
   id: string;
   label: string;
-  /** Optional 11px trailing note, e.g. "gated" on the Meetings settings row. */
+  /** Optional muted trailing note, e.g. "gated" on the Meetings settings row. */
   note?: string | null;
 }
 

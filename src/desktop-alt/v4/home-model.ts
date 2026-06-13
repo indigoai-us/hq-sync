@@ -15,7 +15,7 @@ import {
  * V4 Home model — pure derivations for the exception-based Home surface
  * (docs/design/v4/SPEC.md section 5, home-healthy/syncing/error.png).
  *
- * Home answers "is anything wrong, what needs me, what happened": an 11px
+ * Home answers "is anything wrong, what needs me, what happened": a compact
  * meta line under the title, a NEEDS YOU queue of inline-action cards
  * (conflicts + core drift), a syncing progress card with per-company fanout,
  * a plain-language error card, and an actor-grouped narrative digest. All
@@ -136,7 +136,7 @@ export function getNeedsYouCount(
   return conflictCount + driftCount;
 }
 
-// ── 11px meta line under the Home title ─────────────────────────────────────
+// ── Meta line under the Home title ──────────────────────────────────────────
 
 export interface HomeMetaInput {
   syncState: SyncState;
@@ -190,7 +190,7 @@ export interface HomeFanoutRow {
   slug: string;
   name: string;
   state: 'done' | 'active' | 'queued';
-  /** 11px right-hand detail ("done · 97 files", "downloading … · 76 of 301"). */
+  /** Right-hand detail ("done · 97 files", "downloading … · 76 of 301"). */
   detail: string;
 }
 

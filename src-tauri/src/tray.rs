@@ -167,7 +167,6 @@ pub fn meetings_set_prompt_badge(app: AppHandle, count: usize) {
 /// `Prompt` reuses the idle icon bytes as a placeholder. The visual
 /// differentiation between Idle and Prompt comes from the tooltip text
 /// ("Meeting Detected") until a designer badge composite is created.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
 fn icon_for_state(state: TrayState) -> Image<'static> {
     static ICON_IDLE: OnceLock<Image<'static>> = OnceLock::new();
     static ICON_SYNCING: OnceLock<Image<'static>> = OnceLock::new();
@@ -199,26 +198,15 @@ fn icon_for_state(state: TrayState) -> Image<'static> {
     .clone()
 }
 
-/// Swap the tray affordance for `state`.
+/// Swap the tray icon for `state`, re-asserting the macOS template flag.
 ///
-/// On macOS we intentionally use a native text status item (`HQ`) instead of a
-/// PNG template glyph. The template image path has proven unreliable on recent
-/// macOS builds: the NSStatusItem exists, but the glyph can paint too dark or
-/// disappear entirely. A native title keeps the menu-bar launcher visible.
+/// `icon_as_template(true)` is set at build time, but on macOS each
+/// `set_icon(...)` installs a fresh NSImage whose template flag can be lost.
+/// The tray assets are white-on-alpha template glyphs; re-applying the flag
+/// after each swap lets macOS recolor them for the current menu-bar appearance.
 fn set_state_icon<R: tauri::Runtime>(tray: &tauri::tray::TrayIcon<R>, state: TrayState) {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = tray.set_icon(None);
-        let _ = tray.set_title(Some(TRAY_TITLE));
-        let _ = state;
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = tray.set_icon(Some(icon_for_state(state)));
-        let _ = tray.set_icon_as_template(true);
-        let _ = tray.set_title(Some(TRAY_TITLE));
-    }
+    let _ = tray.set_icon(Some(icon_for_state(state)));
+    let _ = tray.set_icon_as_template(true);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -235,7 +223,6 @@ const MENU_QUIT: &str = "quit";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TRAY_ID: &str = "hq-sync-tray";
-const TRAY_TITLE: &str = "HQ";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Setup
@@ -268,18 +255,11 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .item(&quit)
         .build()?;
 
-    // Build tray icon. macOS uses a native text status item for reliability;
-    // other platforms keep the PNG icon path.
-    #[cfg(target_os = "macos")]
-    let tray_builder = TrayIconBuilder::with_id(TRAY_ID);
-
-    #[cfg(not(target_os = "macos"))]
     let tray_builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon_for_state(TrayState::Idle))
         .icon_as_template(true);
 
     let tray_builder = tray_builder
-        .title(TRAY_TITLE)
         .tooltip("HQ Sync — Idle")
         .menu(&menu)
         .show_menu_on_left_click(false)
@@ -321,7 +301,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     log("tray", "tray icon built");
 
-    // Give macOS one explicit post-build image/title pass. Avoid the old
+    // Give macOS one explicit post-build image pass. Avoid the old
     // hide/show workaround here: `set_visible(false)` removes the NSStatusItem,
     // and if re-adding fails silently the app is alive with no menu-bar affordance.
     set_state_icon(&tray, TrayState::Idle);
@@ -803,11 +783,6 @@ mod tests {
     #[test]
     fn test_tray_id_constant() {
         assert_eq!(TRAY_ID, "hq-sync-tray");
-    }
-
-    #[test]
-    fn test_tray_title_constant() {
-        assert_eq!(TRAY_TITLE, "HQ");
     }
 
     #[test]

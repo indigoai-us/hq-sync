@@ -10,7 +10,7 @@
    * background, hairline right border. Nav (Home / Companies / Messages /
    * Meetings / Library) → COMPANIES section (6px status dot + name per
    * connected company, scrollable when needed) → Settings footer (13px
-   * "Settings" + 11px account email, hairline top border).
+   * "Settings" + muted account email, hairline top border).
    *
    * Exactly one active row, driven by `route` (see getV4SidebarModel).
    * The companies list renders the `list_syncable_workspaces` result: pass it
@@ -141,7 +141,7 @@
     background: transparent;
     color: var(--v4-text-2);
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1;
     text-align: left;
@@ -164,7 +164,7 @@
     margin: 0 0 6px;
     padding: 0 8px;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     font-weight: 400;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -257,7 +257,7 @@
 
   .v4-footer-label {
     color: var(--v4-text-2);
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 400;
     line-height: 1.2;
   }
@@ -266,7 +266,7 @@
     overflow: hidden;
     max-width: 100%;
     color: var(--v4-text-3);
-    font-size: 11px;
+    font-size: var(--text-base);
     line-height: 1.2;
     text-overflow: ellipsis;
     white-space: nowrap;
