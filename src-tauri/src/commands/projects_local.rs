@@ -60,6 +60,12 @@ pub struct LocalProject {
     /// HQ-folder-relative path to the linked `prd.json`, when one exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prd_path: Option<String>,
+    /// Project creation timestamp from board.json or prd metadata, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// Latest project update timestamp from board.json or prd metadata, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
     /// Total user stories in the linked prd (0 if no prd or unparseable).
     pub story_count: u32,
     /// Stories whose `passes == true`.
@@ -316,6 +322,10 @@ struct BoardProject {
     status: String,
     #[serde(default)]
     prd_path: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
 }
 
 /// `prd.json` — the raw on-disk shape. Stories use camelCase keys, so this
@@ -392,6 +402,25 @@ fn story_counts(prd: &PrdFile) -> (u32, u32) {
     (total, complete)
 }
 
+fn metadata_timestamp(metadata: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        metadata
+            .get(*key)
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn prd_created_at(prd: &PrdFile) -> Option<String> {
+    metadata_timestamp(&prd.metadata, &["createdAt", "created_at"])
+}
+
+fn prd_updated_at(prd: &PrdFile) -> Option<String> {
+    metadata_timestamp(&prd.metadata, &["updatedAt", "updated_at"])
+}
+
 /// Resolve the user's HQ folder using the standard 4-tier resolver, the same
 /// way every other CLI-spawning command in this app does (mirrors
 /// `commands/packages.rs::resolve_hq_folder`).
@@ -459,35 +488,55 @@ fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
         let board_path = company_path.join("board.json");
         if let Some(board) = read_json_lenient::<BoardFile>(&board_path) {
             for project in board.projects {
-                let prd_counts = project.prd_path.as_deref().and_then(|rel| {
+                let BoardProject {
+                    id,
+                    title,
+                    description,
+                    status,
+                    prd_path,
+                    created_at,
+                    updated_at,
+                } = project;
+                let prd_details = prd_path.as_deref().and_then(|rel| {
                     let abs = hq_root.join(rel);
                     // Only count prds that live inside the HQ folder.
                     if is_within(hq_root, &abs) {
-                        read_json_lenient::<PrdFile>(&abs).map(|prd| story_counts(&prd))
+                        read_json_lenient::<PrdFile>(&abs).map(|prd| {
+                            let (story_count, stories_complete) = story_counts(&prd);
+                            (
+                                story_count,
+                                stories_complete,
+                                prd_created_at(&prd),
+                                prd_updated_at(&prd),
+                            )
+                        })
                     } else {
                         None
                     }
                 });
-                if let Some(rel) = project.prd_path.as_deref() {
+                if let Some(rel) = prd_path.as_deref() {
                     linked_prds.insert(normalize_rel(rel));
                 }
-                let (story_count, stories_complete) = prd_counts.unwrap_or((0, 0));
-                let id = if project.id.trim().is_empty() {
-                    project.title.clone()
+                let (story_count, stories_complete, prd_created, prd_updated) =
+                    prd_details.unwrap_or((0, 0, None, None));
+                let id = if id.trim().is_empty() {
+                    title.clone()
                 } else {
-                    project.id.clone()
+                    id
                 };
                 out.push(LocalProject {
                     id,
-                    title: if project.title.trim().is_empty() {
-                        project.prd_path.clone().unwrap_or_default()
+                    title: if title.trim().is_empty() {
+                        prd_path.clone().unwrap_or_default()
                     } else {
-                        project.title.clone()
+                        title
                     },
-                    description: project.description,
+                    description,
                     company: slug.clone(),
-                    status: project.status,
-                    prd_path: project.prd_path,
+                    status,
+                    prd_path,
+                    created_at: created_at.or(prd_created),
+                    updated_at: updated_at.or(prd_updated),
                     story_count,
                     stories_complete,
                 });
@@ -509,6 +558,8 @@ fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
                 continue;
             };
             let (story_count, stories_complete) = story_counts(&prd);
+            let created_at = prd_created_at(&prd);
+            let updated_at = prd_updated_at(&prd);
             // Project name from prd, falling back to the parent dir name.
             let dir_name = prd_path
                 .parent()
@@ -528,6 +579,8 @@ fn scan_local_projects(hq_root: &Path) -> Vec<LocalProject> {
                 company: slug.clone(),
                 status: String::new(),
                 prd_path: Some(rel),
+                created_at,
+                updated_at,
                 story_count,
                 stories_complete,
             });
@@ -1011,7 +1064,12 @@ mod tests {
                 {"id":"US-002","title":"two","passes":true},
                 {"id":"US-003","title":"three","passes":false}
             ],
-            "metadata": {"company":"indigo","goal":"ship"}
+            "metadata": {
+                "company":"indigo",
+                "goal":"ship",
+                "createdAt":"2026-06-01T00:00:00Z",
+                "updatedAt":"2026-06-03T00:00:00Z"
+            }
         }"#;
         fs::write(proj.join("prd.json"), prd).unwrap();
 
@@ -1019,8 +1077,8 @@ mod tests {
         let board = r#"{
             "company": "indigo",
             "projects": [
-                {"id":"in-proj-001","title":"Flagship","description":"d","status":"active","prd_path":"companies/indigo/projects/flagship/prd.json"},
-                {"id":"in-proj-002","title":"Broken","status":"archived","prd_path":"companies/indigo/projects/missing/prd.json"}
+                {"id":"in-proj-001","title":"Flagship","description":"d","status":"active","prd_path":"companies/indigo/projects/flagship/prd.json","created_at":"2026-06-02T00:00:00Z","updated_at":"2026-06-04T00:00:00Z"},
+                {"id":"in-proj-002","title":"Broken","status":"archived","prd_path":"companies/indigo/projects/missing/prd.json","created_at":"2026-05-01T00:00:00Z"}
             ]
         }"#;
         fs::write(indigo.join("board.json"), board).unwrap();
@@ -1034,7 +1092,11 @@ mod tests {
         fs::create_dir_all(&solo).unwrap();
         fs::write(
             solo.join("prd.json"),
-            r#"{"name":"Widget","userStories":[{"id":"W-1","passes":false}]}"#,
+            r#"{
+                "name":"Widget",
+                "userStories":[{"id":"W-1","passes":false}],
+                "metadata":{"createdAt":"2026-06-05T00:00:00Z","updatedAt":"2026-06-06T00:00:00Z"}
+            }"#,
         )
         .unwrap();
 
@@ -1063,6 +1125,8 @@ mod tests {
         assert_eq!(acme[0].title, "Widget");
         assert_eq!(acme[0].story_count, 1);
         assert_eq!(acme[0].stories_complete, 0);
+        assert_eq!(acme[0].created_at.as_deref(), Some("2026-06-05T00:00:00Z"));
+        assert_eq!(acme[0].updated_at.as_deref(), Some("2026-06-06T00:00:00Z"));
 
         // indigo: two board projects. Flagship links a real prd → 3 stories, 2 done.
         let flagship = projects
@@ -1072,6 +1136,8 @@ mod tests {
         assert_eq!(flagship.title, "Flagship");
         assert_eq!(flagship.story_count, 3);
         assert_eq!(flagship.stories_complete, 2);
+        assert_eq!(flagship.created_at.as_deref(), Some("2026-06-02T00:00:00Z"));
+        assert_eq!(flagship.updated_at.as_deref(), Some("2026-06-04T00:00:00Z"));
         assert_eq!(
             flagship.prd_path.as_deref(),
             Some("companies/indigo/projects/flagship/prd.json")
@@ -1084,6 +1150,7 @@ mod tests {
             .expect("broken board project still listed");
         assert_eq!(broken.story_count, 0);
         assert_eq!(broken.stories_complete, 0);
+        assert_eq!(broken.created_at.as_deref(), Some("2026-05-01T00:00:00Z"));
 
         // The flagship prd is board-linked, so it must NOT also appear as an
         // unlinked prd row (no duplicate).

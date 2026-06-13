@@ -109,6 +109,14 @@ pub struct Contact {
     /// on older server payloads → the frontend treats absence as "none".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_state: Option<String>,
+    /// Optional server-supplied conversation timestamps. Older servers omit
+    /// these; the frontend also folds in local notification history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_dm_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -986,12 +994,18 @@ mod tests {
             "email": "a@b.com",
             "displayName": "Ada",
             "companyUid": "ent_co",
-            "source": "company"
+            "source": "company",
+            "lastMessageAt": "2026-06-12T01:02:03Z",
+            "lastActivityAt": "2026-06-11T01:02:03Z",
+            "lastDmAt": "2026-06-10T01:02:03Z"
         }"#;
         let c: Contact = serde_json::from_str(json).expect("Contact parses");
         assert_eq!(c.email, "a@b.com");
         assert_eq!(c.company_uid.as_deref(), Some("ent_co"));
         assert_eq!(c.source.as_deref(), Some("company"));
+        assert_eq!(c.last_message_at.as_deref(), Some("2026-06-12T01:02:03Z"));
+        assert_eq!(c.last_activity_at.as_deref(), Some("2026-06-11T01:02:03Z"));
+        assert_eq!(c.last_dm_at.as_deref(), Some("2026-06-10T01:02:03Z"));
     }
 
     #[test]

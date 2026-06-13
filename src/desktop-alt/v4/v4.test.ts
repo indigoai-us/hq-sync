@@ -160,6 +160,20 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
     ]);
   });
 
+  it('deduplicates repeated workspace slugs so cached local data cannot blank the app', () => {
+    const model = getV4SidebarModel({ kind: 'company', slug: 'dupe' }, [
+      company({ slug: 'dupe', displayName: 'Dupe Local', state: 'local-only' }),
+      company({ slug: 'dupe', displayName: 'Dupe Cloud', state: 'cloud-only' }),
+      company({ slug: 'next', displayName: 'Next' }),
+    ]);
+
+    expect(model.companies.map((row) => row.slug)).toEqual(['dupe', 'next']);
+    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual([
+      'dupe',
+    ]);
+    expect(activeRowCount(model)).toBe(1);
+  });
+
   it('keeps later companies selectable and active because every row renders', () => {
     const many = Array.from({ length: 9 }, (_, index) =>
       company({ slug: `co-${index}`, displayName: `Co ${index}` }),

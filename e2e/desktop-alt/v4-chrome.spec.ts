@@ -84,7 +84,23 @@ describe('desktop-alt V4 chrome (US-002)', () => {
 
     expect(desktopApp).toContain('<V4TitleBar');
     expect(desktopApp).toContain('<V4Sidebar');
-    expect(desktopApp).toContain('{companies}');
+    expect(desktopApp).toContain('let companies = $state<Workspace[]>(cachedCompanies)');
+    expect(desktopApp).toContain('const nextCompanies = getDesktopCompanies(result.workspaces)');
+    expect(desktopApp).toContain('companies = nextCompanies');
+    expect(desktopApp).toContain('const shellCompanies = $derived');
+    expect(desktopApp).toContain('const watchedWorkspaceCount = $derived(shellCompanies.length)');
+    expect(desktopApp).toContain(
+      'let renderCompanies = $state<Workspace[]>(cachedCompanies)',
+    );
+    expect(desktopApp).toContain('let renderWorkspaceCount = $state(cachedCompanies.length)');
+    expect(desktopApp).toContain('renderCompanies = nextCompanies');
+    expect(desktopApp).toContain('renderWorkspaceCount = nextCompanies.length');
+    expect(desktopApp).toContain('writeCachedWorkspaces(result.workspaces)');
+    expect(desktopApp).toContain('window.location.reload()');
+    expect(desktopApp).toContain('companies={renderCompanies}');
+    expect(desktopApp).toContain('workspaceCount={renderWorkspaceCount}');
+    expect(desktopApp).toContain('{#key renderWorkspaceCount}');
+    expect(desktopApp).not.toContain('chromeReady');
     expect(desktopApp).not.toContain('companies={workspaces}');
     // The secondary sidebar is composed conditionally; the settings surface is
     // suppressed until its in-window page (US-013) is wired, so match the guard
@@ -101,12 +117,25 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     expect(sidebar).toContain('class="v4-nav v4-company-nav"');
     expect(sidebar).toContain('flex: 1 1 auto');
     expect(sidebar).toContain('overflow-y: auto');
+    expect(sidebar).toContain('companies,');
+    expect(sidebar).toContain('companies && companies.length > 0 ? companies : fetched');
+    expect(sidebar).toContain('if (companies && companies.length > 0) return');
+    expect(sidebar).not.toContain('companies = null');
     expect(sidebar).not.toContain('data-testid="v4-more-companies"');
     expect(sidebar).not.toContain('model.overflowCount');
     expect(sidebar).not.toContain('View {model.overflowCount} more companies');
     expect(harnessMocks).toContain('const HARNESS_WORKSPACES');
     expect(harnessMocks).toContain("slug: 'sender-agency'");
     expect(harnessMocks).toContain("slug: 'archive-labs'");
+  });
+
+  it('the status bar derives live fallback values without defaulting dynamic props', () => {
+    const statusBar = readRepoFile('src/desktop-alt/DesktopStatusBar.svelte');
+
+    expect(statusBar).toContain('workspaceCount,');
+    expect(statusBar).toContain('const currentWorkspaceCount = $derived(workspaceCount ?? 0)');
+    expect(statusBar).toContain('{currentWorkspaceCount}</span> workspace');
+    expect(statusBar).not.toContain('workspaceCount = 0');
   });
 
   it('the old segmented-control navigation is gone from company and library pages', () => {
@@ -118,5 +147,12 @@ describe('desktop-alt V4 chrome (US-002)', () => {
     // The library body forces its tab from the route, which hides
     // LibraryBrowser's in-body segmented control.
     expect(library).toContain('forcedFilter={tab}');
+  });
+
+  it('settings uses the V4 secondary sidebar instead of rendering a second in-page index', () => {
+    const settings = readRepoFile('src/desktop-alt/pages/SettingsPage.svelte');
+
+    expect(settings).not.toContain('class="settings-index"');
+    expect(settings).not.toContain('grid-template-columns: 180px minmax');
   });
 });

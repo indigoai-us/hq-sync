@@ -107,7 +107,22 @@ describe('desktop-alt V4 Companies (US-004)', () => {
     expect(companiesPage).toContain(
       "import { buildClaudeCodeUrl } from '../../lib/claude-code-link'",
     );
-    expect(companiesPage).toContain('[$accept](/Users/corey/Documents/HQ/.claude/skills/accept/SKILL.md)');
+    expect(companiesPage).toContain(
+      "import { hqSkillMarkdownLink } from '../../lib/hq-skill-link'",
+    );
+    expect(companiesPage).toContain("hqSkillMarkdownLink('accept', config.hqFolderPath)");
+    const oldAbsoluteSkillPath = [
+      '',
+      'Users',
+      'corey',
+      'Documents',
+      'HQ',
+      '.claude',
+      'skills',
+      'accept',
+      'SKILL.md',
+    ].join('/');
+    expect(companiesPage).not.toContain(oldAbsoluteSkillPath);
     expect(companiesPage).toContain('buildClaudeCodeUrl({ folder: config.hqFolderPath ?? \'\', prompt })');
     expect(companiesPage).toContain("invoke('open_claude_code_link', { url })");
     expect(companiesPage).toContain('Open invite');

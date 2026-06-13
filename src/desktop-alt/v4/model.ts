@@ -82,13 +82,19 @@ export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
  */
 export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
   const settingsActive = route.kind === 'settings';
+  const seenCompanySlugs = new Set<string>();
 
-  const companies: V4SidebarCompanyRow[] = workspaces.map((workspace) => ({
-    slug: workspace.slug,
-    label: workspace.displayName,
-    tone: v4CompanyDotTone(workspace),
-    active: route.kind === 'company' && route.slug === workspace.slug,
-  }));
+  const companies: V4SidebarCompanyRow[] = [];
+  for (const workspace of workspaces) {
+    if (seenCompanySlugs.has(workspace.slug)) continue;
+    seenCompanySlugs.add(workspace.slug);
+    companies.push({
+      slug: workspace.slug,
+      label: workspace.displayName,
+      tone: v4CompanyDotTone(workspace),
+      active: route.kind === 'company' && route.slug === workspace.slug,
+    });
+  }
 
   const companyRowActive = companies.some((row) => row.active);
   // Company route with no matching row (e.g. not connected yet) → fall back

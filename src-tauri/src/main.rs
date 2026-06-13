@@ -1,8 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::Mutex;
 #[cfg(target_os = "macos")]
 use tauri::Manager;
-use std::sync::Mutex;
 
 mod commands;
 mod events;
@@ -27,7 +27,10 @@ fn apply_liquid_glass(window: &tauri::WebviewWindow) {
         Some(NSVisualEffectState::Active),
         Some(18.0),
     ) {
-        Ok(()) => log("ui", "apply_vibrancy: success (Popover material, blur 18, active)"),
+        Ok(()) => log(
+            "ui",
+            "apply_vibrancy: success (Popover material, blur 18, active)",
+        ),
         Err(e) => log("ui", &format!("apply_vibrancy FAILED: {e}")),
     }
 }
@@ -77,7 +80,10 @@ fn set_app_icon_from_bytes(bytes: &'static [u8]) {
         let app_cls = class!(NSApplication);
         let app: *mut AnyObject = msg_send![app_cls, sharedApplication];
         if app.is_null() {
-            log("ui", "set_app_icon: NSApplication::sharedApplication returned nil");
+            log(
+                "ui",
+                "set_app_icon: NSApplication::sharedApplication returned nil",
+            );
             return;
         }
         let _: () = msg_send![app, setApplicationIconImage: image];
@@ -314,6 +320,7 @@ fn main() {
             tray::meetings_set_prompt_badge,
             commands::desktop_alt::open_desktop_alt_window,
             commands::desktop_alt::desktop_alt_consume_pending_route,
+            commands::desktop_alt::desktop_alt_dev_audit_render,
             commands::share_notify::poll_shared_with_me,
             commands::share_notify::open_share_detail,
             commands::share_notify::share_detail_window_ready,
@@ -522,8 +529,11 @@ fn main() {
             // Auto-start the watcher when either flag is on:
             //   - `autostart_daemon` (V2-prep devtools flag, default OFF)
             //   - `realtime_sync`   (user-facing Auto-sync toggle, default ON)
-            if commands::daemon::is_autostart_enabled()
-                || commands::daemon::is_realtime_sync_enabled()
+            let dev_disable_auto_sync =
+                std::env::var("HQ_DEV_DISABLE_AUTO_SYNC_ON_LAUNCH").ok().as_deref() == Some("1");
+            if !dev_disable_auto_sync
+                && (commands::daemon::is_autostart_enabled()
+                    || commands::daemon::is_realtime_sync_enabled())
             {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {

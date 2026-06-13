@@ -42,16 +42,16 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     expect(app).toContain('.filter((event) => isToday(event, now))');
     expect(app).toContain('.filter((event) => (eventStart(event)?.getTime() ?? 0) >= now.getTime())');
     expect(app).toContain('return `${company} · in ${minutes}m`;');
-    expect(bar).toContain('{#if nextMeetingLabel}');
+    expect(bar).toContain('{#if currentNextMeetingLabel}');
     expect(bar).toContain('Idle · all safe');
-    expect(bar).toContain("if (state === 'syncing') return 'syncing';");
-    expect(bar).toContain("if (state === 'error' || state === 'auth-error') return 'error';");
-    expect(bar).toContain("if (state === 'conflict' || state === 'setup-needed') return 'conflict';");
+    expect(bar).toContain("if (currentState === 'syncing') return 'syncing';");
+    expect(bar).toContain("if (currentState === 'error' || currentState === 'auth-error') return 'error';");
+    expect(bar).toContain("if (currentState === 'conflict' || currentState === 'setup-needed') return 'conflict';");
     expect(bar).toContain("return 'idle';");
-    expect(bar).toContain('Math.round((filesProgressed / totalFiles) * 100)');
-    expect(bar).toContain('{filesProgressed}/{totalFiles} files');
+    expect(bar).toContain('Math.round((currentFilesProgressed / currentTotalFiles) * 100)');
+    expect(bar).toContain('{currentFilesProgressed}/{currentTotalFiles} files');
     expect(bar).toContain('class="ls-progress"');
-    expect(bar).toContain('{progress.path}');
+    expect(bar).toContain('{currentProgress.path}');
     expect(bar).toContain('v{version}');
   });
 

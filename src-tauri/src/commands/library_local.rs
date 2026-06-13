@@ -204,6 +204,8 @@ struct WorkerBlock {
     #[serde(default)]
     description: String,
     #[serde(default)]
+    status: String,
+    #[serde(default)]
     team: Option<String>,
     /// Optional authorship (US-001). Absent on legacy worker.yaml.
     #[serde(default)]
@@ -429,6 +431,120 @@ fn worker_row(entry: &RawWorkerEntry, scope: &str, company: Option<String>) -> L
     }
 }
 
+fn push_unique_worker(workers: &mut Vec<LibraryWorker>, worker: LibraryWorker) {
+    let next_path = worker.path.trim_end_matches('/');
+    if workers
+        .iter()
+        .any(|existing| existing.path.trim_end_matches('/') == next_path)
+    {
+        return;
+    }
+    workers.push(worker);
+}
+
+/// Scan `worker.yaml` files from the real filesystem as a fallback/augmentation
+/// to the generated registry. The registry can be stale or locally malformed,
+/// but each worker directory is still the source of detail truth.
+fn scan_worker_yaml_dir(
+    hq_root: &Path,
+    workers_dir: &Path,
+    scope: &str,
+    company: Option<String>,
+) -> Vec<LibraryWorker> {
+    let mut yaml_files = Vec::new();
+    collect_worker_yaml_files(workers_dir, &mut yaml_files);
+    yaml_files.sort();
+
+    yaml_files
+        .iter()
+        .filter_map(|path| worker_from_yaml(hq_root, path, scope, company.clone()))
+        .collect()
+}
+
+fn collect_worker_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with('.') || name.starts_with('_') {
+            continue;
+        }
+
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_file() && name == "worker.yaml" {
+            out.push(path);
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_worker_yaml_files(&path, out);
+        }
+    }
+}
+
+fn worker_from_yaml(
+    hq_root: &Path,
+    yaml_path: &Path,
+    scope: &str,
+    company: Option<String>,
+) -> Option<LibraryWorker> {
+    if yaml_path.file_name().and_then(|n| n.to_str()) != Some("worker.yaml") {
+        return None;
+    }
+    if !is_within(hq_root, yaml_path) {
+        return None;
+    }
+
+    let raw = std::fs::read_to_string(yaml_path).ok()?;
+    let parsed: WorkerFile = serde_yaml::from_str(&raw).ok()?;
+    let dir = yaml_path.parent()?;
+    let rel = dir
+        .strip_prefix(hq_root)
+        .ok()?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let path = if rel.ends_with('/') {
+        rel
+    } else {
+        format!("{rel}/")
+    };
+    let fallback_id = last_path_segment(&path);
+    let id = if parsed.worker.id.trim().is_empty() {
+        fallback_id
+    } else {
+        parsed.worker.id.clone()
+    };
+    let name = if parsed.worker.name.trim().is_empty() {
+        id.clone()
+    } else {
+        parsed.worker.name.clone()
+    };
+    let status = if parsed.worker.status.trim().is_empty() {
+        "active".to_string()
+    } else {
+        parsed.worker.status.clone()
+    };
+
+    Some(LibraryWorker {
+        id,
+        name,
+        type_: parsed.worker.type_.clone(),
+        description: parsed.worker.description.clone(),
+        scope: scope.to_string(),
+        company,
+        status,
+        path,
+        team: parsed.worker.team.clone(),
+    })
+}
+
 /// The ROOT library is an ALL-SCOPES view: core (public workers + `.claude/skills`),
 /// the personal overlay (`personal/skills`), AND every company's private workers +
 /// company-scoped skills. The desktop UI narrows it with a client-side facet
@@ -442,6 +558,10 @@ fn scan_root_library(hq_root: &Path) -> LibraryItems {
         .filter(|e| e.visibility == "public")
         .map(|e| worker_row(e, "root", None))
         .collect();
+    for worker in scan_worker_yaml_dir(hq_root, &hq_root.join("core/workers/public"), "root", None)
+    {
+        push_unique_worker(&mut workers, worker);
+    }
     let mut skills = scan_skills_dir(hq_root, &hq_root.join(".claude/skills"), "root", None);
     skills.extend(scan_skills_dir(
         hq_root,
@@ -454,10 +574,19 @@ fn scan_root_library(hq_root: &Path) -> LibraryItems {
     for slug in company_slugs(hq_root, &registry) {
         let prefix = format!("companies/{slug}/workers/");
         for e in registry.iter().filter(|e| e.path.starts_with(&prefix)) {
-            workers.push(worker_row(e, "company", Some(slug.clone())));
+            push_unique_worker(&mut workers, worker_row(e, "company", Some(slug.clone())));
+        }
+        let workers_dir = hq_root.join("companies").join(&slug).join("workers");
+        for worker in scan_worker_yaml_dir(hq_root, &workers_dir, "company", Some(slug.clone())) {
+            push_unique_worker(&mut workers, worker);
         }
         let skills_dir = hq_root.join("companies").join(&slug).join("skills");
-        skills.extend(scan_skills_dir(hq_root, &skills_dir, "company", Some(slug.clone())));
+        skills.extend(scan_skills_dir(
+            hq_root,
+            &skills_dir,
+            "company",
+            Some(slug.clone()),
+        ));
     }
 
     LibraryItems { workers, skills }
@@ -505,11 +634,15 @@ fn scan_company_library(hq_root: &Path, company_slug: &str) -> Result<LibraryIte
     let slug = validate_slug(company_slug)?;
 
     let prefix = format!("companies/{slug}/workers/");
-    let workers = read_registry(hq_root)
+    let mut workers: Vec<LibraryWorker> = read_registry(hq_root)
         .iter()
         .filter(|e| e.path.starts_with(&prefix))
         .map(|e| worker_row(e, "company", Some(slug.clone())))
         .collect();
+    let workers_dir = hq_root.join("companies").join(&slug).join("workers");
+    for worker in scan_worker_yaml_dir(hq_root, &workers_dir, "company", Some(slug.clone())) {
+        push_unique_worker(&mut workers, worker);
+    }
 
     let skills_dir = hq_root.join("companies").join(&slug).join("skills");
     let skills = scan_skills_dir(hq_root, &skills_dir, "company", Some(slug.clone()));
@@ -595,7 +728,9 @@ fn read_worker_detail(hq_root: &Path, worker_path: &str) -> Result<WorkerDetail,
     }
     let dir = hq_root.join(rel);
     if !is_within(hq_root, &dir) {
-        return Err(format!("worker_path escapes the HQ folder: {worker_path:?}"));
+        return Err(format!(
+            "worker_path escapes the HQ folder: {worker_path:?}"
+        ));
     }
     let yaml_path = dir.join("worker.yaml");
     if !is_within(hq_root, &yaml_path) {
@@ -978,7 +1113,11 @@ skills:
         assert_eq!(run.scope, "root");
         assert_eq!(run.allowed_tools, vec!["Read", "Grep", "Bash"]);
 
-        let imp = items.skills.iter().find(|s| s.name == "impeccable").unwrap();
+        let imp = items
+            .skills
+            .iter()
+            .find(|s| s.name == "impeccable")
+            .unwrap();
         assert_eq!(imp.scope, "personal");
         assert_eq!(imp.allowed_tools, vec!["Read", "Edit"]);
 
@@ -1019,6 +1158,40 @@ skills:
         assert_eq!(lr.workers[0].id, "gtm");
         assert_eq!(lr.workers[0].name, "gtm");
         assert_eq!(lr.workers[0].company.as_deref(), Some("liverecover"));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_yaml_scan_keeps_library_visible_when_registry_is_broken() {
+        let root = make_fixture_tree();
+        fs::write(
+            root.join("core/workers/registry.yaml"),
+            "workers:\n  - id: broken\n    path:\n    type:\n    visibility:\n    status:\n",
+        )
+        .unwrap();
+
+        let root_items = scan_root_library(&root);
+        let architect = root_items
+            .workers
+            .iter()
+            .find(|w| w.path == "core/workers/public/dev-team/architect/")
+            .expect("root worker from worker.yaml");
+        assert_eq!(architect.id, "architect");
+        assert_eq!(architect.scope, "root");
+        assert_eq!(architect.status, "active");
+
+        let cmo = root_items
+            .workers
+            .iter()
+            .find(|w| w.path == "companies/indigo/workers/cmo/")
+            .expect("company worker from worker.yaml");
+        assert_eq!(cmo.id, "cmo-indigo");
+        assert_eq!(cmo.company.as_deref(), Some("indigo"));
+
+        let indigo = scan_company_library(&root, "indigo").expect("indigo library");
+        assert_eq!(indigo.workers.len(), 1);
+        assert_eq!(indigo.workers[0].path, "companies/indigo/workers/cmo/");
 
         let _ = fs::remove_dir_all(&root);
     }
@@ -1065,7 +1238,10 @@ skills:
         assert_eq!(detail.type_, "OpsWorker");
         assert_eq!(detail.skills.len(), 2);
         assert_eq!(detail.skills[0].name, "content-calendar");
-        assert_eq!(detail.skills[0].description.as_deref(), Some("Plan weekly content"));
+        assert_eq!(
+            detail.skills[0].description.as_deref(),
+            Some("Plan weekly content")
+        );
         assert_eq!(detail.skills[1].name, "draft-post");
         assert!(detail.skills[1].description.is_none());
         // List instructions become markdown bullets.
@@ -1127,10 +1303,8 @@ skills:
 
     #[test]
     fn missing_registry_is_empty_not_panic() {
-        let root = std::env::temp_dir().join(format!(
-            "hq-library-local-empty-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("hq-library-local-empty-{}", std::process::id()));
         let _ = fs::create_dir_all(&root);
         let items = scan_root_library(&root);
         assert!(items.workers.is_empty());

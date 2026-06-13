@@ -28,6 +28,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
@@ -35,6 +36,11 @@
   import ChannelView from './ChannelView.svelte';
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
+  import {
+    sortContactsByRecentActivity,
+    type ContactRecencyFields,
+    type ConversationEventRecencyFields,
+  } from './contact-order';
   import {
     type DmRequest,
     type RequestAction,
@@ -55,16 +61,23 @@
 
   // A person the caller can DM (connection or company teammate). Mirrors the
   // Rust `Contact` wire shape (camelCase).
-  interface Contact {
+  interface Contact extends ContactRecencyFields {
     personUid: string;
     email: string;
     displayName: string;
     companyUid?: string | null;
     source?: string | null;
+    lastMessageAt?: string | null;
+    lastActivityAt?: string | null;
+    lastDmAt?: string | null;
   }
 
   interface ContactsResponse {
     contacts: Contact[];
+  }
+
+  interface NotificationHistoryResponse {
+    dms?: ConversationEventRecencyFields[];
   }
 
   interface ThreadMessage extends ConversationMessage {
@@ -254,6 +267,7 @@
       displayName: r.displayName ?? r.email,
       companyUid: null,
       source: null,
+      lastMessageAt: new Date().toISOString(),
     };
     segment = 'people';
     selected = peer;
@@ -321,14 +335,29 @@
     loadingContacts = true;
     contactsError = null;
     try {
-      const resp = await invoke<ContactsResponse>('list_contacts');
-      contacts = resp.contacts ?? [];
+      const [resp, historyEvents] = await Promise.all([
+        invoke<ContactsResponse>('list_contacts'),
+        loadContactHistoryEvents(),
+      ]);
+      contacts = sortContactsByRecentActivity(resp.contacts ?? [], historyEvents);
     } catch (err) {
       contactsError = typeof err === 'string' ? err : 'Could not load conversations';
       contacts = [];
       console.error('messages: list_contacts failed', err);
     } finally {
       loadingContacts = false;
+    }
+  }
+
+  async function loadContactHistoryEvents(): Promise<ConversationEventRecencyFields[]> {
+    try {
+      const history = await invoke<NotificationHistoryResponse>('fetch_notification_history', {
+        limit: 200,
+      });
+      return history.dms ?? [];
+    } catch (err) {
+      console.error('messages: fetch_notification_history failed', err);
+      return [];
     }
   }
 
@@ -454,6 +483,7 @@
         displayName: req.fromDisplayName,
         companyUid: null,
         source: 'request',
+        lastMessageAt: req.createdAt,
       };
       segment = 'people';
       void selectContact(peer);
@@ -514,7 +544,7 @@
 
   function buildAgentPrompt(text: string): string {
     return [
-      '[$startwork](/Users/corey/Documents/HQ/.claude/skills/startwork/SKILL.md)',
+      hqSkillMarkdownLink('startwork', hqFolderPath),
       '',
       'Continue from the HQ desktop Messages window.',
       '',
@@ -561,6 +591,7 @@
       if (selected.source === 'agent') {
         await sendAgentPrompt(text);
       } else {
+        const sentAt = new Date().toISOString();
         await invoke('send_dm', { toPersonUid: selected.personUid, body: text });
         // Optimistic append — the durable copy lands in the mirror and shows on
         // the next thread load.
@@ -574,10 +605,17 @@
             body: text,
             details: null,
             prompt: null,
-            createdAt: new Date().toISOString(),
+            createdAt: sentAt,
             direction: 'out',
           },
         ];
+        contacts = sortContactsByRecentActivity(
+          contacts.map((contact) =>
+            contact.personUid === selected?.personUid
+              ? { ...contact, lastMessageAt: sentAt }
+              : contact,
+          ),
+        );
       }
     } catch (err) {
       sendError =

@@ -14,32 +14,42 @@
 
   let {
     version,
-    state = 'idle',
-    progress = null,
-    filesProgressed = 0,
-    totalFiles = 0,
-    workspaceCount = 0,
-    observedBytes = 0,
-    nextMeetingLabel = null,
+    state,
+    progress,
+    filesProgressed,
+    totalFiles,
+    workspaceCount,
+    observedBytes,
+    nextMeetingLabel,
   }: Props = $props();
 
+  const currentState = $derived(state ?? 'idle');
+  const currentProgress = $derived(progress ?? null);
+  const currentFilesProgressed = $derived(filesProgressed ?? 0);
+  const currentTotalFiles = $derived(totalFiles ?? 0);
+  const currentWorkspaceCount = $derived(workspaceCount ?? 0);
+  const currentObservedBytes = $derived(observedBytes ?? 0);
+  const currentNextMeetingLabel = $derived(nextMeetingLabel ?? null);
+
   const tone = $derived.by(() => {
-    if (state === 'syncing') return 'syncing';
-    if (state === 'error' || state === 'auth-error') return 'error';
-    if (state === 'conflict' || state === 'setup-needed') return 'conflict';
+    if (currentState === 'syncing') return 'syncing';
+    if (currentState === 'error' || currentState === 'auth-error') return 'error';
+    if (currentState === 'conflict' || currentState === 'setup-needed') return 'conflict';
     return 'idle';
   });
 
   const syncPercent = $derived(
-    totalFiles > 0 ? Math.min(100, Math.max(0, Math.round((filesProgressed / totalFiles) * 100))) : 0,
+    currentTotalFiles > 0
+      ? Math.min(100, Math.max(0, Math.round((currentFilesProgressed / currentTotalFiles) * 100)))
+      : 0,
   );
 
   const stateLabel = $derived(
-    state === 'error' || state === 'auth-error'
+    currentState === 'error' || currentState === 'auth-error'
       ? 'Sync error'
-      : state === 'conflict'
+      : currentState === 'conflict'
         ? 'Conflict'
-        : state === 'setup-needed'
+        : currentState === 'setup-needed'
           ? 'Setup needed'
           : 'Idle · all safe',
   );
@@ -52,34 +62,34 @@
     return `${(mb / 1024).toFixed(1)} GB`;
   }
 
-  const bytesLabel = $derived(formatMb(observedBytes));
+  const bytesLabel = $derived(formatMb(currentObservedBytes));
 </script>
 
 <footer class="desktop-status-bar live-strip" aria-label="Status">
   <div class="ls-left">
-    {#if state === 'syncing' && progress}
+    {#if currentState === 'syncing' && currentProgress}
       <svg class="ls-glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M12 5v14" />
         <path d="m19 12-7 7-7-7" />
       </svg>
-      <span class="ls-path mono">{progress.path}</span>
+      <span class="ls-path mono">{currentProgress.path}</span>
       <span class="ls-progress" aria-hidden="true"><span style={`width:${syncPercent}%`}></span></span>
-      <span class="ls-count mono">{filesProgressed}/{totalFiles} files</span>
+      <span class="ls-count mono">{currentFilesProgressed}/{currentTotalFiles} files</span>
     {:else}
       <span class={`ls-dot ${tone}`} aria-hidden="true"></span>
       <span class="ls-state">{stateLabel}</span>
-      {#if observedBytes > 0}
+      {#if currentObservedBytes > 0}
         <span class="ls-count mono">{bytesLabel} synced</span>
       {/if}
     {/if}
   </div>
 
   <div class="ls-right">
-    {#if nextMeetingLabel}
-      <span class="ls-meta">next <span class="mono">{nextMeetingLabel}</span></span>
+    {#if currentNextMeetingLabel}
+      <span class="ls-meta">next <span class="mono">{currentNextMeetingLabel}</span></span>
       <span class="ls-div" aria-hidden="true"></span>
     {/if}
-    <span class="ls-meta">watching <span class="mono">{workspaceCount}</span> workspace{workspaceCount === 1 ? '' : 's'}</span>
+    <span class="ls-meta">watching <span class="mono">{currentWorkspaceCount}</span> workspace{currentWorkspaceCount === 1 ? '' : 's'}</span>
     <span class="ls-div" aria-hidden="true"></span>
     <span class="ls-version mono">v{version}</span>
   </div>

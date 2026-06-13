@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
@@ -65,6 +65,44 @@
   } from './lib/sync-model';
   import './styles/desktop-alt.css';
 
+  const WORKSPACE_CACHE_KEY = 'hq-sync.desktop.workspaces.v1';
+  const WORKSPACE_RELOAD_KEY = 'hq-sync.desktop.workspaces.reload-signature';
+
+  function workspaceSignature(items: Workspace[]): string {
+    return items
+      .map((workspace) => `${workspace.slug}:${workspace.displayName}:${workspace.state}`)
+      .join('|');
+  }
+
+  function readCachedWorkspaces(): Workspace[] {
+    try {
+      const raw = window.localStorage.getItem(WORKSPACE_CACHE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(
+        (item): item is Workspace =>
+          item &&
+          typeof item.slug === 'string' &&
+          typeof item.displayName === 'string' &&
+          (item.kind === 'personal' || item.kind === 'company'),
+      );
+    } catch {
+      return [];
+    }
+  }
+
+  function writeCachedWorkspaces(items: Workspace[]) {
+    try {
+      window.localStorage.setItem(WORKSPACE_CACHE_KEY, JSON.stringify(items));
+    } catch {
+      // Best-effort bootstrap cache only.
+    }
+  }
+
+  const cachedWorkspaces = readCachedWorkspaces();
+  const cachedCompanies = getDesktopCompanies(cachedWorkspaces);
+
   let route = $state<DesktopRoute>(initialDesktopRoute);
   // Admin gate for the Moderation nav entry (UX only; the server is the sole
   // authorization boundary). DEFAULT-DENY: starts false and only flips true on an
@@ -72,7 +110,7 @@
   // flashes for a non-admin and stays hidden on any check error. Reuses the same
   // signal ModerationPanel itself gates on.
   let isAdmin = $state(false);
-  let workspaces = $state<Workspace[]>([]);
+  let workspaces = $state<Workspace[]>(cachedWorkspaces);
   let workspaceError = $state<string | null>(null);
   let syncState = $state<SyncState>('idle');
   let syncProgress = $state<SyncProgress | null>(null);
@@ -107,6 +145,8 @@
   let driftRestoring = $state(false);
   // Local hq-core version ("15.0.15") for Home's meta line; null = unreadable.
   let hqVersion = $state<string | null>(null);
+  // Resolved HQ folder from get_config, used for path labels and handoffs.
+  let hqFolderPath = $state<string | null>(null);
   // `realtimeSync` preference (auto-sync cadence in Home's meta line).
   let autoSyncOn = $state<boolean | null>(null);
   let statsBySlug = $state<Record<string, WorkspaceSyncStats>>({});
@@ -121,10 +161,21 @@
   let meetingEvents = $state<MeetingEvent[]>([]);
   let meetingCompanyNamesByUid = $state<Map<string, string>>(new Map());
   let meetingStatusNow = $state(Date.now());
+  let desktopRenderAuditQueued = false;
 
-  const companies = $derived(getDesktopCompanies(workspaces));
+  let companies = $state<Workspace[]>(cachedCompanies);
+  let renderCompanies = $state<Workspace[]>(cachedCompanies);
+  let renderWorkspaceCount = $state(cachedCompanies.length);
+  const shellCompanies = $derived(
+    renderCompanies.length > 0
+      ? renderCompanies
+      : companies.length > 0
+        ? companies
+        : getDesktopCompanies(workspaces),
+  );
+  const watchedWorkspaceCount = $derived(shellCompanies.length);
   const routeKey = $derived(getDesktopRouteKey(route));
-  const activeCompany = $derived(getDesktopActiveCompany(route, companies));
+  const activeCompany = $derived(getDesktopActiveCompany(route, shellCompanies));
   const libraryTab = $derived<LibraryTab>(
     route.kind === 'library' ? route.tab ?? DEFAULT_LIBRARY_TAB : DEFAULT_LIBRARY_TAB,
   );
@@ -134,7 +185,10 @@
   // Secondary (contextual) sidebar — only on company / library / settings
   // surfaces (SPEC section 4); null hides the column entirely.
   const secondarySidebar = $derived(
-    getDesktopSecondarySidebar(route, companies, { version: __APP_VERSION__ }),
+    getDesktopSecondarySidebar(route, shellCompanies, {
+      version: __APP_VERSION__,
+      hqFolderPath,
+    }),
   );
   const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles);
   const observedVaultBytes = $derived.by(() => {
@@ -227,7 +281,7 @@
           },
         ]
       : []),
-    ...companies.flatMap((company, index) => [
+    ...shellCompanies.flatMap((company, index) => [
       {
         id: `command-go-company-${company.slug}`,
         label: `Go to ${company.displayName}`,
@@ -295,19 +349,71 @@
     statsBySlug = { ...statsBySlug, [slug]: update(current) };
   }
 
+  function queueDesktopRenderAudit() {
+    if (desktopRenderAuditQueued) return;
+    desktopRenderAuditQueued = true;
+    for (const delayMs of [250, 1_000, 3_000, 7_000]) {
+      window.setTimeout(() => {
+        void auditDesktopRender();
+      }, delayMs);
+    }
+  }
+
+  async function auditDesktopRender() {
+    await tick();
+    const names = Array.from(document.querySelectorAll<HTMLElement>('.v4-company-row'))
+      .map((row) => row.textContent?.trim() ?? '')
+      .filter(Boolean);
+    const footer =
+      document
+        .querySelector<HTMLElement>('.desktop-status-bar')
+        ?.textContent?.replace(/\s+/g, ' ')
+        .trim() ?? null;
+    const hasMoreCompaniesText = (document.body.textContent ?? '').includes('more companies');
+    const domWorkspaceCount =
+      document.querySelector<HTMLElement>('.desktop-shell')?.dataset.workspaceCount ?? 'missing';
+    const stateSummary = `state companies=${companies.length} workspaces=${workspaces.length} render=${renderWorkspaceCount} shell=${shellCompanies.length} watched=${watchedWorkspaceCount} dom=${domWorkspaceCount}`;
+    await invoke('desktop_alt_dev_audit_render', {
+      companyRowCount: names.length,
+      footer,
+      names: [stateSummary, ...names],
+      hasMoreCompaniesText,
+    }).catch(() => undefined);
+  }
+
   async function loadWorkspaces() {
     try {
       const result = await invoke<WorkspacesResult>('list_syncable_workspaces');
+      const nextCompanies = getDesktopCompanies(result.workspaces);
+      const previousSignature = workspaceSignature(renderCompanies);
+      const nextSignature = workspaceSignature(nextCompanies);
       workspaces = result.workspaces;
+      companies = nextCompanies;
+      renderCompanies = nextCompanies;
+      renderWorkspaceCount = nextCompanies.length;
       workspaceError = result.error;
+      writeCachedWorkspaces(result.workspaces);
+      if (
+        nextSignature &&
+        previousSignature !== nextSignature &&
+        window.sessionStorage.getItem(WORKSPACE_RELOAD_KEY) !== nextSignature
+      ) {
+        window.sessionStorage.setItem(WORKSPACE_RELOAD_KEY, nextSignature);
+        window.location.reload();
+        return;
+      }
       // Warm the company-tab preload cache for every known company once the real
       // slugs resolve. Idempotent + reconciles, so companies that appear on a
       // later refresh still get warmed; the 30s poll + focus listener wire once.
       startCompanyStore(
-        getDesktopCompanies(result.workspaces)
-          .filter((company) => company.state === 'synced' || company.state === 'cloud-only' || Boolean(company.cloudUid))
+        nextCompanies
+          .filter(
+            (company) =>
+              company.state === 'synced' || company.state === 'cloud-only' || Boolean(company.cloudUid),
+          )
           .map((company) => company.slug),
       );
+      if (nextCompanies.length > 0) queueDesktopRenderAudit();
     } catch (err) {
       console.error('list_syncable_workspaces failed:', err);
       workspaceError = String(err);
@@ -486,7 +592,7 @@
 
     if (commandPaletteOpen) return;
 
-    const nextRoute = getDesktopHotkeyRoute(event, companies);
+    const nextRoute = getDesktopHotkeyRoute(event, shellCompanies);
     if (!nextRoute) return;
 
     event.preventDefault();
@@ -502,6 +608,7 @@
       hydrateMeetingStatus();
     }, 30_000);
 
+    if (renderCompanies.length > 0) queueDesktopRenderAudit();
     void refreshRealState().finally(() => {
       if (mounted) ready = true;
     });
@@ -522,6 +629,11 @@
     void invoke<string | null>('get_hq_version')
       .then((version) => {
         if (mounted) hqVersion = version;
+      })
+      .catch(() => undefined);
+    void invoke<{ hqFolderPath?: string | null }>('get_config')
+      .then((config) => {
+        if (mounted) hqFolderPath = config?.hqFolderPath ?? null;
       })
       .catch(() => undefined);
     void invoke<{ realtimeSync?: boolean | null }>('get_settings')
@@ -792,27 +904,32 @@
 
 <div
   class="desktop-shell"
+  data-workspace-count={renderWorkspaceCount}
   style={`--desktop-titlebar-height: ${V4_CHROME_LAYOUT.titleBarHeightPx}px;`}
 >
-  <V4TitleBar
-    {syncState}
-    watchedCount={companies.length}
-    {lastSyncLabel}
-    syncingCompany={syncProgress?.company ?? null}
-    fanoutDone={syncFanoutDoneCount}
-    fanoutTotal={syncFanoutTotal}
-    errorSummary={titleBarErrorSummary}
-    onsync={handleSyncAll}
-    oncancel={handleCancelSync}
-    onretry={handleSyncAll}
-  />
+  {#key renderWorkspaceCount}
+    <V4TitleBar
+      {syncState}
+      watchedCount={renderWorkspaceCount}
+      {lastSyncLabel}
+      syncingCompany={syncProgress?.company ?? null}
+      fanoutDone={syncFanoutDoneCount}
+      fanoutTotal={syncFanoutTotal}
+      errorSummary={titleBarErrorSummary}
+      onsync={handleSyncAll}
+      oncancel={handleCancelSync}
+      onretry={handleSyncAll}
+    />
+  {/key}
 
   <div class="desktop-body">
-    <V4Sidebar
-      {route}
-      {companies}
-      onnavigate={(next) => navigate(fromV4Route(next))}
-    />
+    {#key renderWorkspaceCount}
+      <V4Sidebar
+        {route}
+        companies={renderCompanies}
+        onnavigate={(next) => navigate(fromV4Route(next))}
+      />
+    {/key}
 
     {#if secondarySidebar}
       <V4SecondarySidebar
@@ -941,16 +1058,18 @@
     </div>
   </div>
 
-  <DesktopStatusBar
-    version={__APP_VERSION__}
-    state={syncState}
-    progress={syncProgress}
-    filesProgressed={syncFilesProgressed}
-    totalFiles={effectiveTotalFiles}
-    workspaceCount={companies.length}
-    observedBytes={observedVaultBytes}
-    {nextMeetingLabel}
-  />
+  {#key renderWorkspaceCount}
+    <DesktopStatusBar
+      version={__APP_VERSION__}
+      state={syncState}
+      progress={syncProgress}
+      filesProgressed={syncFilesProgressed}
+      totalFiles={effectiveTotalFiles}
+      workspaceCount={renderWorkspaceCount}
+      observedBytes={observedVaultBytes}
+      {nextMeetingLabel}
+    />
+  {/key}
 
   {#if commandPaletteOpen}
     <CommandPalette commands={commandItems} onclose={() => (commandPaletteOpen = false)} />

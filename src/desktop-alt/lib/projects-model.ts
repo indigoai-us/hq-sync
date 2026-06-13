@@ -53,6 +53,10 @@ export interface Project {
   status: string;
   /** Absolute or HQ-relative path to the prd.json file. */
   prdPath: string;
+  /** Project creation timestamp, when known. */
+  createdAt?: string | null;
+  /** Project update timestamp, when known. */
+  updatedAt?: string | null;
   /** Total number of stories in the PRD. */
   storiesTotal: number;
   /** Number of stories that pass. */
@@ -436,6 +440,32 @@ export const PROJECT_LIST_STATUS_LABEL: Record<ProjectListStatus, string> = {
   archived: 'Archived',
 };
 
+function projectTimestamp(value: string | null | undefined): number {
+  if (!value) return 0;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
+}
+
+/** Latest known project activity timestamp, preferring updatedAt over createdAt. */
+export function projectRecencyTime(
+  project: Pick<Project, 'createdAt' | 'updatedAt'>,
+): number {
+  return projectTimestamp(project.updatedAt) || projectTimestamp(project.createdAt);
+}
+
+/** Sort comparator: most recently updated first, then status, then name. */
+export function compareProjectsByRecency(a: Project, b: Project): number {
+  const recencyDelta = projectRecencyTime(b) - projectRecencyTime(a);
+  if (recencyDelta !== 0) return recencyDelta;
+
+  const aStatus = PROJECT_LIST_STATUS_ORDER[projectListStatus(a)] ?? 99;
+  const bStatus = PROJECT_LIST_STATUS_ORDER[projectListStatus(b)] ?? 99;
+  return (
+    aStatus - bStatus ||
+    projectDisplayName(a).localeCompare(projectDisplayName(b))
+  );
+}
+
 /** Does a project's effective status text match a free-text query token? */
 function projectStatusMatches(project: Project, query: string): boolean {
   return PROJECT_LIST_STATUS_LABEL[projectListStatus(project)]
@@ -472,14 +502,9 @@ export interface ProjectSection {
   projects: Project[];
 }
 
-/** Sort comparator: live first, then by status order, then by name. */
+/** Sort comparator: most recent first, then by status order, then by name. */
 function compareProjects(a: Project, b: Project): number {
-  const aStatus = PROJECT_LIST_STATUS_ORDER[projectListStatus(a)] ?? 99;
-  const bStatus = PROJECT_LIST_STATUS_ORDER[projectListStatus(b)] ?? 99;
-  return (
-    aStatus - bStatus ||
-    projectDisplayName(a).localeCompare(projectDisplayName(b))
-  );
+  return compareProjectsByRecency(a, b);
 }
 
 /**
@@ -488,7 +513,7 @@ function compareProjects(a: Project, b: Project): number {
  * - `status`  — one section per effective list status, in status order, empty
  *               sections omitted.
  * - `company` — one section per company slug, alphabetical, projects within a
- *               section sorted live-first then by name.
+ *               section sorted newest-first.
  */
 export function groupProjects(
   projects: Project[],

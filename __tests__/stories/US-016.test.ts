@@ -79,7 +79,7 @@ describe('US-016: V4 connective tissue stays complete', () => {
     const palette = normalize(commandPalette);
 
     expect(desktopApp).toContain('COMPANY_SECTIONS');
-    expect(desktopApp).toContain('companies.flatMap((company, index) => [');
+    expect(desktopApp).toContain('shellCompanies.flatMap((company, index) => [');
     expect(desktopApp).toContain('label: `Go to ${company.displayName} ${section.label}`');
     expect(desktopApp).toContain("action: () => navigate({ kind: 'company', slug: company.slug, tab: section.id })");
 
@@ -97,12 +97,12 @@ describe('US-016: V4 connective tissue stays complete', () => {
     expect(statusBar).toContain('totalFiles?: number;');
     expect(statusBar).toContain('workspaceCount?: number;');
     expect(statusBar).toContain('nextMeetingLabel?: string | null;');
-    expect(statusBar).toContain('{filesProgressed}/{totalFiles} files');
-    expect(statusBar).toContain('watching <span class="mono">{workspaceCount}</span>');
-    expect(statusBar).toContain('next <span class="mono">{nextMeetingLabel}</span>');
+    expect(statusBar).toContain('{currentFilesProgressed}/{currentTotalFiles} files');
+    expect(statusBar).toContain('watching <span class="mono">{currentWorkspaceCount}</span>');
+    expect(statusBar).toContain('next <span class="mono">{currentNextMeetingLabel}</span>');
     expect(statusBar).toContain('v{version}');
     expect(desktopApp).toContain('<DesktopStatusBar');
-    expect(desktopApp).toContain('workspaceCount={companies.length}');
+    expect(desktopApp).toContain('workspaceCount={renderWorkspaceCount}');
     expect(desktopApp).toContain('{nextMeetingLabel}');
   });
 });

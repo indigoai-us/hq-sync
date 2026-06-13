@@ -4,7 +4,8 @@
  * US-004 model types (`Project` / `Story`).
  *
  * The Rust `LocalProject` is camelCase-serialised as
- * `{ id, title, description, company, status, prdPath?, storyCount, storiesComplete }`
+ * `{ id, title, description, company, status, prdPath?, createdAt?, updatedAt?,
+ * storyCount, storiesComplete }`
  * and `LocalStory.priority` is an optional *string* — the US-004 `Story` type
  * wants `storiesTotal`/`storiesComplete` on the project and a numeric
  * `priority`, so this module owns that coercion in one place. No Svelte runes
@@ -22,6 +23,8 @@ export interface LocalProjectWire {
   company: string;
   status?: string;
   prdPath?: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   storyCount: number;
   storiesComplete: number;
 }
@@ -70,6 +73,8 @@ export function toProject(wire: LocalProjectWire): Project {
     company: wire.company,
     status: wire.status ?? '',
     prdPath: wire.prdPath ?? '',
+    createdAt: wire.createdAt ?? null,
+    updatedAt: wire.updatedAt ?? null,
     storiesTotal: Math.max(0, wire.storyCount ?? 0),
     storiesComplete: Math.max(0, wire.storiesComplete ?? 0),
   };

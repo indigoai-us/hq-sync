@@ -12,6 +12,8 @@ import {
   projectProgressFromStories,
   effectiveProjectStatus,
   projectListStatus,
+  projectRecencyTime,
+  compareProjectsByRecency,
   matchesStatusFilter,
   projectDisplayName,
   type Story,
@@ -294,6 +296,44 @@ describe('projectDisplayName', () => {
     expect(projectDisplayName(proj({ name: 'Name', title: 'Title' }))).toBe('Name');
     expect(projectDisplayName(proj({ title: 'Title' }))).toBe('Title');
     expect(projectDisplayName(proj({}))).toBe('proj-x');
+  });
+});
+
+describe('project recency ordering', () => {
+  const proj = (overrides: Partial<Project>): Project => ({
+    id: 'proj-x',
+    description: '',
+    company: 'indigo',
+    status: 'active',
+    prdPath: '/x/prd.json',
+    storiesTotal: 0,
+    storiesComplete: 0,
+    ...overrides,
+  });
+
+  it('prefers updatedAt, falling back to createdAt', () => {
+    expect(
+      projectRecencyTime(
+        proj({
+          createdAt: '2026-06-10T00:00:00Z',
+          updatedAt: '2026-06-12T00:00:00Z',
+        }),
+      ),
+    ).toBe(Date.parse('2026-06-12T00:00:00Z'));
+
+    expect(projectRecencyTime(proj({ createdAt: '2026-06-10T00:00:00Z' }))).toBe(
+      Date.parse('2026-06-10T00:00:00Z'),
+    );
+  });
+
+  it('sorts newest projects first before status/name tie breakers', () => {
+    const sorted = [
+      proj({ id: 'a', title: 'Alpha', updatedAt: '2026-06-10T00:00:00Z' }),
+      proj({ id: 'b', title: 'Beta', updatedAt: '2026-06-12T00:00:00Z' }),
+      proj({ id: 'c', title: 'Charlie', createdAt: '2026-06-11T00:00:00Z' }),
+    ].sort(compareProjectsByRecency);
+
+    expect(sorted.map((project) => project.id)).toEqual(['b', 'c', 'a']);
   });
 });
 

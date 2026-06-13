@@ -31,13 +31,6 @@
   }
 
   const platforms: Platform[] = ['zoom', 'meet', 'teams', 'slack', 'webex'];
-  const sections = [
-    { id: 'sync', label: 'Sync' },
-    { id: 'notifications', label: 'Notifications' },
-    { id: 'updates', label: 'Updates' },
-    { id: 'general', label: 'General' },
-    { id: 'meetings', label: 'Meetings' },
-  ];
 
   let loading = $state(true);
   let saved = $state(false);
@@ -64,7 +57,7 @@
   const displayedChannel = $derived<Channel>(
     releaseChannel ?? (availableChannels.includes('beta') ? 'beta' : 'stable'),
   );
-  const hqPathLabel = $derived(hqPath ? hqPath.replace(/^\/Users\/[^/]+/, '~') : '~/HQ');
+  const hqPathLabel = $derived(hqPath ? hqPath.replace(/^\/Users\/[^/]+/, '~') : 'HQ folder not set');
 
   $effect(() => {
     void loadSettings();
@@ -115,10 +108,6 @@
     return value === 'stable' || value === 'beta' || value === 'alpha';
   }
 
-  function jumpTo(sectionId: string) {
-    document.getElementById(sectionId)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  }
-
   function togglePlatform(platform: Platform) {
     meetingDetectPlatforms = meetingDetectPlatforms.includes(platform)
       ? meetingDetectPlatforms.filter((item) => item !== platform)
@@ -159,13 +148,6 @@
 </script>
 
 <section class="settings-page" aria-labelledby="settings-title" aria-busy={loading}>
-  <aside class="settings-index" aria-label="Settings sections">
-    <h2>Settings</h2>
-    {#each sections as section (section.id)}
-      <button type="button" onclick={() => jumpTo(section.id)}>{section.label}</button>
-    {/each}
-  </aside>
-
   <main class="settings-main">
     <header class="page-header">
       <div>
@@ -236,25 +218,12 @@
 
 <style>
   .settings-page {
-    display: grid;
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 22px;
+    display: block;
     min-width: 0;
     height: 100%;
     color: var(--v4-text-1);
   }
 
-  .settings-index {
-    position: sticky;
-    top: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    align-self: start;
-    padding-top: 4px;
-  }
-
-  .settings-index h2,
   .settings-section h2,
   .page-header p {
     margin: 0;
@@ -262,22 +231,6 @@
     font-size: 11px;
     font-weight: 500;
     line-height: 1.25;
-  }
-
-  .settings-index button {
-    height: 30px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--v4-text-2);
-    font: inherit;
-    font-size: 12px;
-    text-align: left;
-  }
-
-  .settings-index button:hover {
-    background: var(--v4-control-bg);
-    color: var(--v4-text-1);
   }
 
   .settings-main {

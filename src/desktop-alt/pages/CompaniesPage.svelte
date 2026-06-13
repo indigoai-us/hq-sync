@@ -2,6 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import type { Workspace } from '../../lib/workspaces';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import { hqSkillMarkdownLink } from '../../lib/hq-skill-link';
   import {
     getCompaniesPageModel,
     type CompanySyncMode,
@@ -106,8 +107,11 @@
     if (openingInvite) return;
     openingInvite = row.slug;
     inviteNotices = { ...inviteNotices, [row.slug]: '' };
+    const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
+      hqFolderPath: '',
+    }));
     const prompt = [
-      '[$accept](/Users/corey/Documents/HQ/.claude/skills/accept/SKILL.md)',
+      hqSkillMarkdownLink('accept', config.hqFolderPath),
       '',
       `Help me accept the pending HQ company invite for ${row.name}.`,
       `Company slug shown in HQ Sync: ${row.slug}.`,
@@ -116,9 +120,6 @@
     ].join('\n');
 
     try {
-      const config = await invoke<{ hqFolderPath?: string }>('get_config').catch(() => ({
-        hqFolderPath: '',
-      }));
       const url = buildClaudeCodeUrl({ folder: config.hqFolderPath ?? '', prompt });
       await invoke('open_claude_code_link', { url });
       inviteNotices = { ...inviteNotices, [row.slug]: 'Opened invite flow in Claude Code.' };

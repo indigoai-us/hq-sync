@@ -132,7 +132,7 @@ const builders: Record<IssueKind, (i: Issue) => string> = {
       '',
       error ? `Parser error: ${error}` : '',
       '',
-      'Please open `~/HQ/companies/manifest.yaml` (or wherever my HQ folder is — check `~/.hq/menubar.json` → `hqPath`) and find the parse error. Likely a trailing tab, an unquoted value with a colon, or a stray BOM. After fixing, validate with `yamllint` if available. Do not regenerate the manifest from scratch — preserve the existing companies + their cloud_uid fields.',
+      'Please open `companies/manifest.yaml` inside my resolved HQ folder (check `~/.hq/menubar.json` → `hqPath`) and find the parse error. Likely a trailing tab, an unquoted value with a colon, or a stray BOM. After fixing, validate with `yamllint` if available. Do not regenerate the manifest from scratch — preserve the existing companies + their cloud_uid fields.',
     ].filter(Boolean).join('\n');
   },
 

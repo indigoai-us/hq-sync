@@ -28,16 +28,18 @@
 
   let {
     route,
-    companies = null,
-    accountEmail = null,
+    companies,
+    accountEmail,
     onnavigate,
   }: Props = $props();
 
   let fetched = $state<Workspace[]>([]);
-  const model = $derived(getV4SidebarModel(route, companies ?? fetched));
+  const model = $derived(
+    getV4SidebarModel(route, companies && companies.length > 0 ? companies : fetched),
+  );
 
   onMount(() => {
-    if (companies !== null) return;
+    if (companies && companies.length > 0) return;
     void invoke<WorkspacesResult>('list_syncable_workspaces')
       .then((result) => {
         fetched = result.workspaces;

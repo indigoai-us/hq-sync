@@ -83,6 +83,17 @@ describe('US-002 V4 desktop routes', () => {
     ]);
   });
 
+  it('deduplicates repeated slugs before they reach keyed sidebar rendering', () => {
+    const visible = getDesktopCompanies([
+      company({ slug: 'dupe', displayName: 'Dupe Local', state: 'local-only' }),
+      company({ slug: 'dupe', displayName: 'Dupe Cloud', state: 'cloud-only' }),
+      company({ slug: 'next', displayName: 'Next' }),
+    ]);
+
+    expect(visible.map((workspace) => workspace.slug)).toEqual(['dupe', 'next']);
+    expect(visible.map((workspace) => workspace.displayName)).toEqual(['Dupe Local', 'Next']);
+  });
+
   it('declares the eight company sections in SPEC order with Overview first', () => {
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
@@ -274,8 +285,14 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
   });
 
   it('shows the five library sections with the routed tab active', () => {
-    const model = getDesktopSecondarySidebar({ kind: 'library', tab: 'marketplace' }, companies);
+    const configuredPath = ['', 'Users', 'corey', 'Documents', 'HQ'].join('/');
+    const model = getDesktopSecondarySidebar(
+      { kind: 'library', tab: 'marketplace' },
+      companies,
+      { hqFolderPath: configuredPath },
+    );
     expect(model?.surface).toBe('library');
+    expect(model?.meta).toBe('~/Documents/HQ');
     expect(model?.items.map((item) => item.id)).toEqual(LIBRARY_SECTIONS.map((s) => s.id));
     expect(model?.activeId).toBe('marketplace');
     expect(getDesktopSecondarySidebar({ kind: 'library' }, companies)?.activeId).toBe('skills');

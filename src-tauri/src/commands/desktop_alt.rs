@@ -269,7 +269,9 @@ pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>
     // DIAGNOSTIC: capture each surface's raw Result (count or error string)
     // before collapsing, so a "panel shows 0" can be traced to the exact
     // surface + reason. Counts and error messages only — never secret values.
-    let board_res = get_company_board(slug.clone()).await.map(|b| b.card_count());
+    let board_res = get_company_board(slug.clone())
+        .await
+        .map(|b| b.card_count());
     let activity_res = get_company_activity(slug.clone()).await.map(|a| a.last7d());
     let deployments_res = get_company_deployments(slug.clone())
         .await
@@ -455,6 +457,28 @@ pub fn desktop_alt_consume_pending_route() -> Option<String> {
         .lock()
         .ok()
         .and_then(|mut cell| cell.take())
+}
+
+/// Dev-only render audit for local desktop verification. No-ops unless
+/// `HQ_DEV_AUDIT_DESKTOP_RENDER=1` is set before launch.
+#[tauri::command]
+pub fn desktop_alt_dev_audit_render(
+    company_row_count: usize,
+    footer: Option<String>,
+    names: Vec<String>,
+    has_more_companies_text: bool,
+) {
+    if std::env::var("HQ_DEV_AUDIT_DESKTOP_RENDER").ok().as_deref() != Some("1") {
+        return;
+    }
+
+    let sample = names.into_iter().take(12).collect::<Vec<_>>().join(" | ");
+    let footer = footer.unwrap_or_default();
+    let line = format!(
+        "render company_rows={company_row_count} has_more_companies_text={has_more_companies_text} footer={footer:?} sample={sample:?}"
+    );
+    crate::util::logfile::log("desktop-alt-dev", &line);
+    eprintln!("[desktop-alt-dev] {line}");
 }
 
 /// Open or focus the expanded desktop window (GA — any signed-in user).
@@ -826,11 +850,9 @@ fn secret_structure_summary(value: &serde_json::Value) -> String {
 /// Comma-joined key names of a JSON object row (names only, never values).
 fn first_row_key_names(row: Option<&serde_json::Value>) -> String {
     match row {
-        Some(serde_json::Value::Object(map)) => map
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join(","),
+        Some(serde_json::Value::Object(map)) => {
+            map.keys().map(String::as_str).collect::<Vec<_>>().join(",")
+        }
         Some(other) => format!("<row is {}>", json_kind(other)),
         None => "<empty>".to_string(),
     }
@@ -1543,32 +1565,36 @@ mod tests {
         );
         // Auth failures propagate so the UI can route to sign-in.
         assert_eq!(
-            super::summary_count_or_auth(Err("AUTH_REQUIRED: board (HTTP 401 Unauthorized)".to_string()))
-                .unwrap_err(),
+            super::summary_count_or_auth(Err(
+                "AUTH_REQUIRED: board (HTTP 401 Unauthorized)".to_string()
+            ))
+            .unwrap_err(),
             "AUTH_REQUIRED: board (HTTP 401 Unauthorized)"
         );
     }
 
     #[test]
     fn parse_responses_flag_auth_failures_as_auth_required() {
-        assert!(super::parse_board_response(reqwest::StatusCode::UNAUTHORIZED, "")
-            .unwrap_err()
-            .starts_with("AUTH_REQUIRED: board"));
-        assert!(super::parse_board_response(reqwest::StatusCode::FORBIDDEN, "")
-            .unwrap_err()
-            .starts_with("AUTH_REQUIRED: board"));
+        assert!(
+            super::parse_board_response(reqwest::StatusCode::UNAUTHORIZED, "")
+                .unwrap_err()
+                .starts_with("AUTH_REQUIRED: board")
+        );
+        assert!(
+            super::parse_board_response(reqwest::StatusCode::FORBIDDEN, "")
+                .unwrap_err()
+                .starts_with("AUTH_REQUIRED: board")
+        );
         assert!(
             super::parse_activity_response(reqwest::StatusCode::UNAUTHORIZED, "")
                 .unwrap_err()
                 .starts_with("AUTH_REQUIRED: activity")
         );
-        assert!(super::parse_deployments_response(
-            reqwest::StatusCode::FORBIDDEN,
-            "",
-            "test-org"
-        )
-        .unwrap_err()
-        .starts_with("AUTH_REQUIRED: deployments"));
+        assert!(
+            super::parse_deployments_response(reqwest::StatusCode::FORBIDDEN, "", "test-org")
+                .unwrap_err()
+                .starts_with("AUTH_REQUIRED: deployments")
+        );
         assert!(
             super::parse_secrets_response(reqwest::StatusCode::UNAUTHORIZED, "")
                 .unwrap_err()
@@ -2233,7 +2259,11 @@ mod tests {
             "test-org",
         )
         .expect("valid rows survive alongside a skipped hostile row");
-        assert_eq!(mixed.len(), 2, "both safe rows are kept; only the hostile one drops");
+        assert_eq!(
+            mixed.len(),
+            2,
+            "both safe rows are kept; only the hostile one drops"
+        );
         let subs: Vec<&str> = mixed.iter().map(|d| d.sub.as_str()).collect();
         assert!(subs.contains(&"good-app"));
         assert!(subs.contains(&"another"));

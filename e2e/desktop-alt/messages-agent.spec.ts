@@ -6,10 +6,24 @@ describe('desktop-alt Messages agent handoff', () => {
 
   it('routes the Your agent conversation to Claude Code instead of a fake DM', () => {
     expect(shell).toContain("import { buildClaudeCodeUrl } from '../../lib/claude-code-link'");
+    expect(shell).toContain("import { hqSkillMarkdownLink } from '../../lib/hq-skill-link'");
     expect(shell).toContain('function sendAgentPrompt(text: string)');
+    expect(shell).toContain("hqSkillMarkdownLink('startwork', hqFolderPath)");
     expect(shell).toContain('buildClaudeCodeUrl({ folder: hqFolderPath, prompt })');
     expect(shell).toContain("invoke('open_claude_code_link', { url })");
     expect(shell).toContain("personUid: 'agent:self'");
+    const oldAbsoluteSkillPath = [
+      '',
+      'Users',
+      'corey',
+      'Documents',
+      'HQ',
+      '.claude',
+      'skills',
+      'startwork',
+      'SKILL.md',
+    ].join('/');
+    expect(shell).not.toContain(oldAbsoluteSkillPath);
     expect(shell).not.toContain("personUid: selfPersonUid ?? 'agent:self'");
   });
 

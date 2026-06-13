@@ -75,14 +75,35 @@ const COMPANY_GOALS = {
 };
 
 const COMPANY_PROJECTS = [
-  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', storyCount: 8, storiesComplete: 3 },
-  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', storyCount: 6, storiesComplete: 2 },
-  { id: 'in-proj-203', title: 'Browse vs Sync — role-aware sharing', description: 'Let viewers browse a vault without a full local sync.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-browse-vs-sync/prd.json', storyCount: 5, storiesComplete: 1 },
-  { id: 'in-proj-125', title: 'HQ Sync Desktop — Flagship Company OS', description: 'Top-level Board, Projects port, actionable surfaces.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', storyCount: 12, storiesComplete: 12 },
-  { id: 'in-proj-204', title: 'Instant DM delivery', description: 'MQTT-over-WSS wake signal for sub-second DMs.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', storyCount: 5, storiesComplete: 5 },
-  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', storyCount: 7, storiesComplete: 0 },
-  { id: 'in-proj-206', title: 'S3 → Laptop Live Sync', description: 'Continuous background sync without manual triggers.', company: 'indigo', status: 'exploring', prdPath: null, storyCount: 0, storiesComplete: 0 },
+  { id: 'in-proj-201', title: 'Event-driven HQ-Cloud sync', description: 'Push-based sync — drop the 60s poll for instant fan-out.', company: 'indigo', status: 'active', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', createdAt: '2026-06-01T00:00:00Z', updatedAt: '2026-06-12T00:00:00Z', storyCount: 8, storiesComplete: 3 },
+  { id: 'in-proj-202', title: 'S3-versioned conflict handling', description: 'Use S3 object versions to resolve concurrent edits.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', createdAt: '2026-06-02T00:00:00Z', updatedAt: '2026-06-13T00:00:00Z', storyCount: 6, storiesComplete: 2 },
+  { id: 'in-proj-203', title: 'Browse vs Sync — role-aware sharing', description: 'Let viewers browse a vault without a full local sync.', company: 'indigo', status: 'in_progress', prdPath: 'companies/indigo/projects/hq-sync-browse-vs-sync/prd.json', createdAt: '2026-06-03T00:00:00Z', updatedAt: '2026-06-11T00:00:00Z', storyCount: 5, storiesComplete: 1 },
+  { id: 'in-proj-125', title: 'HQ Sync Desktop — Flagship Company OS', description: 'Top-level Board, Projects port, actionable surfaces.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', createdAt: '2026-05-30T00:00:00Z', updatedAt: '2026-06-09T00:00:00Z', storyCount: 12, storiesComplete: 12 },
+  { id: 'in-proj-204', title: 'Instant DM delivery', description: 'MQTT-over-WSS wake signal for sub-second DMs.', company: 'indigo', status: 'completed', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', createdAt: '2026-06-04T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z', storyCount: 5, storiesComplete: 5 },
+  { id: 'in-proj-205', title: 'Meeting detect + notify', description: 'Clickable detected-meeting notifications + permissions wizard.', company: 'indigo', status: 'prd_created', prdPath: 'companies/indigo/projects/meeting-detect-notify/prd.json', createdAt: '2026-06-05T00:00:00Z', updatedAt: '2026-06-08T00:00:00Z', storyCount: 7, storiesComplete: 0 },
+  { id: 'in-proj-206', title: 'S3 → Laptop Live Sync', description: 'Continuous background sync without manual triggers.', company: 'indigo', status: 'exploring', prdPath: null, createdAt: '2026-06-06T00:00:00Z', updatedAt: '2026-06-07T00:00:00Z', storyCount: 0, storiesComplete: 0 },
 ];
+
+const LIBRARY_ROOT = {
+  workers: [
+    { id: 'architect', name: 'Architect', type: 'CodeWorker', description: 'Surface architecture tradeoffs and deep-module opportunities.', scope: 'root', status: 'active', path: 'core/workers/public/dev-team/architect/', team: 'dev-team' },
+    { id: 'frontend-dev', name: 'Frontend Dev', type: 'CodeWorker', description: 'Build polished desktop and web interfaces.', scope: 'root', status: 'active', path: 'core/workers/public/dev-team/frontend-dev/', team: 'dev-team' },
+    { id: 'paper-designer', name: 'Paper Designer', type: 'DesignWorker', description: 'Translate Paper references into implementable UI systems.', scope: 'root', status: 'active', path: 'core/workers/public/paper-designer/', team: 'design' },
+    { id: 'indigo-cmo', name: 'Indigo CMO', type: 'OpsWorker', description: 'Company-scoped go-to-market planning.', scope: 'company', company: 'indigo', status: 'active', path: 'companies/indigo/workers/cmo/' },
+    { id: 'liverecover-analyst', name: 'Liverecover Analyst', type: 'ResearchWorker', description: 'Analyze local company signals and market notes.', scope: 'company', company: 'liverecover', status: 'active', path: 'companies/liverecover/workers/analyst/' },
+  ],
+  skills: [
+    { name: 'startwork', description: 'Start a work session from local HQ context.', scope: 'root', path: '.claude/skills/startwork/SKILL.md', allowedTools: ['Read', 'Bash'] },
+    { name: 'plan', description: 'Create an execution-ready project plan.', scope: 'root', path: '.claude/skills/plan/SKILL.md', allowedTools: ['Read', 'Write'] },
+    { name: 'search', description: 'Search across HQ knowledge and projects.', scope: 'root', path: '.claude/skills/search/SKILL.md', allowedTools: ['Read', 'Bash'] },
+    { name: 'signals', description: 'Read company signals and action items.', scope: 'company', company: 'indigo', path: 'companies/indigo/skills/signals/SKILL.md', allowedTools: ['Read'] },
+  ],
+};
+
+const LIBRARY_COMPANY = {
+  workers: LIBRARY_ROOT.workers.filter((worker) => worker.company === 'indigo'),
+  skills: LIBRARY_ROOT.skills.filter((skill) => skill.company === 'indigo'),
+};
 
 // PRDs keyed by prdPath — enough stories for classifyStories to surface an
 // in-progress one (its title shows on the in-flight row + drill-in Kanban).
@@ -254,6 +275,31 @@ const handlers: Record<string, Handler> = {
     syncMode: args?.companySlug === 'liverecover' ? 'shared' : 'all',
   }),
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
+  get_library_root: () => LIBRARY_ROOT,
+  get_library_company: () => LIBRARY_COMPANY,
+  get_library_worker_detail: (args) => {
+    const path = String(args?.workerPath ?? '');
+    const worker = LIBRARY_ROOT.workers.find((item) => item.path === path) ?? LIBRARY_ROOT.workers[0];
+    return {
+      id: worker.id,
+      name: worker.name,
+      type: worker.type,
+      description: worker.description,
+      team: worker.team ?? null,
+      skills: [{ name: 'startwork', description: 'Load the right company and repo context.' }],
+      instructions: `# ${worker.name}\n\nUse local HQ files first and keep work scoped to the selected company.`,
+    };
+  },
+  get_library_skill_detail: (args) => {
+    const path = String(args?.skillPath ?? '');
+    const skill = LIBRARY_ROOT.skills.find((item) => item.path === path) ?? LIBRARY_ROOT.skills[0];
+    return {
+      name: skill.name,
+      description: skill.description,
+      allowedTools: skill.allowedTools,
+      body: `# ${skill.name}\n\nRepresentative harness detail for ${skill.description}`,
+    };
+  },
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
   get_local_company_goals: () => COMPANY_GOALS,
   get_local_projects: () => COMPANY_PROJECTS,
@@ -292,15 +338,17 @@ const handlers: Record<string, Handler> = {
       dms: [
         {
           eventId: 'dm-1',
+          fromPersonUid: 'prs_grace',
           fromDisplayName: 'Maya Chen',
-          fromEmail: 'maya@getindigo.ai',
+          fromEmail: 'grace@getindigo.ai',
           body: 'Pushed the conflict-versioning notes — take a look when you get a sec?',
           createdAt: iso(6),
         },
         {
           eventId: 'dm-2',
+          fromPersonUid: 'prs_alan',
           fromDisplayName: 'Sam Rivera',
-          fromEmail: 'sam@liverecover.com',
+          fromEmail: 'alan@example.com',
           body: 'Meeting recap is synced to the Liverecover folder.',
           createdAt: iso(48),
         },
@@ -370,10 +418,10 @@ const handlers: Record<string, Handler> = {
   get_unread_summary: () => ({ unreadDms: 2, pendingRequests: 2 }),
   list_contacts: () => ({
     contacts: [
-      { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company' },
+      { personUid: 'prs_ada', email: 'ada@getindigo.ai', displayName: 'Ada Lovelace', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-09T19:43:10.000Z' },
       { personUid: 'prs_grace', email: 'grace@getindigo.ai', displayName: 'Grace Hopper', companyUid: 'cmp_indigo', source: 'company' },
       { personUid: 'prs_alan', email: 'alan@example.com', displayName: 'Alan Turing', companyUid: null, source: 'connection' },
-      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company' },
+      { personUid: 'prs_katherine', email: 'katherine@getindigo.ai', displayName: 'Katherine Johnson', companyUid: 'cmp_indigo', source: 'company', lastMessageAt: '2026-06-08T19:43:10.000Z' },
     ],
   }),
   list_company_members: () => ({

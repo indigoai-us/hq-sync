@@ -98,8 +98,14 @@ export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
   // also stay visible so an invite/download state does not disappear. The
   // backend command is already the visibility boundary for desktop workspaces,
   // so do not second-guess it with one stale/missing metadata flag.
+  const seen = new Set<string>();
   return workspaces.filter(
-    (workspace) => workspace.kind === 'personal' || workspace.kind === 'company',
+    (workspace) => {
+      if (workspace.kind !== 'personal' && workspace.kind !== 'company') return false;
+      if (seen.has(workspace.slug)) return false;
+      seen.add(workspace.slug);
+      return true;
+    },
   );
 }
 
@@ -262,6 +268,8 @@ export interface DesktopSecondarySidebar {
 export interface DesktopSecondarySidebarOptions {
   /** App version for the Settings header meta line. */
   version?: string | null;
+  /** Resolved HQ folder root for Library metadata, e.g. `~/Documents/HQ`. */
+  hqFolderPath?: string | null;
 }
 
 /**
@@ -299,7 +307,7 @@ export function getDesktopSecondarySidebar(
       surface: 'library',
       header: 'Library',
       headerTone: null,
-      meta: '~/.hq',
+      meta: formatHqFolderMeta(options.hqFolderPath),
       items: LIBRARY_SECTIONS.map(({ id, label }) => ({ id, label })),
       activeId: route.tab ?? DEFAULT_LIBRARY_TAB,
       footer: { label: 'Publish a pack' },
@@ -320,6 +328,12 @@ export function getDesktopSecondarySidebar(
   }
 
   return null;
+}
+
+export function formatHqFolderMeta(path: string | null | undefined): string {
+  const trimmed = path?.trim();
+  if (!trimmed) return 'HQ folder';
+  return trimmed.replace(/^\/Users\/[^/]+/, '~');
 }
 
 function formatCompanyRole(company: Workspace): string | null {

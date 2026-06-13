@@ -8,6 +8,7 @@
     type Objective,
   } from '../lib/local-projects';
   import {
+    compareProjectsByRecency,
     projectDisplayName,
     projectListStatus,
     projectProgress,
@@ -53,7 +54,7 @@
   const companyProjects = $derived(
     projects
       .filter((project) => project.company === slug)
-      .sort((a, b) => projectDisplayName(a).localeCompare(projectDisplayName(b))),
+      .sort(compareProjectsByRecency),
   );
   const filteredCompanyProjects = $derived(
     companyProjects.filter((project) => matchesProjectFilter(project, projectFilter)),
