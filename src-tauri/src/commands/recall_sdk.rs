@@ -961,8 +961,17 @@ fn fail_active_recordings_on_exit(app: &AppHandle, code: Option<i32>, signal: Op
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SdkUploadTokenResponse {
-    /// Recall.ai Recording UUID — stable handle for the recording.
+    /// SDK-upload record id (UUID). This is NOT the recording handle — see
+    /// `recording_id`. Kept only as a back-compat fallback for an older hq-pro
+    /// that didn't yet return `recordingId`.
     id: String,
+    /// Recall.ai Recording UUID — the durable handle the `sdk_upload.complete`
+    /// webhook, the landed `sources/meetings/{id}.md` source object, and
+    /// signals are all keyed by. This is what the recordings ledger must store
+    /// so a recording can be correlated back to its landed source. Optional:
+    /// hq-pro emits it (as `recordingId`) only when Recall returned it, so we
+    /// fall back to `id` when it's absent.
+    recording_id: Option<String>,
     /// One-shot token consumed by `RecallAiSdk.startRecording({ uploadToken })`.
     upload_token: String,
 }
@@ -1021,13 +1030,66 @@ async fn fetch_sdk_upload_token(
     let parsed: SdkUploadTokenResponse = serde_json::from_str(&text)
         .map_err(|e| format!("upload-token parse: {e} — body: {text}"))?;
 
-    if parsed.id.is_empty() || parsed.upload_token.is_empty() {
+    if parsed.upload_token.is_empty() {
         return Err(format!(
-            "upload-token response missing id or token — body: {text}"
+            "upload-token response missing upload token — body: {text}"
         ));
     }
 
-    Ok((parsed.id, parsed.upload_token))
+    // The recordings ledger keys on the Recall *recording* id — the same handle
+    // the `sdk_upload.complete` webhook and the landed `sources/meetings/{id}.md`
+    // source object use. hq-pro returns it as `recordingId`. We fall back to the
+    // sdk-upload `id` only when hq-pro omitted it (older server). Log the
+    // fallback so the (re-broken) source correlation is visible rather than
+    // silently storing the wrong id.
+    let used_recording_id = parsed
+        .recording_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some();
+
+    let recording_id = match pick_recording_handle(parsed.recording_id.as_deref(), &parsed.id)
+    {
+        Some(rid) => rid,
+        None => {
+            return Err(format!(
+                "upload-token response missing both recordingId and id — body: {text}"
+            ));
+        }
+    };
+
+    if !used_recording_id {
+        log(
+            LOG_TAG,
+            "fetch_sdk_upload_token: hq-pro returned no recordingId — \
+             falling back to sdk-upload id (source correlation may break)",
+        );
+    }
+
+    Ok((recording_id, parsed.upload_token))
+}
+
+/// Choose the durable recording handle the recordings ledger should store from
+/// an `/v1/recall/upload-token` response.
+///
+/// Prefers the Recall *recording* id (`recordingId`) — the handle the
+/// `sdk_upload.complete` webhook and the landed `sources/meetings/{id}.md`
+/// source object are keyed by. Falls back to the sdk-upload `id` only when the
+/// recording id is absent/blank (an older hq-pro that didn't yet return it).
+/// Returns `None` when neither is usable so the caller surfaces a hard error
+/// instead of storing an empty handle. Both candidates are trimmed; blank
+/// strings count as absent.
+fn pick_recording_handle(recording_id: Option<&str>, sdk_upload_id: &str) -> Option<String> {
+    if let Some(rid) = recording_id.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(rid.to_string());
+    }
+    let id = sdk_upload_id.trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
 }
 
 /// Start a local recording for the given SDK window.
@@ -1625,6 +1687,86 @@ mod tests {
             }
             other => panic!("expected RecordingMediaCapture, got {:?}", other),
         }
+    }
+
+    // ── Recording-handle selection (recordingId vs sdk-upload id) ───────────
+    //
+    // The recordings ledger must store the Recall *recording* id — the handle
+    // the `sdk_upload.complete` webhook and the landed `sources/meetings/{id}.md`
+    // source object key on. hq-pro returns it as `recordingId` (distinct from
+    // the sdk-upload `id`). Before this fix the client stored the sdk-upload id
+    // and could never correlate a recording to its landed source.
+
+    #[test]
+    fn pick_recording_handle_prefers_recording_id() {
+        assert_eq!(
+            pick_recording_handle(Some("rec-xyz"), "sdkup-abc"),
+            Some("rec-xyz".to_string()),
+        );
+    }
+
+    #[test]
+    fn pick_recording_handle_falls_back_to_sdk_upload_id_when_absent() {
+        // Older hq-pro that didn't return recordingId — recording still works,
+        // just with the legacy (uncorrelatable) handle.
+        assert_eq!(
+            pick_recording_handle(None, "sdkup-abc"),
+            Some("sdkup-abc".to_string()),
+        );
+    }
+
+    #[test]
+    fn pick_recording_handle_treats_blank_recording_id_as_absent() {
+        assert_eq!(
+            pick_recording_handle(Some("   "), "sdkup-abc"),
+            Some("sdkup-abc".to_string()),
+        );
+    }
+
+    #[test]
+    fn pick_recording_handle_trims_both_candidates() {
+        assert_eq!(
+            pick_recording_handle(Some("  rec-xyz  "), "sdkup-abc"),
+            Some("rec-xyz".to_string()),
+        );
+        assert_eq!(
+            pick_recording_handle(None, "  sdkup-abc  "),
+            Some("sdkup-abc".to_string()),
+        );
+    }
+
+    #[test]
+    fn pick_recording_handle_none_when_both_blank() {
+        assert_eq!(pick_recording_handle(Some("  "), "   "), None);
+        assert_eq!(pick_recording_handle(None, ""), None);
+    }
+
+    #[test]
+    fn sdk_upload_token_response_deserialises_camelcase_recording_id() {
+        // hq-pro emits camelCase `recordingId`; serde(rename_all=camelCase)
+        // maps it onto the Rust `recording_id` field.
+        let body = r#"{"id":"sdkup-1","recordingId":"rec-1","uploadToken":"ut-1"}"#;
+        let parsed: SdkUploadTokenResponse = serde_json::from_str(body).expect("parse");
+        assert_eq!(parsed.id, "sdkup-1");
+        assert_eq!(parsed.recording_id.as_deref(), Some("rec-1"));
+        assert_eq!(parsed.upload_token, "ut-1");
+        assert_eq!(
+            pick_recording_handle(parsed.recording_id.as_deref(), &parsed.id),
+            Some("rec-1".to_string()),
+        );
+    }
+
+    #[test]
+    fn sdk_upload_token_response_tolerates_missing_recording_id() {
+        // An older hq-pro response with no recordingId must still parse (the
+        // field is Option) so recording isn't broken — it just falls back.
+        let body = r#"{"id":"sdkup-2","uploadToken":"ut-2"}"#;
+        let parsed: SdkUploadTokenResponse = serde_json::from_str(body).expect("parse");
+        assert_eq!(parsed.recording_id, None);
+        assert_eq!(
+            pick_recording_handle(parsed.recording_id.as_deref(), &parsed.id),
+            Some("sdkup-2".to_string()),
+        );
     }
 
     #[test]
