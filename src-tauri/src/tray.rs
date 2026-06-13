@@ -11,7 +11,7 @@ use tauri::{
     image::Image,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Listener, Manager, PhysicalPosition, Rect, WindowEvent,
+    AppHandle, Emitter, Listener, Manager, Monitor, PhysicalPosition, Rect, WindowEvent,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -441,10 +441,59 @@ fn compute_popover_position(
     (pop_x, pop_y)
 }
 
+fn compute_clamped_popover_position(
+    tray_x: f64,
+    tray_y: f64,
+    tray_w: f64,
+    tray_h: f64,
+    win_w: f64,
+    win_h: f64,
+    gap_px: f64,
+    work_x: f64,
+    work_y: f64,
+    work_w: f64,
+    work_h: f64,
+) -> (i32, i32) {
+    let (raw_x, raw_y) = compute_popover_position(tray_x, tray_y, tray_w, tray_h, win_w, gap_px);
+    let min_x = work_x;
+    let max_x = (work_x + work_w - win_w).max(min_x);
+    let min_y = work_y;
+    let max_y = (work_y + work_h - win_h).max(min_y);
+    let pop_x = (raw_x as f64).clamp(min_x, max_x).round() as i32;
+    let pop_y = (raw_y as f64).clamp(min_y, max_y).round() as i32;
+    (pop_x, pop_y)
+}
+
 // Small visual gap between the menu bar and the popover top edge.
 // 4 physical px is ~2pt on a 2x retina display — enough to avoid
 // the popover looking glued to the menu bar.
 const POPOVER_GAP_PX: f64 = 4.0;
+
+fn tray_anchor_monitor(
+    monitors: impl IntoIterator<Item = Monitor>,
+    tray_center_x: f64,
+    tray_center_y: f64,
+) -> Option<Monitor> {
+    let mut fallback = None;
+    for monitor in monitors {
+        if fallback.is_none() {
+            fallback = Some(monitor.clone());
+        }
+        let work_area = monitor.work_area();
+        let left = work_area.position.x as f64;
+        let top = work_area.position.y as f64;
+        let right = left + work_area.size.width as f64;
+        let bottom = top + work_area.size.height as f64;
+        if tray_center_x >= left
+            && tray_center_x <= right
+            && tray_center_y >= top
+            && tray_center_y <= bottom
+        {
+            return Some(monitor);
+        }
+    }
+    fallback
+}
 
 /// Center the window horizontally under the tray icon, just below it.
 ///
@@ -468,9 +517,33 @@ fn position_below_tray(window: &tauri::WebviewWindow, rect: Rect) {
         tauri::Size::Logical(s) => (s.width * scale, s.height * scale),
     };
     let win_w = size.width as f64;
+    let win_h = size.height as f64;
+    let tray_center_x = tray_x + tray_w / 2.0;
+    let tray_center_y = tray_y + tray_h / 2.0;
 
-    let (pop_x, pop_y) =
-        compute_popover_position(tray_x, tray_y, tray_w, tray_h, win_w, POPOVER_GAP_PX);
+    let (pop_x, pop_y) = window
+        .available_monitors()
+        .ok()
+        .and_then(|monitors| tray_anchor_monitor(monitors, tray_center_x, tray_center_y))
+        .map(|monitor| {
+            let work_area = monitor.work_area();
+            compute_clamped_popover_position(
+                tray_x,
+                tray_y,
+                tray_w,
+                tray_h,
+                win_w,
+                win_h,
+                POPOVER_GAP_PX,
+                work_area.position.x as f64,
+                work_area.position.y as f64,
+                work_area.size.width as f64,
+                work_area.size.height as f64,
+            )
+        })
+        .unwrap_or_else(|| {
+            compute_popover_position(tray_x, tray_y, tray_w, tray_h, win_w, POPOVER_GAP_PX)
+        });
 
     let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
 }
@@ -740,10 +813,28 @@ mod tests {
 
     #[test]
     fn test_compute_popover_position_handles_off_screen_left() {
-        // Tray near left edge — helper returns raw math, no clamping.
-        // Caller is responsible for keeping the popover on-screen if needed.
+        // The raw helper remains pure anchor math; clamping is layered below
+        // once monitor work-area bounds are known.
         let (x, _) = compute_popover_position(10.0, 0.0, 24.0, 24.0, 320.0, 4.0);
         assert_eq!(x, 10 + 12 - 160); // = -138
+    }
+
+    #[test]
+    fn test_compute_clamped_popover_position_keeps_left_edge_on_screen() {
+        let (x, y) = compute_clamped_popover_position(
+            10.0, 0.0, 24.0, 24.0, 320.0, 480.0, 4.0, 0.0, 0.0, 1440.0, 900.0,
+        );
+        assert_eq!(x, 0);
+        assert_eq!(y, 28);
+    }
+
+    #[test]
+    fn test_compute_clamped_popover_position_keeps_right_edge_on_screen() {
+        let (x, y) = compute_clamped_popover_position(
+            1428.0, 0.0, 24.0, 24.0, 320.0, 480.0, 4.0, 0.0, 0.0, 1440.0, 900.0,
+        );
+        assert_eq!(x, 1120);
+        assert_eq!(y, 28);
     }
 
     #[test]

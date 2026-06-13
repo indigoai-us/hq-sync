@@ -129,9 +129,11 @@ fn main() {
     use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 
     // Opt+Shift+H — global hotkey to summon the popover from anywhere.
+    // Opt+Shift+O — global hotkey to reveal the larger desktop window.
     // Defined up front so the plugin builder and the setup-time `register`
-    // call agree on the exact key combo.
+    // calls agree on the exact key combos.
     let show_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
+    let desktop_shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyO);
 
     tauri::Builder::default()
         // single-instance MUST be the first plugin: it runs before any other
@@ -173,6 +175,25 @@ fn main() {
                 .with_handler(move |app, shortcut, event| {
                     if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
                         tray::show_window_at_tray(app);
+                    } else if shortcut == &desktop_shortcut
+                        && event.state() == ShortcutState::Pressed
+                    {
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) =
+                                commands::desktop_alt::open_desktop_alt_window_inner(
+                                    app_handle, None,
+                                )
+                                .await
+                            {
+                                util::logfile::log(
+                                    "ui",
+                                    &format!(
+                                        "global shortcut Opt+Shift+O open desktop FAILED: {e}"
+                                    ),
+                                );
+                            }
+                        });
                     }
                 })
                 .build(),
@@ -499,20 +520,20 @@ fn main() {
                 _ => {}
             }
 
-            // Register Opt+Shift+H globally so the popover can be summoned
-            // from any app. The handler (configured on the plugin builder
-            // above) calls `tray::show_window_at_tray`. Registration can
-            // fail if another app already holds the chord — log and
-            // continue so the rest of the app still launches.
+            // Register global shortcuts so the popover and larger desktop
+            // window can be summoned from any app. Registration can fail if
+            // another app already holds a chord — log and continue so the
+            // rest of the app still launches.
             {
                 use tauri_plugin_global_shortcut::GlobalShortcutExt;
-                let shortcut =
-                    Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), Code::KeyH);
-                if let Err(e) = app.global_shortcut().register(shortcut) {
-                    util::logfile::log(
-                        "ui",
-                        &format!("global shortcut Opt+Shift+H register FAILED: {e}"),
-                    );
+                for (label, code) in [("Opt+Shift+H", Code::KeyH), ("Opt+Shift+O", Code::KeyO)] {
+                    let shortcut = Shortcut::new(Some(Modifiers::ALT | Modifiers::SHIFT), code);
+                    if let Err(e) = app.global_shortcut().register(shortcut) {
+                        util::logfile::log(
+                            "ui",
+                            &format!("global shortcut {label} register FAILED: {e}"),
+                        );
+                    }
                 }
             }
 
