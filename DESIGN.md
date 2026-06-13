@@ -37,29 +37,31 @@ Layered translucent surfaces over the glass background, plus text tiers, kept ne
 
 ## Typography
 
-Two surfaces, two type treatments — the popover and the big window deliberately differ, mirroring the two-budget color split. The shared `--text-*` token names persist; the big window scope (`html[data-window='desktop-alt']`) redefines them so a single declaration site governs each surface.
+The popover, desktop window, and standalone Messages window now share the same `--text-*` role tokens and the same two effective sizes: a 13px body size and an 18px display size. The surfaces still differ by font family and context, but hierarchy comes from weight, uppercase/tracking, mono usage, and text color rather than a many-step scale.
 
-### Popover (4-step ramp, system font)
+### Popover (shared two-size scale, system font)
 
 System font only: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`. One family carries everything. Monospace (`--font-mono`: `ui-monospace, SFMono-Regular, Menlo`) only for version strings and file paths.
 
-Fixed rem scale (not fluid), tuned for a 320px popover. Ratio ~1.15 between steps:
+Fixed px scale (not fluid), tuned for a 320px popover while matching the desktop surfaces:
 
 | Token | Size | Use |
 |---|---|---|
-| `--text-xs` | 11px (0.6875rem) | descriptions, paths, pill labels, section headers |
-| `--text-sm` | 12px (0.75rem) | secondary buttons, version values |
-| `--text-base` | 13px (0.8125rem) | row labels, body |
-| `--text-lg` | 15px (0.9375rem) | screen titles, the popover's primary status line |
+| `--text-xs` | 13px | compact descriptions, paths, pill labels, section headers |
+| `--text-sm` | 13px | secondary buttons, version values |
+| `--text-base` | 13px | row labels, body |
+| `--text-micro` | 13px | uppercase caps, badges, table labels, scope pills |
+| `--text-lg` | 18px | screen titles, the popover's primary status line |
+| `--text-kpi` | 18px | KPI and large display figures |
 
-Weight contrast does the hierarchy work: 600 for headings and labels-that-matter, 500 for standard labels, 400 for descriptions. Section headers are `--text-xs`, 600, uppercase, with positive letter-spacing and muted color.
+Weight contrast does the hierarchy work: 600 for headings and labels-that-matter, 500 for standard labels, 400 for descriptions. Section headers use the same 13px body size, but read as labels through uppercase, positive letter-spacing, muted color, and often the mono family.
 
-### Big-window type & chrome (one size, Geist — mirrors hq-console)
+### Big-window and Messages type & chrome (two sizes, Inter/Geist Mono — mirrors hq-console)
 
 The big window (`src/desktop-alt/`) is a wide, dwell-time "Company OS" surface. It follows the [hq-console](../../private/hq-console) language rather than the popover ramp:
 
-- **Two sizes, and only two.** Body, titles, names, and descriptions are all **13px** (`--text-base`; all four `--text-*` ramp tokens are redefined to 13px in the desktop-alt scope so nothing drifts). The one permitted second size is **`--text-micro` (11px)**, reserved for monospace ALL-CAPS micro-labels and pills — status tags, section eyebrows, table headers, stat-tile labels, scope pills, and `kbd` shortcuts — so the uppercase tracking reads as a quiet label rather than a shout. Everything else is 13px; hierarchy is carried by **weight** (400 body / 600 headings + labels-that-matter) and the **grey (`--muted`) / white (`--fg`) split**, not size. A page title is 13px/650 white, not a bigger font.
-- **Geist.** Bundled offline via `@fontsource-variable/geist` + `@fontsource-variable/geist-mono` (imported from `desktop-alt/main.ts`). `'Geist Variable'` carries body + headings; `--font-mono` (`'Geist Mono Variable'`) is reserved for IDs, paths, and version strings. A faint negative optical tracking (`-0.006em`) matches hq-console's finish.
+- **Two sizes, and only two.** `--text-micro`, `--text-xs`, `--text-sm`, and `--text-base` all resolve to **13px**. `--text-lg` and `--text-kpi` resolve to **18px**. The "micro" token is a semantic role, not a smaller pixel size: status tags, section eyebrows, table headers, stat-tile labels, scope pills, and `kbd` shortcuts read as labels because they are uppercase, tracked, muted, and often mono.
+- **Inter + Geist Mono.** Bundled offline via `@fontsource-variable/inter`, `@fontsource-variable/inter-tight`, and `@fontsource-variable/geist-mono` (imported from `desktop-alt/main.ts` and `MessagesShell.svelte`). `--font-sans` carries UI/body, `--font-display` carries display headings, and `--font-mono` is reserved for IDs, paths, counts, and version strings.
 - **Chrome.** Hairline borders over low-fill surfaces, square-ish corners, grey uppercase section headers + white body, generous horizontal padding. A restrained **Indigo accent** (`--accent: #6366f1`, `--accent-soft`) is used for <10% of the surface: the active-nav "you are here" dot and the focus ring only.
 - **Card grids (the "Foundry tile").** Browsable collections — the Library (`LibraryList.svelte`) and the Board's Projects grid (`ProjectRow.svelte` in `ProjectListView`'s `auto-fill, minmax(296px, 1fr)` grid) — render as cards, not rows. The house card is a near-square (`4px`) hairline tile with a thin (3px) status/kind-colored left **accent bar** (a positioned indicator, not a `border-left` hack), a monospace ALL-CAPS micro-label, a scope pill, and a 2-line-clamped description. This thin in-card accent bar is the one sanctioned left-edge color cue; it is distinct from the banned decorative side-stripe on alerts/callouts/plain list items.
 - **Why it diverges.** The popover is read in motion and must disappear into the menu bar; the big window is a dwell surface where a calm single-size, hairline system reads as a finished product, not a CLI. Semantic state color (priority, project/story state, AC progress, 8-hue labels) still applies on the board — it marks state, not brand, and never fills.
@@ -127,14 +129,14 @@ The popover footer keeps the HQ-core status row (version + labeled drift pill + 
 
 ## Unified desktop token set
 
-HQ Sync ships two surfaces — the menubar **popover** and the Indigo **desktop window** (`src/desktop-alt/`). They are **one design system**, not two. There is a single source of truth for tokens:
+HQ Sync ships three runtime surfaces — the menubar **popover**, the Indigo **desktop window** (`src/desktop-alt/`), and the standalone **Messages window**. They are **one design system**, not drifting surface-specific systems. There is a single source of truth for tokens:
 
 - **Canonical tokens** live in `src/styles/popover.css` (`--popover-*`, `--text-*`, `--space-*`, `--radius-*`, `--popover-blur`). They define light, dark, and reduced-transparency variants via `@media (prefers-color-scheme: …)` and `@media (prefers-reduced-transparency: reduce)`.
-- The desktop window's stylesheet (`src/desktop-alt/styles/desktop-alt.css`) **`@import`s `popover.css`**, so both windows resolve from the same definitions. There is no second, drifting copy.
+- The desktop stylesheet (`src/desktop-alt/styles/desktop-alt.css`) **`@import`s `popover.css`** and scopes the alias layer to both `html[data-window='desktop-alt']` and `html[data-window='messages']`, so the desktop and Messages windows resolve from the same definitions.
 
 ### Desktop semantic alias layer
 
-The desktop window predates the canonical naming and uses a shorter vocabulary. Those names are kept as a thin **alias layer** scoped under `html[data-window='desktop-alt']` so components don't need a mass rename. Every alias derives from a canonical primitive or holds a documented desktop-specific neutral — it is never an independent re-definition.
+The desktop and Messages windows use a shorter vocabulary than the canonical popover primitives. Those names are kept as a thin **alias layer** scoped under `html[data-window='desktop-alt']` and `html[data-window='messages']` so components don't need a mass rename. Every alias derives from a canonical primitive or holds a documented desktop-specific neutral — it is never an independent re-definition.
 
 | Alias | Role | Source / value |
 |---|---|---|
