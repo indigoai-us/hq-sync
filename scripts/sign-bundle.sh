@@ -197,6 +197,21 @@ if [ -f "$SDK_DIR/desktop_sdk_macos_exe" ]; then
   sign_file "$SDK_DIR/desktop_sdk_macos_exe"
 fi
 
+# ─── 5b. Sign the native menu-bar helper (hq-tray-helper) ───────────────────
+# A standalone AppKit binary in Contents/Resources that owns the "HQ" status
+# item (see src-tauri/src/tray_helper.rs + build.rs). Tauri's tao runtime parks
+# an in-process status item off-screen on macOS Tahoe, so the visible menu-bar
+# item lives in this separate clean process. Must be signed with the hardened
+# runtime BEFORE the bundle seal (Phase 8), or the notary rejects it as an
+# unsigned nested Mach-O. Fail loud if missing — a release without it has no icon.
+echo "  Phase 5b: native menu-bar helper"
+if [ -f "$APP/Contents/Resources/hq-tray-helper" ]; then
+  sign_file "$APP/Contents/Resources/hq-tray-helper"
+else
+  echo "ERROR: hq-tray-helper missing from Resources — menu-bar icon would not appear" >&2
+  exit 1
+fi
+
 # ─── 6. Sign sidecar bash wrapper(s) ────────────────────────────────────────
 # Tauri's bundle.externalBin places the bash wrapper(s) into Contents/MacOS/
 # as `recall-desktop-sdk`. Bash scripts aren't strictly required to be

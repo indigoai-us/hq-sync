@@ -8,6 +8,7 @@ mod commands;
 mod events;
 mod sentry_scrub;
 mod tray;
+mod tray_helper;
 mod updater;
 mod util;
 
@@ -440,6 +441,13 @@ fn main() {
             }
 
             tray::setup_tray(app.handle())?;
+
+            // macOS: the menu-bar item lives in a separate native helper process
+            // (tao parks an in-process status item off-screen on Tahoe). Spawn
+            // it + start the command-file poller.
+            #[cfg(target_os = "macos")]
+            tray_helper::spawn_and_poll(app.handle());
+
             // Hard version-gate against hq-pro fires at 5s (BEFORE the soft
             // updater at 10s) so a known-bad release can be yanked before the
             // user touches anything sensitive. Server-side source of truth is

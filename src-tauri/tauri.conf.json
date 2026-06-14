@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
   "productName": "HQ Sync",
-  "version": "0.7.34-beta.14",
+  "version": "0.7.34-beta.15",
   "identifier": "ai.indigo.hq-sync-menubar",
   "build": {
     "frontendDist": "../dist",
@@ -67,7 +67,8 @@
       "../sidecar/recall-sdk-bridge/bridge.mjs": "recall-sdk-bridge/bridge.mjs",
       "../sidecar/recall-sdk-bridge/recording-tracker.mjs": "recall-sdk-bridge/recording-tracker.mjs",
       "../sidecar/recall-sdk-bridge/package.json": "recall-sdk-bridge/package.json",
-      "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules"
+      "../sidecar/recall-sdk-bridge/node_modules": "recall-sdk-bridge/node_modules",
+      "helper/hq-tray-helper": "hq-tray-helper"
     },
     "macOS": {
       "minimumSystemVersion": "13.0",

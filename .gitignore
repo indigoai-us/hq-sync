@@ -1,6 +1,8 @@
 node_modules/
 dist/
 target/
+# Compiled menu-bar helper — build.rs rebuilds it from hq-tray-helper.swift.
+src-tauri/helper/hq-tray-helper
 .DS_Store
 *.log
 .env

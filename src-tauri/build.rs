@@ -18,6 +18,24 @@ fn main() {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
     println!("cargo:rustc-env=APP_VERSION={}", version);
 
+    // Compile the native menu-bar helper (`hq-tray-helper`) on macOS so the
+    // bundler can copy it into Contents/Resources. The helper is a tiny separate
+    // AppKit process that owns the "HQ" status item — Tauri's tao runtime parks
+    // an in-process status item off-screen on macOS Tahoe (a clean AppKit
+    // process places it correctly). Fail loud: a release that silently dropped
+    // the helper would ship with no menu-bar icon.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rerun-if-changed=helper/hq-tray-helper.swift");
+        let status = std::process::Command::new("swiftc")
+            .args(["-O", "helper/hq-tray-helper.swift", "-o", "helper/hq-tray-helper"])
+            .status()
+            .expect("build.rs: failed to invoke swiftc to build hq-tray-helper");
+        assert!(
+            status.success(),
+            "build.rs: swiftc failed to compile helper/hq-tray-helper.swift"
+        );
+    }
+
     tauri_build::build()
 }
 
