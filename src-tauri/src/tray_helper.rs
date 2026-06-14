@@ -58,17 +58,30 @@ pub fn spawn_and_poll(app: &AppHandle) {
                 continue;
             };
             let _ = std::fs::remove_file(&cf);
-            match cmd.trim() {
-                // Menu-bar click toggles the popover (show if hidden, hide if
-                // already up) and hides the desktop window — one HQ window at a
-                // time. Positioning + blur-hide suppression live in
-                // `tray::show_popover_window`.
-                "show" => crate::tray::toggle_popover_window(&app),
-                "sync" => {
-                    let _ = app.emit("tray:sync-now", ());
+            let cmd = cmd.trim();
+            // Menu-bar click toggles the popover (show if hidden, hide if already
+            // up) and hides the desktop window — one HQ window at a time. The
+            // helper appends the icon's on-screen centre ("show <x>", Cocoa
+            // points) so the popover anchors UNDER the icon; positioning +
+            // blur-hide suppression live in `tray::show_popover_window`.
+            if let Some(rest) = cmd.strip_prefix("show") {
+                if let Ok(points) = rest.trim().parse::<f64>() {
+                    crate::tray::set_tray_anchor_x(points);
                 }
-                "quit" => app.exit(0),
-                other => log("tray", &format!("native helper: unknown cmd '{other}'")),
+                // Window ops (esp. the `is_visible()` toggle query) MUST run on
+                // the main thread — calling them from this poll thread deadlocks
+                // AppKit and wedges the poller after the first click. Marshal it.
+                let app_main = app.clone();
+                let _ = app
+                    .run_on_main_thread(move || crate::tray::toggle_popover_window(&app_main));
+            } else {
+                match cmd {
+                    "sync" => {
+                        let _ = app.emit("tray:sync-now", ());
+                    }
+                    "quit" => app.exit(0),
+                    other => log("tray", &format!("native helper: unknown cmd '{other}'")),
+                }
             }
         }
     });

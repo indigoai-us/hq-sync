@@ -21,9 +21,10 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     const swift = read('src-tauri/helper/hq-tray-helper.swift');
     expect(swift).toContain('NSStatusBar.system.statusItem');
     expect(swift).toContain('"HQ"');
-    // Relays actions to the main app via the command file it polls.
+    // Relays actions to the main app via the command file it polls. The "show"
+    // command carries the icon's on-screen x so the popover anchors under it.
     expect(swift).toContain('.hq/.tray-cmd');
-    expect(swift).toContain('writeCommand("show")');
+    expect(swift).toContain('writeCommand("show ');
     expect(swift).toContain('writeCommand("quit")');
     // Self-exits when the main app (argv[1] PID) dies — no orphan icon.
     expect(swift).toContain('kill(hqPid, 0)');
@@ -41,6 +42,22 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(swift).toContain('func activateHQ()');
     expect(swift).toContain('NSRunningApplication(processIdentifier: hqPid)');
     expect(swift).toContain('activateHQ()');
+  });
+
+  it('reports the icon position so the popover anchors under it (not top-right)', () => {
+    const swift = read('src-tauri/helper/hq-tray-helper.swift');
+    // The helper reads the status button window's centre and ships it with "show".
+    expect(swift).toContain('frame.midX');
+    const helper = read('src-tauri/src/tray_helper.rs');
+    // The poller parses "show <x>" and records the anchor before toggling.
+    expect(helper).toContain('strip_prefix("show")');
+    expect(helper).toContain('set_tray_anchor_x');
+    const tray = read('src-tauri/src/tray.rs');
+    // The positioner uses the anchor (centre − half width) and only falls back
+    // to the top-right corner when the icon position is unknown.
+    expect(tray).toContain('pub fn set_tray_anchor_x');
+    expect(tray).toContain('tray_anchor_x_points()');
+    expect(tray).toMatch(/center_px - width \/ 2/);
   });
 
   it('build.rs compiles the helper on macOS and fails loud if swiftc breaks', () => {
@@ -78,8 +95,10 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
     expect(helper).toContain('.tray-cmd');
     // Menu-bar click toggles the popover (show if hidden, hide if up) via the
-    // shared window-management helper in tray.rs.
-    expect(helper).toContain('"show" => crate::tray::toggle_popover_window');
+    // shared window-management helper in tray.rs — the "show" command carries
+    // the icon anchor, so it's matched by prefix.
+    expect(helper).toContain('strip_prefix("show")');
+    expect(helper).toContain('toggle_popover_window');
     expect(helper).toContain('"quit" => app.exit(0)');
   });
 
@@ -100,13 +119,21 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
 
   it('the two global shortcuts toggle their window (single-window enforced)', () => {
     const main = read('src-tauri/src/main.rs');
-    // Opt+Shift+H toggles the popover.
-    expect(main).toContain('tray::toggle_popover_window(app)');
+    // Both shortcuts marshal their window ops onto the main thread (the
+    // is_visible toggle query deadlocks AppKit off-main) and toggle.
+    expect(main).toContain('run_on_main_thread');
+    expect(main).toContain('tray::toggle_popover_window(&app_main)');
     // Opt+Shift+O toggles the desktop window (hide if visible, else open).
-    expect(main).toContain('tray::hide_desktop_alt(app)');
+    expect(main).toContain('tray::hide_desktop_alt(&app_main)');
     expect(main).toMatch(/desktop_visible[\s\S]*?open_desktop_alt_window_inner/);
     // Opening the desktop hides the popover (single-window) at the canonical path.
     const desktop = read('src-tauri/src/commands/desktop_alt.rs');
     expect(desktop).toMatch(/get_webview_window\("main"\)[\s\S]*?\.hide\(\)/);
+  });
+
+  it('marshals the menu-bar click toggle onto the main thread (no poll-thread deadlock)', () => {
+    const helper = read('src-tauri/src/tray_helper.rs');
+    // The poll thread must NOT call window ops directly — it marshals them.
+    expect(helper).toMatch(/run_on_main_thread\([\s\S]*?toggle_popover_window/);
   });
 });

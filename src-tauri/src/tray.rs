@@ -4,7 +4,7 @@
 //! Left-click toggles the popover window; right-click shows a context menu
 //! with "Sync Now", "Settings", and "Quit".
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -118,6 +118,29 @@ pub fn suppress_blur_hide_briefly() {
 
 fn blur_hide_suppressed() -> bool {
     now_ms() < SUPPRESS_BLUR_UNTIL_MS.load(Ordering::SeqCst)
+}
+
+/// Last-known horizontal centre of the native "HQ" menu-bar icon, in Cocoa
+/// screen POINTS (not physical pixels), as reported by the helper on each
+/// click. `i64::MIN` = unknown (helper hasn't reported, or couldn't resolve the
+/// button frame) → callers fall back to the top-right corner. Cached so the
+/// global shortcut (which has no click to read a fresh position from) can still
+/// anchor the popover under the icon.
+static TRAY_ANCHOR_X_POINTS: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// Record the menu-bar icon's on-screen horizontal centre (Cocoa points). A
+/// negative value (the helper writes -1 when it can't resolve the button's
+/// window) is treated as "unknown".
+pub fn set_tray_anchor_x(points: f64) {
+    let rounded = points.round() as i64;
+    TRAY_ANCHOR_X_POINTS.store(if rounded < 0 { i64::MIN } else { rounded }, Ordering::SeqCst);
+}
+
+fn tray_anchor_x_points() -> Option<f64> {
+    match TRAY_ANCHOR_X_POINTS.load(Ordering::SeqCst) {
+        i64::MIN => None,
+        x => Some(x as f64),
+    }
 }
 
 /// RAII guard — increments `MODAL_DEPTH` on construction and decrements
@@ -657,7 +680,21 @@ pub fn show_popover_window(app: &AppHandle) {
         let scale = monitor.scale_factor();
         let margin = (8.0 * scale) as i32;
         let top = (28.0 * scale) as i32;
-        let x = (mon.width as i32 - size.width as i32 - margin).max(margin);
+        let width = size.width as i32;
+        // Anchor the popover's horizontal centre under the icon when the helper
+        // has reported its position (Cocoa points → physical pixels via the
+        // monitor scale; the menu bar lives on the primary monitor whose origin
+        // matches Cocoa's screen origin on the x axis). Clamp so it stays fully
+        // on-screen. Fall back to the top-right corner when the position is
+        // unknown — never off-screen, which is the whole reason we self-position.
+        let x = match tray_anchor_x_points() {
+            Some(center_pts) => {
+                let center_px = (center_pts * scale) as i32;
+                let max_x = (mon.width as i32 - width - margin).max(margin);
+                (center_px - width / 2).clamp(margin, max_x)
+            }
+            None => (mon.width as i32 - width - margin).max(margin),
+        };
         let _ = window.set_position(PhysicalPosition::new(x, top));
     }
     let _ = window.show();

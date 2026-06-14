@@ -77,7 +77,11 @@ final class TrayController: NSObject {
             item.button?.performClick(nil)
             item.menu = nil
         } else {
-            writeCommand("show")
+            // Report the icon's on-screen horizontal centre (Cocoa screen points)
+            // so the main app can anchor the popover UNDER the icon instead of
+            // guessing the top-right corner. -1 = unknown → main app falls back.
+            let anchorX = item.button?.window?.frame.midX ?? -1
+            writeCommand("show \(Int(anchorX.rounded()))")
             activateHQ()
         }
     }

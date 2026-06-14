@@ -177,39 +177,47 @@ fn main() {
                     if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
                         // Toggle the popover: hides it if already up, else shows
                         // it (and hides the desktop window — one at a time).
-                        tray::toggle_popover_window(app);
+                        // Window ops (incl. the is_visible toggle query) must run
+                        // on the main thread, so marshal off the shortcut callback.
+                        let app_main = app.clone();
+                        let _ = app
+                            .run_on_main_thread(move || tray::toggle_popover_window(&app_main));
                     } else if shortcut == &desktop_shortcut
                         && event.state() == ShortcutState::Pressed
                     {
                         // Toggle the desktop window: hide if visible, else open
                         // it (hiding the popover first — one HQ window at a time).
-                        let desktop_visible = app
-                            .get_webview_window("desktop-alt")
-                            .and_then(|w| w.is_visible().ok())
-                            .unwrap_or(false);
-                        if desktop_visible {
-                            tray::hide_desktop_alt(app);
-                        } else {
-                            if let Some(main) = app.get_webview_window("main") {
-                                let _ = main.hide();
-                            }
-                            let app_handle = app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                if let Err(e) =
-                                    commands::desktop_alt::open_desktop_alt_window_inner(
-                                        app_handle, None,
-                                    )
-                                    .await
-                                {
-                                    util::logfile::log(
-                                        "ui",
-                                        &format!(
-                                            "global shortcut Opt+Shift+O open desktop FAILED: {e}"
-                                        ),
-                                    );
+                        // Marshal to the main thread for the same reason.
+                        let app_main = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            let desktop_visible = app_main
+                                .get_webview_window("desktop-alt")
+                                .and_then(|w| w.is_visible().ok())
+                                .unwrap_or(false);
+                            if desktop_visible {
+                                tray::hide_desktop_alt(&app_main);
+                            } else {
+                                if let Some(main) = app_main.get_webview_window("main") {
+                                    let _ = main.hide();
                                 }
-                            });
-                        }
+                                let app_handle = app_main.clone();
+                                tauri::async_runtime::spawn(async move {
+                                    if let Err(e) =
+                                        commands::desktop_alt::open_desktop_alt_window_inner(
+                                            app_handle, None,
+                                        )
+                                        .await
+                                    {
+                                        util::logfile::log(
+                                            "ui",
+                                            &format!(
+                                                "global shortcut Opt+Shift+O open desktop FAILED: {e}"
+                                            ),
+                                        );
+                                    }
+                                });
+                            }
+                        });
                     }
                 })
                 .build(),
