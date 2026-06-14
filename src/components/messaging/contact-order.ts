@@ -230,6 +230,95 @@ export function contactPreviewAt(contact: ContactPreviewFields): string | null {
   return contact.previewAt ?? contact.lastMessageAt ?? contact.lastActivityAt ?? contact.lastDmAt ?? null;
 }
 
+/** Recency-relevant fields a channel contributes to the unified rail. Channels
+ * may not carry a server timestamp yet (older servers omit `lastActivityAt` /
+ * `lastMessageAt`); when absent, an unread channel still floats up via the
+ * `now` fallback in `mergeConversations`. */
+export interface ChannelRecencyFields {
+  channelId: string;
+  name?: string | null;
+  unread?: number | null;
+  lastActivityAt?: string | null;
+  lastMessageAt?: string | null;
+}
+
+export type ConversationKind = 'dm' | 'channel';
+
+/** One row in the unified conversation rail — a DM (contact) or a channel,
+ * carrying the resolved sort `time` and `unread` so the view renders without
+ * re-deriving order. Exactly one of `contact` / `channel` is set. */
+export interface UnifiedConversationItem<C, Ch> {
+  key: string;
+  kind: ConversationKind;
+  time: number;
+  unread: number;
+  contact?: C;
+  channel?: Ch;
+}
+
+function channelLabel(channel: ChannelRecencyFields): string {
+  return (channel.name?.trim() || channel.channelId).toLowerCase();
+}
+
+/**
+ * Merge DMs (contacts) and channels into ONE recency-sorted list — the unified
+ * Messages rail (channels alongside people, no separate Channels tab).
+ *
+ * Sort: newest activity first. A DM's time folds in its own timestamps + the
+ * local notification `events` index (same source as `sortContactsByRecentActivity`)
+ * and its hydrated `previewAt`. A channel's time is its server `lastActivityAt` /
+ * `lastMessageAt` when present; when absent, an UNREAD channel is treated as
+ * `now` (it needs attention, so it sits among recent items) and a read, timeless
+ * channel sinks to the bottom. Ties break by unread desc, then label.
+ *
+ * Pure + DOM-free so it's unit-tested like the other helpers here. Pass `now`
+ * for deterministic tests.
+ */
+export function mergeConversations<
+  C extends ContactPreviewFields,
+  Ch extends ChannelRecencyFields,
+>(
+  contacts: C[],
+  channels: Ch[],
+  options: { events?: ConversationEventRecencyFields[]; now?: number } = {},
+): UnifiedConversationItem<C, Ch>[] {
+  const events = options.events ?? [];
+  const now = options.now ?? Date.now();
+  const eventIndex = indexEvents(events);
+
+  const dmItems: UnifiedConversationItem<C, Ch>[] = contacts.map((contact) => ({
+    key: `dm:${contact.personUid}`,
+    kind: 'dm',
+    time: Math.max(contactTime(contact, eventIndex), contactPreviewTimestamp(contact)),
+    unread: 0,
+    contact,
+  }));
+
+  const channelItems: UnifiedConversationItem<C, Ch>[] = channels.map((channel) => {
+    const stamp = Math.max(
+      parseTimestamp(channel.lastActivityAt),
+      parseTimestamp(channel.lastMessageAt),
+    );
+    const unread = channel.unread ?? 0;
+    return {
+      key: `ch:${channel.channelId}`,
+      kind: 'channel',
+      time: stamp || (unread > 0 ? now : 0),
+      unread,
+      channel,
+    };
+  });
+
+  const labelOf = (item: UnifiedConversationItem<C, Ch>): string =>
+    item.contact ? label(item.contact) : item.channel ? channelLabel(item.channel) : item.key;
+
+  return [...channelItems, ...dmItems].sort((a, b) => {
+    if (b.time !== a.time) return b.time - a.time;
+    if (b.unread !== a.unread) return b.unread - a.unread;
+    return labelOf(a).localeCompare(labelOf(b)) || a.key.localeCompare(b.key);
+  });
+}
+
 export function previewFromMessages<T extends {
   body?: string | null;
   createdAt?: string | null;

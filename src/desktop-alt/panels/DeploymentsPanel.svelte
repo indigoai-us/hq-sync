@@ -132,14 +132,18 @@
   <header class="deployments-toolbar">
     <div class="deployments-title">
       <h2 id="deployments-panel-title">Deployments</h2>
-      <span>{loading ? 'Loading deployments' : `${deployments.length} subdomains`}</span>
+      <span>{loading ? 'Loading deployments' : error ? "Couldn't load" : `${deployments.length} subdomains`}</span>
     </div>
 
     <div class="deployments-controls" aria-label="Deployment controls">
+      <!-- On a load error `deployments` is cleared, so the counts would read
+           "0 active / 0 deploying / 0 paused" — indistinguishable from "no
+           deployments". Show em-dashes instead so the header reflects "unknown,
+           load failed" rather than fabricating an empty state. -->
       <div class="counts" aria-label="Deployment state counts">
-        <span><strong>{activeCount}</strong> active</span>
-        <span><strong>{deployingCount}</strong> deploying</span>
-        <span><strong>{pausedCount}</strong> paused</span>
+        <span><strong>{error ? '—' : activeCount}</strong> active</span>
+        <span><strong>{error ? '—' : deployingCount}</strong> deploying</span>
+        <span><strong>{error ? '—' : pausedCount}</strong> paused</span>
       </div>
       <input
         class="deploy-search"

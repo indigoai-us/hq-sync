@@ -3,8 +3,10 @@ import {
   contactPreviewAt,
   contactPreviewText,
   mergeContactPreviews,
+  mergeConversations,
   previewFromMessages,
   sortContactsByRecentActivity,
+  type ChannelRecencyFields,
   type ContactPreviewFields,
   type ContactRecencyFields,
 } from './contact-order';
@@ -19,6 +21,12 @@ const contact = (
   email: `${personUid}@example.com`,
   ...overrides,
 });
+
+const channel = (
+  channelId: string,
+  name: string,
+  overrides: Partial<ChannelRecencyFields> = {},
+): ChannelRecencyFields => ({ channelId, name, ...overrides });
 
 describe('sortContactsByRecentActivity', () => {
   it('sorts contacts by their newest server-supplied conversation timestamp', () => {
@@ -140,5 +148,68 @@ describe('conversation previews', () => {
       createdAt: '2026-06-13T11:00:00Z',
       direction: 'out',
     });
+  });
+});
+
+describe('mergeConversations', () => {
+  const NOW = Date.parse('2026-06-13T12:00:00Z');
+
+  it('interleaves channels and DMs by recency, newest first', () => {
+    const merged = mergeConversations(
+      [
+        contact('prs_ada', 'Ada', { lastMessageAt: '2026-06-13T11:00:00Z' }),
+        contact('prs_alan', 'Alan', { lastMessageAt: '2026-06-10T11:00:00Z' }),
+      ],
+      [
+        channel('chn_crew', 'crew', { lastActivityAt: '2026-06-12T11:00:00Z' }),
+      ],
+      { now: NOW },
+    );
+
+    // Ada (06-13) > #crew (06-12) > Alan (06-10) — fully interleaved.
+    expect(merged.map((m) => m.key)).toEqual(['dm:prs_ada', 'ch:chn_crew', 'dm:prs_alan']);
+  });
+
+  it('floats an unread, timestamp-less channel up among recent items', () => {
+    const merged = mergeConversations(
+      [contact('prs_old', 'Old', { lastMessageAt: '2026-06-01T00:00:00Z' })],
+      [channel('chn_general', 'general', { unread: 3 })], // no timestamp, but unread
+      { now: NOW },
+    );
+
+    // The unread channel (no timestamp) is treated as "now" and sorts above the
+    // stale DM.
+    expect(merged[0].key).toBe('ch:chn_general');
+    expect(merged[0].unread).toBe(3);
+    expect(merged[1].key).toBe('dm:prs_old');
+  });
+
+  it('sinks a read, timestamp-less channel below DMs', () => {
+    const merged = mergeConversations(
+      [contact('prs_recent', 'Recent', { lastMessageAt: '2026-06-13T11:00:00Z' })],
+      [channel('chn_quiet', 'quiet', { unread: 0 })], // read + no timestamp → time 0
+      { now: NOW },
+    );
+
+    expect(merged.map((m) => m.key)).toEqual(['dm:prs_recent', 'ch:chn_quiet']);
+  });
+
+  it('tags each item with its kind and carries the source object', () => {
+    const merged = mergeConversations(
+      [contact('prs_x', 'X', { lastMessageAt: '2026-06-13T00:00:00Z' })],
+      [channel('chn_y', 'y', { lastActivityAt: '2026-06-12T00:00:00Z' })],
+      { now: NOW },
+    );
+
+    const dm = merged.find((m) => m.kind === 'dm');
+    const ch = merged.find((m) => m.kind === 'channel');
+    expect(dm?.contact?.personUid).toBe('prs_x');
+    expect(dm?.channel).toBeUndefined();
+    expect(ch?.channel?.channelId).toBe('chn_y');
+    expect(ch?.contact).toBeUndefined();
+  });
+
+  it('is stable for empty inputs', () => {
+    expect(mergeConversations([], [], { now: NOW })).toEqual([]);
   });
 });

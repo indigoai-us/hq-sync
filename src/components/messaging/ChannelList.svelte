@@ -212,7 +212,7 @@
   .group-glyph {
     font-size: var(--text-base);
     line-height: 1;
-    color: #c0a8ff;
+    color: var(--muted-2);
   }
 
   .group-add {
@@ -299,8 +299,8 @@
   }
 
   .scope-chip.personal {
-    background: rgba(180, 140, 255, 0.18);
-    color: #e0d0ff;
+    background: var(--surface-raise);
+    color: var(--muted-2);
   }
 
   .invited-chip {

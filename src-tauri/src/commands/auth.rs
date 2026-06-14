@@ -74,6 +74,17 @@ pub async fn has_stored_token() -> Result<bool, String> {
     cognito::has_non_empty_stored_token().await
 }
 
+/// Sign out: clear the locally stored Cognito tokens (file + in-memory cache)
+/// and reset the Sentry user scope. After this, `get_auth_state` / a relaunch
+/// both report unauthenticated — without it, a frontend-only sign-out leaves the
+/// token file on disk and the app re-authenticates silently on next launch.
+#[tauri::command]
+pub async fn sign_out() -> Result<(), String> {
+    cognito::clear_tokens().await?;
+    clear_sentry_user();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn refresh_tokens() -> Result<AuthState, String> {
     let tokens = cognito::get_tokens().await?;

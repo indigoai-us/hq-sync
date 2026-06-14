@@ -9,9 +9,10 @@ import { readRepoFile } from './harness';
  * (~130px of wasted height) whose active item rendered a 4px `var(--accent)`
  * (Indigo #6366f1) dot — a violation of SPEC.md §2 "No purple anywhere" / §6
  * "Blue is allowed only on Messages surfaces". The redesign collapses it to one
- * horizontal line of quiet text tabs (All · People · Channels, Requests demoted
- * to the row end), reclaiming ~100px so the conversation list starts much higher.
- * This spec locks the compact, purple-free shape in.
+ * horizontal line of quiet text tabs (All · People, Requests demoted to the row
+ * end), reclaiming ~100px so the conversation list starts much higher. Channels
+ * are no longer a separate tab — they live ALONGSIDE people in the unified `all`
+ * rail (mergeConversations). This spec locks the compact, purple-free shape in.
  */
 describe('Messages filter — compact horizontal quiet tabs', () => {
   const shell = readRepoFile('src/components/messaging/MessagesShell.svelte');
@@ -36,12 +37,26 @@ describe('Messages filter — compact horizontal quiet tabs', () => {
     expect(rule).not.toContain('flex-direction: column');
   });
 
-  it('preserves all four filter behaviors (no segment dropped)', () => {
-    for (const seg of ['all', 'people', 'channels', 'requests']) {
+  it('keeps the all/people/requests filters and drops the standalone Channels tab', () => {
+    for (const seg of ['all', 'people', 'requests']) {
       expect(shell).toContain(`segment = '${seg}'`);
     }
+    // The separate Channels tab is gone — there is no `segment = 'channels'`.
+    expect(shell).not.toContain("segment = 'channels'");
     // Requests keeps its neutral count chip (no stoplight color)
     expect(shell).toContain('class="filter-count"');
+  });
+
+  it('merges channels alongside people in the unified rail (no separate Channels view)', () => {
+    // Channels render INLINE in the `all` list via mergeConversations + a
+    // channelRow snippet — not behind a tab and not via the old ChannelList rail.
+    expect(shell).toContain('mergeConversations(contacts, channels)');
+    expect(shell).toContain('{#snippet channelRow(');
+    expect(shell).toContain('{#snippet dmRow(');
+    // The old per-tab ChannelList rail component is no longer imported/rendered.
+    expect(shell).not.toContain("import ChannelList from './ChannelList.svelte'");
+    // A channel row resolves the company NAME (never the raw cmp_ UID).
+    expect(shell).toContain('companyNameFor(ch, companyLabels)');
   });
 
   it('uses no purple/indigo --accent anywhere on the Messages surface', () => {

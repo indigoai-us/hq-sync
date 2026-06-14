@@ -7,6 +7,7 @@
   import Conversation, { type ConversationMessage } from './messaging/Conversation.svelte';
   import { type ReactionEvent, dmScope } from '../lib/reactions';
   import { ReactionController } from '../lib/reactionController.svelte';
+  import { shouldAppendInbound } from '../lib/dmThread';
 
   // The DM that opened the window (the reply target). Also the most recent
   // inbound message — it anchors who the conversation is with.
@@ -107,6 +108,32 @@
     }
   }
 
+  /**
+   * Append a freshly-arrived inbound DM to the open thread when it's from the
+   * peer this window is scoped to. Without this the thread was static after the
+   * window opened — a reply from the other person didn't appear until the window
+   * was closed and reopened. Deduped by eventId (the poll can re-surface an
+   * event, and the same id may also land in a later fetch_dm_thread). DMs from
+   * other peers are ignored — this window is a single conversation.
+   */
+  function appendInbound(dm: DmEvent): void {
+    if (!shouldAppendInbound(messages, dm, event?.fromPersonUid)) return;
+    messages = [
+      ...messages,
+      {
+        eventId: dm.eventId,
+        fromPersonUid: dm.fromPersonUid,
+        fromEmail: dm.fromEmail,
+        fromDisplayName: dm.fromDisplayName,
+        body: dm.body,
+        details: dm.details ?? null,
+        prompt: dm.prompt ?? null,
+        createdAt: dm.createdAt,
+        direction: 'in',
+      },
+    ];
+  }
+
   async function sendReply(text: string): Promise<void> {
     if (!text || sending || !event) return;
     sending = true;
@@ -152,6 +179,13 @@
       // pending event + shows the window (mirrors ShareDetail).
       invoke('dm_detail_window_ready');
     });
+
+    // Live inbound: a new DM from the peer being viewed lands in the thread
+    // without a reopen. The poll/MQTT path broadcasts every freshly-polled DM
+    // as `dm:new-events` (a batch); we filter to this conversation's peer.
+    listen<DmEvent[]>('dm:new-events', (e) => {
+      for (const dm of e.payload ?? []) appendInbound(dm);
+    }).then((fn) => unlisteners.push(fn));
 
     // Live reaction reconcile for this DM (US-025).
     listen<ReactionEvent>('message:reaction', (e) => {

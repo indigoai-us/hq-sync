@@ -72,7 +72,8 @@ function stateOf(c: ContactLike): ConnectionState {
 }
 
 function labelOf(c: ContactLike): string {
-  return c.displayName?.trim() || c.email?.trim() || c.personUid;
+  // Never fall back to the raw prs_… personUid as a user-facing label.
+  return c.displayName?.trim() || c.email?.trim() || 'Someone';
 }
 
 /** True when the contact matches the query on display name or email

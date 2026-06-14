@@ -95,11 +95,14 @@ html[data-window='messages'] {
   --red: #f87171;
   --blue: #60a5fa;
 
-  /* Brand accent (Indigo), mirrored from hq-console. Used sparingly (<10% of
-     surface): the active-nav "you are here" cue and the focus ring only —
-     never as a fill or a decorative flourish. */
-  --accent: #6366f1;
-  --accent-soft: rgba(99, 102, 241, 0.16);
+  /* Accent. SPEC §2/§6: NO purple/indigo anywhere — blue is the only sanctioned
+     accent (and only on Messages surfaces). The legacy `--accent` / `--accent-soft`
+     names are kept as aliases of `--blue` so the handful of shared messaging
+     components that still reference them (Conversation, ComposeMessage,
+     RecipientPicker, DmRequestCard) render BLUE, never the old #6366f1 indigo.
+     New code should use `--blue` / `--v4-unread` directly. */
+  --accent: var(--blue);
+  --accent-soft: rgba(96, 165, 250, 0.16);
 
   /* ---- TYPE SCALE -------------------------------------------------------
    * A compact, high-density ramp mirroring the Paper "Desktop Sync" build.

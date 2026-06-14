@@ -94,6 +94,14 @@
     errorCompany?: string;
     conflicts?: ConflictFile[];
     showConflictModal?: boolean;
+    /** Number of files the runner aborted on as conflicts, summed across the
+     *  fanout. Drives the conflict banner copy + the resolve-conflicts prompt.
+     *  The runner reports conflicts only in aggregate (`sync:complete`), so this
+     *  count — not the per-file `conflicts` list — is what's actionable. */
+    conflictCount?: number;
+    /** Company slug of the conflict-aborted sync, or '' when more than one
+     *  company aborted (no single slug to name in the prompt). */
+    conflictCompany?: string;
     /** Non-null when the Tauri updater has found a newer release. */
     updateAvailable?: { version: string; body?: string; date?: string } | null;
     /** True while `install_update` is in flight — disables the button. */
@@ -273,6 +281,8 @@
     errorCompany = '',
     conflicts = [],
     showConflictModal = false,
+    conflictCount = 0,
+    conflictCompany = '',
     updateAvailable = null,
     updateInstalling = false,
     hqCliUpdateAvailable = null,
@@ -832,6 +842,36 @@
               variant="compact"
               label="Copy prompt"
               issue={{ kind: 'sync-failed', payload: { message: errorMessage, company: errorCompany } }}
+            />
+          </div>
+        </div>
+      {:else if syncState === 'conflict'}
+        <!-- Conflict-aborted: the runner paused this sync because a file changed
+             in two places. It reports conflicts only in aggregate, so there's no
+             per-file list to resolve inline — the actionable path is Claude Code
+             (`/resolve-conflicts`) or a retry via the header Sync button. Without
+             this banner the conflict state was a silent dead-end: a red tray and
+             an empty body. Plain, non-alarming framing, no raw paths. -->
+        <div class="banner banner-notice banner-notice-inline">
+          <div class="banner-update-text">
+            <p class="banner-title">
+              Sync paused — {conflictCount > 0
+                ? `${conflictCount} file${conflictCount === 1 ? '' : 's'} changed in two places`
+                : 'a file changed in two places'}
+            </p>
+            <p class="banner-body">Resolve in Claude Code, then Sync again.</p>
+          </div>
+          <div class="banner-actions">
+            <OpenInClaudeCodeButton
+              variant="compact"
+              label="Resolve in Claude Code"
+              folder={config?.hqFolderPath ?? ''}
+              issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
+            />
+            <CopyPromptButton
+              variant="compact"
+              label="Copy prompt"
+              issue={{ kind: 'sync-conflict', payload: { count: conflictCount, company: conflictCompany } }}
             />
           </div>
         </div>

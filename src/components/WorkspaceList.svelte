@@ -674,9 +674,9 @@
   }
 
   .badge-personal {
-    background: rgba(99, 102, 241, 0.14);
-    color: #a5a8ff;
-    border-color: rgba(99, 102, 241, 0.32);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.62);
+    border-color: rgba(255, 255, 255, 0.14);
   }
 
   .badge-synced {

@@ -32,7 +32,6 @@
   import Conversation, { type ConversationMessage } from './Conversation.svelte';
   import ComposeMessage, { type ComposeSendResult } from './ComposeMessage.svelte';
   import DmRequestCard from './DmRequestCard.svelte';
-  import ChannelList from './ChannelList.svelte';
   import ChannelView from './ChannelView.svelte';
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
@@ -41,6 +40,7 @@
     contactPreviewAt,
     contactPreviewText,
     mergeContactPreviews,
+    mergeConversations,
     previewFromMessages,
     sortContactsByRecentActivity,
     type ContactPreviewFields,
@@ -57,6 +57,7 @@
     type Channel,
     type CompanyLabel,
     channelDisplayName,
+    companyNameFor,
     upsertChannel,
     bumpChannelUnread,
     clearChannelUnread,
@@ -64,7 +65,9 @@
   import { type ReactionEvent, dmScope } from '../../lib/reactions';
   import { ReactionController } from '../../lib/reactionController.svelte';
 
-  type Segment = 'all' | 'people' | 'requests' | 'channels';
+  // Channels live ALONGSIDE people now — no separate "Channels" tab. `all` is the
+  // unified rail (channels + DMs interleaved by recency); `people` filters to DMs.
+  type Segment = 'all' | 'people' | 'requests';
 
   // A person the caller can DM (connection or company teammate). Mirrors the
   // Rust `Contact` wire shape (camelCase).
@@ -386,14 +389,16 @@
       .map((item, index) => ({ ...item, rank: index + 1 }));
   });
 
+  // The unified rail for the `all` segment: channels + DMs in one recency-sorted
+  // list. Contacts are already recency-sorted with hydrated previews; channels
+  // interleave by their server timestamp when present, else float up when unread.
+  const mergedItems = $derived(mergeConversations(contacts, channels));
+
   function handleCatchUpOpen(item: CatchUpItem): void {
     if (item.id.startsWith('ch:')) {
       const channelId = item.id.slice(3);
       const channel = channels.find((ch) => ch.channelId === channelId);
-      if (channel) {
-        segment = 'channels';
-        selectChannel(channel);
-      }
+      if (channel) selectChannel(channel);
       return;
     }
     if (item.id.startsWith('dm:')) {
@@ -588,6 +593,9 @@
 
   function selectChannel(c: Channel): void {
     selectedChannel = c;
+    // The pane switches on which item is active, so opening a channel clears any
+    // selected DM (and vice versa in selectContact).
+    selected = null;
     // Switching channels closes any open thread (it belonged to the old channel).
     openThread = null;
     // Opening a channel optimistically clears its rail unread; ChannelView also
@@ -651,6 +659,8 @@
 
   async function selectContact(c: Contact): Promise<void> {
     selected = c;
+    // Opening a DM clears the active channel so the pane shows this conversation.
+    selectedChannel = null;
     messages = [];
     threadError = null;
     sendError = null;
@@ -675,6 +685,7 @@
   }
 
   function openAgentThread(): void {
+    selectedChannel = null;
     selected = {
       personUid: 'agent:self',
       email: '',
@@ -882,10 +893,11 @@
       </button>
     </header>
 
-    <!-- Filter row — one horizontal line of quiet text tabs. All/People/Channels
-         are the primary scope triad; Requests is demoted to the row end behind a
-         hairline. No purple dot, no pill, no track. Active = brighter text +
-         a colorless underline. State is unchanged: same Segment union + handlers. -->
+    <!-- Filter row — quiet text tabs. `All` is the unified rail (channels +
+         people interleaved by recency); `People` filters to DMs. There is no
+         separate Channels tab — channels live alongside contacts. Requests is
+         demoted to the row end behind a hairline. Active = brighter text + a
+         colorless underline. -->
     <nav class="segments" aria-label="Message segments">
       <button
         class="seg"
@@ -904,14 +916,6 @@
         People
       </button>
       <button
-        class="seg"
-        class:active={segment === 'channels'}
-        type="button"
-        onclick={() => (segment = 'channels')}
-      >
-        Channels
-      </button>
-      <button
         class="seg seg-requests"
         class:active={segment === 'requests'}
         type="button"
@@ -925,6 +929,63 @@
     </nav>
 
     <div class="rail-body">
+      <!-- One DM row — used by both the unified `all` list and the `people` filter. -->
+      {#snippet dmRow(c: Contact)}
+        <li>
+          <button
+            class="contact-row"
+            class:active={selected?.personUid === c.personUid}
+            type="button"
+            onclick={() => selectContact(c)}
+            title={contactSubline(c) ? `${displayLabel(c)} — ${contactSubline(c)}` : displayLabel(c)}
+          >
+            <span class="contact-avatar" aria-hidden="true">{initials(c)}</span>
+            <span class="contact-meta">
+              <span class="contact-top">
+                <span class="contact-name">{displayLabel(c)}</span>
+                {#if formatContactTime(c)}
+                  <time class="contact-time" datetime={contactPreviewAt(c) ?? undefined}>
+                    {formatContactTime(c)}
+                  </time>
+                {/if}
+              </span>
+              {#if contactSubline(c)}
+                <span class="contact-sub">{contactSubline(c)}</span>
+              {/if}
+            </span>
+          </button>
+        </li>
+      {/snippet}
+
+      <!-- One channel row — same row vocabulary as a DM (avatar + name + sub),
+           with a '#' glyph, the company NAME (never the cmp_ UID), and an unread
+           badge. Lives inline with people in the unified `all` list. -->
+      {#snippet channelRow(ch: Channel)}
+        {@const company = companyNameFor(ch, companyLabels)}
+        <li>
+          <button
+            class="contact-row channel-row"
+            class:active={selectedChannel?.channelId === ch.channelId}
+            type="button"
+            onclick={() => selectChannel(ch)}
+            title={`#${channelDisplayName(ch)}${company ? ` — ${company}` : ''}`}
+          >
+            <span class="contact-avatar channel-avatar" aria-hidden="true">#</span>
+            <span class="contact-meta">
+              <span class="contact-top">
+                <span class="contact-name">{channelDisplayName(ch)}</span>
+                {#if (ch.unread ?? 0) > 0}
+                  <span class="unread-badge" aria-label={`${ch.unread} unread`}>{ch.unread}</span>
+                {/if}
+              </span>
+              {#if company}
+                <span class="contact-sub">{company}</span>
+              {/if}
+            </span>
+          </button>
+        </li>
+      {/snippet}
+
       {#if segment === 'all' && catchUpItems.length > 0 && !catchUpDismissed}
         <div class="catch-up-host">
           <CatchUp
@@ -934,63 +995,15 @@
           />
         </div>
       {/if}
-      {#if segment === 'all' || segment === 'people'}
-        {#if loadingContacts}
-          <p class="rail-status">Loading conversations…</p>
-        {:else if contactsError}
-          <p class="rail-status rail-error" role="alert">{contactsError}</p>
-        {:else}
-          <ul class="contact-list">
-            <li>
-              <button
-                class="contact-row agent-row"
-                class:active={selected?.source === 'agent'}
-                type="button"
-                onclick={openAgentThread}
-              >
-                <span class="contact-avatar bolt-avatar" aria-hidden="true">⚡</span>
-                <span class="contact-meta">
-                  <span class="contact-name">Your agent</span>
-                  <span class="contact-sub">Watching for work that needs you</span>
-                </span>
-              </button>
-            </li>
-            {#each contacts as c (c.personUid)}
-              <li>
-                <button
-                  class="contact-row"
-                  class:active={selected?.personUid === c.personUid}
-                  type="button"
-                  onclick={() => selectContact(c)}
-                  title={contactSubline(c) ? `${displayLabel(c)} — ${contactSubline(c)}` : displayLabel(c)}
-                >
-                  <span class="contact-avatar" aria-hidden="true">{initials(c)}</span>
-                  <span class="contact-meta">
-                    <span class="contact-top">
-                      <span class="contact-name">{displayLabel(c)}</span>
-                      {#if formatContactTime(c)}
-                        <time class="contact-time" datetime={contactPreviewAt(c) ?? undefined}>
-                          {formatContactTime(c)}
-                        </time>
-                      {/if}
-                    </span>
-                    {#if contactSubline(c)}
-                      <span class="contact-sub">{contactSubline(c)}</span>
-                    {/if}
-                  </span>
-                </button>
-              </li>
-            {/each}
-          </ul>
-          {#if contacts.length === 0}
-            <p class="rail-status">No conversations yet.</p>
-          {/if}
-        {/if}
-      {:else if segment === 'requests'}
+
+      {#if segment === 'requests'}
         {#if loadingRequests}
           <p class="rail-status">Loading requests…</p>
         {:else if requestsError}
-          <p class="rail-status rail-error" role="alert">{requestsError}</p>
+          <div class="rail-status rail-error" role="alert">
+            <p>{requestsError}</p>
+            <button type="button" class="rail-retry" onclick={() => loadRequests()}>Retry</button>
+          </div>
         {:else if requests.length === 0}
           <div class="segment-empty">
             <p class="segment-empty-title">No pending requests</p>
@@ -1008,17 +1021,54 @@
             {/each}
           </ul>
         {/if}
+      {:else if loadingContacts || (segment === 'all' && loadingChannels)}
+        <p class="rail-status">Loading conversations…</p>
+      {:else if contactsError}
+        <div class="rail-status rail-error" role="alert">
+          <p>{contactsError}</p>
+          <button type="button" class="rail-retry" onclick={() => loadContacts()}>Retry</button>
+        </div>
       {:else}
-        <ChannelList
-          {channels}
-          companies={companyLabels}
-          loading={loadingChannels}
-          error={channelsError}
-          selectedId={selectedChannel?.channelId ?? null}
-          onselect={selectChannel}
-          oncreate={openCreateChannel}
-          oncreategroup={openCreateGroupDm}
-        />
+        <div class="rail-actions">
+          <button type="button" class="rail-action" onclick={() => openCreateChannel(null)}>
+            + New channel
+          </button>
+          <button type="button" class="rail-action" onclick={openCreateGroupDm}>
+            + New group DM
+          </button>
+        </div>
+        <ul class="contact-list">
+          <li>
+            <button
+              class="contact-row agent-row"
+              class:active={selected?.source === 'agent'}
+              type="button"
+              onclick={openAgentThread}
+            >
+              <span class="contact-avatar bolt-avatar" aria-hidden="true">⚡</span>
+              <span class="contact-meta">
+                <span class="contact-name">Your agent</span>
+                <span class="contact-sub">Watching for work that needs you</span>
+              </span>
+            </button>
+          </li>
+          {#if segment === 'all'}
+            {#each mergedItems as item (item.key)}
+              {#if item.contact}
+                {@render dmRow(item.contact)}
+              {:else if item.channel}
+                {@render channelRow(item.channel)}
+              {/if}
+            {/each}
+          {:else}
+            {#each contacts as c (c.personUid)}
+              {@render dmRow(c)}
+            {/each}
+          {/if}
+        </ul>
+        {#if (segment === 'all' ? mergedItems.length : contacts.length) === 0}
+          <p class="rail-status">No conversations yet.</p>
+        {/if}
       {/if}
     </div>
   </aside>
@@ -1031,21 +1081,15 @@
           one.
         </p>
       </div>
-    {:else if segment === 'channels'}
-      {#if selectedChannel}
-        <ChannelView
-          channel={selectedChannel}
-          {selfPersonUid}
-          onchannelchange={handleChannelChange}
-          onread={handleChannelRead}
-          onopenthread={handleOpenChannelThread}
-          activeRootEventId={openThread?.scope === 'channel' ? openThread.rootEventId : null}
-        />
-      {:else}
-        <div class="pane-empty">
-          <p>Select a channel, or create one to start a group conversation.</p>
-        </div>
-      {/if}
+    {:else if selectedChannel}
+      <ChannelView
+        channel={selectedChannel}
+        {selfPersonUid}
+        onchannelchange={handleChannelChange}
+        onread={handleChannelRead}
+        onopenthread={handleOpenChannelThread}
+        activeRootEventId={openThread?.scope === 'channel' ? openThread.rootEventId : null}
+      />
     {:else if !selected}
       <div class="pane-empty">
         <p>Select a conversation to start messaging.</p>
@@ -1277,8 +1321,102 @@
     color: var(--red);
   }
 
+  /* A transient load failure (network blip) is recoverable — give it a Retry
+     instead of a dead-end that forces the user to close and reopen the window.
+     loadContacts/loadRequests are idempotent (they reset their error on entry). */
+  .rail-error p {
+    margin: 0 0 var(--space-1);
+  }
+
+  .rail-retry {
+    border: 1px solid var(--border);
+    background: var(--surface-raise);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    font-size: var(--text-micro);
+    font-weight: 500;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+  }
+
+  .rail-retry:hover {
+    background: var(--row-hover);
+    border-color: var(--border-strong);
+  }
+
+  .rail-retry:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+  }
+
   .catch-up-host {
     padding: 0 0 var(--space-2);
+  }
+
+  /* Create affordances — moved out of the old Channels tab into the unified rail
+     so channels can still be started without a separate view. Quiet ghost
+     buttons matching the desktop language. */
+  .rail-actions {
+    display: flex;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-1) var(--space-2);
+  }
+
+  .rail-action {
+    flex: 1;
+    border: 1px solid var(--border);
+    background: var(--surface-raise);
+    color: var(--muted-2);
+    font-family: var(--font-sans);
+    font-size: var(--text-micro);
+    font-weight: 500;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+  }
+
+  .rail-action:hover {
+    background: var(--row-hover);
+    color: var(--fg);
+    border-color: var(--border-strong);
+  }
+
+  .rail-action:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+  }
+
+  /* Channel rows reuse the contact-row vocabulary so #channels and DMs read as
+     one list. The avatar carries a '#' glyph instead of initials. */
+  .channel-avatar {
+    color: var(--fg);
+    font-family: var(--font-display);
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  /* Unread count on a channel row — neutral, tabular, no decoration color. */
+  .unread-badge {
+    flex-shrink: 0;
+    min-width: 16px;
+    height: 15px;
+    padding: 0 var(--space-1);
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    background: var(--surface-raise);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
 
   .contact-list {

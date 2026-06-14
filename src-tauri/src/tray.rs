@@ -301,9 +301,18 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
 
     log("tray", "tray icon built");
 
-    // Give macOS one explicit post-build image pass. Avoid the old
-    // hide/show workaround here: `set_visible(false)` removes the NSStatusItem,
-    // and if re-adding fails silently the app is alive with no menu-bar affordance.
+    // Force SystemUIServer to register the freshly-built NSStatusItem by
+    // toggling visibility off→on. This is LOAD-BEARING on macOS (incl. Tahoe /
+    // Darwin 25.x): a status item created during launch is otherwise frequently
+    // never drawn in the menu bar — the item exists in-process but never
+    // appears. The off→on toggle is the documented kick that makes it register.
+    //
+    // REGRESSION HISTORY: this toggle shipped working, then a later "fix" removed
+    // it (worried that `set_visible(false)` could briefly leave no affordance),
+    // which silently made the icon disappear for everyone on macOS. `set_icon`
+    // alone does NOT register the item — restore the toggle, then the image pass.
+    let _ = tray.set_visible(false);
+    let _ = tray.set_visible(true);
     set_state_icon(&tray, TrayState::Idle);
 
     // Hide the popover when the user clicks away. `window.hide()` preserves
@@ -617,6 +626,11 @@ fn reassert_tray(app: &AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if let Some(tray) = handle.tray_by_id(TRAY_ID) {
+            // Toggle off→on (not just on): the off→on transition is what forces
+            // SystemUIServer to (re)register the item. A bare set_visible(true)
+            // on an already-"visible" item is a no-op and does not redraw it —
+            // that was the regression that left the menu-bar icon missing.
+            let _ = tray.set_visible(false);
             let _ = tray.set_visible(true);
             let state = get_current_state();
             set_state_icon(&tray, state);

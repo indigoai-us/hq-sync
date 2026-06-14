@@ -207,7 +207,9 @@
 
   function ownerLabel(value: string | null | undefined): string {
     const raw = (value ?? '').trim();
-    if (!raw) return 'Agent';
+    // An unowned objective is honestly "Unassigned" — never invent "Agent"
+    // attribution the data doesn't assert (matches Projects/Tasks).
+    if (!raw) return 'Unassigned';
     if (raw.toLowerCase() === 'you' || raw.toLowerCase() === 'me') return 'You';
     if (raw.toLowerCase() === 'agent') return 'Agent';
     return raw;

@@ -87,7 +87,9 @@
   }
   /** Cross-session new-file row from the server file-history feed. */
   function serverFileItem(f: FileHistoryItem): Item {
-    const co = f.companySlug || f.companyUid || '';
+    // Display label: the human slug only — never the raw cmp_… UID (the
+    // companyUid is still used for the dedup key below).
+    const co = f.companySlug || '';
     return {
       id: `filehist:${f.eventId}`,
       kind: 'new-file',

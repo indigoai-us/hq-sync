@@ -66,6 +66,11 @@
   // this from menubar.json on each background check, so the toggle takes
   // effect without restart. Default ON: the app keeps the HQ CLI current.
   let cliAutoUpdate = $state(true);
+  // Usage telemetry — shown to ALL signed-in users. OFF by default (opt-in):
+  // telemetry.rs re-reads `telemetryEnabled` untyped from menubar.json after
+  // each sync, so the toggle takes effect without restart. The authoritative
+  // gate is still the server-side opt-in; this is the local fallback.
+  let telemetryEnabled = $state(false);
   // Shared @getindigo.ai gate. No longer gates the notification toggles
   // (those are now universal) — still used by the staging-channel toggle and
   // the release-channel picker below. Populated at mount from
@@ -156,6 +161,7 @@
             platforms: string[] | null;
           } | null;
           defaultRecordingCompanyUid?: string | null;
+          telemetryEnabled?: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
         // Shared @getindigo.ai gate for share-notify section AND
@@ -183,6 +189,7 @@
       shareNotifications = settings.shareNotifications ?? true;
       dmNotifications = settings.dmNotifications ?? true;
       cliAutoUpdate = settings.cliAutoUpdate ?? true;
+      telemetryEnabled = settings.telemetryEnabled ?? false;
       stagingChannel = settings.stagingChannel ?? true;
       isIndigoUser = indigoUser;
       availableChannels = (channels.filter(
@@ -235,6 +242,7 @@
           shareNotifications,
           dmNotifications,
           cliAutoUpdate,
+          telemetryEnabled,
           stagingChannel,
           // Round-trip the RAW stored value (null when never explicitly
           // chosen). The Rust side serializes `null` -> absent via
@@ -311,6 +319,11 @@
 
   async function handleToggleCliAutoUpdate() {
     cliAutoUpdate = !cliAutoUpdate;
+    await saveAll();
+  }
+
+  async function handleToggleTelemetry() {
+    telemetryEnabled = !telemetryEnabled;
     await saveAll();
   }
 
@@ -723,6 +736,24 @@
               role="switch"
               aria-checked={cliAutoUpdate}
               aria-label="Automatically update HQ CLI"
+            >
+              <span class="toggle-knob"></span>
+            </button>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="toggle-telemetry">Usage telemetry</label>
+              <span class="setting-desc">Share anonymized usage counts to help improve HQ. Off by default.</span>
+            </div>
+            <button
+              id="toggle-telemetry"
+              class="toggle"
+              class:active={telemetryEnabled}
+              onclick={handleToggleTelemetry}
+              role="switch"
+              aria-checked={telemetryEnabled}
+              aria-label="Usage telemetry"
             >
               <span class="toggle-knob"></span>
             </button>

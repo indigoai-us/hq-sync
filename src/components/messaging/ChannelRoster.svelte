@@ -116,7 +116,8 @@
   }
 
   function memberLabel(m: ChannelMember): string {
-    return m.displayName?.trim() || m.email?.trim() || m.personUid;
+    // Never surface the raw prs_… personUid as a member label.
+    return m.displayName?.trim() || m.email?.trim() || 'Unknown member';
   }
 
   function onBackdropKeydown(e: KeyboardEvent): void {

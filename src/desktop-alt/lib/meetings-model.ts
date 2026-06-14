@@ -182,7 +182,8 @@ export function meetingState(
 export function companyLabel(event: MeetingEvent, companyNames: Map<string, string>): string {
   const uid = event.sourceCompanyUid;
   if (!uid) return 'Personal';
-  return companyNames.get(uid) ?? shortUid(uid);
+  // Never surface the raw cmp_… UID as a label — degrade to the generic name.
+  return companyNames.get(uid) ?? 'Company';
 }
 
 export interface DayGroup {
@@ -353,7 +354,7 @@ export function buildConnectedCalendarRows(
         key,
         email: account.email ?? account.accountId,
         calendar: calendar.summary,
-        routingTarget: membership?.companyName ?? (companyUid ? shortUid(companyUid) : 'Personal'),
+        routingTarget: membership?.companyName ?? (companyUid ? 'Company' : 'Personal'),
         status: membership?.status ?? 'active',
       });
     }
@@ -363,8 +364,8 @@ export function buildConnectedCalendarRows(
     return memberships.map((membership) => ({
       key: membership.companyUid,
       email: 'Calendar routing',
-      calendar: membership.companyName ?? shortUid(membership.companyUid),
-      routingTarget: membership.companyName ?? shortUid(membership.companyUid),
+      calendar: membership.companyName ?? 'Company',
+      routingTarget: membership.companyName ?? 'Company',
       status: membership.status,
     }));
   }
@@ -542,7 +543,3 @@ function isSignalLike(value: unknown): value is MeetingSignal {
   return typeof value === 'object' && value !== null;
 }
 
-function shortUid(uid: string): string {
-  const short = uid.slice(0, 12);
-  return short.length === 12 ? `${short}...` : short;
-}

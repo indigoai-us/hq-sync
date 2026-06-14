@@ -316,34 +316,103 @@ fn clear_in_flight() {
 
 // ── Cursor persistence (mirrors share_notify) ───────────────────────────────────
 
-type CursorStore = HashMap<String, String>;
+/// Upper bound on the per-machine `notified` ring. The repeated boundary events
+/// (the cause of the re-notify bug) are always the newest, so they never reach
+/// the eviction end of the FIFO — 200 is comfortably more than any single
+/// `?since=` page (`limit=50`).
+const NOTIFIED_CAP: usize = 200;
+
+/// Per-machine cursor state. `cursor` is the ISO8601 `createdAt` of the newest
+/// DM seen (the `?since=` value). `notified` is a bounded FIFO of recently
+/// banner-fired `eventId`s: the inbox treats `?since=` as **inclusive**, so the
+/// boundary DM(s) — and any DM sharing the cursor's exact timestamp — are
+/// returned on every subsequent poll. Without an id-level guard that re-fires the
+/// same banner each poll/launch (the same class of bug fixed in share_notify on
+/// 2026-05-29). Deduping by id makes re-notification impossible regardless of the
+/// server's `since` semantics.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct CursorEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cursor: Option<String>,
+    #[serde(default)]
+    notified: Vec<String>,
+}
+
+/// Back-compat shim: earlier builds stored a bare ISO string per machine. Accept
+/// both the new object form and the legacy string form on read so an upgrade
+/// doesn't re-notify every historical DM once.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CursorEntryCompat {
+    Entry(CursorEntry),
+    Legacy(String),
+}
+
+impl From<CursorEntryCompat> for CursorEntry {
+    fn from(c: CursorEntryCompat) -> Self {
+        match c {
+            CursorEntryCompat::Entry(e) => e,
+            CursorEntryCompat::Legacy(s) => CursorEntry {
+                cursor: Some(s),
+                notified: Vec::new(),
+            },
+        }
+    }
+}
+
+type CursorStore = HashMap<String, CursorEntry>;
 
 fn cursor_path() -> Result<std::path::PathBuf, String> {
     paths::hq_config_dir().map(|d| d.join("dm-cursor.json"))
 }
 
-fn read_cursor(machine_id: &str) -> Option<String> {
-    let path = cursor_path().ok()?;
-    let contents = std::fs::read_to_string(&path).ok()?;
-    let store: CursorStore = serde_json::from_str(&contents).ok()?;
-    store.get(machine_id).cloned()
+/// Read the whole store, normalising any legacy bare-string entries to the
+/// current object shape.
+fn read_cursor_store() -> CursorStore {
+    let Ok(path) = cursor_path() else {
+        return CursorStore::default();
+    };
+    let Ok(contents) = std::fs::read_to_string(&path) else {
+        return CursorStore::default();
+    };
+    match serde_json::from_str::<HashMap<String, CursorEntryCompat>>(&contents) {
+        Ok(store) => store.into_iter().map(|(k, v)| (k, v.into())).collect(),
+        Err(_) => CursorStore::default(),
+    }
 }
 
-fn write_cursor(machine_id: &str, since: &str) {
+fn read_cursor_entry(machine_id: &str) -> CursorEntry {
+    read_cursor_store().remove(machine_id).unwrap_or_default()
+}
+
+fn write_cursor_entry(machine_id: &str, entry: &CursorEntry) {
     let Ok(path) = cursor_path() else { return };
-    let mut store: CursorStore = path
-        .exists()
-        .then(|| {
-            std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| serde_json::from_str(&s).ok())
-        })
-        .flatten()
-        .unwrap_or_default();
-    store.insert(machine_id.to_string(), since.to_string());
+    // Re-read (with normalisation) so we never clobber other machines' entries.
+    let mut store = read_cursor_store();
+    store.insert(machine_id.to_string(), entry.clone());
     if let Ok(json) = serde_json::to_string_pretty(&store) {
         let _ = std::fs::write(&path, json);
     }
+}
+
+/// Split a poll's DMs into the subset to notify (dropping any whose `eventId` is
+/// already in `notified`, preserving order) and the updated `notified` ring
+/// (bounded to [`NOTIFIED_CAP`], newest at the end). Pure so it is unit-testable
+/// without the filesystem or network.
+fn partition_unnotified(events: &[DmEvent], notified: &[String]) -> (Vec<DmEvent>, Vec<String>) {
+    let seen: HashSet<&str> = notified.iter().map(String::as_str).collect();
+    let fresh: Vec<DmEvent> = events
+        .iter()
+        .filter(|e| !seen.contains(e.event_id.as_str()))
+        .cloned()
+        .collect();
+
+    let mut updated = notified.to_vec();
+    updated.extend(fresh.iter().map(|e| e.event_id.clone()));
+    if updated.len() > NOTIFIED_CAP {
+        updated.drain(0..updated.len() - NOTIFIED_CAP);
+    }
+    (fresh, updated)
 }
 
 // ── Gate ────────────────────────────────────────────────────────────────────────
@@ -1803,7 +1872,8 @@ async fn do_poll(app: &AppHandle) {
     // parallel poller.
     poll_reactions(app, &base_url, &access_token).await;
 
-    let since = read_cursor(&machine_id);
+    let entry = read_cursor_entry(&machine_id);
+    let since = entry.cursor.clone();
     let url = match since.as_deref() {
         Some(s) => format!("{}/v1/notify/inbox?since={}&limit=50", base_url, s),
         None => format!("{}/v1/notify/inbox?limit=50", base_url),
@@ -1847,41 +1917,73 @@ async fn do_poll(app: &AppHandle) {
         return;
     }
 
-    // Advance cursor to the newest DM's createdAt.
+    // Advance the cursor to the newest DM's createdAt across ALL returned events
+    // (so it moves forward even when every event was a re-delivered boundary
+    // dupe), and dedupe by eventId against the notified ring. Only `fresh` DMs —
+    // ones never banner-fired before — drive unread, banners, ack, and the
+    // live `dm:new-events` emit. Persist the advanced cursor + grown ring before
+    // returning, even on the all-dupes path, so the ring keeps converging.
     let newest = body
         .events
         .iter()
         .map(|e| e.created_at.as_str())
         .max()
         .unwrap_or_default();
-    if !newest.is_empty() {
-        write_cursor(&machine_id, newest);
+    let (fresh, updated_notified) = partition_unnotified(&body.events, &entry.notified);
+    write_cursor_entry(
+        &machine_id,
+        &CursorEntry {
+            cursor: (!newest.is_empty()).then(|| newest.to_string()),
+            notified: updated_notified,
+        },
+    );
+
+    if fresh.is_empty() {
+        log(
+            LOG_TAG,
+            &format!(
+                "DM_NOTIFY_POLL_OK {} DM(s) all already notified, cursor→{}",
+                body.events.len(),
+                newest
+            ),
+        );
+        return;
     }
 
     log(
         LOG_TAG,
-        &format!("DM_NOTIFY_POLL_OK {} DM(s), cursor→{}", body.events.len(), newest),
+        &format!(
+            "DM_NOTIFY_POLL_OK {} new DM(s) ({} returned), cursor→{}",
+            fresh.len(),
+            body.events.len(),
+            newest
+        ),
     );
 
     // Extend the SINGLE poll path with unread accounting (US-009) — NOT a
     // parallel poller. Every freshly-polled DM increments the running unread
     // count and emits `dm:unread-summary` so the popover Messages badge stays
     // live. The count is reset when the Messages window opens.
-    bump_unread(app, body.events.len() as u32);
+    bump_unread(app, fresh.len() as u32);
 
     // SPIKE: when the custom banner is enabled, route every DM through the
     // in-app banner (commands::banner) — event-driven, no blocking Cocoa run
     // loop — and skip the native firing path entirely.
     if crate::commands::banner::custom_banner_enabled() {
-        log(LOG_TAG, &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", body.events.len()));
-        for dm in &body.events {
+        log(LOG_TAG, &format!("DM_NOTIFY_CUSTOM_BANNER {} DM(s)", fresh.len()));
+        for dm in &fresh {
             if let Err(e) = crate::commands::banner::show_dm_banner(app.clone(), dm.clone()).await {
                 log(LOG_TAG, &format!("DM_NOTIFY_BANNER_FAIL err={e}"));
             }
         }
-        let event_ids: Vec<String> = body.events.iter().map(|e| e.event_id.clone()).collect();
-        tauri::async_runtime::spawn(async move { post_ack(event_ids).await });
-        let _ = app.emit(EVENT_DM_NEW_EVENTS, &body.events);
+        let event_ids: Vec<String> = fresh.iter().map(|e| e.event_id.clone()).collect();
+        // Await (don't detach) so the server-side unread decrement lands within
+        // the poll's lifetime. Detaching risked the runtime dropping the task on
+        // a quick app quit, leaving the web/other-device unread badge stuck even
+        // though this Mac already showed + dismissed the DM. post_ack is
+        // best-effort + uses a timed client, so awaiting can't hang the poll.
+        post_ack(event_ids).await;
+        let _ = app.emit(EVENT_DM_NEW_EVENTS, &fresh);
         return;
     }
 
@@ -1917,7 +2019,7 @@ async fn do_poll(app: &AppHandle) {
     // clickable — this only widens which DMs compete for that single capped slot.
     // Concurrent DMs that can't acquire the slot fall back to fire-and-forget
     // `.send()` (lose the click surface for that banner, but never leak a spin).
-    for dm in &body.events {
+    for dm in &fresh {
         let title = dm.from_display_name.clone();
         let message = dm.body.clone();
         let has_prompt = dm.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
@@ -1998,15 +2100,14 @@ async fn do_poll(app: &AppHandle) {
         });
     }
 
-    // Best-effort ack so the same DMs aren't re-notified next poll.
-    let event_ids: Vec<String> = body.events.iter().map(|e| e.event_id.clone()).collect();
-    let app_clone = app.clone();
-    tauri::async_runtime::spawn(async move {
-        post_ack(event_ids).await;
-    });
+    // Ack only the fresh DMs — boundary dupes were acked on the poll where they
+    // were first fresh, so each event is acked exactly once. Await (don't detach)
+    // so the server-side unread decrement reliably lands within the poll's
+    // lifetime; post_ack is best-effort + uses a timed client, so it can't hang.
+    let event_ids: Vec<String> = fresh.iter().map(|e| e.event_id.clone()).collect();
+    post_ack(event_ids).await;
 
-    let _ = app.emit(EVENT_DM_NEW_EVENTS, &body.events);
-    let _ = app_clone; // keep handle alive for the spawned ack
+    let _ = app.emit(EVENT_DM_NEW_EVENTS, &fresh);
 }
 
 /// POST `/v1/notify/inbox/ack`. Best-effort: errors logged, never surfaced.
@@ -2206,6 +2307,70 @@ mod tests {
         assert_eq!(dm.body, "hi");
         assert!(dm.prompt.is_none());
         assert!(dm.details.is_none());
+    }
+
+    fn mk_dm(event_id: &str, created_at: &str) -> DmEvent {
+        DmEvent {
+            event_id: event_id.to_string(),
+            from_person_uid: "prs_sender".to_string(),
+            from_email: "a@b.com".to_string(),
+            from_display_name: "Ada".to_string(),
+            body: "hi".to_string(),
+            details: None,
+            prompt: None,
+            created_at: created_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn partition_unnotified_drops_already_notified_boundary_dupes() {
+        // The inbox treats `?since=` as inclusive, so the boundary DM (e1) comes
+        // back on the next poll. With e1 already in the ring, only e2 is fresh —
+        // no duplicate banner. The ring grows to include the newly-fired e2.
+        let events = vec![mk_dm("e1", "2026-06-05T00:00:00Z"), mk_dm("e2", "2026-06-05T00:01:00Z")];
+        let (fresh, updated) = partition_unnotified(&events, &["e1".to_string()]);
+        assert_eq!(fresh.iter().map(|e| e.event_id.as_str()).collect::<Vec<_>>(), ["e2"]);
+        assert_eq!(updated, ["e1", "e2"]);
+    }
+
+    #[test]
+    fn partition_unnotified_all_seen_returns_empty() {
+        // Every returned DM already notified → nothing fresh, ring unchanged.
+        let events = vec![mk_dm("e1", "t1"), mk_dm("e2", "t2")];
+        let (fresh, updated) = partition_unnotified(&events, &["e1".to_string(), "e2".to_string()]);
+        assert!(fresh.is_empty());
+        assert_eq!(updated, ["e1", "e2"]);
+    }
+
+    #[test]
+    fn partition_unnotified_ring_is_bounded_newest_kept() {
+        // The FIFO never exceeds NOTIFIED_CAP; the oldest ids evict first and the
+        // just-fired (newest) id is always retained.
+        let prior: Vec<String> = (0..NOTIFIED_CAP).map(|i| format!("old{i}")).collect();
+        let events = vec![mk_dm("newest", "t")];
+        let (fresh, updated) = partition_unnotified(&events, &prior);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(updated.len(), NOTIFIED_CAP);
+        assert_eq!(updated.last().unwrap(), "newest");
+        assert_eq!(updated.first().unwrap(), "old1"); // old0 evicted
+    }
+
+    #[test]
+    fn cursor_entry_compat_upgrades_legacy_bare_string() {
+        // Earlier builds stored `{"machineX":"2026-06-05T00:00:00Z"}`. Reading it
+        // must yield a cursor with an empty ring — not re-notify history.
+        let legacy = r#"{"machineX":"2026-06-05T00:00:00Z"}"#;
+        let store: HashMap<String, CursorEntryCompat> = serde_json::from_str(legacy).unwrap();
+        let entry: CursorEntry = store.into_iter().next().unwrap().1.into();
+        assert_eq!(entry.cursor.as_deref(), Some("2026-06-05T00:00:00Z"));
+        assert!(entry.notified.is_empty());
+
+        // And the new object form round-trips with its ring intact.
+        let modern = r#"{"machineX":{"cursor":"t","notified":["e1","e2"]}}"#;
+        let store: HashMap<String, CursorEntryCompat> = serde_json::from_str(modern).unwrap();
+        let entry: CursorEntry = store.into_iter().next().unwrap().1.into();
+        assert_eq!(entry.cursor.as_deref(), Some("t"));
+        assert_eq!(entry.notified, ["e1", "e2"]);
     }
 
     #[test]

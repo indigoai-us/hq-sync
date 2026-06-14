@@ -78,8 +78,15 @@
 
   async function execute(command: CommandPaletteItem | undefined) {
     if (!command) return;
-    await command.action();
-    onclose();
+    // Always close the palette, even if the action throws — otherwise a single
+    // failing command left the palette stuck open and modal over the whole app.
+    try {
+      await command.action();
+    } catch (err) {
+      console.error('command-palette: action failed', err);
+    } finally {
+      onclose();
+    }
   }
 
   function handleKeydown(event: KeyboardEvent) {

@@ -38,6 +38,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
             default_recording_company_uid: None,
+            // Telemetry is opt-in; absent → off (mirrors
+            // telemetry.rs::read_local_telemetry_enabled's unwrap_or(false)).
+            telemetry_enabled: Some(false),
         });
     }
 
@@ -102,6 +105,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // surfaces this as the "Personal" option (same shape as the
         // URL-invite picker in MeetingsWindow).
         default_recording_company_uid: prefs.default_recording_company_uid,
+        // Telemetry defaults OFF (opt-in). Re-read untyped from menubar.json by
+        // the collector each sync, so the toggle takes effect without restart.
+        telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
     })
 }
 
@@ -112,7 +118,17 @@ fn default_meeting_detect_notify() -> MeetingDetectNotifyPrefs {
     }
 }
 
-/// Write settings to ~/.hq/menubar.json (pretty-printed JSON).
+/// Write settings to ~/.hq/menubar.json, preserving keys the typed
+/// `MenubarPrefs` doesn't model.
+///
+/// IMPORTANT: a plain `to_string_pretty(&prefs)` overwrite WIPED every
+/// top-level key absent from the struct — `machineId`, `firstRunCompleted`,
+/// `autoSyncNoticeShown`, `cliUpdateDismissedVersion` — on every settings save.
+/// That regenerated machine identity (telemetry double-counting) and could
+/// re-trigger first-run onboarding on the next launch. So we merge: emit the
+/// typed fields, then carry forward any on-disk keys the typed output lacks,
+/// and atomic-rename — the same untyped-merge contract as
+/// `config::ensure_machine_id` / first_run.rs.
 #[tauri::command]
 pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
     let path = paths::menubar_json_path()?;
@@ -123,13 +139,49 @@ pub async fn save_settings(prefs: MenubarPrefs) -> Result<(), String> {
             .map_err(|e| format!("Failed to create config directory: {}", e))?;
     }
 
-    let json = serde_json::to_string_pretty(&prefs)
-        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    let existing = if path.exists() {
+        std::fs::read_to_string(&path).ok()
+    } else {
+        None
+    };
+    let json = merge_prefs_over_existing(&prefs, existing.as_deref())?;
 
-    std::fs::write(&path, json)
+    // Atomic write: stage to a temp file, fsync, rename into place.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json.as_bytes())
+        .map_err(|e| format!("Failed to write menubar.json: {}", e))?;
+    std::fs::rename(&tmp, &path)
         .map_err(|e| format!("Failed to write menubar.json: {}", e))?;
 
     Ok(())
+}
+
+/// Serialize the typed `prefs`, then carry forward any top-level keys present
+/// in `existing_json` (the current on-disk menubar.json) that the typed struct
+/// doesn't model — `machineId`, `firstRunCompleted`, `autoSyncNoticeShown`,
+/// `cliUpdateDismissedVersion`, and any future/unknown keys. Typed fields
+/// always win on collision; on-disk-only keys are preserved verbatim.
+///
+/// Pulled out of `save_settings` so the data-loss-prevention contract is unit
+/// testable without touching the real `~/.hq/menubar.json` (the command itself
+/// resolves an absolute path via `paths::menubar_json_path`).
+fn merge_prefs_over_existing(
+    prefs: &MenubarPrefs,
+    existing_json: Option<&str>,
+) -> Result<String, String> {
+    let incoming = serde_json::to_value(prefs)
+        .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+    let mut obj = incoming.as_object().cloned().unwrap_or_default();
+    if let Some(existing) = existing_json
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .and_then(|v| v.as_object().cloned())
+    {
+        for (k, v) in existing {
+            obj.entry(k).or_insert(v);
+        }
+    }
+    serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+        .map_err(|e| format!("Failed to serialize settings: {}", e))
 }
 
 #[cfg(test)]
@@ -159,6 +211,7 @@ mod tests {
             release_channel: None,
             meeting_detect_notify: None,
             default_recording_company_uid: None,
+            telemetry_enabled: None,
         }
     }
 
@@ -185,6 +238,7 @@ mod tests {
             release_channel: prefs.release_channel,
             meeting_detect_notify: prefs.meeting_detect_notify,
             default_recording_company_uid: prefs.default_recording_company_uid,
+            telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
         }
     }
 
@@ -206,6 +260,8 @@ mod tests {
         // CLI auto-update defaults ON — the app keeps the CLI current unless
         // the user opts out.
         assert_eq!(result.cli_auto_update, Some(true));
+        // Telemetry is opt-in — defaults OFF when absent from disk.
+        assert_eq!(result.telemetry_enabled, Some(false));
         // release_channel stays None at the apply_defaults boundary; the
         // identity-aware resolution happens inside get_settings itself
         // and is exercised by util::release_channel::tests.
@@ -247,6 +303,7 @@ mod tests {
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
             default_recording_company_uid: Some("co_xyz".to_string()),
+            telemetry_enabled: Some(true),
         };
 
         let result = apply_defaults(prefs);
@@ -261,6 +318,8 @@ mod tests {
         assert_eq!(result.dm_notifications, Some(false));
         assert_eq!(result.cli_auto_update, Some(false));
         assert_eq!(result.staging_channel, Some(false));
+        // explicit telemetry opt-in survives the default-off coercion
+        assert_eq!(result.telemetry_enabled, Some(true));
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
@@ -286,6 +345,7 @@ mod tests {
             release_channel: Some("beta".to_string()),
             meeting_detect_notify: None,
             default_recording_company_uid: None,
+            telemetry_enabled: Some(true),
         };
 
         let json = serde_json::to_string_pretty(&prefs).unwrap();
@@ -297,6 +357,7 @@ mod tests {
         assert_eq!(parsed.start_at_login, prefs.start_at_login);
         assert_eq!(parsed.share_notifications, prefs.share_notifications);
         assert_eq!(parsed.staging_channel, Some(true));
+        assert_eq!(parsed.telemetry_enabled, Some(true));
         // releaseChannel round-trips as a camelCase string (matches the
         // #[serde(rename_all = "camelCase")] on MenubarPrefs).
         assert_eq!(parsed.release_channel, Some("beta".to_string()));
@@ -406,6 +467,58 @@ mod tests {
         let mdn = parsed.meeting_detect_notify.unwrap();
         assert_eq!(mdn.enabled, Some(false));
         assert_eq!(mdn.platforms, Some(vec!["zoom".to_string(), "meet".to_string()]));
+    }
+
+    #[test]
+    fn test_save_preserves_unmodeled_top_level_keys() {
+        // REGRESSION: a plain `to_string_pretty(&prefs)` overwrite wiped every
+        // top-level key the typed struct doesn't model — machineId,
+        // firstRunCompleted, autoSyncNoticeShown, cliUpdateDismissedVersion,
+        // and any future key. That regenerated machine identity (telemetry
+        // double-counting) and could re-trigger first-run onboarding. The
+        // untyped merge must carry those forward untouched.
+        let existing = r#"{
+            "machineId": "mid-keepme",
+            "firstRunCompleted": true,
+            "autoSyncNoticeShown": true,
+            "cliUpdateDismissedVersion": "1.2.3",
+            "someFutureKey": {"nested": 42},
+            "telemetryEnabled": false
+        }"#;
+
+        // User flips telemetry ON in Settings; everything else is whatever the
+        // Settings UI round-tripped back.
+        let prefs = MenubarPrefs {
+            telemetry_enabled: Some(true),
+            ..empty_prefs()
+        };
+
+        let merged = merge_prefs_over_existing(&prefs, Some(existing)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+
+        // On-disk-only keys survive verbatim.
+        assert_eq!(v["machineId"], "mid-keepme");
+        assert_eq!(v["firstRunCompleted"], true);
+        assert_eq!(v["autoSyncNoticeShown"], true);
+        assert_eq!(v["cliUpdateDismissedVersion"], "1.2.3");
+        assert_eq!(v["someFutureKey"]["nested"], 42);
+
+        // The typed field the user actually changed wins over the on-disk value.
+        assert_eq!(v["telemetryEnabled"], true);
+    }
+
+    #[test]
+    fn test_save_with_no_existing_file_emits_typed_only() {
+        // First-ever save (no menubar.json yet): output is just the typed
+        // fields, no spurious keys, telemetry opt-in respected.
+        let prefs = MenubarPrefs {
+            telemetry_enabled: Some(true),
+            ..empty_prefs()
+        };
+        let merged = merge_prefs_over_existing(&prefs, None).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&merged).unwrap();
+        assert_eq!(v["telemetryEnabled"], true);
+        assert!(v.get("machineId").is_none());
     }
 
     #[test]

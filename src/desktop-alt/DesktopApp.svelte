@@ -919,7 +919,11 @@
           filesSkipped: syncFanoutFilesSkipped,
         };
         syncProgress = null;
-        if (syncState !== 'conflict' && syncState !== 'error') {
+        // Don't clobber an attention state set mid-run. 'setup-needed' is added
+        // here alongside conflict/error: the runner bails on setup-needed and
+        // still fires all-complete, so without this guard the status would snap
+        // back to "Idle · all safe" and hide that the account isn't provisioned.
+        if (syncState !== 'conflict' && syncState !== 'error' && syncState !== 'setup-needed') {
           syncState = event.payload.errors.length > 0 ? 'error' : 'idle';
           await invoke('set_tray_state', { state: syncState === 'idle' ? 'idle' : 'error' }).catch(
             () => undefined,
@@ -965,6 +969,16 @@
           }));
         }
         await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
+      }),
+      // Brand-new account with no person entity / no companies yet: the runner
+      // emits sync:setup-needed and bails. The desktop has a purpose-built,
+      // non-alarming "Sync not set up" surface (model.ts + DesktopStatusBar) —
+      // surface it instead of letting all-complete fall through to "Idle · all
+      // safe", which falsely told the user the account was ready. Not an error
+      // tone (idle), matching the classic popover's "this is normal" framing.
+      listen('sync:setup-needed', () => {
+        syncState = 'setup-needed';
+        syncProgress = null;
       }),
       listen<{ message: string }>('sync:auth-error', async (event) => {
         syncState = 'auth-error';

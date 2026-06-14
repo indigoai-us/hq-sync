@@ -105,9 +105,12 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     expect(panel).toContain('const activeCount = $derived(countByState(\'active\'))');
     expect(panel).toContain('const deployingCount = $derived(countByState(\'deploying\'))');
     expect(panel).toContain('const pausedCount = $derived(countByState(\'paused\'))');
-    expect(panel).toContain('<span><strong>{activeCount}</strong> active</span>');
-    expect(panel).toContain('<span><strong>{deployingCount}</strong> deploying</span>');
-    expect(panel).toContain('<span><strong>{pausedCount}</strong> paused</span>');
+    // Counts read em-dash on a load error so an error never masquerades as an
+    // empty deployment list ("0 active" looked like "no deployments").
+    expect(panel).toContain("<span><strong>{error ? '—' : activeCount}</strong> active</span>");
+    expect(panel).toContain("<span><strong>{error ? '—' : deployingCount}</strong> deploying</span>");
+    expect(panel).toContain("<span><strong>{error ? '—' : pausedCount}</strong> paused</span>");
+    expect(panel).toContain('error ? "Couldn\'t load"');
     expect(panel).toContain('bind:value={deploymentQuery}');
     expect(panel).toContain('matchesDeploymentQuery(deployment, deploymentQuery)');
     expect(panel).toContain("onclick={() => void openDeployWorkflow()}");
@@ -136,7 +139,7 @@ describe('US-011: Deployments panel reads hq-deploy subdomains via Tauri command
     const row = normalize(deploymentRow);
 
     expect(panel).toContain("return deployments.filter((deployment) => deployment.state === state).length;");
-    expect(panel).toContain("<span><strong>{deployingCount}</strong> deploying</span>");
+    expect(panel).toContain("<span><strong>{error ? '—' : deployingCount}</strong> deploying</span>");
     expect(row).toContain(".status-dot.deploying { background: var(--blue); animation: pulse 1.4s ease-in-out infinite; }");
     expect(row).toContain('@keyframes pulse');
     expect(row).toContain('@media (prefers-reduced-motion: reduce) { .status-dot.deploying { animation: none; } }');

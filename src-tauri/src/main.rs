@@ -236,6 +236,7 @@ fn main() {
             commands::auth::get_auth_state,
             commands::auth::has_stored_token,
             commands::auth::refresh_tokens,
+            commands::auth::sign_out,
             commands::config::get_config,
             commands::status::get_sync_status,
             commands::sync::start_sync,

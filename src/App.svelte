@@ -123,6 +123,15 @@
   );
   let showConflictModal = $state(false);
   let conflicts = $state<ConflictFile[]>([]);
+  // Conflict-aborted accounting (the actionable path). The runner no longer
+  // emits per-file `sync:conflict` events — it signals conflicts only via the
+  // aggregate `sync:complete {conflicts, aborted}`. So the per-file ConflictModal
+  // can never populate from a live sync; instead we surface an actionable
+  // conflict banner driven by this count + company. Reset at every sync start so
+  // a resolved conflict doesn't linger. `syncConflictCompany` is '' when more
+  // than one company aborted (no single slug to name in the prompt).
+  let syncConflictCount = $state(0);
+  let syncConflictCompany = $state('');
   let showSettings = $state(false);
   let syncStatsRefresh = $state<(() => void) | null>(null);
 
@@ -649,6 +658,8 @@
     syncLastSummary = null;
     syncErrorMessage = '';
     syncErrorCompany = '';
+    syncConflictCount = 0;
+    syncConflictCompany = '';
     await invoke('set_tray_state', { state: 'syncing' });
     try {
       await invoke('start_sync');
@@ -696,11 +707,19 @@
     loadCoreState();
   }
 
-  function handleSignOut() {
-    // Placeholder: clear auth state, return to sign-in
+  async function handleSignOut() {
+    // Clear the persisted Cognito tokens (file + in-memory cache) in the backend
+    // so the app doesn't silently re-authenticate on the next launch — a
+    // frontend-only flag left the token file on disk. We reset the UI to the
+    // sign-in screen regardless (the user asked to sign out), but a backend
+    // failure is logged so a lingering token file stays diagnosable.
+    try {
+      await invoke('sign_out');
+    } catch (err) {
+      console.error('Sign out: failed to clear stored tokens', err);
+    }
     authenticated = false;
     expiresAt = '';
-    console.log('Sign out requested — clearing local auth state');
   }
 
   async function handleResolveConflict(path: string, strategy: 'keep-local' | 'keep-remote') {
@@ -932,6 +951,10 @@
           syncFanoutTotal = event.payload.companies.length;
           syncFanoutDoneCount = 0;
           syncCompanies = event.payload.companies;
+          // Fresh run — clear any prior conflict-aborted accounting so a resolved
+          // conflict doesn't carry a stale banner into this sync.
+          syncConflictCount = 0;
+          syncConflictCompany = '';
           await invoke('set_tray_state', { state: 'syncing' });
         }
       )
@@ -1057,10 +1080,18 @@
         syncFanoutDoneCount += 1;
         syncFanoutFilesSkipped += event.payload.filesSkipped;
         if (event.payload.aborted) {
-          // Conflict-aborted: show the conflict state so the user knows
-          // something needs attention. ConflictModal wiring is follow-up
-          // work (runner doesn't emit per-file conflict events anymore);
-          // for now the tray + banner is enough signal.
+          // Conflict-aborted: surface the conflict state + an actionable banner.
+          // The runner doesn't emit per-file conflict events, so the ConflictModal
+          // can't populate — instead we drive a conflict banner from the aggregate
+          // count here (resolve-in-Claude-Code + Copy prompt), and the header Sync
+          // button retries. Accumulate the count across the fanout; null the
+          // company name when more than one company aborts (no single slug).
+          syncConflictCount += event.payload.conflicts;
+          if (syncConflictCompany === '') {
+            syncConflictCompany = event.payload.company;
+          } else if (syncConflictCompany !== event.payload.company) {
+            syncConflictCompany = '';
+          }
           syncState = 'conflict';
           await invoke('set_tray_state', { state: 'conflict' });
         }
@@ -1884,6 +1915,8 @@
       errorCompany={syncErrorCompany}
       {conflicts}
       {showConflictModal}
+      conflictCount={syncConflictCount}
+      conflictCompany={syncConflictCompany}
       {updateAvailable}
       {updateInstalling}
       {hqCliUpdateAvailable}

@@ -172,7 +172,8 @@
         <select class="scope-select" bind:value={scopeValue} aria-labelledby="channel-scope-label">
           <option value="personal">Personal</option>
           {#each companies as co (co.companyUid)}
-            <option value={co.companyUid}>{co.companyName?.trim() || co.companyUid}</option>
+            <!-- Never surface the raw cmp_… UID as a user-facing label. -->
+            <option value={co.companyUid}>{co.companyName?.trim() || 'Company'}</option>
           {/each}
         </select>
         <p class="scope-hint">

@@ -684,9 +684,22 @@ pub async fn join_channel(channel_id: String) -> Result<Channel, String> {
     Ok(out)
 }
 
+/// Body for a single channel-invite POST. The `/members` endpoint validates
+/// "exactly one of toPersonUid or toEmail" and rejects the older
+/// `{ personUids: [...] }` batch shape — that mismatch is what broke channel
+/// invites (server returned "Provide exactly one of 'toPersonUid' or
+/// 'toEmail'"). Pulled out as a pure fn so the wire shape is unit-locked.
+fn invite_member_payload(uid: &str) -> serde_json::Value {
+    serde_json::json!({ "toPersonUid": uid })
+}
+
 /// Tauri command: invite people to a channel (owner action). `POST
-/// /v1/notify/channels/{id}/members` with `{ personUids: [...] }`. Returns the
-/// channel's updated member list so the roster refreshes in place.
+/// /v1/notify/channels/{id}/members`, ONE invitee per request with a body of
+/// exactly `{ toPersonUid }` (the server validates "exactly one of toPersonUid
+/// or toEmail" and rejects the older `{ personUids: [...] }` batch shape — that
+/// mismatch is what broke channel invites). Returns the channel's updated member
+/// list (the last response after all invitees are added) so the roster refreshes
+/// in place.
 #[tauri::command]
 pub async fn invite_to_channel(
     channel_id: String,
@@ -706,9 +719,18 @@ pub async fn invite_to_channel(
     }
     let (base, token) = auth_and_base("MESSAGES_CHANNEL_INVITE").await?;
     let url = format!("{base}/v1/notify/channels/{}/members", esc_seg(id));
-    let payload = serde_json::json!({ "personUids": cleaned });
-    let out: ChannelMembersResponse =
-        post_json(&url, &token, &payload, "MESSAGES_CHANNEL_INVITE").await?;
+    // The /members endpoint adds one person per POST, keyed by exactly one of
+    // toPersonUid / toEmail. We resolve to personUids upstream, so each invitee
+    // is a `{ toPersonUid }` body. Keep the final response — it carries the full
+    // updated roster.
+    let mut latest: Option<ChannelMembersResponse> = None;
+    for uid in &cleaned {
+        let payload = invite_member_payload(uid);
+        let out: ChannelMembersResponse =
+            post_json(&url, &token, &payload, "MESSAGES_CHANNEL_INVITE").await?;
+        latest = Some(out);
+    }
+    let out = latest.ok_or_else(|| "At least one person is required".to_string())?;
     log(
         LOG_TAG,
         &format!("MESSAGES_CHANNEL_INVITE_OK id={id} members={}", out.members.len()),
@@ -1200,6 +1222,19 @@ mod tests {
         // A blank companyUid is treated as absent.
         let blank = build_create_payload("x", "company", Some("   "), &[]);
         assert!(!blank.as_object().unwrap().contains_key("companyUid"));
+    }
+
+    #[test]
+    fn invite_member_payload_is_single_to_person_uid() {
+        // REGRESSION: the /members endpoint rejects the old `{ personUids: [...] }`
+        // batch shape with "Provide exactly one of 'toPersonUid' or 'toEmail'".
+        // Each invitee must POST exactly `{ toPersonUid }`.
+        let payload = invite_member_payload("prs_abc");
+        assert_eq!(payload["toPersonUid"], "prs_abc");
+        let obj = payload.as_object().expect("object");
+        assert_eq!(obj.len(), 1, "exactly one key — no toEmail, no batch array");
+        assert!(!obj.contains_key("personUids"), "the stale batch key must be gone");
+        assert!(!obj.contains_key("toEmail"), "must not send both identity keys");
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   type Channel,
   channelDisplayName,
+  companyNameFor,
   scopeChipLabel,
   isInvitedNotJoined,
   canPost,
@@ -58,11 +59,13 @@ describe('scopeChipLabel', () => {
   it('returns Personal for personal channels', () => {
     expect(scopeChipLabel(ch({ channelId: 'c', name: 'x', scope: 'personal' }))).toBe('Personal');
   });
-  it('prefers companyName, then companyUid, then generic', () => {
+  it('prefers companyName, else generic — NEVER the raw UID', () => {
     expect(
       scopeChipLabel(ch({ channelId: 'c', name: 'x', scope: 'company', companyName: 'Acme', companyUid: 'ent_1' })),
     ).toBe('Acme');
-    expect(scopeChipLabel(ch({ channelId: 'c', name: 'x', scope: 'company', companyUid: 'ent_1' }))).toBe('ent_1');
+    // A bare companyUid (no name) degrades to "Company", not the opaque UID —
+    // this is the leak fix; the chip must never render `ent_1` / `cmp_…`.
+    expect(scopeChipLabel(ch({ channelId: 'c', name: 'x', scope: 'company', companyUid: 'ent_1' }))).toBe('Company');
     expect(scopeChipLabel(ch({ channelId: 'c', name: 'x', scope: 'company' }))).toBe('Company');
   });
 });
@@ -163,5 +166,58 @@ describe('unread + upsert helpers', () => {
     const cleared = clearChannelUnread(list, 'a');
     expect(cleared[0].unread).toBe(0);
     expect(cleared[1].unread).toBe(2);
+  });
+});
+
+describe('company label resolution never leaks a raw UID (REGRESSION)', () => {
+  // The unified rail rendered `cmp_01KQ2RYAHXHDPCTY9GPQPTH3DG` as a chip when the
+  // server omitted companyName. A row must NEVER show the opaque cmp_ UID.
+  const COMPANY_UID = 'cmp_01KQ2RYAHXHDPCTY9GPQPTH3DG';
+
+  it('scopeChipLabel returns "Company", not the cmp_ UID, when no name is known', () => {
+    const label = scopeChipLabel(
+      ch({ channelId: 'c1', name: 'crew', scope: 'company', companyUid: COMPANY_UID }),
+    );
+    expect(label).toBe('Company');
+    expect(label).not.toContain('cmp_');
+  });
+
+  it('companyNameFor resolves the server companyName when present', () => {
+    expect(
+      companyNameFor(
+        ch({ channelId: 'c1', name: 'crew', scope: 'company', companyUid: COMPANY_UID, companyName: 'Indigo' }),
+      ),
+    ).toBe('Indigo');
+  });
+
+  it('companyNameFor resolves the name from the memberships list by UID', () => {
+    expect(
+      companyNameFor(
+        ch({ channelId: 'c1', name: 'crew', scope: 'company', companyUid: COMPANY_UID }),
+        [{ companyUid: COMPANY_UID, companyName: 'Indigo' }],
+      ),
+    ).toBe('Indigo');
+  });
+
+  it('companyNameFor falls back to "Company" — never the UID — when unresolved', () => {
+    const name = companyNameFor(
+      ch({ channelId: 'c1', name: 'crew', scope: 'company', companyUid: COMPANY_UID }),
+    );
+    expect(name).toBe('Company');
+    expect(name).not.toContain('cmp_');
+  });
+
+  it('companyNameFor returns null for personal/group channels (no company chip)', () => {
+    expect(companyNameFor(ch({ channelId: 'c1', name: 'notes', scope: 'personal' }))).toBeNull();
+    expect(companyNameFor(ch({ channelId: 'c2', name: '', scope: 'group' }))).toBeNull();
+  });
+
+  it('groupChannels header label never falls back to the raw UID', () => {
+    const groups = groupChannels([
+      ch({ channelId: 'c1', name: 'crew', scope: 'company', companyUid: COMPANY_UID }),
+    ]);
+    const companyGroup = groups.find((g) => g.scope === 'company');
+    expect(companyGroup?.label).toBe('Company');
+    expect(companyGroup?.label).not.toContain('cmp_');
   });
 });

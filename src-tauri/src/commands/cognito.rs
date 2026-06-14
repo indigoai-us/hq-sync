@@ -228,6 +228,39 @@ pub async fn set_tokens(tokens: &CognitoTokens) -> Result<(), String> {
     Ok(())
 }
 
+/// Sign out locally: delete the on-disk token file and drop the in-memory
+/// cache so a relaunch (and any in-session token read) sees no identity. Without
+/// this, flipping a frontend `authenticated` flag leaves
+/// `~/.hq/cognito-tokens.json` in place and the app silently re-authenticates on
+/// next launch. A missing file is treated as already-signed-out (not an error).
+/// The cache is cleared regardless so an in-session sign-out takes effect even
+/// if the file delete races. Also clears the cached feature gate, mirroring
+/// `set_tokens`. This is a local sign-out (this device) — it does not revoke the
+/// refresh token server-side, so other signed-in devices are unaffected.
+pub async fn clear_tokens() -> Result<(), String> {
+    let path = tokens_file_path()?;
+    // Always drop the in-memory cache first so a concurrent get_tokens() can't
+    // re-populate it from a clone we're about to invalidate.
+    {
+        let mut guard = cache().lock().await;
+        *guard = None;
+    }
+    remove_token_file_at(&path)?;
+    crate::util::feature_gate::clear_cached_gate();
+    Ok(())
+}
+
+/// Delete a token file. A missing file is success (already signed out), so this
+/// is idempotent. Path-parameterized (mirrors `has_non_empty_token_at`) so the
+/// deletion contract is unit-testable without `$HOME` or the async cache.
+fn remove_token_file_at(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("Failed to delete token file: {}", e)),
+    }
+}
+
 pub fn is_expired(tokens: &CognitoTokens) -> bool {
     if tokens.expires_at <= 0 {
         return true; // treat corrupt/zero timestamps as expired
@@ -599,6 +632,38 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cognito-tokens.json");
         assert!(!has_non_empty_token_at(&path).unwrap());
+    }
+
+    #[test]
+    fn test_remove_token_file_deletes_existing() {
+        // Sign-out must actually delete the token file — a frontend-only flag
+        // left it on disk and the app re-authenticated on next launch.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        let tokens = CognitoTokens {
+            access_token: "abc123".to_string(),
+            id_token: Some("id".to_string()),
+            refresh_token: "r".to_string(),
+            expires_at: 1,
+        };
+        std::fs::write(&path, serde_json::to_string(&tokens).unwrap()).unwrap();
+        assert!(has_non_empty_token_at(&path).unwrap());
+
+        remove_token_file_at(&path).unwrap();
+        assert!(!path.exists());
+        // And the onboarding "is logged in" signal flips to false post-removal.
+        assert!(!has_non_empty_token_at(&path).unwrap());
+    }
+
+    #[test]
+    fn test_remove_token_file_missing_is_ok() {
+        // Idempotent: deleting an already-absent token file is success, not an
+        // error (signing out twice, or when never signed in, must not throw).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cognito-tokens.json");
+        assert!(!path.exists());
+        remove_token_file_at(&path).unwrap();
+        remove_token_file_at(&path).unwrap();
     }
 
     #[test]

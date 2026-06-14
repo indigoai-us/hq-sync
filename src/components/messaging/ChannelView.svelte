@@ -276,6 +276,11 @@
 </header>
 
 {#if invited}
+  <!-- Invited-but-not-joined: the thread is a read-only preview. `readonly`
+       hides the composer and renders a static "preview" note in its place — the
+       Join CTA below is the only write affordance. Without readonly the composer
+       rendered fully (textarea + Send + ⌘↵) but onsend was a no-op, so a typed
+       message silently vanished with no error and no hint to join first. -->
   <Conversation
     {messages}
     showAuthors={true}
@@ -284,6 +289,7 @@
     sending={false}
     sendError={null}
     placeholder=""
+    readonly={true}
     onsend={() => {}}
   />
   <div class="join-cta">
@@ -372,8 +378,8 @@
   }
 
   .scope-chip.personal {
-    background: rgba(180, 140, 255, 0.18);
-    color: #e0d0ff;
+    background: var(--surface-raise);
+    color: var(--muted-2);
   }
 
   .scope-glyph {

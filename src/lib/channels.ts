@@ -39,6 +39,12 @@ export interface Channel {
   unread?: number;
   /** Member count (shown on the header member-count button). */
   memberCount?: number;
+  /** Optional server-supplied activity timestamps (ISO-8601). Older servers omit
+   * them; when present they let a channel interleave with DMs by recency in the
+   * unified rail (`mergeConversations`). Absent → the channel falls back to an
+   * unread-aware ordering. */
+  lastActivityAt?: string | null;
+  lastMessageAt?: string | null;
 }
 
 /** One member of a channel. Mirrors the Rust `ChannelMember` wire shape. */
@@ -76,11 +82,29 @@ export function channelDisplayName(c: Channel): string {
 }
 
 /** The scope chip text: a personal glyph for personal channels, "Group" for a
- * group DM, else the company name (falling back to companyUid, then generic). */
+ * group DM, else the company NAME. Never the raw `cmp_…` UID — an unresolved
+ * company degrades to the generic "Company" label, not an opaque identifier. */
 export function scopeChipLabel(c: Channel): string {
   if (c.scope === 'personal') return 'Personal';
   if (c.scope === 'group') return 'Group';
-  return c.companyName?.trim() || c.companyUid?.trim() || 'Company';
+  return c.companyName?.trim() || 'Company';
+}
+
+/** Resolve a channel's company display NAME for the unified rail chip. Tries the
+ * channel's own `companyName`, then the caller's membership labels, and finally
+ * the generic "Company" — it NEVER returns the raw `cmp_…` UID (the bug where a
+ * channel row rendered `cmp_01KQ2RYAH…` as a pill). Personal/group channels have
+ * no company chip and return null. */
+export function companyNameFor(c: Channel, companies: CompanyLabel[] = []): string | null {
+  if (c.scope === 'personal' || c.scope === 'group') return null;
+  const fromChannel = c.companyName?.trim();
+  if (fromChannel) return fromChannel;
+  const uid = c.companyUid?.trim();
+  if (uid) {
+    const fromList = companies.find((co) => co.companyUid === uid)?.companyName?.trim();
+    if (fromList) return fromList;
+  }
+  return 'Company';
 }
 
 /** True when the caller is invited to a channel but hasn't joined yet — the
@@ -143,7 +167,8 @@ export function groupChannels(
     if (fromChannel) return fromChannel;
     const fromList = companies.find((co) => co.companyUid === uid)?.companyName?.trim();
     if (fromList) return fromList;
-    return uid === '__unknown__' ? 'Company' : uid;
+    // Never surface the raw `cmp_…` UID as a header label.
+    return 'Company';
   };
 
   const groups: ChannelGroup[] = [];
