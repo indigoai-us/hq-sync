@@ -29,6 +29,20 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(swift).toContain('kill(hqPid, 0)');
   });
 
+  it('opens the popover on LEFT-click (menu on right-click) and activates the app', () => {
+    const swift = read('src-tauri/helper/hq-tray-helper.swift');
+    // Left-click handled via the button action (NOT item.menu, which would make
+    // a plain click open the menu instead of the popover).
+    expect(swift).toContain('item.button?.action = #selector(statusItemClicked)');
+    expect(swift).toContain('sendAction(on: [.leftMouseUp, .rightMouseUp])');
+    expect(swift).toContain('.rightMouseUp');
+    // Left-click activates the main app so the background-launched popover
+    // reliably comes to the front (the bug the user hit: click did nothing).
+    expect(swift).toContain('func activateHQ()');
+    expect(swift).toContain('NSRunningApplication(processIdentifier: hqPid)');
+    expect(swift).toContain('activateHQ()');
+  });
+
   it('build.rs compiles the helper on macOS and fails loud if swiftc breaks', () => {
     const build = read('src-tauri/build.rs');
     expect(build).toContain('CARGO_CFG_TARGET_OS');
@@ -63,11 +77,36 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
   it('tray_helper polls the command file and dispatches show/sync/quit', () => {
     const helper = read('src-tauri/src/tray_helper.rs');
     expect(helper).toContain('.tray-cmd');
-    expect(helper).toContain('"show" => show_popover');
+    // Menu-bar click toggles the popover (show if hidden, hide if up) via the
+    // shared window-management helper in tray.rs.
+    expect(helper).toContain('"show" => crate::tray::toggle_popover_window');
     expect(helper).toContain('"quit" => app.exit(0)');
+  });
+
+  it('popover toggle shows on-screen, suppresses auto-hide, and is single-window', () => {
+    const tray = read('src-tauri/src/tray.rs');
     // The popover is repositioned on-screen (the off-screen tao rect dragged it
     // off the right edge) and the spurious auto-hide is suppressed.
-    expect(helper).toContain('suppress_blur_hide_briefly');
-    expect(helper).toContain('set_position');
+    expect(tray).toContain('pub fn show_popover_window');
+    expect(tray).toContain('suppress_blur_hide_briefly');
+    expect(tray).toContain('set_position');
+    // Toggle: hide if already visible, else show.
+    expect(tray).toContain('pub fn toggle_popover_window');
+    expect(tray).toMatch(/is_visible\(\)\.unwrap_or\(false\)[\s\S]*?\.hide\(\)/);
+    // Single-window: showing the popover hides the desktop window.
+    expect(tray).toContain('pub fn hide_desktop_alt');
+    expect(tray).toContain('get_webview_window("desktop-alt")');
+  });
+
+  it('the two global shortcuts toggle their window (single-window enforced)', () => {
+    const main = read('src-tauri/src/main.rs');
+    // Opt+Shift+H toggles the popover.
+    expect(main).toContain('tray::toggle_popover_window(app)');
+    // Opt+Shift+O toggles the desktop window (hide if visible, else open).
+    expect(main).toContain('tray::hide_desktop_alt(app)');
+    expect(main).toMatch(/desktop_visible[\s\S]*?open_desktop_alt_window_inner/);
+    // Opening the desktop hides the popover (single-window) at the canonical path.
+    const desktop = read('src-tauri/src/commands/desktop_alt.rs');
+    expect(desktop).toMatch(/get_webview_window\("main"\)[\s\S]*?\.hide\(\)/);
   });
 });

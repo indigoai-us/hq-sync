@@ -606,6 +606,8 @@ pub fn show_window_at_tray(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
+    // One HQ window at a time: summoning the popover hides the desktop view.
+    hide_desktop_alt(app);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Ok(Some(rect)) = tray.rect() {
             position_below_tray(&window, rect);
@@ -619,6 +621,61 @@ pub fn show_window_at_tray(app: &AppHandle) {
 // commands/banner.rs now — the meeting-detect notification's "open" action
 // hits the same handler as the update banner's body-click, and both just
 // call `show_window_at_tray` here. One name, one handler.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Popover ↔ desktop window management (toggle + single-window-at-a-time)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Only one HQ window is ever on-screen at a time: the classic popover (`main`)
+// OR the desktop window (`desktop-alt`). Showing one hides the other. The two
+// global shortcuts (Opt+Shift+H popover, Opt+Shift+O desktop) and the menu-bar
+// click toggle their window — press again with it open and it hides.
+
+/// Hide the desktop window if it's open — enforces "only one HQ window at a
+/// time" whenever the popover is summoned.
+pub fn hide_desktop_alt(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("desktop-alt") {
+        let _ = win.hide();
+    }
+}
+
+/// Show the popover (`main`) on-screen, hiding the desktop window first.
+///
+/// Positions it top-right just under the menu bar — on macOS Tahoe the tao
+/// tray rect lives off-screen, so we place the window ourselves rather than
+/// anchoring to the (absent/parked) tray icon. Suppresses the spurious
+/// click-away hide that fires because the helper process, not HQ, is frontmost
+/// when this is invoked.
+pub fn show_popover_window(app: &AppHandle) {
+    suppress_blur_hide_briefly();
+    hide_desktop_alt(app);
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let (Ok(Some(monitor)), Ok(size)) = (window.primary_monitor(), window.outer_size()) {
+        let mon = monitor.size();
+        let scale = monitor.scale_factor();
+        let margin = (8.0 * scale) as i32;
+        let top = (28.0 * scale) as i32;
+        let x = (mon.width as i32 - size.width as i32 - margin).max(margin);
+        let _ = window.set_position(PhysicalPosition::new(x, top));
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// Toggle the popover: hide it if it's already visible, otherwise show it
+/// (which also hides the desktop window). Used by the Opt+Shift+H shortcut and
+/// the menu-bar click so pressing again dismisses the window.
+pub fn toggle_popover_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+            return;
+        }
+    }
+    show_popover_window(app);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Icon update

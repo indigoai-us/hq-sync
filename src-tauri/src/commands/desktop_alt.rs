@@ -511,6 +511,13 @@ pub async fn open_desktop_alt_window_inner(
         return Err("desktop-alt requires a signed-in user".to_string());
     }
 
+    // One HQ window at a time: opening the desktop view hides the classic
+    // popover (whether summoned via shortcut, menu, or the popover's own
+    // "Open desktop view" button).
+    if let Some(popover) = app.get_webview_window("main") {
+        let _ = popover.hide();
+    }
+
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;

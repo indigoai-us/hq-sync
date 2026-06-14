@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::util::logfile::log;
 
@@ -31,32 +31,6 @@ fn helper_path() -> Option<PathBuf> {
         macos_dir.join("hq-tray-helper"),
     ];
     candidates.into_iter().find(|p| p.exists())
-}
-
-/// Position the popover at the top-right (just under the menu bar) so it lands
-/// on-screen. The old tao-tray rect lived off-screen, which dragged the popover
-/// off the right edge; we ignore it and place the window ourselves.
-fn show_popover(app: &AppHandle) {
-    // The helper is a separate process, so HQ isn't frontmost when this fires —
-    // the freshly-shown popover would be auto-hidden by the click-away handler.
-    // Suppress that auto-hide briefly; the initial spurious Focused(false) is
-    // skipped, after which no further blur fires and the popover stays put.
-    // (We deliberately do NOT force-activate the app: activating via the
-    // main-thread dispatch fired a *late* focus change that re-hid the popover.)
-    crate::tray::suppress_blur_hide_briefly();
-
-    if let Some(win) = app.get_webview_window("main") {
-        if let (Ok(Some(monitor)), Ok(size)) = (win.primary_monitor(), win.outer_size()) {
-            let mon = monitor.size();
-            let scale = monitor.scale_factor();
-            let margin = (8.0 * scale) as i32;
-            let top = (28.0 * scale) as i32;
-            let x = (mon.width as i32 - size.width as i32 - margin).max(margin);
-            let _ = win.set_position(PhysicalPosition::new(x, top));
-        }
-        let _ = win.show();
-        let _ = win.set_focus();
-    }
 }
 
 /// Spawn the helper (passing our PID so it self-exits if we die) and start the
@@ -85,7 +59,11 @@ pub fn spawn_and_poll(app: &AppHandle) {
             };
             let _ = std::fs::remove_file(&cf);
             match cmd.trim() {
-                "show" => show_popover(&app),
+                // Menu-bar click toggles the popover (show if hidden, hide if
+                // already up) and hides the desktop window — one HQ window at a
+                // time. Positioning + blur-hide suppression live in
+                // `tray::show_popover_window`.
+                "show" => crate::tray::toggle_popover_window(&app),
                 "sync" => {
                     let _ = app.emit("tray:sync-now", ());
                 }

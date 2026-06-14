@@ -175,26 +175,41 @@ fn main() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
                     if shortcut == &show_shortcut && event.state() == ShortcutState::Pressed {
-                        tray::show_window_at_tray(app);
+                        // Toggle the popover: hides it if already up, else shows
+                        // it (and hides the desktop window — one at a time).
+                        tray::toggle_popover_window(app);
                     } else if shortcut == &desktop_shortcut
                         && event.state() == ShortcutState::Pressed
                     {
-                        let app_handle = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(e) =
-                                commands::desktop_alt::open_desktop_alt_window_inner(
-                                    app_handle, None,
-                                )
-                                .await
-                            {
-                                util::logfile::log(
-                                    "ui",
-                                    &format!(
-                                        "global shortcut Opt+Shift+O open desktop FAILED: {e}"
-                                    ),
-                                );
+                        // Toggle the desktop window: hide if visible, else open
+                        // it (hiding the popover first — one HQ window at a time).
+                        let desktop_visible = app
+                            .get_webview_window("desktop-alt")
+                            .and_then(|w| w.is_visible().ok())
+                            .unwrap_or(false);
+                        if desktop_visible {
+                            tray::hide_desktop_alt(app);
+                        } else {
+                            if let Some(main) = app.get_webview_window("main") {
+                                let _ = main.hide();
                             }
-                        });
+                            let app_handle = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) =
+                                    commands::desktop_alt::open_desktop_alt_window_inner(
+                                        app_handle, None,
+                                    )
+                                    .await
+                                {
+                                    util::logfile::log(
+                                        "ui",
+                                        &format!(
+                                            "global shortcut Opt+Shift+O open desktop FAILED: {e}"
+                                        ),
+                                    );
+                                }
+                            });
+                        }
                     }
                 })
                 .build(),
