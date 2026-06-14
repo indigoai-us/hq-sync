@@ -119,7 +119,18 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
   const errored: ConnectedCompanyRow[] = [];
   const notConnected: NotConnectedCompanyRow[] = [];
 
+  // `list_syncable_workspaces` is the UNION of manifest companies and cloud
+  // memberships, so a company present in both arrives twice under the same
+  // slug. CompaniesPage keys its rows by slug; a duplicate key throws
+  // `each_key_duplicate` and strands the whole page (the body freezes on the
+  // previous route). Collapse to the first occurrence per slug — same
+  // first-wins dedupe the sidebar already applies via `getDesktopCompanies`.
+  const seenSlugs = new Set<string>();
+
   for (const workspace of input.workspaces) {
+    if (seenSlugs.has(workspace.slug)) continue;
+    seenSlugs.add(workspace.slug);
+
     const lastChange = formatRelativeTime(workspace.lastSyncedAt) ?? EM_DASH;
 
     if (workspace.kind === 'personal') {

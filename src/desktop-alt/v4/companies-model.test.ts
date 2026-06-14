@@ -221,4 +221,32 @@ describe('V4 Companies model (US-004)', () => {
     expect(model.connected[1].sync).toBe('Manual · all paths');
     expect(model.summary).toContain('manual sync');
   });
+
+  it('dedupes companies that appear twice (manifest + cloud union) so rows stay slug-unique', () => {
+    // `list_syncable_workspaces` is the UNION of manifest companies and cloud
+    // memberships — a company in both arrives twice under the same slug.
+    // CompaniesPage keys its rows by slug; a duplicate key throws
+    // `each_key_duplicate` in Svelte and freezes the whole page (the Companies
+    // tab "loads nothing" — the body stays stuck on the previous route). The
+    // model must collapse duplicates to one row per slug.
+    const model = getCompaniesPageModel({
+      workspaces: [
+        personal,
+        workspace({ slug: 'liverecover', displayName: 'Liverecover', role: 'member' }),
+        // Same slug again — the cloud-membership copy of a manifest company.
+        workspace({ slug: 'liverecover', displayName: 'Liverecover', role: 'member' }),
+        workspace({ slug: 'indigo', displayName: 'Indigo' }),
+      ],
+    });
+
+    const allSlugs = [
+      ...model.connected.map((row) => row.slug),
+      ...model.notConnected.map((row) => row.slug),
+    ];
+    // No duplicate keys — the invariant CompaniesPage's keyed {#each} relies on.
+    expect(new Set(allSlugs).size).toBe(allSlugs.length);
+    // The duplicate collapsed to exactly one Liverecover row.
+    expect(model.connected.filter((row) => row.slug === 'liverecover')).toHaveLength(1);
+    expect(model.connected.map((row) => row.slug)).toEqual(['personal', 'liverecover', 'indigo']);
+  });
 });

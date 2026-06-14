@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { open } from '@tauri-apps/plugin-shell';
   import * as Sentry from '@sentry/svelte';
-  import type { Workspace } from '../lib/workspaces';
+  import { dedupeWorkspaces, type Workspace } from '../lib/workspaces';
   import { parseLocalEnvFailure } from '../lib/copy-prompts';
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
@@ -43,8 +43,13 @@
     broken: 3,
     'local-only': 4,
   };
+  // Dedupe before sorting: `list_syncable_workspaces` is the manifest+cloud
+  // UNION, so a company in both arrives twice under the same kind+slug. The row
+  // {#each} below is keyed by `${kind}:${slug}`; a duplicate key throws
+  // `each_key_duplicate` in Svelte and breaks the whole popover render. See
+  // `dedupeWorkspaces`.
   const sortedWorkspaces = $derived(
-    [...workspaces].sort((a, b) => stateOrder[a.state] - stateOrder[b.state]),
+    dedupeWorkspaces(workspaces).sort((a, b) => stateOrder[a.state] - stateOrder[b.state]),
   );
 
   // Per-row connect state. Keys are slugs; absent = idle, true = in flight,

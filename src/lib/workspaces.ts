@@ -38,3 +38,24 @@ export interface WorkspacesResult {
   // workspaces fall back to folder enumeration.
   manifestError: string | null;
 }
+
+/**
+ * Collapse duplicate workspaces to one entry per `kind:slug`, first occurrence
+ * wins (preserving the backend ordering of the survivor).
+ *
+ * `list_syncable_workspaces` is the UNION of manifest companies and cloud
+ * memberships, so a company present in both arrives twice under the same
+ * kind+slug. Every list that renders a keyed `{#each}` over workspaces (the
+ * classic popover's WorkspaceList keys by `kind:slug`) throws Svelte's
+ * `each_key_duplicate` on a repeat — which aborts the whole render and freezes
+ * the surface. Dedupe through here before keying.
+ */
+export function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
+  const seen = new Set<string>();
+  return workspaces.filter((workspace) => {
+    const key = `${workspace.kind}:${workspace.slug}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
