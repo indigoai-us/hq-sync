@@ -919,19 +919,42 @@ async fn post_ack(_app: &AppHandle, event_ids: Vec<String>) {
 mod tests {
     use super::*;
 
+    // `POLL_IN_FLIGHT` is a process-global singleton, but cargo runs the tests
+    // in this binary on parallel threads within ONE process. Any test that
+    // mutates the flag (e.g. `test_try_set_and_clear_in_flight`, which flips it
+    // to `true` mid-body) would otherwise race a test that reads it
+    // (`test_singleton_lock_starts_false`, which asserts `false`). This guard
+    // serializes the singleton-touching tests so they never interleave — held
+    // for the whole test body. ANY new test that touches `poll_lock()` /
+    // `try_set_in_flight()` / `clear_in_flight()` MUST take this guard first.
+    static POLL_LOCK_TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+    /// Acquire the serial guard, ignoring poisoning from a panicking sibling
+    /// test (a poisoned guard must not cascade-fail every other test).
+    fn poll_lock_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        POLL_LOCK_TEST_SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn test_singleton_lock_starts_false() {
+        // Serialized against the mutating test below; the only other toucher
+        // (`test_try_set_and_clear_in_flight`) always ends by clearing the flag,
+        // so in either ordering the flag is `false` when we observe it here.
+        let _serial = poll_lock_test_guard();
         // The OnceLock starts unset; initialised to false on first access.
-        let guard = poll_lock().lock().unwrap();
+        let guard = poll_lock().lock().unwrap_or_else(|p| p.into_inner());
         assert!(!*guard);
     }
 
     #[test]
     fn test_try_set_and_clear_in_flight() {
+        let _serial = poll_lock_test_guard();
         // Force the lock to false first (may already be set from another test
         // calling try_set_in_flight).
         {
-            let mut g = poll_lock().lock().unwrap();
+            let mut g = poll_lock().lock().unwrap_or_else(|p| p.into_inner());
             *g = false;
         }
         assert!(try_set_in_flight(), "first attempt should succeed");
