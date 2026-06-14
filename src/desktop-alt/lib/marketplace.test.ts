@@ -20,7 +20,9 @@ import {
   isAdminGate,
   isClaimError,
   isPublishError,
+  listingDisplayName,
   listingHaystack,
+  prettifyPackName,
   loadCreatorApplications,
   loadModerationQueue,
   loadMyCreator,
@@ -116,6 +118,53 @@ describe('filterListings', () => {
 
   it('builds a lowercased haystack', () => {
     expect(listingHaystack(listing({ name: 'LOUD' }))).toContain('loud');
+  });
+
+  it('includes the friendly display name so a search matches it', () => {
+    // "Matt Pocock Skills" is the curated name for slug pocock-skills; the raw
+    // package name is hq-pack-pocock-skills (no spaces), so this only matches via
+    // the display name now folded into the haystack.
+    const items = [listing({ id: 'lst_p', name: 'hq-pack-pocock-skills', slug: 'pocock-skills', author: 'mattpocock' })];
+    expect(filterListings(items, 'matt pocock skills')).toHaveLength(1);
+  });
+});
+
+describe('prettifyPackName — generic friendly name fallback', () => {
+  it('strips the hq-pack- prefix and title-cases', () => {
+    expect(prettifyPackName('hq-pack-pocock-skills')).toBe('Pocock Skills');
+  });
+
+  it('handles an hq- prefix and underscores', () => {
+    expect(prettifyPackName('hq_agent_browser')).toBe('Agent Browser');
+  });
+
+  it('keeps minor words lowercase (except when leading)', () => {
+    expect(prettifyPackName('hq-pack-tools-for-the-team')).toBe('Tools for the Team');
+  });
+
+  it('returns empty string for empty input', () => {
+    expect(prettifyPackName('')).toBe('');
+  });
+});
+
+describe('listingDisplayName — friendly card/detail title', () => {
+  it('uses the curated name for a known slug', () => {
+    expect(listingDisplayName(listing({ slug: 'impeccable', name: 'hq-pack-impeccable' }))).toBe(
+      'Impeccable Design',
+    );
+    expect(listingDisplayName(listing({ slug: 'gstack', name: 'hq-pack-gstack' }))).toBe('gStack');
+  });
+
+  it('falls back to a prettified package name for an unknown slug', () => {
+    expect(
+      listingDisplayName(listing({ slug: 'some-new-pack', name: 'hq-pack-some-new-pack' })),
+    ).toBe('Some New Pack');
+  });
+
+  it('prefers a server-provided displayName over the curated map', () => {
+    expect(
+      listingDisplayName(listing({ slug: 'impeccable', displayName: 'Custom Brand Name' })),
+    ).toBe('Custom Brand Name');
   });
 });
 

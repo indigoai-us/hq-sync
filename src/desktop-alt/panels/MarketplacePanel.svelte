@@ -22,12 +22,14 @@
     companyInstallTargets,
     filterListings,
     installMarketplacePack,
+    listingDisplayName,
     loadMarketplaceListings,
     recordMarketplaceInstall,
     type InstallScope,
     type InstallTarget,
     type MarketplaceListing,
   } from '../lib/marketplace';
+  import { coverForListing, coverFallback } from '../lib/pack-covers';
   import type { WorkspacesResult } from '../../lib/workspaces';
 
   let listings = $state<MarketplaceListing[]>([]);
@@ -287,49 +289,65 @@
   {:else}
     <div class="grid" aria-label="Marketplace listings">
       {#each visible as listing (listing.id)}
+        {@const cover = coverForListing(listing)}
         <!--
           The card is keyboard-focusable + clickable (role="button") to open the
           detail slide-over, but it is a <div> rather than a <button> so the
           author byline can be a real nested <a> link to the creator profile
           (US-019) — a <button> can't legally contain an <a>. The card keeps full
           button semantics (role, tabindex, Enter/Space handler).
+
+          The card leads with a full-bleed piece of cover art (unique per pack)
+          with the pack name overlaid on a scrim, so each listing reads as a
+          distinct object. Below the art sits a compact body (author + summary).
         -->
         <div
           role="button"
           tabindex="0"
           class="card"
           data-testid="marketplace-card"
-          aria-label={`${listing.type} ${listing.name} by ${authorLabel(listing)}`}
+          aria-label={`${listing.type} ${listingDisplayName(listing)} by ${authorLabel(listing)}`}
           onclick={() => select(listing)}
           onkeydown={(event) => handleKeydown(event, listing)}
         >
           <span class="accent" aria-hidden="true"></span>
-          <div class="card-head">
-            <span class="kind-tag">
+          <div class="cover" data-testid="marketplace-cover">
+            {#if cover}
+              <img class="cover-img" src={cover} alt="" loading="lazy" decoding="async" />
+            {:else}
+              {@const fb = coverFallback(listing)}
+              <div class="cover-fallback" style={`background:${fb.gradient}`} aria-hidden="true">
+                <span class="cover-monogram">{fb.monogram}</span>
+              </div>
+            {/if}
+            <div class="cover-scrim" aria-hidden="true"></div>
+            <span class="kind-tag kind-chip">
               <span class="kind-dot" aria-hidden="true"></span>
               {listing.type}
             </span>
-            <span class="pill version" data-testid="marketplace-version">v{listing.version}</span>
+            <span class="pill version cover-version" data-testid="marketplace-version">v{listing.version}</span>
+            <h3 class="card-name" title={listingDisplayName(listing)}>{listingDisplayName(listing)}</h3>
           </div>
-          <h3 class="card-name" title={listing.name}>{listing.name}</h3>
-          {#if creatorProfileHref(listing)}
-            <!-- Byline → creator profile (US-019). stopPropagation so clicking
-                 the link opens the profile instead of selecting the card. -->
-            <a
-              class="author author-link"
-              href={creatorProfileHref(listing)}
-              target="_blank"
-              rel="noreferrer noopener"
-              data-testid="marketplace-author"
-              title={`View ${authorLabel(listing)} on the creator directory`}
-              onclick={(event) => event.stopPropagation()}
-            >{authorLabel(listing)}</a>
-          {:else}
-            <span class="author" data-testid="marketplace-author">{authorLabel(listing)}</span>
-          {/if}
-          {#if listing.summary}
-            <p class="card-desc">{listing.summary}</p>
-          {/if}
+          <div class="card-body">
+            {#if creatorProfileHref(listing)}
+              <!-- Byline → creator profile (US-019). stopPropagation so clicking
+                   the link opens the profile instead of selecting the card. -->
+              <a
+                class="author author-link"
+                href={creatorProfileHref(listing)}
+                target="_blank"
+                rel="noreferrer noopener"
+                data-testid="marketplace-author"
+                title={`View ${authorLabel(listing)} on the creator directory`}
+                onclick={(event) => event.stopPropagation()}
+              >{authorLabel(listing)}</a>
+            {:else}
+              <span class="author" data-testid="marketplace-author">{authorLabel(listing)}</span>
+            {/if}
+            {#if listing.summary}
+              <p class="card-desc">{listing.summary}</p>
+            {/if}
+          </div>
         </div>
       {/each}
     </div>
@@ -337,6 +355,7 @@
 </div>
 
 {#if selected}
+  {@const detailCover = coverForListing(selected)}
   <div
     class="detail-backdrop"
     data-testid="marketplace-detail-backdrop"
@@ -348,13 +367,24 @@
     class="detail-panel"
     role="dialog"
     aria-modal="true"
-    aria-label={`Listing: ${selected.name}`}
+    aria-label={`Listing: ${listingDisplayName(selected)}`}
     data-testid="marketplace-detail-panel"
   >
+    <div class="detail-cover" data-testid="marketplace-detail-cover">
+      {#if detailCover}
+        <img class="detail-cover-img" src={detailCover} alt="" />
+      {:else}
+        {@const fb = coverFallback(selected)}
+        <div class="detail-cover-fallback" style={`background:${fb.gradient}`} aria-hidden="true">
+          <span class="cover-monogram">{fb.monogram}</span>
+        </div>
+      {/if}
+      <div class="detail-cover-scrim" aria-hidden="true"></div>
+    </div>
     <header class="detail-header">
       <div class="header-text">
         <span class="kind-tag detail-kind">{selected.type}</span>
-        <h2 class="detail-title">{selected.name}</h2>
+        <h2 class="detail-title">{listingDisplayName(selected)}</h2>
         <div class="badges">
           <span class="pill version">v{selected.version}</span>
           <span class="scope-badge">{selected.slug}</span>
@@ -572,7 +602,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
     align-items: start;
-    gap: var(--space-2);
+    gap: var(--space-3);
     min-width: 0;
   }
 
@@ -580,25 +610,25 @@
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
     min-width: 0;
-    padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 4px);
     overflow: hidden;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 8px;
     background: var(--row-active);
     text-align: left;
     cursor: pointer;
     transition:
       background 140ms ease,
       border-color 140ms ease,
-      transform 140ms ease;
+      transform 160ms ease,
+      box-shadow 160ms ease;
   }
 
   .card:hover {
     border-color: var(--border-strong);
     background: var(--row-hover);
-    transform: translateY(-1px);
+    transform: translateY(-2px);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
   }
 
   .card:focus-visible {
@@ -606,25 +636,98 @@
     outline-offset: 2px;
   }
 
+  /* Amber brand spine — runs the full card height, over the art's left edge. */
   .accent {
     position: absolute;
     inset-block: 0;
     inset-inline-start: 0;
+    z-index: 4;
     width: 3px;
     background: var(--amber);
-    opacity: 0.55;
+    opacity: 0.6;
     transition: opacity 140ms ease;
   }
   .card:hover .accent {
     opacity: 1;
   }
 
-  .card-head {
+  /* ---- cover art (the visual hero of each card) ------------------------- */
+  .cover {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    width: 100%;
+    overflow: hidden;
+    background: var(--bg-subtle);
+  }
+
+  .cover-img,
+  .cover-fallback {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    width: 100%;
+    height: 100%;
+  }
+
+  .cover-img {
+    object-fit: cover;
+    object-position: center;
+    transition: transform 240ms ease;
+  }
+  .card:hover .cover-img {
+    transform: scale(1.04);
+  }
+
+  .cover-fallback {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
-    min-width: 0;
+    justify-content: center;
+  }
+
+  .cover-monogram {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-size: 46px;
+    font-weight: 700;
+    color: rgba(255, 255, 255, 0.88);
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  }
+
+  /* Bottom-up scrim so the overlaid name stays legible over any art. */
+  .cover-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    pointer-events: none;
+    background: linear-gradient(
+      to top,
+      rgba(8, 8, 10, 0.88) 0%,
+      rgba(8, 8, 10, 0.5) 30%,
+      rgba(8, 8, 10, 0) 58%
+    );
+  }
+
+  /* Frosted corner chips over the art (type + version). */
+  .kind-chip,
+  .cover-version {
+    position: absolute;
+    z-index: 3;
+    top: var(--space-2);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  .kind-chip {
+    inset-inline-start: var(--space-2);
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(8, 8, 10, 0.5);
+    color: rgba(255, 255, 255, 0.92);
+  }
+
+  .cover-version {
+    inset-inline-end: var(--space-2);
+    background: rgba(8, 8, 10, 0.5);
+    border-color: color-mix(in srgb, var(--amber) 48%, transparent);
   }
 
   .kind-tag {
@@ -646,15 +749,32 @@
     background: var(--amber);
   }
 
+  /* Pack name overlaid on the bottom of the art (over the scrim). */
   .card-name {
-    margin: 2px 0 0;
+    position: absolute;
+    z-index: 3;
+    inset-inline: var(--space-3) var(--space-3);
+    bottom: var(--space-2);
+    margin: 0;
     overflow: hidden;
-    color: var(--fg);
-    font-size: var(--text-base);
-    font-weight: 650;
-    line-height: 18px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    color: #fff;
+    font-size: 15px;
+    font-weight: 680;
+    line-height: 19px;
+    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.65);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
+  /* Card body beneath the art — author byline + summary. */
+  .card-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    padding: var(--space-3);
   }
 
   .author {
@@ -754,13 +874,13 @@
   .grid-skeleton {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-    gap: var(--space-2);
+    gap: var(--space-3);
   }
 
   .card-skeleton {
-    height: 104px;
+    height: 212px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: 8px;
     background: var(--row-active);
     animation: mk-skeleton-pulse 1.3s ease-in-out infinite;
   }
@@ -797,6 +917,47 @@
     background: var(--bg);
     box-shadow: -8px 0 32px rgba(0, 0, 0, 0.45);
     animation: panel-slide-in 200ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+
+  /* Cover-art hero at the top of the detail slide-over. */
+  .detail-cover {
+    position: relative;
+    flex-shrink: 0;
+    width: 100%;
+    height: 172px;
+    overflow: hidden;
+    background: var(--bg-subtle);
+  }
+
+  .detail-cover-img,
+  .detail-cover-fallback {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  .detail-cover-img {
+    object-fit: cover;
+    object-position: center;
+  }
+
+  .detail-cover-fallback {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Fade the art into the panel surface so the header reads as one piece. */
+  .detail-cover-scrim {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 42%,
+      color-mix(in srgb, var(--bg) 94%, transparent) 100%
+    );
   }
 
   .detail-header {

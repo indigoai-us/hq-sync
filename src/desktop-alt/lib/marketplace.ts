@@ -32,6 +32,73 @@ export interface MarketplaceListing {
   contributes?: string | null;
   /** ISO-8601 publish timestamp. */
   createdAt: string;
+  /**
+   * Optional server-provided cover-art URL (forward-compat). Absent today — the
+   * UI falls back to bundled-by-slug art (see `lib/pack-covers.ts`). When the
+   * backend starts serving a per-listing cover, it takes precedence over the
+   * bundled map with no client change.
+   */
+  coverImageUrl?: string | null;
+  /**
+   * Optional server-provided human display name (forward-compat). Absent today —
+   * the UI derives a friendly name from the package `name`/`slug` via
+   * `listingDisplayName`. When the backend starts serving one it takes precedence.
+   */
+  displayName?: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Display names — turn package ids (`hq-pack-impeccable`) into friendly titles
+// ("Impeccable Design") for the cards + detail, without losing the real slug.
+// ---------------------------------------------------------------------------
+
+/**
+ * Curated, brand-respecting display names keyed by pack slug. A pack not listed
+ * here falls back to the generic `prettifyPackName` of its package name, so new
+ * packs still read cleanly without a code change.
+ */
+export const PACK_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  engineering: 'Engineering',
+  gstack: 'gStack',
+  'pocock-skills': 'Matt Pocock Skills',
+  impeccable: 'Impeccable Design',
+  'magicpath-agent-skills': 'MagicPath',
+};
+
+/** Words we keep lowercased when title-casing a derived name (unless leading). */
+const NAME_MINOR_WORDS = new Set(['and', 'for', 'the', 'of', 'to', 'a', 'an']);
+
+/**
+ * Generic prettifier: strip a leading `hq-pack-` (or `hq-`) prefix, split on
+ * `-`/`_`/space, and Title-Case the words (minor words stay lowercase unless
+ * leading). Pure + DOM-free so it's unit-testable. Returns '' for empty input.
+ */
+export function prettifyPackName(name: string): string {
+  const stripped = (name ?? '')
+    .trim()
+    .replace(/^hq-pack[-_]/i, '')
+    .replace(/^hq[-_]/i, '');
+  const words = stripped.split(/[-_\s]+/).filter(Boolean);
+  return words
+    .map((w, i) => {
+      const lower = w.toLowerCase();
+      if (i > 0 && NAME_MINOR_WORDS.has(lower)) return lower;
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join(' ');
+}
+
+/**
+ * The friendly display name for a listing. Precedence: a server-provided
+ * `displayName` (future backend) → the curated `PACK_DISPLAY_NAMES` map →
+ * a generic prettify of the package name → the raw package name as a last resort.
+ */
+export function listingDisplayName(listing: MarketplaceListing): string {
+  const hosted = listing.displayName?.trim();
+  if (hosted) return hosted;
+  const curated = PACK_DISPLAY_NAMES[listing.slug];
+  if (curated) return curated;
+  return prettifyPackName(listing.name) || listing.name;
 }
 
 /** Listing detail (`get_marketplace_listing`) — adds the presigned download URL. */
@@ -61,6 +128,7 @@ export async function loadMarketplaceListing(
 export function listingHaystack(listing: MarketplaceListing): string {
   return [
     listing.name,
+    listingDisplayName(listing),
     listing.slug,
     listing.author,
     listing.summary ?? '',
