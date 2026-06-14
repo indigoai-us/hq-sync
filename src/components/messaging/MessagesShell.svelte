@@ -36,6 +36,7 @@
   import ChannelView from './ChannelView.svelte';
   import CreateChannel from './CreateChannel.svelte';
   import ThreadPanel from './ThreadPanel.svelte';
+  import CatchUp, { type CatchUpItem } from './v4/CatchUp.svelte';
   import {
     contactPreviewAt,
     contactPreviewText,
@@ -55,6 +56,7 @@
   import {
     type Channel,
     type CompanyLabel,
+    channelDisplayName,
     upsertChannel,
     bumpChannelUnread,
     clearChannelUnread,
@@ -347,6 +349,58 @@
 
   function contactSubline(c: Contact): string | null {
     return contactPreviewText(c) ?? c.email?.trim() ?? null;
+  }
+
+  // ── Catch-up digest (real data only) ───────────────────────────────────────
+  // "While you were away" — conversations waiting for you, built ONLY from
+  // signals already loaded: channels carrying a real unread count, and DMs whose
+  // last message came IN (the ball is in your court). There is no per-DM unread
+  // flag server-side, so we never claim a DM is "unread" — those are framed as
+  // waiting. Ranked: unread channels first (by count), then inbound DMs in the
+  // existing recency order. It's a digest (top slice), not the whole list.
+  let catchUpDismissed = $state(false);
+
+  const CATCH_UP_LIMIT = 6;
+
+  const catchUpItems = $derived.by((): CatchUpItem[] => {
+    const channelItems = channels
+      .filter((ch) => (ch.unread ?? 0) > 0)
+      .slice()
+      .sort((a, b) => (b.unread ?? 0) - (a.unread ?? 0))
+      .map((ch) => ({
+        id: `ch:${ch.channelId}`,
+        title: `# ${channelDisplayName(ch)}`,
+        detail: `${ch.unread} unread`,
+      }));
+
+    const dmItems = contacts
+      .filter((c) => ((c.previewDirection ?? c.lastMessageDirection) ?? '') === 'in')
+      .map((c) => ({
+        id: `dm:${c.personUid}`,
+        title: displayLabel(c),
+        detail: contactSubline(c) ?? 'Sent you a message',
+      }));
+
+    return [...channelItems, ...dmItems]
+      .slice(0, CATCH_UP_LIMIT)
+      .map((item, index) => ({ ...item, rank: index + 1 }));
+  });
+
+  function handleCatchUpOpen(item: CatchUpItem): void {
+    if (item.id.startsWith('ch:')) {
+      const channelId = item.id.slice(3);
+      const channel = channels.find((ch) => ch.channelId === channelId);
+      if (channel) {
+        segment = 'channels';
+        selectChannel(channel);
+      }
+      return;
+    }
+    if (item.id.startsWith('dm:')) {
+      const personUid = item.id.slice(3);
+      const contact = contacts.find((c) => c.personUid === personUid);
+      if (contact) void selectContact(contact);
+    }
   }
 
   function formatContactTime(c: Contact): string | null {
@@ -871,6 +925,15 @@
     </nav>
 
     <div class="rail-body">
+      {#if segment === 'all' && catchUpItems.length > 0 && !catchUpDismissed}
+        <div class="catch-up-host">
+          <CatchUp
+            items={catchUpItems}
+            onopen={handleCatchUpOpen}
+            ondismiss={() => (catchUpDismissed = true)}
+          />
+        </div>
+      {/if}
       {#if segment === 'all' || segment === 'people'}
         {#if loadingContacts}
           <p class="rail-status">Loading conversations…</p>
@@ -1212,6 +1275,10 @@
 
   .rail-error {
     color: var(--red);
+  }
+
+  .catch-up-host {
+    padding: 0 0 var(--space-2);
   }
 
   .contact-list {

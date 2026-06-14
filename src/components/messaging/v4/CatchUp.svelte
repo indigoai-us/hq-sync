@@ -9,15 +9,21 @@
   interface Props {
     items?: CatchUpItem[];
     onopen?: (item: CatchUpItem) => void;
+    ondismiss?: () => void;
   }
 
-  let { items = [], onopen }: Props = $props();
+  let { items = [], onopen, ondismiss }: Props = $props();
 </script>
 
 <section class="catch-up" aria-label="Catch up" data-testid="v4-catch-up">
   <header>
     <h2>Catch up</h2>
-    <span>{items.length} unread</span>
+    <div class="catch-up-meta">
+      <span>{items.length} waiting</span>
+      {#if ondismiss}
+        <button type="button" class="catch-up-hide" onclick={() => ondismiss?.()}>Hide</button>
+      {/if}
+    </div>
   </header>
   {#if items.length === 0}
     <p class="empty">Nothing new.</p>
@@ -58,6 +64,28 @@
     justify-content: space-between;
   }
 
+  .catch-up-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .catch-up-hide {
+    padding: 2px 7px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted-2);
+    font: inherit;
+    font-size: var(--text-micro);
+    cursor: pointer;
+  }
+
+  .catch-up-hide:hover {
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+
   h2,
   .empty {
     margin: 0;
@@ -91,6 +119,17 @@
     color: inherit;
     font: inherit;
     text-align: left;
+    cursor: pointer;
+  }
+
+  .ranked-card:hover {
+    border-color: var(--border-strong);
+    background: var(--row-hover);
+  }
+
+  .ranked-card:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
   }
 
   .rank {
