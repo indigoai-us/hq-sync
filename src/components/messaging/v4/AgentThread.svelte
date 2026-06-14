@@ -88,7 +88,8 @@
     width: 30px;
     height: 30px;
     border-radius: 8px;
-    background: var(--accent-soft);
+    /* No purple (hard Indigo policy). Matches the rail's .bolt-avatar fix. */
+    background: var(--surface-raise);
     color: var(--fg);
   }
 

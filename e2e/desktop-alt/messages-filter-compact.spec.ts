@@ -52,4 +52,16 @@ describe('Messages filter — compact horizontal quiet tabs', () => {
     expect(shell).not.toContain('var(--accent)');
     expect(shell).not.toContain('var(--accent-soft)');
   });
+
+  it('keeps the staged v4 agent-native messaging components purple-free', () => {
+    // AgentThread / CatchUp / SystemEventCard / UnfurlCard are staged for the
+    // agent-native Messages build. They render inside MessagesShell's cascade,
+    // so the same hard no-purple policy applies even before they all mount —
+    // AgentThread's avatar previously leaked var(--accent-soft) (indigo).
+    for (const name of ['AgentThread', 'CatchUp', 'SystemEventCard', 'UnfurlCard']) {
+      const component = readRepoFile(`src/components/messaging/v4/${name}.svelte`);
+      expect(component, `${name} must not use --accent`).not.toContain('var(--accent)');
+      expect(component, `${name} must not use --accent-soft`).not.toContain('var(--accent-soft)');
+    }
+  });
 });
