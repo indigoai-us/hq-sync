@@ -6,6 +6,8 @@ use tauri::Manager;
 
 mod commands;
 mod events;
+#[cfg(target_os = "macos")]
+mod glass;
 mod sentry_scrub;
 mod tray;
 mod tray_helper;

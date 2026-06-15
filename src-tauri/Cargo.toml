@@ -121,6 +121,11 @@ block2 = "0.6"
 # Tauri command itself never blocks. Pattern shared between
 # commands/meetings.rs and commands/share_notify.rs.
 mac-notification-sys = "0.6"
+# CGRect/CGPoint/CGSize for the Liquid Glass window backing (src/glass.rs):
+# `[contentView bounds]` returns an NSRect by value, which msg_send! needs an
+# Encode-able type for. Already in the lock tree (transitive via objc2-app-kit);
+# pinned as a direct dep so the glass bridge can name the geometry type.
+objc2-core-foundation = "0.3"
 
 [features]
 journal-cli = []

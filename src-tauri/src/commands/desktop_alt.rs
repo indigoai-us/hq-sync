@@ -625,10 +625,28 @@ pub async fn open_desktop_alt_window_inner(
     .resizable(true)
     .decorations(true)
     .title_bar_style(tauri::TitleBarStyle::Overlay)
-    .transparent(false)
+    // Transparent so the native Liquid Glass backing view (applied below) shows
+    // through. The desktop CSS paints translucent surfaces over it; the
+    // reduced-transparency media query restores a solid window for that a11y
+    // setting. See src/glass.rs.
+    .transparent(true)
     .visible(true)
     .build()
     .map_err(|e| e.to_string())?;
+
+    // Apply the macOS 26 Liquid Glass material (NSGlassEffectView) behind the
+    // webview, falling back to NSVisualEffectView vibrancy on older macOS.
+    // AppKit is main-thread-only, so hop onto the main thread and re-fetch the
+    // window by label inside the closure (mirrors commands/banner.rs).
+    #[cfg(target_os = "macos")]
+    {
+        let app_for_glass = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(win) = app_for_glass.get_webview_window(WINDOW_LABEL) {
+                crate::glass::apply_liquid_glass_window(&win);
+            }
+        });
+    }
 
     Ok(())
 }

@@ -153,6 +153,29 @@ html[data-window='messages'] body {
   background: var(--bg-body);
 }
 
+/* ---- Liquid Glass (desktop window only) -----------------------------------
+ * The desktop window is transparent (tauri.conf.json + the WebviewWindowBuilder
+ * in commands/desktop_alt.rs) with a native NSGlassEffectView backing inserted
+ * behind the webview — Apple's macOS 26 Liquid Glass material, falling back to
+ * NSVisualEffectView vibrancy on older macOS (src-tauri/src/glass.rs). These
+ * overrides make the window's own surfaces translucent so the real glass shows
+ * through, with a dark wash that keeps text legible over any desktop. Hierarchy
+ * is by alpha: --v4-ground (window + main content) shows the most glass;
+ * --v4-raised (cards, primary sidebar) reads as a denser glass panel.
+ *
+ * Scoped to data-window='desktop-alt' so the standalone, still-opaque Messages
+ * window is untouched. The reduced-transparency blocks below restore solids. */
+html[data-window='desktop-alt'] {
+  background: transparent;
+  --v4-ground: rgba(22, 22, 24, 0.42);
+  --v4-raised: rgba(42, 42, 47, 0.55);
+  --v4-inset: rgba(28, 28, 32, 0.5);
+}
+
+html[data-window='desktop-alt'] body {
+  background: transparent;
+}
+
 /* ---- Light mode -----------------------------------------------------------
  * First-class, derived from the popover light palette so the two windows read
  * as the same monochrome-glass system under a light desktop. Neutral inversion
@@ -189,10 +212,22 @@ html[data-window='messages'] body {
   }
 }
 
+/* Liquid Glass — light desktop. Light translucent washes over the native glass
+   (which is bright under a light desktop) so the window reads as light glass.
+   Placed after the light block above so these win for the desktop window. */
+@media (prefers-color-scheme: light) {
+  html[data-window='desktop-alt'] {
+    --v4-ground: rgba(244, 244, 247, 0.5);
+    --v4-raised: rgba(255, 255, 255, 0.62);
+    --v4-inset: rgba(249, 249, 252, 0.55);
+  }
+}
+
 /* ---- Reduced transparency -------------------------------------------------
- * The desktop window is already fully opaque (no backdrop blur), so the
- * reduced-transparency contract is satisfied by promoting the few alpha-based
- * surfaces to solid neutrals. Dark + light variants both covered. */
+ * Promote the few alpha-based surfaces (borders, hover/active rows) to solid
+ * neutrals for the reduced-transparency contract. The desktop window's glass
+ * surfaces are additionally restored to opaque fills in the Liquid Glass a11y
+ * blocks further below. Dark + light variants both covered. */
 @media (prefers-reduced-transparency: reduce) {
   html[data-window='desktop-alt'],
   html[data-window='messages'] {
@@ -210,6 +245,32 @@ html[data-window='messages'] body {
     --border-strong: rgba(0, 0, 0, 0.22);
     --row-hover: #ededf0;
     --row-active: #e4e4e8;
+  }
+}
+
+/* Liquid Glass a11y fallback — when the user prefers reduced transparency,
+   restore a solid, opaque desktop window. The native glass backing view stays
+   in place but is fully covered by these opaque fills, so nothing shows
+   through. (The native NSGlassEffectView / vibrancy also self-dampens under
+   this setting, so this is belt-and-suspenders.) */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-window='desktop-alt'] {
+    background: var(--bg);
+    --v4-ground: #161618;
+    --v4-raised: #1b1b1d;
+    --v4-inset: #19191b;
+  }
+
+  html[data-window='desktop-alt'] body {
+    background: var(--bg-body);
+  }
+}
+
+@media (prefers-color-scheme: light) and (prefers-reduced-transparency: reduce) {
+  html[data-window='desktop-alt'] {
+    --v4-ground: #f6f6f8;
+    --v4-raised: #ffffff;
+    --v4-inset: #f1f1f4;
   }
 }
 
