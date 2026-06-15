@@ -423,9 +423,14 @@ jobs:
           fi
 
           if ! gh release view "$TAG" >/dev/null 2>&1; then
+            # Auto-generate the release body ("What's Changed" + a working
+            # "Full Changelog: <prev>...<tag>" compare link) from the commits/PRs
+            # since the previous release. Replaces a hard-coded link to a
+            # CHANGELOG.md that never existed (404'd on every release). Nothing to
+            # hand-maintain, so the notes can't go stale.
             gh release create "$TAG" \
               --title "HQ Sync $TAG" \
-              --notes "See the [changelog](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details." \
+              --generate-notes \
               --draft $PRE_FLAG \
               --target "${{ github.sha }}"
           fi
