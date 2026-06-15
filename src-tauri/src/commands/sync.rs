@@ -78,11 +78,25 @@ pub struct RunTotals {
     /// can emit a synthetic AllComplete and unblock the UI from a stuck
     /// "syncing" state.
     pub all_complete_seen: bool,
+    /// Set true when the runner emitted at least one company-level error event
+    /// (`path == "(company)"`). Each company that throws mid-fanout pushes one
+    /// such event AND drives the runner's exit-2 path (see hq-cloud
+    /// `sync-runner.ts`). The Exit handler uses this together with
+    /// `saw_alertable_company_error` to tell "non-zero exit fully explained by
+    /// benign company errors" apart from "unexplained crash before any
+    /// protocol" — only the latter should raise a Sentry alert.
+    pub saw_company_error: bool,
+    /// Set true when at least one company-level error was *alertable* — a real
+    /// defect rather than a benign not-yet-provisioned 404 or a transient,
+    /// self-healing network blip. Gates the Sentry capture at the
+    /// non-zero-exit site (see `should_alert_on_nonzero_exit`).
+    pub saw_alertable_company_error: bool,
 }
 
 impl RunTotals {
     /// Update totals from a single event. `Complete` events contribute to
-    /// counters; `AllComplete` flips the seen-flag. Saturates on overflow.
+    /// counters; `AllComplete` flips the seen-flag; company-level `Error`
+    /// events feed the exit-alert decision. Saturates on overflow.
     pub fn accumulate(&mut self, event: &SyncEvent) {
         match event {
             SyncEvent::Complete(c) => {
@@ -90,6 +104,16 @@ impl RunTotals {
             }
             SyncEvent::AllComplete(_) => {
                 self.all_complete_seen = true;
+            }
+            // Only company-level sentinel errors (`path == "(company)"`) drive
+            // the runner's non-zero exit — file-level errors co-exist with a
+            // clean exit and are renderer-only. Record whether we saw any, and
+            // whether any was a real (alertable) defect.
+            SyncEvent::Error(e) if e.path == "(company)" => {
+                self.saw_company_error = true;
+                if is_alertable_company_error(e) {
+                    self.saw_alertable_company_error = true;
+                }
             }
             _ => {}
         }
@@ -104,6 +128,13 @@ const SYNC_TIMEOUT: Duration = Duration::from_secs(3600);
 
 /// SIGKILL delay after SIGTERM on cancel.
 const SIGKILL_DELAY: Duration = Duration::from_secs(5);
+
+/// Exit code the runner returns when another operation already holds this HQ
+/// root's lock (hq-cloud `OPERATION_LOCKED_EXIT`, a stable non-zero code). A
+/// concurrent sync is a normal race — e.g. instant-sync firing while a manual
+/// or scheduled sync is already mid-run — not a failure, so the menubar must
+/// never escalate it to a Sentry alert. See `should_alert_on_nonzero_exit`.
+const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 
 /// Semver range for `@indigoai-us/hq-cloud` that ships `hq-sync-runner`.
 ///
@@ -618,6 +649,88 @@ fn is_entity_not_yet_provisioned(err: &SyncErrorEvent) -> bool {
         || (msg.contains("entity") && msg.contains("not found"))
 }
 
+/// Returns `true` when a runner error message is a transient, retryable network
+/// condition that the next sync cycle recovers from on its own — a socket reset
+/// mid-fanout, a momentary DNS hiccup, a connection timeout. These are not
+/// actionable: sync runs every cycle, one machine's momentary connectivity blip
+/// self-heals, and persistent vault/S3 outages surface in server-side
+/// monitoring rather than per-client crash reports. The runner's `describeError`
+/// walks the AWS-SDK cause chain so the underlying Node networking code
+/// (`ECONNRESET`, `ETIMEDOUT`, …) reaches us instead of a bare "UnknownError".
+///
+/// Deliberately matches only unambiguous network-layer markers — HTTP-status
+/// errors (`403`, `404`, `5xx`) and filesystem errors (`EISDIR`) are NOT
+/// transient and must keep alerting.
+fn is_transient_network_error(message: &str) -> bool {
+    let msg = message.to_lowercase();
+    const TRANSIENT_MARKERS: &[&str] = &[
+        "econnreset",
+        "econnrefused",
+        "etimedout",
+        "epipe",
+        "eai_again",
+        "enetdown",
+        "enetunreach",
+        "ehostunreach",
+        "socket hang up",
+        "timeouterror",
+    ];
+    TRANSIENT_MARKERS.iter().any(|m| msg.contains(m))
+}
+
+/// Returns `true` when a per-company runner error should raise a Sentry alert
+/// if it drives a non-zero runner exit.
+///
+/// Benign (no alert):
+///   - not-yet-provisioned companies — the vault's *correct* 404 / "no bucket
+///     provisioned". `handle_sync_line` already reclassifies these into an
+///     empty-sync `Complete` for the UI via `classify_error_event`; alerting at
+///     exit would re-raise the very condition the UI just absorbed.
+///   - transient, retryable network errors (`is_transient_network_error`).
+///
+/// Everything else (EISDIR, 403/404 auth, 5xx-after-retries, `UnknownError`,
+/// anything unrecognised) is treated as a real defect and keeps alerting —
+/// fail safe toward surfacing, not swallowing.
+///
+/// Only company-level sentinel errors (`path == "(company)"`) are eligible:
+/// file-level errors co-exist with a clean exit and never explain a non-zero
+/// exit code.
+fn is_alertable_company_error(err: &SyncErrorEvent) -> bool {
+    if err.path != "(company)" {
+        return false;
+    }
+    !(is_entity_not_yet_provisioned(err) || is_transient_network_error(&err.message))
+}
+
+/// Pure policy: should a *non-zero* runner exit raise a Sentry alert?
+///
+/// Extracted from the `ProcessEvent::Exit` handler so the decision is
+/// unit-testable without a live `AppHandle`. Returns `false` (suppress) for the
+/// non-actionable exits this issue was drowning in, `true` (alert) otherwise:
+///
+///   - exit 17 (`OPERATION_LOCKED`): another sync holds the lock — a normal
+///     concurrent-sync race, never a failure.
+///   - a run whose company errors were all benign (`saw_company_error &&
+///     !saw_alertable_company_error`): the non-zero exit is fully explained by
+///     not-yet-provisioned 404s and/or transient network blips.
+///
+/// An *unexplained* non-zero exit — no company error seen at all, e.g. the
+/// runner panicked or was OOM-killed before emitting protocol — still alerts,
+/// preserving the original "bailed before emitting a useful stream" signal.
+fn should_alert_on_nonzero_exit(
+    code: Option<i32>,
+    saw_company_error: bool,
+    saw_alertable_company_error: bool,
+) -> bool {
+    if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
+        return false;
+    }
+    if saw_company_error && !saw_alertable_company_error {
+        return false;
+    }
+    true
+}
+
 /// Classifies a per-company error event. Returns `Some(SyncCompleteEvent)` when
 /// the error represents a company not yet provisioned on S3 (empty-sync
 /// semantics), or `None` when the error should surface normally.
@@ -1112,14 +1225,41 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // the frontend already knows. A non-zero exit means the runner
                 // bailed before emitting a useful protocol stream.
                 if !success {
-                    let _ = report_sync_error(
-                        &app_bg,
-                        crate::events::SyncErrorEvent {
-                            company: None,
-                            path: "(runner)".to_string(),
-                            message: format!("hq-sync-runner exited {}", exit_desc),
-                        },
-                    );
+                    // Not every non-zero exit is an actionable defect. The
+                    // runner exits 2 whenever *any* company throws mid-fanout —
+                    // including the vault's correct 404 for a not-yet-
+                    // provisioned company and transient network resets that the
+                    // next cycle recovers from — and exit 17 when another sync
+                    // already holds the lock. Those flooded this Sentry issue
+                    // with un-actionable noise. Consult the run's error
+                    // classification (accumulated from the company-level `error`
+                    // events) and only capture a genuine defect. The per-company
+                    // error events + stderr breadcrumbs were already surfaced to
+                    // the UI and the local sync log, so suppression loses no
+                    // diagnostics — only the Sentry alert.
+                    let (saw_company_error, saw_alertable) = totals
+                        .lock()
+                        .map(|t| (t.saw_company_error, t.saw_alertable_company_error))
+                        .unwrap_or((false, false));
+                    if should_alert_on_nonzero_exit(code, saw_company_error, saw_alertable) {
+                        let _ = report_sync_error(
+                            &app_bg,
+                            crate::events::SyncErrorEvent {
+                                company: None,
+                                path: "(runner)".to_string(),
+                                message: format!("hq-sync-runner exited {}", exit_desc),
+                            },
+                        );
+                    } else {
+                        log(
+                            "sync",
+                            &format!(
+                                "runner exited non-zero ({}) but fully explained by benign/transient conditions \
+                                 (locked / not-provisioned / network reset) — not alerting",
+                                exit_desc
+                            ),
+                        );
+                    }
                 } else {
                     // Successful exit but no AllComplete observed (e.g.
                     // runner bailed on setup-needed for a brand-new account
@@ -1846,6 +1986,181 @@ mod tests {
             "Failed to fetch entity cmp_01ABC: 404 company/entity not found",
         );
         assert!(is_entity_not_yet_provisioned(&err));
+    }
+
+    // ── is_transient_network_error ───────────────────────────────────────────
+
+    #[test]
+    fn test_transient_network_error_matches_known_markers() {
+        // The exact shape the runner's `describeError` surfaces for the
+        // latest-event scenario (HQ-SYNC-WEB-6): a socket reset mid-fanout.
+        assert!(is_transient_network_error(
+            "TimeoutError code=ECONNRESET read ECONNRESET"
+        ));
+        assert!(is_transient_network_error("connect ECONNREFUSED 10.0.0.1:443"));
+        assert!(is_transient_network_error("Client network socket disconnected: socket hang up"));
+        assert!(is_transient_network_error("request to https://vault failed, reason: ETIMEDOUT"));
+        assert!(is_transient_network_error("getaddrinfo EAI_AGAIN hqapi.getindigo.ai"));
+        // Case-insensitive.
+        assert!(is_transient_network_error("Econnreset"));
+    }
+
+    #[test]
+    fn test_transient_network_error_excludes_real_defects() {
+        // Filesystem + HTTP-status + opaque errors are NOT transient and must
+        // keep alerting.
+        assert!(!is_transient_network_error(
+            "EISDIR: illegal operation on a directory, read"
+        ));
+        assert!(!is_transient_network_error("Unknown http=403 UnknownError"));
+        assert!(!is_transient_network_error(
+            "Failed to fetch entity cmp_01ABC: 404 {\"error\":\"gone\"}"
+        ));
+        assert!(!is_transient_network_error("ScopeShrinkBlockedError code=SCOPE_SHRINK_BLOCKED"));
+        assert!(!is_transient_network_error("something unexpected"));
+    }
+
+    // ── is_alertable_company_error ───────────────────────────────────────────
+
+    #[test]
+    fn test_alertable_false_for_not_yet_provisioned() {
+        // The vault's correct 404 is benign — the UI already absorbs it as an
+        // empty sync; re-alerting at exit is the noise this fix removes.
+        let err = make_company_error(
+            Some("newco"),
+            "(company)",
+            "Failed to fetch entity cmp_01ABC: 404 company/entity not found",
+        );
+        assert!(!is_alertable_company_error(&err));
+    }
+
+    #[test]
+    fn test_alertable_false_for_transient_network() {
+        let err = make_company_error(
+            Some("personal"),
+            "(company)",
+            "TimeoutError code=ECONNRESET read ECONNRESET",
+        );
+        assert!(!is_alertable_company_error(&err));
+    }
+
+    #[test]
+    fn test_alertable_true_for_real_defect() {
+        // EISDIR (a genuine bug) and a 403 (auth) must still alert.
+        let eisdir = make_company_error(
+            Some("acme"),
+            "(company)",
+            "EISDIR: illegal operation on a directory, read",
+        );
+        assert!(is_alertable_company_error(&eisdir));
+        let forbidden = make_company_error(
+            Some("acme"),
+            "(company)",
+            "STS /sts/vend-self failed: 403 {\"error\":\"denied\"}",
+        );
+        assert!(is_alertable_company_error(&forbidden));
+    }
+
+    #[test]
+    fn test_alertable_false_for_file_level_error() {
+        // File-level errors never drive the runner's non-zero exit; they are
+        // not eligible as the "cause" of an exit alert.
+        let err = make_company_error(
+            Some("acme"),
+            "docs/a.md",
+            "EISDIR: illegal operation on a directory, read",
+        );
+        assert!(!is_alertable_company_error(&err));
+    }
+
+    // ── should_alert_on_nonzero_exit ─────────────────────────────────────────
+
+    #[test]
+    fn test_exit_alert_suppressed_for_operation_locked() {
+        // Exit 17 = another sync holds the lock — a normal concurrent race.
+        assert!(!should_alert_on_nonzero_exit(Some(17), false, false));
+        // Even if it somehow co-occurred with an alertable error, locked wins.
+        assert!(!should_alert_on_nonzero_exit(Some(17), true, true));
+    }
+
+    #[test]
+    fn test_exit_alert_suppressed_when_all_company_errors_benign() {
+        // The HQ-SYNC-WEB-6 latest-event shape: exit 2 driven solely by a
+        // transient ECONNRESET on one company → no alert.
+        assert!(!should_alert_on_nonzero_exit(Some(2), true, false));
+    }
+
+    #[test]
+    fn test_exit_alert_fires_for_real_company_error() {
+        // exit 2 with at least one alertable company error (e.g. EISDIR) → alert.
+        assert!(should_alert_on_nonzero_exit(Some(2), true, true));
+    }
+
+    #[test]
+    fn test_exit_alert_fires_for_unexplained_exit() {
+        // Non-zero exit with NO company error seen — runner panicked / was
+        // OOM-killed before emitting protocol. This is the original
+        // "bailed before a useful stream" signal and must keep alerting.
+        assert!(should_alert_on_nonzero_exit(Some(1), false, false));
+        // Signal-kill (code None) with no protocol is likewise unexplained.
+        assert!(should_alert_on_nonzero_exit(None, false, false));
+    }
+
+    // ── accumulate: company-error classification ─────────────────────────────
+
+    #[test]
+    fn test_accumulate_flags_benign_company_error_not_alertable() {
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::Error(make_company_error(
+            Some("personal"),
+            "(company)",
+            "TimeoutError code=ECONNRESET read ECONNRESET",
+        )));
+        assert!(t.saw_company_error);
+        assert!(!t.saw_alertable_company_error);
+    }
+
+    #[test]
+    fn test_accumulate_flags_real_company_error_alertable() {
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::Error(make_company_error(
+            Some("acme"),
+            "(company)",
+            "EISDIR: illegal operation on a directory, read",
+        )));
+        assert!(t.saw_company_error);
+        assert!(t.saw_alertable_company_error);
+    }
+
+    #[test]
+    fn test_accumulate_mixed_company_errors_stay_alertable() {
+        // A benign error must not "downgrade" a real one seen in the same run.
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::Error(make_company_error(
+            Some("personal"),
+            "(company)",
+            "TimeoutError code=ECONNRESET read ECONNRESET",
+        )));
+        t.accumulate(&SyncEvent::Error(make_company_error(
+            Some("acme"),
+            "(company)",
+            "EISDIR: illegal operation on a directory, read",
+        )));
+        assert!(t.saw_company_error);
+        assert!(t.saw_alertable_company_error);
+    }
+
+    #[test]
+    fn test_accumulate_ignores_file_level_error() {
+        // File-level errors don't set the company-error flags.
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::Error(make_company_error(
+            Some("acme"),
+            "docs/a.md",
+            "EISDIR: illegal operation on a directory, read",
+        )));
+        assert!(!t.saw_company_error);
+        assert!(!t.saw_alertable_company_error);
     }
 
     // ── classify_error_event ─────────────────────────────────────────────────
