@@ -87,8 +87,15 @@ pub struct LocalStory {
     pub acceptance_criteria: Vec<String>,
     #[serde(default)]
     pub passes: bool,
+    // `priority` is a passthrough JSON value: real prds write it as a NUMBER
+    // (e.g. `1`), older ones as a STRING (e.g. `"P0"`). Deserializing into
+    // `Option<String>` made serde reject the whole story (and therefore the
+    // whole prd) the moment it hit a numeric priority — which is why every
+    // numeric-priority project's board showed 0 stories. The frontend already
+    // coerces `string | number | null` (see lib/local-projects.ts), so we pass
+    // the raw value straight through.
     #[serde(default)]
-    pub priority: Option<String>,
+    pub priority: Option<serde_json::Value>,
     #[serde(default)]
     pub labels: Vec<String>,
     #[serde(default)]
@@ -356,8 +363,10 @@ struct PrdStory {
     acceptance_criteria: Vec<String>,
     #[serde(default)]
     passes: bool,
+    // Accept number OR string priority (see LocalStory::priority) — a numeric
+    // priority must not fail the whole prd parse.
     #[serde(default)]
-    priority: Option<String>,
+    priority: Option<serde_json::Value>,
     #[serde(default)]
     labels: Vec<String>,
     #[serde(default, rename = "dependsOn")]
@@ -1189,11 +1198,60 @@ mod tests {
         assert_eq!(us1.id, "US-001");
         assert_eq!(us1.acceptance_criteria, vec!["a", "b"]);
         assert!(us1.passes);
-        assert_eq!(us1.priority.as_deref(), Some("P0"));
+        // String priority still round-trips (now carried as a JSON value).
+        assert_eq!(us1.priority.as_ref().and_then(|v| v.as_str()), Some("P0"));
         assert_eq!(us1.labels, vec!["x"]);
         assert_eq!(us1.notes.as_deref(), Some("n"));
         // metadata passes through.
         assert_eq!(prd.metadata["company"], "indigo");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn numeric_priority_does_not_break_the_prd() {
+        // Regression: real prds write `priority` as a NUMBER (e.g. 1). When the
+        // field was typed `Option<String>`, serde rejected the entire prd the
+        // moment it hit a numeric priority — so EVERY story vanished and the
+        // board showed "0 stories" (and unlinked numeric-priority prds dropped
+        // out of the project list entirely). The prd must parse with all stories.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hq-prd-numprio-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        let proj = root
+            .join("companies")
+            .join("acme")
+            .join("projects")
+            .join("numeric");
+        fs::create_dir_all(&proj).unwrap();
+        let prd = r#"{
+            "name": "Numeric",
+            "userStories": [
+                {"id":"US-1","title":"a","passes":true,"priority":1},
+                {"id":"US-2","title":"b","passes":false,"priority":2}
+            ]
+        }"#;
+        fs::write(proj.join("prd.json"), prd).unwrap();
+
+        // Direct read keeps both stories and passes the numeric priority through.
+        let parsed = read_project_prd(&root, "companies/acme/projects/numeric/prd.json")
+            .expect("numeric-priority prd must parse");
+        assert_eq!(parsed.user_stories.len(), 2);
+        assert_eq!(parsed.user_stories[0].priority, Some(serde_json::json!(1)));
+
+        // The board scan reports the REAL counts (2 total, 1 complete) — not 0 —
+        // and lists the unlinked prd as a project.
+        let projects = scan_local_projects(&root);
+        let numeric = projects
+            .iter()
+            .find(|p| p.title == "Numeric")
+            .expect("unlinked numeric-priority prd should surface as a project");
+        assert_eq!(numeric.story_count, 2);
+        assert_eq!(numeric.stories_complete, 1);
+
         let _ = fs::remove_dir_all(&root);
     }
 
