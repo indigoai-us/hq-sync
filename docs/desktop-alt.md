@@ -29,7 +29,8 @@ All commands are registered in `src-tauri/src/main.rs`.
 | Command | Purpose |
 | --- | --- |
 | `desktop_alt_enabled` | Returns the Indigo gate result. |
-| `open_desktop_alt_window` | Shows/focuses an existing `desktop-alt` window or builds the 1180 x 760 decorated window. |
+| `open_desktop_alt_window` | Shows/focuses an existing `desktop-alt` window or builds the decorated window. The window is built `transparent(true)` and gets its native macOS glass backing applied via `glass::apply_liquid_glass_window` immediately after build (0.8.1-beta.1). |
+| `get_company_project_creators` | Fetches the cloud board for a company and returns only projects with a non-empty creator (derived from the prd's S3 `created-by` metadata) for the Projects-list **Lead** column (0.8.2-beta.1). Projects with no stamped creator are omitted and stay "Unassigned" in the UI. Pure parse is `parse_project_creators`, unit-tested in `desktop_alt.rs`. |
 | `get_company_summary` | Returns counts for the company header and overview stats. |
 | `get_company_board` | Reads board data from the vault API at `/companies/{companyUid}/board`. |
 | `get_company_activity` | Reads activity data from the vault API at `/companies/{companyUid}/activity`. |
@@ -46,6 +47,12 @@ Company slugs are normalized in Rust, resolved through `list_syncable_workspaces
 - Deployments intentionally call hq-deploy directly; hq-deploy owns app rows, DNS state, deploy history, passwords, and share-token state.
 - Secrets must never expose plaintext. `get_company_secrets` projects each row into `{ env, count, items: [{ key, upd, rot }] }`; parser and E2E coverage reject recursive `value` or `secret` fields.
 - The desktop-alt capability grants only `core:default`, `core:event:default`, and `shell:allow-open`.
+
+## Window Appearance
+
+- **Liquid Glass window (0.8.1-beta.1).** The desktop window is built `transparent(true)`; `src-tauri/src/glass.rs::apply_liquid_glass_window` inserts a native `NSGlassEffectView` at the very back of the content view on macOS 26 (Tahoe) so the window reads as real Liquid Glass over the desktop. On older macOS the class is resolved at runtime as absent and the code falls back to the same `NSVisualEffectView` `UnderWindowBackground` vibrancy the menubar popover uses, so every supported OS still gets a translucent window. AppKit is main-thread-only, so this runs via `run_on_main_thread`. The native material backs the *window*; in-window panels get matched translucent styling in CSS (the material cannot refract the webview's own DOM).
+- **Light-mode adaptivity (0.8.2-beta.1).** The V4 surface follows the OS appearance. `src/desktop-alt/v4/tokens.css` carries a light token set under `prefers-color-scheme: light`, and `src/desktop-alt/styles/desktop-alt.css` carries matching light glass/surface overrides. Previously the desktop window was dark-only.
+- **HQ console links.** Every external link the desktop window opens into the HQ web console is centralized in `src/desktop-alt/lib/hq-console.ts` (base `https://hq.getindigo.ai`) — Company Settings (the console company page), invite, integrations, and creator profiles. Links open in the system browser via `@tauri-apps/plugin-shell`.
 
 ## Tests
 
