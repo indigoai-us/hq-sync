@@ -3,6 +3,7 @@
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import type { Workspace } from '../../lib/workspaces';
   import { buildClaudeCodeUrl } from '../../lib/claude-code-link';
+  import { companyInviteUrl, companySettingsUrl } from '../lib/hq-console';
   import ActivityPanel from '../panels/ActivityPanel.svelte';
   import CompanyBoardPanel from '../panels/CompanyBoardPanel.svelte';
   import CompanyGoalsPage from './CompanyGoalsPage.svelte';
@@ -21,8 +22,6 @@
      * Overview.
      */
     tab?: CompanyTab;
-    /** Open the V4 desktop Settings route from the company action row. */
-    onopencompanysettings?: () => void;
     /** Switch to the Projects section before handing project creation to HQ. */
     onopenprojects?: () => void;
   }
@@ -30,7 +29,6 @@
   let {
     company,
     tab = DEFAULT_COMPANY_TAB,
-    onopencompanysettings,
     onopenprojects,
   }: Props = $props();
 
@@ -41,30 +39,22 @@
   let actionError = $state<string | null>(null);
   let newProjectBusy = $state(false);
 
-  // HQ web console base. Same host the Meetings page links to for
-  // "Open HQ Console Integrations" — the company console lives at /{slug}.
-  const HQ_CONSOLE_BASE = 'https://hq.getindigo.ai';
   const cloudBacked = $derived(
     company.state === 'synced' ||
       company.state === 'cloud-only' ||
       (company.kind === 'company' && Boolean(company.cloudUid)),
   );
 
-  function companyConsoleUrl(): string {
-    return `${HQ_CONSOLE_BASE}/${encodeURIComponent(company.slug)}`;
-  }
-
   function openInvite() {
-    void openExternal(`${companyConsoleUrl()}/invite`);
+    void openExternal(companyInviteUrl(company.slug));
   }
 
+  // Company settings (sync rules, members, roles) live in the HQ web console,
+  // not the in-app Settings route — open the company's console page in the
+  // system browser.
   function openCompanySettings() {
     actionError = null;
-    if (onopencompanysettings) {
-      onopencompanysettings();
-      return;
-    }
-    void openExternal(companyConsoleUrl());
+    void openExternal(companySettingsUrl(company.slug));
   }
 
   async function startNewProject() {

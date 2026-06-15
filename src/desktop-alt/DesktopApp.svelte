@@ -44,6 +44,8 @@
   import type { HomeConflict, HomeCoreState } from './v4/home-model';
   import V4Sidebar from './v4/V4Sidebar.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
+  import { open as openExternal } from '@tauri-apps/plugin-shell';
+  import { companyConsoleUrl } from './lib/hq-console';
   import V4TitleBar from './v4/V4TitleBar.svelte';
   import DesktopStatusBar from './DesktopStatusBar.svelte';
   import CommandPalette, {
@@ -637,7 +639,14 @@
       navigate({ kind: 'library', tab: 'profile' });
       return;
     }
-    // Company settings live inside the V4 Settings route in the desktop app.
+    // "Company settings" — sync rules, members, roles all live in the HQ web
+    // console, so open the company's console page in the system browser rather
+    // than the in-app Settings route.
+    const slug = activeCompany?.slug;
+    if (slug) {
+      void openExternal(companyConsoleUrl(slug));
+      return;
+    }
     handleOpenSettings();
   }
 
@@ -1180,7 +1189,6 @@
               <CompanyPage
                 company={activeCompany}
                 tab={companyTab}
-                onopencompanysettings={() => handleOpenSettings()}
                 onopenprojects={() =>
                   navigate({ kind: 'company', slug: activeCompany.slug, tab: 'projects' })
                 }

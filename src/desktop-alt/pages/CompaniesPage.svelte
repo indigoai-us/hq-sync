@@ -94,12 +94,41 @@
     }
   });
 
+  // slug → team member count (get_company_activity stats.members), fetched
+  // lazily per connected company row to fill the MEMBERS lane.
+  let memberCounts = $state<Record<string, number>>({});
+  const requestedMembers = new Set<string>();
+
+  // One lazy get_company_activity round-trip per connected company row, purely
+  // to resolve the MEMBERS lane. Best-effort: a failure leaves the lane at "—".
+  // Mirrors the get_sync_mode guard so a re-render never refetches a slug.
+  $effect(() => {
+    for (const workspace of workspaces) {
+      if (workspace.kind !== 'company') continue;
+      if (workspace.state !== 'synced' && workspace.state !== 'cloud-only') continue;
+      const slug = workspace.slug;
+      if (requestedMembers.has(slug)) continue;
+      requestedMembers.add(slug);
+      void invoke<{ stats?: { members?: number } }>('get_company_activity', { slug })
+        .then((activity) => {
+          const count = activity?.stats?.members;
+          if (typeof count === 'number') {
+            memberCounts = { ...memberCounts, [slug]: count };
+          }
+        })
+        .catch((err) => {
+          console.warn(`get_company_activity(${slug}) members fetch failed:`, err);
+        });
+    }
+  });
+
   const model = $derived(
     getCompaniesPageModel({
       workspaces,
       connectingSlugs: connecting,
       connectErrors,
       syncModes,
+      memberCounts,
       autoSyncOn,
     }),
   );

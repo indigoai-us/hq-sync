@@ -142,7 +142,9 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(rustDesktopAlt).toContain('pub struct CompanySummary');
     expect(rustDesktopAlt).toContain('pub async fn get_company_summary(slug: String) -> Result<CompanySummary, String>');
     expect(rustMain).toContain('commands::desktop_alt::get_company_summary');
-    expect(page).toContain('onopencompanysettings?: () => void;');
+    // Company settings now opens the HQ web console (sync rules / members /
+    // roles live there) in the system browser, not an in-app settings route.
+    expect(page).toContain('void openExternal(companySettingsUrl(company.slug));');
     expect(page).toContain('onopenprojects?: () => void;');
     expect(page).toContain("const settings = await invoke<SettingsWire>('get_settings').catch(() => ({ hqPath: null }));");
 

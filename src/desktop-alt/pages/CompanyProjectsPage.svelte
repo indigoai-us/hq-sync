@@ -63,6 +63,56 @@
     companyProjects.filter((project) => matchesProjectFilter(project, projectFilter)),
   );
   const groups = $derived.by(() => groupProjectsByGoal(objectives, filteredCompanyProjects));
+
+  // ── Column sorting (within each goal group; group order is preserved) ───────
+  type SortKey = 'project' | 'lead' | 'progress' | 'status';
+  let sortKey = $state<SortKey>('project');
+  let sortDir = $state<'asc' | 'desc'>('asc');
+
+  function toggleSort(key: SortKey): void {
+    if (sortKey === key) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortKey = key;
+      sortDir = 'asc';
+    }
+  }
+
+  const STATUS_RANK: Record<string, number> = {
+    live: 0,
+    'in-progress': 1,
+    complete: 2,
+    archived: 3,
+  };
+
+  function compareProjects(a: Project, b: Project): number {
+    let cmp = 0;
+    if (sortKey === 'project') {
+      cmp = projectDisplayName(a).localeCompare(projectDisplayName(b));
+    } else if (sortKey === 'lead') {
+      cmp = leadLabel(a).localeCompare(leadLabel(b));
+    } else if (sortKey === 'progress') {
+      cmp =
+        projectProgress(a.storiesComplete, a.storiesTotal).percent -
+        projectProgress(b.storiesComplete, b.storiesTotal).percent;
+    } else {
+      cmp =
+        (STATUS_RANK[projectListStatus(a)] ?? 99) - (STATUS_RANK[projectListStatus(b)] ?? 99);
+    }
+    // Stable tiebreak on name so equal keys keep a deterministic order.
+    if (cmp === 0) cmp = projectDisplayName(a).localeCompare(projectDisplayName(b));
+    return sortDir === 'asc' ? cmp : -cmp;
+  }
+
+  const sortedGroups = $derived(
+    groups.map((group) => ({
+      ...group,
+      projects: [...group.projects].sort(compareProjects),
+    })),
+  );
+
+  const sortArrow = (key: SortKey): string =>
+    sortKey !== key ? '' : sortDir === 'asc' ? ' ↑' : ' ↓';
   const selectedStory = $derived(
     selectedStoryId === null
       ? null
@@ -446,12 +496,12 @@
     {/if}
 
     <div class="project-table" aria-busy={loading}>
-      <div class="project-table-head" aria-hidden="true">
-        <span>PROJECT</span>
-        <span>LEAD</span>
-        <span>PROGRESS</span>
-        <span>TARGET</span>
-        <span>STATUS</span>
+      <div class="project-table-head">
+        <button type="button" class="th" class:sorted={sortKey === 'project'} onclick={() => toggleSort('project')} aria-label="Sort by project">PROJECT{sortArrow('project')}</button>
+        <button type="button" class="th" class:sorted={sortKey === 'lead'} onclick={() => toggleSort('lead')} aria-label="Sort by lead">LEAD{sortArrow('lead')}</button>
+        <button type="button" class="th" class:sorted={sortKey === 'progress'} onclick={() => toggleSort('progress')} aria-label="Sort by progress">PROGRESS{sortArrow('progress')}</button>
+        <span class="th-static">TARGET</span>
+        <button type="button" class="th" class:sorted={sortKey === 'status'} onclick={() => toggleSort('status')} aria-label="Sort by status">STATUS{sortArrow('status')}</button>
       </div>
 
       {#if loading}
@@ -469,7 +519,7 @@
           <p>Change the filter to see the rest of this company’s projects.</p>
         </div>
       {:else}
-        {#each groups as group (group.key)}
+        {#each sortedGroups as group (group.key)}
           <section class="project-group" aria-labelledby={`project-group-${group.key}`}>
             <h3 id={`project-group-${group.key}`} class="project-group-title">
               <span class={`status-dot ${group.tone}`} aria-hidden="true"></span>
@@ -632,6 +682,39 @@
     font-size: var(--text-base);
     line-height: 1.2;
     letter-spacing: 0;
+  }
+
+  /* Sortable header cells — reset the button to read as a header label, but
+     stay clickable with a hover + active-sort affordance and the ↑/↓ arrow. */
+  .project-table-head .th {
+    display: inline-flex;
+    align-items: center;
+    justify-self: start;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-size: var(--text-base);
+    letter-spacing: inherit;
+    text-align: left;
+    text-transform: inherit;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .project-table-head .th:hover {
+    color: var(--v4-text-2);
+  }
+
+  .project-table-head .th.sorted {
+    color: var(--v4-text-1);
+  }
+
+  .project-table-head .th:focus-visible {
+    outline: 1px solid var(--v4-control-border);
+    outline-offset: 2px;
+    border-radius: 4px;
   }
 
   .project-group {

@@ -78,6 +78,11 @@ export interface CompaniesModelInput {
   connectErrors?: Record<string, string>;
   /** slug → per-membership sync mode (`get_sync_mode`), absent while loading. */
   syncModes?: Record<string, CompanySyncMode>;
+  /**
+   * slug → team member count (from `get_company_activity` stats.members),
+   * fetched lazily per connected company row. Absent while loading → "—".
+   */
+  memberCounts?: Record<string, number>;
   /** `realtimeSync` preference; null while loading. */
   autoSyncOn?: boolean | null;
 }
@@ -125,7 +130,16 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
   const connecting = new Set(input.connectingSlugs ?? []);
   const connectErrors = input.connectErrors ?? {};
   const syncModes = input.syncModes ?? {};
+  const memberCounts = input.memberCounts ?? {};
   const autoSyncOn = input.autoSyncOn ?? null;
+
+  // MEMBERS lane — the resolved team size for a connected company, or "—" until
+  // the count loads (best-effort, fetched lazily per row in CompaniesPage). A
+  // zero/absent count stays "—" rather than rendering a misleading "0".
+  const memberLabel = (slug: string): string => {
+    const count = memberCounts[slug];
+    return typeof count === 'number' && count > 0 ? String(count) : EM_DASH;
+  };
 
   const active: ConnectedCompanyRow[] = [];
   const provisioning: ConnectedCompanyRow[] = [];
@@ -229,7 +243,7 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
         name: workspace.displayName,
         sub: `${roleLabel(workspace.role)} · not on this Mac`,
         tone: 'idle',
-        members: EM_DASH,
+        members: memberLabel(workspace.slug),
         lastChange,
         sync: EM_DASH,
         syncMode: null,
@@ -247,7 +261,7 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
       name: workspace.displayName,
       sub: roleLabel(workspace.role),
       tone: 'ok',
-      members: EM_DASH,
+      members: memberLabel(workspace.slug),
       lastChange,
       sync: syncLaneLabel(syncedMode, autoSyncOn),
       syncMode: syncedMode,
