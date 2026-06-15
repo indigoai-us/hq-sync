@@ -8,7 +8,7 @@
   import CopyPromptButton from './CopyPromptButton.svelte';
   import OpenInClaudeCodeButton from './OpenInClaudeCodeButton.svelte';
   import MeetingIcon from './MeetingIcon.svelte';
-  import type { Workspace } from '../lib/workspaces';
+  import { joinableMemberships, type Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
   import type { ConflictFile } from '../stores/conflicts';
@@ -460,6 +460,27 @@
   // CopyPromptButton copied→reset pattern (1.5s) so the surface is calm and
   // consistent rather than a transient OS toast.
   let hqCliCmdCopied = $state(false);
+
+  // ── "You've been added" membership prompt ────────────────────────────────
+  //  Companies the signed-in user has an ACTIVE cloud membership in but no
+  //  local folder for yet — they accepted an invite (email link or HQ Console)
+  //  but the workspace was never pulled to this machine. The data already
+  //  arrives in `workspaces` (recomputed on popover open / mount / post-sync);
+  //  we just surface a one-click "Sync to pull it" prompt so an accepted
+  //  teammate isn't left with a local HQ that "doesn't know" they're a member.
+  //  Dismissed slugs are hidden for the session (a sync flips the row to
+  //  `synced` and the prompt clears for good on its own).
+  let dismissedMemberships = $state(new Set<string>());
+  const membershipsToPull = $derived(
+    joinableMemberships(workspaces ?? []).filter(
+      (w) => !dismissedMemberships.has(w.slug),
+    ),
+  );
+  function dismissMembershipPrompt(slug: string) {
+    // Reassign (not mutate) so Svelte 5 picks up the change.
+    dismissedMemberships = new Set(dismissedMemberships).add(slug);
+  }
+
   async function copyHqCliCommand() {
     try {
       await navigator.clipboard.writeText(HQ_CLI_UPGRADE_CMD);
@@ -791,6 +812,46 @@
                 {hqCliUpdateInstalling ? 'Installing…' : 'Update'}
               </button>
             {/if}
+          </div>
+        </div>
+      {/if}
+
+      <!-- "You've been added" membership prompt — shown when the signed-in
+           user has an ACTIVE cloud membership with no local folder yet: they
+           accepted an invite (email link or HQ Console) but the workspace was
+           never pulled to this machine. One-click Sync pulls it; the × hides it
+           for the session. Closes the dead-end where an accepted teammate's
+           local HQ "didn't know" they were a member (US-003). -->
+      {#if membershipsToPull.length > 0}
+        <div class="banner banner-info banner-membership">
+          <button
+            class="banner-dismiss"
+            onclick={() => dismissMembershipPrompt(membershipsToPull[0].slug)}
+            title="Dismiss for now"
+            aria-label="Dismiss the membership prompt"
+          >
+            ×
+          </button>
+          <div class="banner-update-text">
+            <p class="banner-title">
+              You've been added to {membershipsToPull[0].displayName}{membershipsToPull.length >
+              1
+                ? ` + ${membershipsToPull.length - 1} more`
+                : ''}
+            </p>
+            <p class="banner-body">
+              {membershipsToPull.length > 1 ? "They're" : "It's"} not on this machine
+              yet — sync to pull {membershipsToPull.length > 1 ? 'them' : 'it'} down.
+            </p>
+          </div>
+          <div class="banner-actions">
+            <button
+              class="banner-update-button"
+              onclick={onsync}
+              disabled={syncState === 'syncing'}
+            >
+              {syncState === 'syncing' ? 'Syncing…' : 'Sync Now'}
+            </button>
           </div>
         </div>
       {/if}
