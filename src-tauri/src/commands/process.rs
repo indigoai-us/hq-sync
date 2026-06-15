@@ -484,6 +484,56 @@ pub fn cancel_process_impl(handle: &str, sigkill_delay: Duration) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// App-exit teardown
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Snapshot every currently-registered child as `(handle, pid)`.
+///
+/// Each child is spawned with `.process_group(0)` — it leads its *own* process
+/// group, so the OS does not reap it when the app process exits. Without an
+/// explicit teardown the `--watch` sync daemon (and any sidecar) reparents to
+/// PID 1 and keeps running against a now-stale engine. This snapshot is the
+/// input to [`terminate_pids_for_exit`].
+pub fn registered_pids() -> Vec<(String, u32)> {
+    process_registry()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|(h, e)| e.pid.map(|p| (h.clone(), p)))
+        .collect()
+}
+
+/// Synchronously terminate the given process *groups* for app shutdown:
+/// SIGTERM each, wait one `grace`, then SIGKILL any survivor.
+///
+/// Synchronous on purpose — [`cancel_process_impl`] schedules its SIGKILL on a
+/// background thread, which would not survive the app process exiting. At exit
+/// we must guarantee the children are dead before we return, so the kill runs
+/// inline. Signals target the negated pid (the process *group*) so the npx/npm
+/// wrapper *and* the node worker it forks both die, not just the wrapper —
+/// mirroring [`cancel_process_impl`].
+pub fn terminate_pids_for_exit(pids: &[(String, u32)], grace: Duration) {
+    for (_handle, pid) in pids {
+        let _ = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGTERM);
+    }
+    if !pids.is_empty() {
+        thread::sleep(grace);
+    }
+    for (handle, pid) in pids {
+        let _ = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGKILL);
+        deregister_process(handle);
+    }
+}
+
+/// Tear down every spawned child on app exit. Call from the app's
+/// `RunEvent::ExitRequested` handler so closing HQ Sync (tray Quit, `quit_app`,
+/// or Cmd-Q) reliably stops the `--watch` sync daemon and any sidecar instead
+/// of orphaning them to PID 1.
+pub fn terminate_all_for_exit(grace: Duration) {
+    terminate_pids_for_exit(&registered_pids(), grace);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -555,4 +605,63 @@ pub fn spawn_process(app: AppHandle, args: SpawnArgs) -> Result<String, String> 
 #[tauri::command]
 pub fn cancel_process(handle: String) -> bool {
     cancel_process_impl(&handle, Duration::from_secs(5))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod exit_teardown_tests {
+    use super::*;
+    use std::process::Command as StdCommand;
+
+    /// Probe existence without delivering a signal (signal 0). True while the
+    /// pid is live OR a not-yet-reaped zombie; callers must reap first.
+    fn alive(pid: u32) -> bool {
+        signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+    }
+
+    #[test]
+    fn terminate_pids_for_exit_kills_detached_process_groups() {
+        // Spawn children each leading their OWN process group — the same shape
+        // as run_process_impl's `.process_group(0)` sync daemon. Regression
+        // guard: closing the app must stop these, not orphan them to PID 1.
+        let mut kids: Vec<std::process::Child> = (0..2)
+            .map(|_| {
+                StdCommand::new("sleep")
+                    .arg("30")
+                    .process_group(0)
+                    .spawn()
+                    .expect("spawn sleep")
+            })
+            .collect();
+
+        let pids: Vec<(String, u32)> = kids
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (format!("exit-test-{i}"), c.id()))
+            .collect();
+
+        for (_, pid) in &pids {
+            assert!(alive(*pid), "child {pid} should be alive before teardown");
+        }
+
+        terminate_pids_for_exit(&pids, Duration::from_millis(200));
+
+        // Reap so the existence probe reflects reality (a killed-but-unwaited
+        // child lingers as a zombie), then assert every group is gone.
+        for kid in &mut kids {
+            let _ = kid.wait();
+        }
+        for (_, pid) in &pids {
+            assert!(!alive(*pid), "child {pid} must be dead after teardown");
+        }
+    }
+
+    #[test]
+    fn terminate_pids_for_exit_is_noop_when_empty() {
+        // Must not sleep the grace period or panic when nothing is registered.
+        terminate_pids_for_exit(&[], Duration::from_secs(30));
+    }
 }

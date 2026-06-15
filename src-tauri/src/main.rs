@@ -681,6 +681,17 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // On exit, tear down every spawned child (the `--watch` sync daemon,
+            // recall sidecar, …). Each was spawned with `.process_group(0)`, so
+            // the OS does NOT reap it when the app exits — without this they
+            // reparent to PID 1 and keep running against a now-stale engine.
+            // ExitRequested is the single chokepoint for every quit path (tray
+            // Quit, `quit_app`, Cmd-Q), all of which call `app.exit(0)`.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                commands::process::terminate_all_for_exit(std::time::Duration::from_millis(500));
+            }
+        });
 }
