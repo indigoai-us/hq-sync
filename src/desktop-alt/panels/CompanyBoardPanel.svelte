@@ -44,6 +44,7 @@
   import ProjectDetailView from '../pages/ProjectDetailView.svelte';
   import GoalCard from '../v4/GoalCard.svelte';
   import StoryPanel from '../v4/StoryPanel.svelte';
+  import OverviewActivityDigest from '../components/OverviewActivityDigest.svelte';
   import '../v4/tokens.css';
 
   interface Props {
@@ -480,6 +481,8 @@
         <span>last updated</span>
       </div>
     </section>
+
+    <OverviewActivityDigest {slug} {cloudBacked} />
 
     <section class="overview-section" aria-labelledby="board-goals-title">
       <header class="section-header">

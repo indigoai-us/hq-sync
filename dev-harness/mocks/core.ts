@@ -301,6 +301,17 @@ const handlers: Record<string, Handler> = {
     };
   },
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
+  get_company_activity: () => ({
+    stats: { files7: 128, edits7: 342, members: 5, vaultSize: '2.4 GB' },
+    sparkline: [4, 9, 2, 14, 7, 21, 5, 12, 3, 18, 9, 11, 6, 16],
+    recent: [],
+    top: [
+      { who: 'corey@getindigo.ai', edits: 142 },
+      { who: 'maya@getindigo.ai', edits: 88 },
+      { who: 'sam@liverecover.com', edits: 51 },
+      { who: 'jacob@getindigo.ai', edits: 23 },
+    ],
+  }),
   get_local_company_goals: () => COMPANY_GOALS,
   get_local_projects: () => COMPANY_PROJECTS,
   get_local_project_prd: (args) =>
