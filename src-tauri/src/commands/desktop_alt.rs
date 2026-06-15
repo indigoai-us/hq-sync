@@ -341,6 +341,84 @@ pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
     parse_board_response(status, &text)
 }
 
+/// Per-project creator for the Projects list Lead column. The cloud board model
+/// already derives each project's creator from its prd.json's S3 `created-by`
+/// author metadata (resolved honestly server-side — never fabricated), so we
+/// just expose it here. Rows are matchable to `get_local_projects` by board
+/// `id` (same board.json project id) or by `prdPath`. Only projects that
+/// actually carry a creator are returned; everything else stays "Unassigned".
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCreator {
+    pub id: String,
+    pub prd_path: Option<String>,
+    pub creator: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BoardCreatorEnvelope {
+    #[serde(default)]
+    projects: Vec<BoardCreatorProject>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BoardCreatorProject {
+    #[serde(default)]
+    id: String,
+    #[serde(default, rename = "prdPath")]
+    prd_path: Option<String>,
+    #[serde(default, rename = "createdByName")]
+    created_by_name: Option<String>,
+}
+
+#[tauri::command]
+pub async fn get_company_project_creators(slug: String) -> Result<Vec<ProjectCreator>, String> {
+    let slug = normalize_slug(&slug)?;
+    let company_uid = resolve_company_uid(&slug).await?;
+    let url = board_url(&vault_base()?, &company_uid)?;
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+    let res = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("creators fetch: {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| format!("creators read: {e}"))?;
+    // A missing / unprovisioned board (or no ACL) is not an error here — the
+    // Lead column simply falls back to "Unassigned". Only the body parse below
+    // can fail, and only on a 2xx with malformed JSON.
+    if !status.is_success() {
+        return Ok(Vec::new());
+    }
+    parse_project_creators(&text).map_err(|e| format!("creators parse: {e}"))
+}
+
+/// Pure parse of the board JSON into creator rows: keep only projects that
+/// carry a non-empty `createdByName`, so the frontend map only contains real
+/// creators (everything else stays "Unassigned"). Testable in isolation.
+fn parse_project_creators(text: &str) -> Result<Vec<ProjectCreator>, String> {
+    let env: BoardCreatorEnvelope = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    Ok(env
+        .projects
+        .into_iter()
+        .filter_map(|p| {
+            let creator = p.created_by_name?;
+            let creator = creator.trim().to_string();
+            if creator.is_empty() {
+                return None;
+            }
+            Some(ProjectCreator {
+                id: p.id,
+                prd_path: p.prd_path,
+                creator,
+            })
+        })
+        .collect())
+}
+
 #[tauri::command]
 pub async fn get_company_activity(slug: String) -> Result<CompanyActivity, String> {
     let slug = normalize_slug(&slug)?;
@@ -1578,6 +1656,39 @@ mod tests {
             .unwrap_err(),
             "AUTH_REQUIRED: board (HTTP 401 Unauthorized)"
         );
+    }
+
+    #[test]
+    fn parse_project_creators_keeps_only_real_creators() {
+        // The board model carries createdByName per project (from S3 created-by).
+        // We surface only projects with a non-empty creator; the rest stay
+        // "Unassigned" on the desktop. Keyed by both id and prdPath.
+        let body = r#"{
+            "companyUid": "cmp_1",
+            "goals": [],
+            "projects": [
+                {"id":"p1","prdPath":"companies/co/projects/a/prd.json","createdByName":"maya@x.com"},
+                {"id":"p2","prdPath":"companies/co/projects/b/prd.json","createdBy":"sub_2"},
+                {"id":"p3","prdPath":"companies/co/projects/c/prd.json","createdByName":"  "},
+                {"id":"p4","createdByName":"corey@x.com"}
+            ]
+        }"#;
+        let rows = super::parse_project_creators(body).expect("parses");
+        // p2 (no name), p3 (blank) dropped; p1 + p4 kept.
+        assert_eq!(rows.len(), 2);
+        let p1 = rows.iter().find(|r| r.id == "p1").unwrap();
+        assert_eq!(p1.creator, "maya@x.com");
+        assert_eq!(p1.prd_path.as_deref(), Some("companies/co/projects/a/prd.json"));
+        let p4 = rows.iter().find(|r| r.id == "p4").unwrap();
+        assert_eq!(p4.creator, "corey@x.com");
+        assert!(p4.prd_path.is_none());
+    }
+
+    #[test]
+    fn parse_project_creators_tolerates_empty_or_missing_projects() {
+        assert!(super::parse_project_creators(r#"{"companyUid":"c","goals":[]}"#).unwrap().is_empty());
+        assert!(super::parse_project_creators(r#"{"projects":[]}"#).unwrap().is_empty());
+        assert!(super::parse_project_creators("not json").is_err());
     }
 
     #[test]

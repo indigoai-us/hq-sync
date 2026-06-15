@@ -301,6 +301,14 @@ const handlers: Record<string, Handler> = {
     };
   },
   get_company_summary: () => ({ board: 7, activity: { last7d: 34 }, deployments: 3, secrets: 12 }),
+  // Creator per project (from the cloud board's S3 created-by). Some projects
+  // intentionally omitted → they stay honestly "Unassigned" in the Lead column.
+  get_company_project_creators: () => [
+    { id: 'in-proj-201', prdPath: 'companies/indigo/projects/event-driven-hq-cloud-sync/prd.json', creator: 'corey@getindigo.ai' },
+    { id: 'in-proj-202', prdPath: 'companies/indigo/projects/hq-sync-conflict-versioning/prd.json', creator: 'maya@getindigo.ai' },
+    { id: 'in-proj-125', prdPath: 'companies/indigo/projects/hq-sync-desktop-flagship/prd.json', creator: 'corey@getindigo.ai' },
+    { id: 'in-proj-204', prdPath: 'companies/indigo/projects/instant-dm-delivery/prd.json', creator: 'jacob@getindigo.ai' },
+  ],
   get_company_activity: () => ({
     stats: { files7: 128, edits7: 342, members: 5, vaultSize: '2.4 GB' },
     sparkline: [4, 9, 2, 14, 7, 21, 5, 12, 3, 18, 9, 11, 6, 16],

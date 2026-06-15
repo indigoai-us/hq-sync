@@ -50,6 +50,9 @@
   let storiesLoading = $state(false);
   let storiesError = $state<string | null>(null);
   let selectedStoryId = $state<string | null>(null);
+  // project board-id / prdPath → creator (display name). Best-effort, from the
+  // cloud board; empty when unavailable so Lead falls back to "Unassigned".
+  let creatorByKey = $state<Record<string, string>>({});
 
   const companyProjects = $derived(
     projects
@@ -75,6 +78,7 @@
     stories = [];
     storiesError = null;
     selectedStoryId = null;
+    creatorByKey = {};
 
     if (!activeSlug) {
       loading = false;
@@ -83,6 +87,27 @@
 
     loading = true;
     let cancelled = false;
+
+    // Best-effort, decoupled from the gating load below: a creators fetch must
+    // never error the Projects page or block it — the Lead column simply stays
+    // "Unassigned" if it fails or the board isn't reachable.
+    void invoke<Array<{ id: string; prdPath?: string | null; creator: string }>>(
+      'get_company_project_creators',
+      { slug: activeSlug },
+    )
+      .then((rows) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const row of rows ?? []) {
+          if (!row?.creator) continue;
+          if (row.id) map[row.id] = row.creator;
+          if (row.prdPath) map[row.prdPath] = row.creator;
+        }
+        creatorByKey = map;
+      })
+      .catch((err) => {
+        console.warn(`get_company_project_creators(${activeSlug}) failed:`, err);
+      });
 
     void (async () => {
       try {
@@ -246,11 +271,16 @@
     return sections;
   }
 
-  // prd.json carries no project lead/owner field, so a project is unassigned
-  // until a person or an agent is recorded as leading it. Show that honestly
-  // instead of inventing a You/Agent/teammate from list position.
-  function leadLabel(): string {
-    return 'Unassigned';
+  // Lead = the project's CREATOR, joined from the cloud board's S3 `created-by`
+  // author metadata (resolved honestly server-side — never fabricated). Keyed by
+  // both board id and prdPath so either matches a local project. A project with
+  // no recorded creator (e.g. a prd uploaded before author metadata, or a
+  // local-only company) stays honestly "Unassigned".
+  function leadLabel(project: Project): string {
+    const byId = creatorByKey[project.id];
+    if (byId) return byId;
+    const byPath = project.prdPath ? creatorByKey[project.prdPath] : undefined;
+    return byPath ?? 'Unassigned';
   }
 
   function startedLabel(project: Project): string {
@@ -449,7 +479,7 @@
             {#each group.projects as project, index (project.id)}
               {@const progress = projectProgress(project.storiesComplete, project.storiesTotal)}
               {@const status = projectListStatus(project)}
-              {@const lead = leadLabel()}
+              {@const lead = leadLabel(project)}
               <div
                 class="project-row"
                 data-testid="project-row"

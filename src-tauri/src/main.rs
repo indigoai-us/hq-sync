@@ -310,6 +310,7 @@ fn main() {
             commands::desktop_alt::desktop_alt_is_admin,
             commands::desktop_alt::get_company_summary,
             commands::desktop_alt::get_company_board,
+            commands::desktop_alt::get_company_project_creators,
             commands::desktop_alt::get_company_activity,
             commands::desktop_alt::get_company_deployments,
             commands::desktop_alt::get_company_secrets,
