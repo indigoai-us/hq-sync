@@ -72,6 +72,14 @@ pub struct MarketplaceListing {
     /// ISO-8601 publish timestamp (recency sort on the server).
     #[serde(default)]
     pub created_at: String,
+    /// Presigned cover-art URL, when the listing ships a cover. Server-served
+    /// per-listing; `pack-covers.ts` prefers this over the bundled-by-slug map.
+    /// Without this field serde silently drops it at the Rust boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_image_url: Option<String>,
+    /// Creator's display name, when the server provides one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// Public detail payload — a listing plus the short-lived presigned tarball URL.
