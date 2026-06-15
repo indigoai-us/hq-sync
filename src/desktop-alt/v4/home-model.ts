@@ -1,4 +1,14 @@
 import type { Workspace } from '../../lib/workspaces';
+import { formatRelativeTime } from '../route';
+import type { Project } from '../lib/projects-model';
+import {
+  companyLabel,
+  eventStart,
+  isToday,
+  sortByStart,
+  timeLabel,
+  type MeetingEvent,
+} from '../lib/meetings-model';
 import {
   formatBytes,
   friendlySyncError,
@@ -448,4 +458,179 @@ export function getHomeDigestGroups(
   }
 
   return result.sort((a, b) => b.latestAt - a.latestAt);
+}
+
+// ── Portfolio overview (merged Home — real, local-only, NO vault fan-out) ────
+//
+// Everything below derives from data DesktopApp already holds: the deduped
+// workspace union, the single `get_local_projects` scan, and the meetings cache.
+// We deliberately do NOT surface vault storage, sync-latency, per-company
+// sparklines, goals done/total, "shipped this week", or "due today" — none of
+// those has a real source yet (the deferred vault-enrichment work), and
+// inventing them would violate the no-fabricated-data rule.
+
+/** A project is "active" when work remains: a non-terminal status and, when
+ *  stories are tracked, at least one still open. Terminal statuses never count. */
+function isActiveProject(p: Project): boolean {
+  const status = (p.status ?? '').toLowerCase();
+  if (['done', 'complete', 'completed', 'archived', 'shipped', 'cancelled', 'canceled'].includes(status)) {
+    return false;
+  }
+  if (p.storiesTotal > 0) return p.storiesComplete < p.storiesTotal;
+  return true;
+}
+
+function roleLabel(role: string | null | undefined): string {
+  if (!role) return 'Member';
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
+function toneForWorkspace(w: Workspace): HomeCompanyTone {
+  if (w.kind === 'personal') return w.hasLocalFolder ? 'ok' : 'idle';
+  switch (w.state) {
+    case 'synced':
+      return 'ok';
+    case 'broken':
+      return 'error';
+    case 'cloud-only':
+    case 'local-only':
+    default:
+      return 'idle';
+  }
+}
+
+/** Collapse the manifest+cloud union to one entry per slug (first wins) — the
+ *  same invariant every keyed `{#each (slug)}` in this app relies on. */
+function dedupeBySlug(workspaces: Workspace[]): Workspace[] {
+  const seen = new Set<string>();
+  const out: Workspace[] = [];
+  for (const w of workspaces) {
+    if (seen.has(w.slug)) continue;
+    seen.add(w.slug);
+    out.push(w);
+  }
+  return out;
+}
+
+export interface HomeStat {
+  label: string;
+  value: string;
+}
+
+/**
+ * The Home stat strip — three glanceable, fully-real counts:
+ *   • Companies     — connected company workspaces (excludes the personal vault)
+ *   • Active projects — local projects with work remaining
+ *   • Open stories  — unfinished stories summed across those active projects
+ * No storage / latency / "edits 7d" tiles: there is no honest source for them.
+ */
+export function getHomePortfolioStats(input: {
+  workspaces: Workspace[];
+  projects: Project[];
+}): HomeStat[] {
+  const companies = dedupeBySlug(input.workspaces).filter((w) => w.kind === 'company');
+  const active = input.projects.filter(isActiveProject);
+  const openStories = active.reduce(
+    (sum, p) => sum + Math.max(0, p.storiesTotal - p.storiesComplete),
+    0,
+  );
+  return [
+    { label: companies.length === 1 ? 'Company' : 'Companies', value: companies.length.toLocaleString() },
+    { label: 'Active projects', value: active.length.toLocaleString() },
+    { label: 'Open stories', value: openStories.toLocaleString() },
+  ];
+}
+
+// ── Company portfolio table ─────────────────────────────────────────────────
+
+export type HomeCompanyTone = 'ok' | 'idle' | 'warn' | 'error';
+
+export interface HomeCompanyRow {
+  slug: string;
+  name: string;
+  /** Second line — role, or "Personal vault". */
+  sub: string;
+  tone: HomeCompanyTone;
+  /** "3 active" project count, or "—" when none are local. */
+  projects: string;
+  /** "12 / 18 stories" rollup, or "—" when no stories are tracked. */
+  stories: string;
+  /** Relative last-synced, or "—". */
+  lastChange: string;
+}
+
+/**
+ * Per-company portfolio rows for the Home table. Project + story counts come
+ * from the single `get_local_projects` scan grouped by company slug; role,
+ * tone, and last-change come from the (deduped) workspace union. Goals,
+ * members, and activity sparklines are intentionally absent — no real source.
+ */
+export function getHomeCompanyRows(input: {
+  workspaces: Workspace[];
+  projects: Project[];
+}): HomeCompanyRow[] {
+  const byCompany = new Map<string, { active: number; storiesTotal: number; storiesComplete: number }>();
+  for (const p of input.projects) {
+    const agg = byCompany.get(p.company) ?? { active: 0, storiesTotal: 0, storiesComplete: 0 };
+    if (isActiveProject(p)) agg.active += 1;
+    agg.storiesTotal += Math.max(0, p.storiesTotal);
+    agg.storiesComplete += Math.max(0, p.storiesComplete);
+    byCompany.set(p.company, agg);
+  }
+
+  return dedupeBySlug(input.workspaces).map((w) => {
+    const agg = byCompany.get(w.slug);
+    const projects =
+      agg && agg.active > 0 ? `${agg.active.toLocaleString()} active` : agg ? 'no active' : '—';
+    const stories =
+      agg && agg.storiesTotal > 0
+        ? `${agg.storiesComplete.toLocaleString()} / ${agg.storiesTotal.toLocaleString()} stories`
+        : '—';
+    return {
+      slug: w.slug,
+      name: w.displayName,
+      sub: w.kind === 'personal' ? 'Personal vault' : roleLabel(w.role),
+      tone: toneForWorkspace(w),
+      projects,
+      stories,
+      lastChange: formatRelativeTime(w.lastSyncedAt) ?? '—',
+    };
+  });
+}
+
+// ── Today agenda (meetings only — action items have no due-date source) ──────
+
+export interface HomeAgendaItem {
+  id: string;
+  /** "10:00 AM" or "Time pending". */
+  time: string;
+  title: string;
+  /** Routed company name, or "Personal". */
+  company: string;
+}
+
+/**
+ * Today's meetings, chronological. Filtered to the current day from the
+ * already-loaded meetings cache; capped so the rail stays calm. Action items
+ * are NOT included — board cards carry an age string, not a due date, so
+ * "due today" can't be derived honestly yet.
+ */
+export function getHomeTodayAgenda(input: {
+  events: MeetingEvent[];
+  companyNamesByUid: Map<string, string>;
+  now?: Date;
+  limit?: number;
+}): HomeAgendaItem[] {
+  const now = input.now ?? new Date();
+  const limit = input.limit ?? 6;
+  return input.events
+    .filter((e) => isToday(e, now) && eventStart(e) !== null)
+    .sort(sortByStart)
+    .slice(0, limit)
+    .map((e) => ({
+      id: e.id,
+      time: timeLabel(e),
+      title: e.summary?.trim() || 'Untitled meeting',
+      company: companyLabel(e, input.companyNamesByUid),
+    }));
 }

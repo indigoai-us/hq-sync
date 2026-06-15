@@ -14,6 +14,8 @@
   import SettingsPage from './pages/SettingsPage.svelte';
   import ModerationPanel from './panels/ModerationPanel.svelte';
   import { startMeetingsStore } from './lib/meetings-store.svelte';
+  import { loadLocalProjects } from './lib/local-projects';
+  import type { Project } from './lib/projects-model';
   import { startCompanyStore, setActiveCompany } from './lib/company-store.svelte';
   import { openAgentWorkflow } from './lib/agent-workflow';
   import {
@@ -160,6 +162,9 @@
   let ready = $state(false);
   let commandPaletteOpen = $state(false);
   let meetingEvents = $state<MeetingEvent[]>([]);
+  // Local projects across every company — ONE `get_local_projects` scan (no
+  // per-company vault fan-out), feeding the Home portfolio stats + table.
+  let homeProjects = $state<Project[]>([]);
   let meetingCompanyNamesByUid = $state<Map<string, string>>(new Map());
   let meetingStatusNow = $state(Date.now());
   let desktopRenderAuditQueued = false;
@@ -485,8 +490,24 @@
     }
   }
 
+  async function loadHomeProjects() {
+    try {
+      homeProjects = await loadLocalProjects();
+    } catch (err) {
+      // A missing/locked HQ tree leaves the portfolio table empty rather than
+      // breaking Home — the stats simply read 0 / "—".
+      console.error('get_local_projects failed:', err);
+    }
+  }
+
   async function refreshRealState() {
-    await Promise.all([loadWorkspaces(), loadSyncStatus(), loadDaemonStatus(), loadActivity()]);
+    await Promise.all([
+      loadWorkspaces(),
+      loadSyncStatus(),
+      loadDaemonStatus(),
+      loadActivity(),
+      loadHomeProjects(),
+    ]);
   }
 
   async function handleSyncAll() {
@@ -1093,6 +1114,10 @@
                 {coreState}
                 {driftDismissed}
                 {driftRestoring}
+                projects={homeProjects}
+                {meetingEvents}
+                companyNamesByUid={meetingCompanyNamesByUid}
+                onopencompany={(slug) => navigate({ kind: 'company', slug })}
                 onresolveconflict={handleResolveConflict}
                 oncompareconflict={handleCompareConflict}
                 onrestoredrift={handleRestoreDrift}

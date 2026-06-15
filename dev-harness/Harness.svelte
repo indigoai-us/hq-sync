@@ -4,6 +4,7 @@
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
   import CompaniesPage from '../src/desktop-alt/pages/CompaniesPage.svelte';
+  import HomePage from '../src/desktop-alt/pages/HomePage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import Conversation, {
@@ -50,6 +51,27 @@
   // The Indigo workspace fixture drives the ?view=company desktop board preview.
   const indigoWorkspace = workspaces.find((w) => w.slug === 'indigo') ?? workspaces[0];
 
+  // ?view=home — the merged Home in isolation (DesktopApp is auth-gated). Real
+  // local-data sections only: portfolio stat strip + company table + today's
+  // meetings + the activity digest. Projects/meetings are inline fixtures.
+  const homeProjects = [
+    { id: 'p1', title: 'Native CRM', name: 'Native CRM', description: '', company: 'indigo', status: 'in-progress', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 8, storiesComplete: 3 },
+    { id: 'p2', title: 'Docs site refresh', name: 'Docs site refresh', description: '', company: 'indigo', status: 'done', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 5, storiesComplete: 5 },
+    { id: 'p3', title: 'Recovery flows', name: 'Recovery flows', description: '', company: 'liverecover', status: 'in-progress', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 6, storiesComplete: 1 },
+    { id: 'p4', title: 'Field sync', name: 'Field sync', description: '', company: 'moonflow', status: 'planning', prdPath: '', createdAt: null, updatedAt: null, storiesTotal: 0, storiesComplete: 0 },
+  ];
+  const todayISO = (h: number, m: number) => {
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    return d.toISOString();
+  };
+  const homeMeetings = [
+    { id: 'mtg1', summary: 'Creative Ops kickoff', start: { dateTime: todayISO(10, 0) }, end: { dateTime: todayISO(10, 30) }, status: 'confirmed', sourceCompanyUid: 'cmp_indigo' },
+    { id: 'mtg2', summary: 'Indigo standup', start: { dateTime: todayISO(11, 30) }, end: { dateTime: todayISO(11, 45) }, status: 'confirmed', sourceCompanyUid: 'cmp_indigo' },
+    { id: 'mtg3', summary: 'Field sync', start: { dateTime: todayISO(16, 0) }, end: { dateTime: todayISO(16, 30) }, status: 'confirmed' },
+  ];
+  const homeCompanyNames = new Map([['cmp_indigo', 'Indigo']]);
+
   // View + theme driven by URL query so screenshots target a known state:
   //   ?view=settings|popover|banner   ?theme=light|dark
   //   banner view also takes ?kind=share|meeting|dm|update (default share)
@@ -79,7 +101,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop' || view === 'companies'
+      : view === 'company' || view === 'desktop' || view === 'companies' || view === 'home'
         ? 'desktop-alt'
         : view === 'permissions'
           ? 'meeting-permissions'
@@ -134,6 +156,33 @@
        desktop token aliases. -->
   <div class="desktop-stage">
     <CompanyPage company={indigoWorkspace} />
+  </div>
+{:else if view === 'home'}
+  <!-- The merged Home in isolation. Resize the viewport to ~1180x760. -->
+  <div class="desktop-stage">
+    <HomePage
+      syncState="idle"
+      ready={true}
+      {workspaces}
+      progress={null}
+      companies={[]}
+      statsBySlug={{}}
+      status={null}
+      daemon={null}
+      activity={[]}
+      syncErrorMessage=""
+      syncFilesProgressed={0}
+      syncTotalFiles={0}
+      transferredBytes={0}
+      autoSyncOn={true}
+      hqVersion="15.0.16"
+      conflicts={[]}
+      coreState={null}
+      projects={homeProjects}
+      meetingEvents={homeMeetings}
+      companyNamesByUid={homeCompanyNames}
+      onopencompany={() => {}}
+    />
   </div>
 {:else if view === 'companies'}
   <!-- The desktop Companies page in isolation (DesktopApp is auth-gated). Drives

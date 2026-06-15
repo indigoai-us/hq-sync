@@ -2,14 +2,19 @@ import { describe, expect, it } from 'vitest';
 import type { Workspace } from '../../lib/workspaces';
 import type { ActivityEntry, SyncCompanyRef, WorkspaceSyncStats } from '../lib/sync-model';
 import { emptyWorkspaceStats } from '../lib/sync-model';
+import type { Project } from '../lib/projects-model';
+import type { MeetingEvent } from '../lib/meetings-model';
 import {
   activityFileVerb,
   getConflictCardModel,
   getDriftCardModel,
+  getHomeCompanyRows,
   getHomeDigestGroups,
   getHomeErrorModel,
   getHomeMetaLine,
+  getHomePortfolioStats,
   getHomeProgressModel,
+  getHomeTodayAgenda,
   getNeedsYouCount,
   type HomeConflict,
   type HomeCoreState,
@@ -350,5 +355,143 @@ describe('US-003 actor-grouped digest', () => {
     expect(groups[0].headline).toContain('across');
     expect(groups[0].headline).toContain('Indigo');
     expect(groups[0].headline).toContain('hpo');
+  });
+});
+
+// ── Merged-Home real-data sections ──────────────────────────────────────────
+
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: overrides.id ?? 'p1',
+    title: overrides.title ?? 'Project',
+    name: overrides.name ?? overrides.title ?? 'Project',
+    description: overrides.description ?? '',
+    company: overrides.company ?? 'indigo',
+    status: overrides.status ?? '',
+    prdPath: overrides.prdPath ?? '',
+    createdAt: overrides.createdAt ?? null,
+    updatedAt: overrides.updatedAt ?? null,
+    storiesTotal: overrides.storiesTotal ?? 0,
+    storiesComplete: overrides.storiesComplete ?? 0,
+  };
+}
+
+function meeting(overrides: Partial<MeetingEvent> & { startISO?: string } = {}): MeetingEvent {
+  const start = overrides.startISO ?? new Date().toISOString();
+  return {
+    id: overrides.id ?? 'm1',
+    summary: overrides.summary,
+    start: overrides.start ?? { dateTime: start },
+    end: overrides.end ?? { dateTime: start },
+    status: overrides.status ?? 'confirmed',
+    sourceCompanyUid: overrides.sourceCompanyUid,
+  };
+}
+
+describe('getHomePortfolioStats', () => {
+  it('counts companies (not personal), active projects, and open stories — all real', () => {
+    const stats = getHomePortfolioStats({
+      workspaces: [
+        workspace({ slug: 'personal', kind: 'personal', state: 'personal' }),
+        workspace({ slug: 'indigo' }),
+        workspace({ slug: 'amass' }),
+      ],
+      projects: [
+        project({ id: 'a', company: 'indigo', storiesTotal: 6, storiesComplete: 2 }), // active, 4 open
+        project({ id: 'b', company: 'indigo', status: 'done', storiesTotal: 3, storiesComplete: 3 }), // terminal
+        project({ id: 'c', company: 'amass', storiesTotal: 0 }), // active (no stories tracked)
+      ],
+    });
+    expect(stats).toEqual([
+      { label: 'Companies', value: '2' },
+      { label: 'Active projects', value: '2' },
+      { label: 'Open stories', value: '4' },
+    ]);
+  });
+
+  it('dedupes the manifest+cloud union so a doubled company is counted once', () => {
+    const stats = getHomePortfolioStats({
+      workspaces: [workspace({ slug: 'indigo' }), workspace({ slug: 'indigo' })],
+      projects: [],
+    });
+    expect(stats[0]).toEqual({ label: 'Company', value: '1' });
+  });
+
+  it('never invents storage / latency / sparkline tiles', () => {
+    const stats = getHomePortfolioStats({ workspaces: [], projects: [] });
+    const labels = stats.map((s) => s.label.toLowerCase()).join(' ');
+    expect(labels).not.toMatch(/storage|gb|p95|latency|spark|edits|shipped/);
+  });
+});
+
+describe('getHomeCompanyRows', () => {
+  it('rolls up local projects/stories per company and reads role + last change from the workspace', () => {
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60_000).toISOString();
+    const rows = getHomeCompanyRows({
+      workspaces: [
+        workspace({ slug: 'personal', displayName: 'Corey', kind: 'personal', state: 'personal' }),
+        workspace({ slug: 'indigo', displayName: 'Indigo', role: 'owner', lastSyncedAt: fifteenMinutesAgo }),
+      ],
+      projects: [
+        project({ id: 'a', company: 'indigo', storiesTotal: 6, storiesComplete: 2 }),
+        project({ id: 'b', company: 'indigo', status: 'done', storiesTotal: 4, storiesComplete: 4 }),
+      ],
+    });
+    const indigo = rows.find((r) => r.slug === 'indigo')!;
+    expect(indigo.sub).toBe('Owner');
+    expect(indigo.tone).toBe('ok');
+    expect(indigo.projects).toBe('1 active'); // the done one doesn't count
+    expect(indigo.stories).toBe('6 / 10 stories'); // both projects' stories roll up
+    expect(indigo.lastChange).toBe('15m ago');
+
+    const personal = rows.find((r) => r.slug === 'personal')!;
+    expect(personal.sub).toBe('Personal vault');
+    expect(personal.projects).toBe('—'); // no local projects for personal
+    expect(personal.stories).toBe('—');
+    expect(personal.lastChange).toBe('—');
+  });
+
+  it('maps workspace state to a status tone and dedupes duplicate slugs', () => {
+    const rows = getHomeCompanyRows({
+      workspaces: [
+        workspace({ slug: 'broke', state: 'broken' }),
+        workspace({ slug: 'cloudonly', state: 'cloud-only', hasLocalFolder: false }),
+        workspace({ slug: 'broke', state: 'broken' }), // dup
+      ],
+      projects: [],
+    });
+    expect(rows.map((r) => r.slug)).toEqual(['broke', 'cloudonly']); // deduped
+    expect(rows.find((r) => r.slug === 'broke')!.tone).toBe('error');
+    expect(rows.find((r) => r.slug === 'cloudonly')!.tone).toBe('idle');
+  });
+});
+
+describe('getHomeTodayAgenda', () => {
+  const NOW = new Date('2026-06-15T12:00:00');
+
+  it("returns only today's meetings, chronological, with time + company", () => {
+    const names = new Map([['cmp_indigo', 'Indigo']]);
+    const agenda = getHomeTodayAgenda({
+      events: [
+        meeting({ id: 'late', summary: 'Standup', startISO: '2026-06-15T16:00:00', sourceCompanyUid: 'cmp_indigo' }),
+        meeting({ id: 'early', summary: 'Kickoff', startISO: '2026-06-15T09:30:00' }),
+        meeting({ id: 'tomorrow', summary: 'Later', startISO: '2026-06-16T09:00:00' }),
+      ],
+      companyNamesByUid: names,
+      now: NOW,
+    });
+    expect(agenda.map((a) => a.id)).toEqual(['early', 'late']); // today only, sorted
+    expect(agenda[0].title).toBe('Kickoff');
+    expect(agenda[0].company).toBe('Personal'); // no source company uid
+    expect(agenda[1].company).toBe('Indigo');
+  });
+
+  it('falls back to a placeholder title and caps the list', () => {
+    const events = Array.from({ length: 9 }, (_, i) =>
+      meeting({ id: `e${i}`, startISO: `2026-06-15T0${i}:00:00`, summary: i === 0 ? undefined : `M${i}` }),
+    );
+    const agenda = getHomeTodayAgenda({ events, companyNamesByUid: new Map(), now: NOW, limit: 6 });
+    expect(agenda).toHaveLength(6);
+    expect(agenda[0].title).toBe('Untitled meeting');
   });
 });
