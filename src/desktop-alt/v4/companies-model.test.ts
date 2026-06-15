@@ -250,3 +250,69 @@ describe('V4 Companies model (US-004)', () => {
     expect(model.connected.map((row) => row.slug)).toEqual(['personal', 'liverecover', 'indigo']);
   });
 });
+
+describe('V4 Companies model — per-company sync-mode toggle', () => {
+  function syncedRow(slug: string, syncModes: Record<string, 'all' | 'shared' | 'custom' | null>) {
+    const model = getCompaniesPageModel({
+      workspaces: [workspace({ slug, displayName: slug })],
+      syncModes,
+      autoSyncOn: true,
+    });
+    return model.connected.find((row) => row.slug === slug)!;
+  }
+
+  it('exposes a toggleable mode for a synced company resolved to "all"', () => {
+    const row = syncedRow('indigo', { indigo: 'all' });
+    expect(row.syncMode).toBe('all');
+    expect(row.canToggleSyncMode).toBe(true);
+    // The string label remains as the fallback the lane renders while loading.
+    expect(row.sync).toBe('Auto · all paths');
+  });
+
+  it('exposes a toggleable mode for a synced company resolved to "shared"', () => {
+    const row = syncedRow('amass', { amass: 'shared' });
+    expect(row.syncMode).toBe('shared');
+    expect(row.canToggleSyncMode).toBe(true);
+    expect(row.sync).toBe('Auto · shared paths');
+  });
+
+  it('keeps "custom" read-only — it is CLI-only and not a binary control', () => {
+    const row = syncedRow('sender-agency', { 'sender-agency': 'custom' });
+    expect(row.syncMode).toBe('custom');
+    expect(row.canToggleSyncMode).toBe(false);
+    expect(row.sync).toBe('Auto · custom paths');
+  });
+
+  it('stays label-only while the mode is still loading (no get_sync_mode yet)', () => {
+    // No entry in syncModes → mode unresolved → fall back to the plain label,
+    // never render a control whose on/off state we do not yet know.
+    const row = syncedRow('keptwork', {});
+    expect(row.syncMode).toBeNull();
+    expect(row.canToggleSyncMode).toBe(false);
+    expect(row.sync).toBe('Auto');
+  });
+
+  it('never offers the toggle for the personal vault', () => {
+    const model = getCompaniesPageModel({ workspaces: [personal], autoSyncOn: true });
+    const row = model.connected[0];
+    expect(row.syncMode).toBeNull();
+    expect(row.canToggleSyncMode).toBe(false);
+  });
+
+  it('never offers the toggle for cloud-only, provisioning, or broken rows', () => {
+    const model = getCompaniesPageModel({
+      workspaces: [
+        workspace({ slug: 'cloudonly', displayName: 'CloudOnly', state: 'cloud-only', hasLocalFolder: false, role: 'member' }),
+        workspace({ slug: 'mid-connect', displayName: 'Mid Connect', state: 'local-only', cloudUid: null, membershipStatus: null, role: null }),
+        workspace({ slug: 'broke', displayName: 'Broke', state: 'broken', brokenReason: 'x' }),
+      ],
+      connectingSlugs: ['mid-connect'],
+      // Even if a stale mode is somehow present for a non-synced row, it must
+      // not become toggleable — only the synced branch reads syncModes.
+      syncModes: { cloudonly: 'all', 'mid-connect': 'all', broke: 'all' },
+    });
+    for (const row of model.connected) {
+      expect(row.canToggleSyncMode).toBe(false);
+    }
+  });
+});

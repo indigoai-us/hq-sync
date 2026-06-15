@@ -3,6 +3,7 @@
   import Popover from '../src/components/Popover.svelte';
   import BannerNotification from '../src/components/BannerNotification.svelte';
   import CompanyPage from '../src/desktop-alt/pages/CompanyPage.svelte';
+  import CompaniesPage from '../src/desktop-alt/pages/CompaniesPage.svelte';
   import DesktopApp from '../src/desktop-alt/DesktopApp.svelte';
   import MeetingPermissionsWindow from '../src/components/MeetingPermissionsWindow.svelte';
   import Conversation, {
@@ -78,7 +79,7 @@
     'data-window',
     view === 'banner'
       ? 'dm-banner'
-      : view === 'company' || view === 'desktop'
+      : view === 'company' || view === 'desktop' || view === 'companies'
         ? 'desktop-alt'
         : view === 'permissions'
           ? 'meeting-permissions'
@@ -133,6 +134,19 @@
        desktop token aliases. -->
   <div class="desktop-stage">
     <CompanyPage company={indigoWorkspace} />
+  </div>
+{:else if view === 'companies'}
+  <!-- The desktop Companies page in isolation (DesktopApp is auth-gated). Drives
+       the per-company Shared/All sync-mode toggle, the All→Shared confirm, and
+       the cloud-unreachable gating. Append ?cloud=off to preview the offline
+       notice + disabled writes. Resize the viewport to ~1180x720. -->
+  <div class="desktop-stage">
+    <CompaniesPage
+      {workspaces}
+      cloudReachable={params.get('cloud') !== 'off'}
+      onopencompany={() => {}}
+      onrefresh={() => {}}
+    />
   </div>
 {:else}
   <div class="stage" class:light={theme === 'light'}>

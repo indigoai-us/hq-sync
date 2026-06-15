@@ -109,6 +109,10 @@
   let isAdmin = $state(false);
   let workspaces = $state<Workspace[]>(cachedWorkspaces);
   let workspaceError = $state<string | null>(null);
+  // Whether the last workspace fetch reached the vault. Drives Companies-page
+  // write gating (Connect / Retry / sync-mode toggle) + a quiet notice. Assume
+  // reachable until a fetch says otherwise so we never gate on a cold cache.
+  let cloudReachable = $state(true);
   let syncState = $state<SyncState>('idle');
   let syncProgress = $state<SyncProgress | null>(null);
   let syncFanoutTotal = $state(0);
@@ -432,6 +436,7 @@
       renderCompanies = nextCompanies;
       renderWorkspaceCount = nextCompanies.length;
       workspaceError = result.error;
+      cloudReachable = result.cloudReachable;
       writeCachedWorkspaces(result.workspaces);
       // The chrome (V4Sidebar / V4TitleBar / DesktopStatusBar) consumes
       // renderCompanies + renderWorkspaceCount reactively ($derived / $props),
@@ -1105,6 +1110,7 @@
                 {ready}
                 {autoSyncOn}
                 {workspaceError}
+                {cloudReachable}
                 onopencompany={(slug) => navigate({ kind: 'company', slug })}
                 onrefresh={() => void loadWorkspaces()}
               />

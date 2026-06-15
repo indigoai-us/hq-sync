@@ -34,6 +34,19 @@ export interface ConnectedCompanyRow {
   lastChange: string;
   /** SYNC lane — "Auto · all paths", "Manual", "Setting up", "—". */
   sync: string;
+  /**
+   * Resolved per-membership footprint mode (`get_sync_mode`), null while
+   * loading / when not applicable. Drives the interactive Shared/All control.
+   */
+  syncMode: CompanySyncMode;
+  /**
+   * True only when the Sync lane should render the interactive Shared/All
+   * control instead of the static `sync` label: a synced company row whose
+   * mode has resolved to a toggleable value (`all` or `shared`). Loading
+   * (`null`), CLI-only `custom`, personal vaults, cloud-only/provisioning/
+   * error rows all stay label-only (`false`) and fall back to `sync`.
+   */
+  canToggleSyncMode: boolean;
   /** Error rows surface an inline Retry (re-runs connect to reconcile). */
   retry: boolean;
   /** Row navigates to the company workspace (synced local vaults only). */
@@ -142,6 +155,8 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
         members: EM_DASH,
         lastChange,
         sync: syncLaneLabel(null, autoSyncOn),
+        syncMode: null,
+        canToggleSyncMode: false,
         retry: false,
         open: true,
       });
@@ -159,6 +174,8 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
         members: EM_DASH,
         lastChange: EM_DASH,
         sync: 'Setting up',
+        syncMode: null,
+        canToggleSyncMode: false,
         retry: false,
         open: false,
       });
@@ -198,6 +215,8 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
         members: EM_DASH,
         lastChange: EM_DASH,
         sync: EM_DASH,
+        syncMode: null,
+        canToggleSyncMode: false,
         retry: true,
         open: false,
       });
@@ -213,6 +232,8 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
         members: EM_DASH,
         lastChange,
         sync: EM_DASH,
+        syncMode: null,
+        canToggleSyncMode: false,
         retry: false,
         open: false,
       });
@@ -220,6 +241,7 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
     }
 
     // state === 'synced'
+    const syncedMode = syncModes[workspace.slug] ?? null;
     active.push({
       slug: workspace.slug,
       name: workspace.displayName,
@@ -227,7 +249,13 @@ export function getCompaniesPageModel(input: CompaniesModelInput): CompaniesPage
       tone: 'ok',
       members: EM_DASH,
       lastChange,
-      sync: syncLaneLabel(syncModes[workspace.slug] ?? null, autoSyncOn),
+      sync: syncLaneLabel(syncedMode, autoSyncOn),
+      syncMode: syncedMode,
+      // Toggleable only once the mode resolves to a value the popover/CLI
+      // expose as a binary control. `custom` is CLI-only (needs a path list),
+      // and a still-loading `null` falls back to the plain "Auto" label until
+      // get_sync_mode lands — never render a control whose state we don't know.
+      canToggleSyncMode: syncedMode === 'all' || syncedMode === 'shared',
       retry: false,
       open: true,
     });

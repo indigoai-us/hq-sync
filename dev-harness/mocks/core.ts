@@ -274,6 +274,10 @@ const handlers: Record<string, Handler> = {
   get_sync_mode: (args) => ({
     syncMode: args?.companySlug === 'liverecover' ? 'shared' : 'all',
   }),
+  // Echo the requested mode back so the Companies-page Shared/All toggle
+  // resolves its optimistic write in the browser harness (mirrors the real
+  // set_sync_mode, which returns the resulting MembershipSyncConfig).
+  set_sync_mode: (args) => ({ syncMode: args?.mode ?? 'all' }),
   get_config: () => ({ hqFolderPath: '/Users/corey/Documents/HQ', companySlug: 'indigo', configured: true }),
   get_library_root: () => LIBRARY_ROOT,
   get_library_company: () => LIBRARY_COMPANY,
