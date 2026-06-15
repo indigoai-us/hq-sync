@@ -439,9 +439,9 @@
     border-radius: 5px;
     background: linear-gradient(
       90deg,
-      rgba(255, 255, 255, 0.05),
-      rgba(255, 255, 255, 0.1),
-      rgba(255, 255, 255, 0.05)
+      var(--v4-control-faint),
+      var(--v4-hairline),
+      var(--v4-control-faint)
     );
     background-size: 200% 100%;
     animation: skeleton 1.2s ease-in-out infinite;

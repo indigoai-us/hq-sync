@@ -350,7 +350,7 @@
     color: var(--emerald); font-size: var(--text-base); line-height: 18px;
   }
   .toast-warn {
-    border-color: rgba(202, 138, 4, 0.35); background: rgba(202, 138, 4, 0.1); color: #fcd34d;
+    border-color: rgba(202, 138, 4, 0.35); background: rgba(202, 138, 4, 0.1); color: var(--v4-warn);
   }
 
   .btn {

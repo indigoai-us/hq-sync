@@ -70,9 +70,9 @@
     border-radius: 999px;
     background: linear-gradient(
       90deg,
-      rgba(255, 255, 255, 0.05) 0%,
-      rgba(255, 255, 255, 0.1) 46%,
-      rgba(255, 255, 255, 0.05) 100%
+      var(--v4-control-faint) 0%,
+      var(--v4-hairline) 46%,
+      var(--v4-control-faint) 100%
     );
     background-size: 180% 100%;
     animation: skeleton-pulse 1100ms ease-in-out infinite;

@@ -412,7 +412,7 @@
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
   .row-icon-btn:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--v4-active-row);
     border-color: var(--border-strong);
     color: var(--fg);
   }
@@ -442,24 +442,24 @@
   /* Invite CTA — brighter so it reads as actionable. */
   .row-icon-invite {
     color: var(--fg);
-    background: rgba(255, 255, 255, 0.12);
-    border-color: rgba(255, 255, 255, 0.28);
+    background: var(--v4-control-bg);
+    border-color: var(--border-strong);
   }
   .row-icon-invite:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.2);
+    background: var(--v4-active-row);
   }
   /* Invited — muted check; hover hints at the uninvite affordance. */
   .row-icon-invited {
     color: var(--muted-2);
   }
   .row-icon-invited:hover:not(:disabled) {
-    color: #fca5a5;
+    color: var(--v4-error);
     background: rgba(220, 38, 38, 0.12);
     border-color: rgba(220, 38, 38, 0.4);
   }
   /* In-call — red tint broadcasts "live" at a glance. */
   .row-icon-incall {
-    color: #fca5a5;
+    color: var(--v4-error);
     background: rgba(220, 38, 38, 0.12);
     border-color: rgba(220, 38, 38, 0.4);
   }
@@ -468,13 +468,13 @@
   }
   /* Joining — amber spinner; transient. */
   .row-icon-joining {
-    color: #fcd34d;
+    color: var(--v4-warn);
     background: rgba(202, 138, 4, 0.1);
     border-color: rgba(202, 138, 4, 0.4);
   }
   /* Processing — muted blue; non-interactive. */
   .row-icon-processing {
-    color: #93c5fd;
+    color: var(--v4-unread);
     background: rgba(59, 130, 246, 0.08);
     border-color: rgba(59, 130, 246, 0.3);
     cursor: default;
@@ -488,7 +488,7 @@
   }
   /* Join-now — amber-accented "act now", distinct from state colours. */
   .row-icon-bot-now {
-    color: #fcd34d;
+    color: var(--v4-warn);
     background: rgba(202, 138, 4, 0.08);
     border-color: rgba(202, 138, 4, 0.32);
   }
@@ -502,7 +502,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #ef4444;
+    background: var(--v4-error);
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
     animation: live-pulse 1.6s ease-out infinite;
   }
@@ -530,7 +530,7 @@
     opacity: 0.85;
   }
   .row-icon-spinner-amber {
-    color: #fcd34d;
+    color: var(--v4-warn);
   }
   @keyframes row-icon-spin {
     to {

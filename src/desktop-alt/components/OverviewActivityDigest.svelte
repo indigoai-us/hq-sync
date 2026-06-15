@@ -249,7 +249,8 @@
     min-height: 2px;
     border-radius: 2px 2px 0 0;
     /* Neutral white-alpha to match the app's restrained Activity bars (no
-       introduced accent colour). */
+       introduced accent colour); flips to black-alpha in light mode so the
+       bars stay visible on a light background. */
     background: rgba(255, 255, 255, 0.14);
   }
   .digest-contributors {
@@ -285,6 +286,14 @@
     height: 100%;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.32);
+  }
+  @media (prefers-color-scheme: light) {
+    .digest-bar {
+      background: rgba(0, 0, 0, 0.14);
+    }
+    .digest-fill {
+      background: rgba(0, 0, 0, 0.32);
+    }
   }
   .digest-contributor strong {
     flex: 0 0 auto;

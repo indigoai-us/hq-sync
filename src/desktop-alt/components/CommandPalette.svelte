@@ -262,7 +262,7 @@
     max-height: min(360px, calc(100vh - 160px));
     overflow-y: auto;
     padding: 6px;
-    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+    scrollbar-color: var(--scrollbar-thumb-hover) transparent;
   }
 
   .command-section + .command-section {

@@ -33,3 +33,41 @@
   --v4-control-faint: rgba(255, 255, 255, 0.06); /* chips, search field, segmented track */
   --v4-active-row: rgba(255, 255, 255, 0.08); /* sidebar/list selection */
 }
+
+/* ── Light mode ─────────────────────────────────────────────────────────────
+ * First-class neutral inversion so every V4 surface adapts when the OS is in
+ * light appearance — the V4 token set was previously dark-only, which left all
+ * V4 chrome (sidebars, tables, panels, text) dark on a light desktop. Mirrors
+ * the popover + desktop-alt light palettes: no hue introduced, status hues
+ * darkened for legibility on light surfaces. The desktop window additionally
+ * overrides --v4-ground/raised/inset to translucent glass in desktop-alt.css
+ * (scoped to data-window='desktop-alt'); these solids cover the Messages window
+ * and any non-glass V4 usage. */
+@media (prefers-color-scheme: light) {
+  :root {
+    /* surfaces */
+    --v4-ground: #f6f6f8;
+    --v4-raised: #ffffff;
+    --v4-inset: #f1f1f4;
+    --v4-hairline: rgba(0, 0, 0, 0.09);
+    --v4-rowline: rgba(0, 0, 0, 0.06);
+
+    /* text */
+    --v4-text-1: #111113;
+    --v4-text-2: #5b5b61;
+    --v4-text-3: #8a8a90;
+
+    /* status — darkened for contrast on light surfaces */
+    --v4-ok: #1a8f3c;
+    --v4-warn: #b45309;
+    --v4-error: #dc2626;
+    --v4-unread: #0a6fd6;
+    --v4-idle: #8a8a90;
+
+    /* controls */
+    --v4-control-bg: rgba(0, 0, 0, 0.06);
+    --v4-control-border: rgba(0, 0, 0, 0.14);
+    --v4-control-faint: rgba(0, 0, 0, 0.04);
+    --v4-active-row: rgba(0, 0, 0, 0.06);
+  }
+}
