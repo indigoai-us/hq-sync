@@ -62,10 +62,11 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     }
   });
 
-  it('renders nav rows in the SPEC order Home/Companies/Messages/Meetings/Library', () => {
+  it('renders nav rows in the SPEC order Home/Mission Control/Companies/Messages/Meetings/Library', () => {
     const model = getV4SidebarModel({ kind: 'home' }, workspaces);
     expect(model.nav.map((row) => row.label)).toEqual([
       'Home',
+      'Mission Control',
       'Companies',
       'Messages',
       'Meetings',

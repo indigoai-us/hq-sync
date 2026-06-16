@@ -49,7 +49,7 @@ export type SettingsTab = 'sync' | 'notifications' | 'updates' | 'general' | 'me
 export const DEFAULT_SETTINGS_TAB: SettingsTab = 'sync';
 
 export type DesktopRoute =
-  | { kind: 'home' | 'companies' | 'messages' | 'meetings' | 'moderation' }
+  | { kind: 'home' | 'mission-control' | 'companies' | 'messages' | 'meetings' | 'moderation' }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
   | { kind: 'company'; slug: string; tab?: CompanyTab };
@@ -136,13 +136,15 @@ export function getDesktopActiveCompany(
   return companies.find((company) => company.slug === route.slug) ?? null;
 }
 
-/** First ⌘ hotkey assigned to a company row (after the five primary destinations). */
-const COMPANY_HOTKEY_BASE = 6;
+/** First ⌘ hotkey assigned to a company row (after the six primary destinations). */
+const COMPANY_HOTKEY_BASE = 7;
 
 /**
- * ⌘1–⌘5 map to the five primary destinations in sidebar order (Home /
- * Companies / Messages / Meetings / Library); ⌘6–⌘9 map to the first four
- * companies. Mirrors `companyHotkey` below for the palette/sidebar labels.
+ * ⌘1–⌘6 map to the six primary destinations in sidebar order (Home / Mission
+ * Control / Companies / Messages / Meetings / Library); ⌘7–⌘9 map to the first
+ * three companies. Mission Control sits directly under Home as a global,
+ * cross-company surface (US-006). Mirrors `companyHotkey` below for the
+ * palette/sidebar labels.
  */
 export function getDesktopHotkeyRoute(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'>,
@@ -151,10 +153,11 @@ export function getDesktopHotkeyRoute(
   if (!(event.metaKey || event.ctrlKey)) return null;
 
   if (event.key === '1') return { kind: 'home' };
-  if (event.key === '2') return { kind: 'companies' };
-  if (event.key === '3') return { kind: 'messages' };
-  if (event.key === '4') return { kind: 'meetings' };
-  if (event.key === '5') return { kind: 'library' };
+  if (event.key === '2') return { kind: 'mission-control' };
+  if (event.key === '3') return { kind: 'companies' };
+  if (event.key === '4') return { kind: 'messages' };
+  if (event.key === '5') return { kind: 'meetings' };
+  if (event.key === '6') return { kind: 'library' };
 
   const companyIndex = Number.parseInt(event.key, 10) - COMPANY_HOTKEY_BASE;
   if (companyIndex >= 0 && companyIndex <= 9 - COMPANY_HOTKEY_BASE) {
@@ -201,6 +204,8 @@ export function resolvePendingDesktopRoute(name: string | null | undefined): Des
     case 'home':
     case 'sync':
       return { kind: 'home' };
+    case 'mission-control':
+      return { kind: 'mission-control' };
     case 'companies':
       return { kind: 'companies' };
     case 'messages':
@@ -239,6 +244,8 @@ export function fromV4Route(route: V4Route): DesktopRoute {
   switch (route.kind) {
     case 'home':
       return { kind: 'home' };
+    case 'mission-control':
+      return { kind: 'mission-control' };
     case 'companies':
       return { kind: 'companies' };
     case 'messages':

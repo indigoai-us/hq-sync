@@ -6,6 +6,7 @@
   import { loadMeetingsCache } from '../lib/meetingsCache';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
+  import MissionControlPage from './pages/MissionControlPage.svelte';
   import MeetingsPage from './pages/MeetingsPage.svelte';
   import LibraryPage from './pages/LibraryPage.svelte';
   import MessagesPage from './pages/MessagesPage.svelte';
@@ -267,31 +268,38 @@
       action: () => navigate({ kind: 'home' }),
     },
     {
+      id: 'command-go-mission-control',
+      label: 'Go to Mission Control',
+      detail: 'Live + historical view of running agent sessions',
+      shortcut: '⌘2',
+      action: () => navigate({ kind: 'mission-control' }),
+    },
+    {
       id: 'command-go-companies',
       label: 'Go to Companies',
       detail: 'Connected companies overview',
-      shortcut: '⌘2',
+      shortcut: '⌘3',
       action: () => navigate({ kind: 'companies' }),
     },
     {
       id: 'command-go-messages',
       label: 'Go to Messages',
       detail: 'Direct messages and channels',
-      shortcut: '⌘3',
+      shortcut: '⌘4',
       action: () => navigate({ kind: 'messages' }),
     },
     {
       id: 'command-go-meetings',
       label: 'Go to Meetings',
       detail: 'Show calendar and recordings',
-      shortcut: '⌘4',
+      shortcut: '⌘5',
       action: () => navigate({ kind: 'meetings' }),
     },
     {
       id: 'command-go-library',
       label: 'Go to Library',
       detail: 'Skills, workers, and the marketplace',
-      shortcut: '⌘5',
+      shortcut: '⌘6',
       action: () => navigate({ kind: 'library' }),
     },
     ...LIBRARY_SECTIONS.filter((section) => section.id !== DEFAULT_LIBRARY_TAB).map(
@@ -1136,6 +1144,10 @@
                 onretry={handleSyncAll}
                 onopenlog={handleOpenActivityLog}
               />
+            </div>
+          {:else if route.kind === 'mission-control'}
+            <div class="page">
+              <MissionControlPage />
             </div>
           {:else if route.kind === 'companies'}
             <div class="page">

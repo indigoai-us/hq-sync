@@ -147,31 +147,32 @@ describe('US-002 hotkeys — ⌘1..9 over the V4 destinations', () => {
     company({ slug: 'second', displayName: 'Second', state: 'synced' }),
   ]);
 
-  it('maps ⌘1–⌘5 to the five primary destinations in sidebar order', () => {
+  it('maps ⌘1–⌘6 to the six primary destinations in sidebar order, with Mission Control under Home', () => {
     const meta = (key: string) => getDesktopHotkeyRoute({ key, metaKey: true, ctrlKey: false }, companies);
     expect(meta('1')).toEqual({ kind: 'home' });
-    expect(meta('2')).toEqual({ kind: 'companies' });
-    expect(meta('3')).toEqual({ kind: 'messages' });
-    expect(meta('4')).toEqual({ kind: 'meetings' });
-    expect(meta('5')).toEqual({ kind: 'library' });
+    expect(meta('2')).toEqual({ kind: 'mission-control' });
+    expect(meta('3')).toEqual({ kind: 'companies' });
+    expect(meta('4')).toEqual({ kind: 'messages' });
+    expect(meta('5')).toEqual({ kind: 'meetings' });
+    expect(meta('6')).toEqual({ kind: 'library' });
   });
 
-  it('maps ⌘6+ to companies in list order, ctrl works too, and unmodified keys do nothing', () => {
+  it('maps ⌘7+ to companies in list order, ctrl works too, and unmodified keys do nothing', () => {
     expect(
-      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'first' });
     expect(
-      getDesktopHotkeyRoute({ key: '7', metaKey: false, ctrlKey: true }, companies),
+      getDesktopHotkeyRoute({ key: '8', metaKey: false, ctrlKey: true }, companies),
     ).toEqual({ kind: 'company', slug: 'second' });
-    // No company at ⌘8/⌘9 here → no route.
-    expect(getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies)).toBeNull();
+    // No company at ⌘9 here → no route.
+    expect(getDesktopHotkeyRoute({ key: '9', metaKey: true, ctrlKey: false }, companies)).toBeNull();
     expect(getDesktopHotkeyRoute({ key: '1', metaKey: false, ctrlKey: false }, companies)).toBeNull();
   });
 
-  it('labels company hotkeys ⌘6–⌘9 and none past the ninth slot', () => {
-    expect(companyHotkey(0)).toBe('⌘6');
-    expect(companyHotkey(3)).toBe('⌘9');
-    expect(companyHotkey(4)).toBeUndefined();
+  it('labels company hotkeys ⌘7–⌘9 and none past the ninth slot', () => {
+    expect(companyHotkey(0)).toBe('⌘7');
+    expect(companyHotkey(2)).toBe('⌘9');
+    expect(companyHotkey(3)).toBeUndefined();
   });
 });
 
@@ -184,6 +185,7 @@ describe('US-002 pending-route aliases (desktop_alt_consume_pending_route)', () 
     expect(resolvePendingDesktopRoute('meetings')).toEqual({ kind: 'meetings' });
     expect(resolvePendingDesktopRoute('messages')).toEqual({ kind: 'messages' });
     expect(resolvePendingDesktopRoute('home')).toEqual({ kind: 'home' });
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
     expect(resolvePendingDesktopRoute('companies')).toEqual({ kind: 'companies' });
     expect(resolvePendingDesktopRoute('library')).toEqual({ kind: 'library' });
     expect(resolvePendingDesktopRoute('settings')).toEqual({ kind: 'settings' });
@@ -309,9 +311,50 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     expect(model?.activeId).toBe('sync');
   });
 
-  it('has no secondary sidebar on Home, Companies, Messages, Meetings, or Moderation', () => {
-    for (const kind of ['home', 'companies', 'messages', 'meetings', 'moderation'] as const) {
+  it('has no secondary sidebar on Home, Mission Control, Companies, Messages, Meetings, or Moderation', () => {
+    for (const kind of [
+      'home',
+      'mission-control',
+      'companies',
+      'messages',
+      'meetings',
+      'moderation',
+    ] as const) {
       expect(getDesktopSecondarySidebar({ kind }, companies)).toBeNull();
     }
+  });
+});
+
+describe('US-006 Mission Control destination', () => {
+  it('is a primary destination route keyed on its own kind', () => {
+    const route: DesktopRoute = { kind: 'mission-control' };
+    expect(getDesktopRouteKey(route)).toBe('mission-control');
+  });
+
+  it('treats every Mission Control route as the same active sidebar destination', () => {
+    const route: DesktopRoute = { kind: 'mission-control' };
+    expect(isDesktopRouteActive(route, { kind: 'mission-control' })).toBe(true);
+    expect(isDesktopRouteActive(route, { kind: 'home' })).toBe(false);
+    expect(isDesktopRouteActive({ kind: 'home' }, route)).toBe(false);
+  });
+
+  it('resolves the backend navigation intent to the Mission Control route', () => {
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
+  });
+
+  it('narrows a V4 sidebar payload for Mission Control onto the DesktopRoute union', () => {
+    expect(fromV4Route({ kind: 'mission-control' })).toEqual({ kind: 'mission-control' });
+  });
+
+  it('places Mission Control directly under Home on the ⌘2 hotkey', () => {
+    const companies = getDesktopCompanies([
+      company({ slug: 'first', displayName: 'First', state: 'synced' }),
+    ]);
+    expect(getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'home',
+    });
+    expect(getDesktopHotkeyRoute({ key: '2', metaKey: true, ctrlKey: false }, companies)).toEqual({
+      kind: 'mission-control',
+    });
   });
 });
