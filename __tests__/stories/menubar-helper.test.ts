@@ -53,11 +53,16 @@ describe('macOS menu-bar helper process (HQ status item)', () => {
     expect(helper).toContain('strip_prefix("show")');
     expect(helper).toContain('set_tray_anchor_x');
     const tray = read('src-tauri/src/tray.rs');
-    // The positioner uses the anchor (centre − half width) and only falls back
-    // to the top-right corner when the icon position is unknown.
+    // The positioner uses the anchor (centre − half width) to place the popover
+    // on the monitor the icon was clicked on, and only falls back to the primary
+    // corner when the icon position is unknown / off every display.
     expect(tray).toContain('pub fn set_tray_anchor_x');
     expect(tray).toContain('tray_anchor_x_points()');
-    expect(tray).toMatch(/center_px - width \/ 2/);
+    // Picks the monitor whose span contains the anchor (multi-monitor fix) —
+    // never hard-codes the primary display.
+    expect(tray).toContain('position_popover_under_anchor');
+    expect(tray).toMatch(/available_monitors\(\)/);
+    expect(tray).toMatch(/center_px - win_w \/ 2/);
   });
 
   it('build.rs compiles the helper on macOS and fails loud if swiftc breaks', () => {
