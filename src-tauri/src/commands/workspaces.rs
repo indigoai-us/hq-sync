@@ -950,7 +950,14 @@ where
         local_path: personal_local.then(|| hq_root.to_string_lossy().to_string()),
         membership_status: None,
         role: None,
-        last_synced_at: last_synced_lookup("personal"),
+        // The personal vault's journal is sharded under the reserved slug
+        // PERSONAL_VAULT_JOURNAL_SLUG ("__hq_personal_vault__"), NOT "personal".
+        // The engine migrated off the colliding "personal" slug, so reading
+        // "personal" here returns the orphaned legacy journal whose `lastSync`
+        // froze at the migration date — the tile then shows an ever-growing
+        // "N days ago" even though the vault syncs every cycle. Look up the
+        // reserved slug so the personal tile reflects the real last sync.
+        last_synced_at: last_synced_lookup(crate::commands::personal::PERSONAL_VAULT_JOURNAL_SLUG),
         broken_reason: None,
         invited_by: None,
         invited_at: None,
@@ -1574,7 +1581,16 @@ mod tests {
             &entries,
             true,
             |slug| match slug {
-                "personal" => Some("2026-04-25T00:00:00Z".into()),
+                // Regression lock for the frozen "personal: N days ago" tile:
+                // the personal row MUST read the reserved vault slug, not the
+                // orphaned legacy "personal" journal. Map the two slugs to
+                // different timestamps and assert the tile picks the reserved
+                // one. If a future change reverts to "personal", result[0]
+                // becomes the 1999 sentinel and this fails.
+                crate::commands::personal::PERSONAL_VAULT_JOURNAL_SLUG => {
+                    Some("2026-04-25T00:00:00Z".into())
+                }
+                "personal" => Some("1999-01-01T00:00:00Z".into()), // legacy journal — must be IGNORED
                 "foo" => Some("2026-04-24T12:00:00Z".into()),
                 _ => None,
             },
