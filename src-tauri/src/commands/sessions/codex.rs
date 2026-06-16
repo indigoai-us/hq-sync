@@ -195,7 +195,6 @@ struct HeadInfo {
 /// A rollout file we located on disk, keyed by its filename-embedded session id.
 struct RolloutFile {
     path: PathBuf,
-    len: u64,
     mtime: SystemTime,
 }
 
@@ -345,11 +344,7 @@ fn collect_rollouts(dir: &Path, out: &mut BTreeMap<String, RolloutFile>) {
         };
         // First writer wins; a session id shouldn't collide across sessions/ and
         // archived_sessions/, but if it does we keep the first (live) one.
-        out.entry(id).or_insert(RolloutFile {
-            path,
-            len: metadata.len(),
-            mtime,
-        });
+        out.entry(id).or_insert(RolloutFile { path, mtime });
     }
 }
 
