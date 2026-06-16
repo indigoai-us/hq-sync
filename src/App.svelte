@@ -1672,7 +1672,15 @@
               }
             } else if (kind === 'update') {
               if (action === 'update') {
-                await invoke('install_update');
+                // The update banner's "Update now" chip must land the user on
+                // the popover's in-app update banner AND start the install there
+                // via the SAME guarded path the in-app Install button uses — so
+                // it flips to "Installing…" with dedupe + error handling. A bare
+                // invoke('install_update') here installed invisibly: the popover
+                // never opened and updateInstalling never flipped, so it read as
+                // "nothing happened" until the app abruptly restarted.
+                await invoke('show_main_window');
+                await handleInstallUpdate();
               } else if (action === 'open') {
                 await invoke('show_main_window');
               }
