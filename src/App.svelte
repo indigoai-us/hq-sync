@@ -19,6 +19,7 @@
   import AutoSyncNotice from './components/AutoSyncNotice.svelte';
   import { conflictStore, type ConflictFile } from './stores/conflicts';
   import { transferCountDelta } from './lib/transfer-count';
+  import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
   import { shouldSkipSignIn } from './lib/auth';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
@@ -94,6 +95,12 @@
   // upload-only `syncTotalFiles` from the Rust pre-pass. When 0, the
   // UI falls back to `syncTotalFiles`.
   let syncPlanTotalFiles = $state(0);
+  // True once at least one `sync:plan` event has been processed this run.
+  // Gates `effectiveTotalFiles`: once the runner's plan is in, the strict
+  // transfer count (`syncPlanTotalFiles`) is authoritative — even at 0 —
+  // instead of falling back to the full pre-walk `syncTotalFiles`. Without
+  // this, an up-to-date HQ showed "Syncing … of <whole vault>".
+  let syncPlanReceived = $state(false);
   // filesSkipped is not on sync:all-complete (backend only aggregates
   // filesDownloaded), so we sum it client-side from per-company complete
   // events. Lets the popover surface "Up to date" when everything was
@@ -112,14 +119,20 @@
   // local catch-block failures where the slug isn't known.
   let syncErrorCompany = $state('');
 
-  // Effective progress denominator. When the runner is new enough to emit
-  // Stage-1 plan events (hq-cloud@5.5.0+), `syncPlanTotalFiles` accumulates
-  // a more accurate count that includes both push and pull work; otherwise
-  // we fall through to the older Rust-side pre-pass total in
-  // `syncTotalFiles`. Either source is fine — the popover bar treats this
-  // as the denominator and renders honestly when it's still 0.
+  // Effective progress denominator — "files being synced right now", not the
+  // whole vault. When the runner is new enough to emit Stage-1 plan events
+  // (hq-cloud@5.5.0+), the strict transfer count `syncPlanTotalFiles` is
+  // authoritative once the plan has arrived — INCLUDING when it is 0, which
+  // is the "nothing to sync" signal. Only before any plan (or with a legacy
+  // runner that never emits one) do we fall back to the Rust pre-walk total
+  // `syncTotalFiles`. See lib/effective-total-files.ts for the rationale and
+  // the regression test (an up-to-date HQ must not show the full vault count).
   const effectiveTotalFiles = $derived(
-    syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles
+    computeEffectiveTotalFiles({
+      planReceived: syncPlanReceived,
+      syncPlanTotalFiles,
+      syncTotalFiles,
+    })
   );
   let showConflictModal = $state(false);
   let conflicts = $state<ConflictFile[]>([]);
@@ -655,6 +668,7 @@
     personalFirstPushDone = false;
     syncTotalFiles = 0;
     syncPlanTotalFiles = 0;
+    syncPlanReceived = false;
     syncLastSummary = null;
     syncErrorMessage = '';
     syncErrorCompany = '';
@@ -938,6 +952,9 @@
         filesToConflict: number;
       }>('sync:plan', async (event) => {
         const { filesToDownload, filesToUpload, filesToConflict } = event.payload;
+        // The plan is now authoritative: from here on the denominator is the
+        // strict transfer count, even if it stays 0 (nothing to sync).
+        syncPlanReceived = true;
         // Sum work across the run: each plan event adds its own slice.
         syncPlanTotalFiles += filesToDownload + filesToUpload + filesToConflict;
       })
