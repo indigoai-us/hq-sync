@@ -754,6 +754,73 @@ jq -r 'to_entries[0].value.offset' ~/.hq/telemetry-cursor.json
 
 ---
 
+## Mission Control — Manual Verification Playbook (mission-control US-012)
+
+Mission Control is the global, cross-company fleet view of running Claude Code +
+Codex agent sessions (local + outpost). The automated half of US-012 is the real
+component-mount E2E `e2e/desktop-alt/mission-control.test.ts` (it renders the page
+and asserts the live list refreshes on a `sessions:updated` poll tick — run with
+`pnpm run test:e2e:desktop-alt`). This section is the **manual** half: a human
+verification pass on the built macOS app.
+
+> **Driver:** run this via the HQ skill **`indigo:hq-sync-test-macos`** — its
+> build → launch (dev env vars) → AX + CGEvent tray/popover driving → transparent
+> `NSWindow` screencapture harness is the canonical way to drive HQ Sync's UI on
+> macOS. Open the desktop window from the popover's **Open desktop view** button
+> (or the `open_desktop_alt_window` command), then navigate to Mission Control
+> (sidebar row directly under Home, or the **⌘2** hotkey).
+
+### Setup
+
+- [ ] Build + launch the app via `indigo:hq-sync-test-macos` (signed-in, desktop
+      view enabled).
+- [ ] Have at least one **real local agent session running** before you start so
+      the readers have something to observe:
+  - Claude Code: an active `claude` session in any repo (writes a transcript
+    `.jsonl` under `~/.claude/projects/…`).
+  - Codex: an active `codex` session (writes a rollout under `~/.codex/…`).
+
+### Check 1 — Page loads
+
+- [ ] Navigate to Mission Control (⌘2 / sidebar row under Home).
+- [ ] The page renders its header **"Mission Control"** and the best-effort
+      subtitle (`Best-effort liveness · polled every 5s · … session(s) · … local · … outpost`).
+- [ ] The 4-tile summary strip shows (RUNNING / AWAITING INPUT / IDLE / OUTPOST)
+      with live counts, and the two columns (Live Sessions / History) render.
+- [ ] No console errors in the webview devtools.
+
+### Check 2 — Live local Claude/Codex sessions appear
+
+- [ ] The running Claude session appears as a dense row in the **Live Sessions**
+      panel (grouped by inferred type), with its project, company, and model.
+- [ ] The running Codex session appears too (Codex rows are observed from the
+      rollout, no vendor auth).
+- [ ] Liveness is labeled **best-effort** (the warn dot + tooltip), not a fake
+      live connection.
+- [ ] **Poll refresh (no manual refresh):** start a NEW local agent session while
+      the page stays open. Within ~one poll cadence (5s) the new session appears
+      in the list on its own — you do **not** click anything to refresh. End a
+      session and confirm it drops (or moves to recently-ended) on the next tick.
+- [ ] The summary tiles repaint to match (RUNNING count tracks the live fleet).
+
+### Check 3 — Outpost card renders
+
+- [ ] With **no outpost** configured: the OUTPOST summary tile reads
+      `not connected` and no outpost group/card is shown (honest empty state).
+- [ ] With an **outpost reporting** (box up, heartbeat fresh): the outpost group
+      renders below the local groups, headed by a green **UP** box-status card
+      (RUNTIME / RELAY `connected` / LAST SEEN / `ip · region`); its sessions are
+      origin-badged `outpost`.
+- [ ] With the **outpost gone stale** (heartbeat older than the 90s timeout): the
+      card flips to the red **DOWN** treatment (relay `disconnected` + last-seen),
+      and — if sessions were showing — the amber "N outpost sessions dropped after
+      the 90s stale timeout" note appears.
+
+- [ ] Capture a screenshot of the Mission Control page (via the
+      `indigo:hq-sync-test-macos` screencapture step) for the release Loom/notes.
+
+---
+
 ## Release Checklist
 
 Before each release (v1.0.0 and every subsequent minor/patch):

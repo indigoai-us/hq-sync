@@ -358,3 +358,35 @@ describe('US-006 Mission Control destination', () => {
     });
   });
 });
+
+describe('US-012 Mission Control destination — routing coverage gate', () => {
+  const companies = [company({ slug: 'indigo', displayName: 'Indigo', state: 'synced' })];
+
+  it('resolves the destination intent and trims surrounding whitespace', () => {
+    expect(resolvePendingDesktopRoute('mission-control')).toEqual({ kind: 'mission-control' });
+    // The slash→colon normaliser must not split the hyphenated kind into a bogus
+    // 'mission'/'control' pair — the whole token has to survive as one kind.
+    expect(resolvePendingDesktopRoute('  mission-control  ')).toEqual({ kind: 'mission-control' });
+  });
+
+  it('renders no secondary sidebar — Mission Control is a full-width global surface', () => {
+    expect(getDesktopSecondarySidebar({ kind: 'mission-control' }, companies)).toBeNull();
+  });
+
+  it('is a distinct primary destination, not aliased onto any other surface', () => {
+    const route: DesktopRoute = { kind: 'mission-control' };
+    for (const other of [
+      { kind: 'home' },
+      { kind: 'companies' },
+      { kind: 'messages' },
+      { kind: 'meetings' },
+      { kind: 'library' },
+      { kind: 'settings' },
+    ] as DesktopRoute[]) {
+      expect(isDesktopRouteActive(route, other)).toBe(false);
+      expect(getDesktopRouteKey(other)).not.toBe(getDesktopRouteKey(route));
+    }
+    // And it round-trips through the V4 sidebar payload narrowing unchanged.
+    expect(fromV4Route({ kind: 'mission-control' })).toEqual(route);
+  });
+});
