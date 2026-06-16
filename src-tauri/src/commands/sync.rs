@@ -368,7 +368,7 @@ const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 /// with `HQ_OP_LOCK_TIMEOUT=<secs>` (0 = refuse immediately). The `~6.6.0` ->
 /// `~6.8.0` bump keeps the npx pin on the same release train as hq-cli. See
 /// indigoai-us/hq-cloud#73 (DEV-1772).
-pub const HQ_CLOUD_VERSION: &str = "~6.10.0";
+pub const HQ_CLOUD_VERSION: &str = "~6.11.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
