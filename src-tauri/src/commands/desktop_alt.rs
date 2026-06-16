@@ -341,6 +341,71 @@ pub async fn get_company_board(slug: String) -> Result<CompanyBoard, String> {
     parse_board_response(status, &text)
 }
 
+/// Vault-API fallback for the CRM projection (hq-native-crm US-010).
+///
+/// The Accounts surface reads `crm-projection.json` LOCAL-FIRST (via
+/// `projects_local::get_company_crm_projection`); when the local copy is missing
+/// — never synced to this Mac, CRM not enabled, or a sync in flight — the
+/// frontend falls back to this vault read, EXACTLY as the Board surface falls
+/// back to `get_company_board`.
+///
+/// Returns the raw projection JSON pass-through (the shape is owned by the
+/// hq-pro producer and normalized in the frontend). A not-provisioned vault, a
+/// 404 (the route may not be deployed yet), or any non-auth failure degrades to
+/// JSON `null` — the surface renders its calm empty state. A 401/403 propagates
+/// as `AUTH_REQUIRED:` so the shell can route to sign-in. NO network is made to
+/// Attio / Stripe / PandaDoc / Neon — only to the company's own vault API.
+#[tauri::command]
+pub async fn get_company_crm_projection_vault(slug: String) -> Result<serde_json::Value, String> {
+    let slug = normalize_slug(&slug)?;
+    let company_uid = resolve_company_uid(&slug).await?;
+    let url = crm_projection_url(&vault_base()?, &company_uid)?;
+    let token = cognito::get_valid_access_token()
+        .await
+        .map_err(|e| format!("auth: {e}"))?;
+
+    let res = build_client()
+        .get(&url)
+        .header("authorization", format!("Bearer {token}"))
+        .send()
+        .await
+        .map_err(|e| format!("crm-projection fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("crm-projection read: {e}"))?;
+    eprintln!(
+        "[desktop-alt] crm-projection GET {url} -> HTTP {} ({} bytes)",
+        status,
+        text.len(),
+    );
+
+    parse_crm_projection_response(status, &text)
+}
+
+/// Parse the vault CRM-projection response. Auth failures propagate; a missing
+/// projection / not-provisioned / 404 / empty body / non-2xx all degrade to JSON
+/// `null` (the calm empty state). Only a 2xx with malformed JSON errors.
+fn parse_crm_projection_response(
+    status: StatusCode,
+    text: &str,
+) -> Result<serde_json::Value, String> {
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(format!("AUTH_REQUIRED: crm-projection (HTTP {status})"));
+    }
+    if !status.is_success() {
+        // Not-provisioned, route-not-deployed-yet, or any other non-auth error:
+        // fall back to the empty state rather than surfacing a hard error.
+        return Ok(serde_json::Value::Null);
+    }
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(trimmed).map_err(|e| format!("crm-projection parse: {e}"))
+}
+
 /// Per-project creator for the Projects list Lead column. The cloud board model
 /// already derives each project's creator from its prd.json's S3 `created-by`
 /// author metadata (resolved honestly server-side — never fabricated), so we
@@ -722,6 +787,19 @@ fn board_url(base: &str, company_uid: &str) -> Result<String, String> {
     }
     Ok(format!(
         "{}/companies/{}/board",
+        base.trim_end_matches('/'),
+        company_uid
+    ))
+}
+
+fn crm_projection_url(base: &str, company_uid: &str) -> Result<String, String> {
+    if !is_url_safe_id(company_uid) {
+        return Err(format!(
+            "company uid has invalid characters: {company_uid:?}"
+        ));
+    }
+    Ok(format!(
+        "{}/companies/{}/crm-projection",
         base.trim_end_matches('/'),
         company_uid
     ))
@@ -1849,6 +1927,52 @@ mod tests {
         .unwrap_err();
 
         assert!(err.contains("board HTTP 404"));
+    }
+
+    #[test]
+    fn crm_projection_parses_a_2xx_projection_passthrough() {
+        let value = super::parse_crm_projection_response(
+            reqwest::StatusCode::OK,
+            r#"{"schema_version":1,"accounts":[{"id":"a","name":"A"}],"synced_at":"t"}"#,
+        )
+        .expect("2xx projection parses");
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["accounts"][0]["id"], "a");
+    }
+
+    #[test]
+    fn crm_projection_degrades_non_auth_failures_and_empty_to_null() {
+        // 404 (route not deployed yet) / not-provisioned / empty body all become
+        // JSON null — the surface renders its calm empty state, not an error.
+        for (status, body) in [
+            (reqwest::StatusCode::NOT_FOUND, r#"{"code":"crm-not-provisioned"}"#),
+            (reqwest::StatusCode::NOT_FOUND, "route not found"),
+            (reqwest::StatusCode::OK, "  \n "),
+            (reqwest::StatusCode::INTERNAL_SERVER_ERROR, "boom"),
+        ] {
+            let value = super::parse_crm_projection_response(status, body)
+                .expect("non-auth failure degrades to null");
+            assert!(value.is_null(), "status {status} body {body:?} should be null");
+        }
+    }
+
+    #[test]
+    fn crm_projection_propagates_auth_failures() {
+        for status in [
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::FORBIDDEN,
+        ] {
+            let err = super::parse_crm_projection_response(status, "{}").unwrap_err();
+            assert!(err.starts_with("AUTH_REQUIRED:"), "got {err}");
+        }
+    }
+
+    #[test]
+    fn crm_projection_url_is_company_scoped() {
+        let url =
+            super::crm_projection_url("https://hqapi.getindigo.ai", "cmp_01ABC").expect("url");
+        assert_eq!(url, "https://hqapi.getindigo.ai/companies/cmp_01ABC/crm-projection");
+        assert!(super::crm_projection_url("https://x", "bad uid!").is_err());
     }
 
     #[test]

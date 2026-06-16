@@ -734,6 +734,67 @@ fn read_company_goals(hq_root: &Path, company_slug: &str) -> Result<CompanyGoals
         .unwrap_or_default())
 }
 
+// ---- CRM projection (hq-native-crm US-010) ---------------------------------
+
+/// Read a company's CRM projection (`crm-projection.json`) from the resolved HQ
+/// folder — the LOCAL-FIRST leg of the Accounts surface, read EXACTLY the way
+/// `get_local_company_goals` reads `board.json`.
+///
+/// The projection is produced server-side by hq-pro (US-009) and synced down to
+/// the company vault like `board.json`; this command reads the on-disk copy. It
+/// returns the raw JSON value pass-through (the projection shape is owned by the
+/// producer and normalized in the frontend `account-view-model.ts`), so a schema
+/// addition never needs a Rust change.
+///
+/// A missing / unsynced / unparseable projection resolves to JSON `null` rather
+/// than an error: the frontend treats `null` as "no local projection — fall
+/// back to the vault API" (the same local-first → vault-API fallback the board
+/// surface uses). The only hard errors are a `company_slug` that escapes the HQ
+/// folder (path-traversal guard) or the gate rejecting a signed-out caller.
+#[tauri::command]
+pub async fn get_company_crm_projection(
+    company_slug: String,
+) -> Result<serde_json::Value, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("CRM projection reader requires a signed-in user".to_string());
+    }
+    let hq = resolve_hq_folder();
+    read_crm_projection(&hq, &company_slug)
+}
+
+/// Pure body for `get_company_crm_projection` — explicit HQ root for testing.
+///
+/// Validates the slug stays inside `companies/` under the HQ folder (no `..`
+/// traversal, no nested path, no absolute escape), then leniently reads the
+/// company's `crm-projection.json`. Missing/garbage projection → JSON `null`
+/// (the "fall back to the vault" signal), never an error.
+fn read_crm_projection(
+    hq_root: &Path,
+    company_slug: &str,
+) -> Result<serde_json::Value, String> {
+    let slug = company_slug.trim();
+    if slug.is_empty() {
+        return Err("company_slug is required".to_string());
+    }
+    // A slug is a single directory name — reject separators / traversal before
+    // it ever touches the filesystem.
+    if slug.contains('/') || slug.contains('\\') || slug == "." || slug == ".." {
+        return Err(format!("invalid company_slug: {company_slug:?}"));
+    }
+    let projection_path = hq_root
+        .join("companies")
+        .join(slug)
+        .join("crm-projection.json");
+    // Defense-in-depth: the resolved path must stay inside the HQ folder.
+    if !is_within(hq_root, &projection_path) {
+        return Err(format!(
+            "company_slug escapes the HQ folder: {company_slug:?}"
+        ));
+    }
+    // Missing/unparseable crm-projection.json → JSON null (fall back to vault).
+    Ok(read_json_lenient::<serde_json::Value>(&projection_path).unwrap_or(serde_json::Value::Null))
+}
+
 // ---- writes (US-010) -------------------------------------------------------
 
 /// Persist a project's `status` (and refresh its `updated_at`) back to the
@@ -1462,6 +1523,79 @@ mod tests {
             );
         }
         assert!(read_company_goals(&root, "   ").is_err(), "empty slug rejected");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ---- CRM projection (hq-native-crm US-010) -----------------------------
+
+    fn make_crm_fixture_tree() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "hq-projects-local-crm-{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        let indigo = root.join("companies").join("indigo");
+        fs::create_dir_all(&indigo).unwrap();
+        let projection = r#"{
+            "schema_version": 1,
+            "synced_at": "2026-06-15T00:00:00Z",
+            "accounts": [
+                { "id": "ent_acme", "name": "Acme", "stage": "signed",
+                  "external_ids": { "stripe": "cus_1" },
+                  "sources": { "billing": { "system": "stripe", "status": "paid", "value": "$1", "meta": "", "ref": "cus_1" } },
+                  "timeline": [] }
+            ]
+        }"#;
+        fs::write(indigo.join("crm-projection.json"), projection).unwrap();
+        root
+    }
+
+    #[test]
+    fn read_crm_projection_returns_the_synced_json_passthrough() {
+        let root = make_crm_fixture_tree();
+        let value = read_crm_projection(&root, "indigo").expect("projection read");
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["accounts"][0]["id"], "ent_acme");
+        assert_eq!(value["accounts"][0]["sources"]["billing"]["status"], "paid");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_crm_projection_missing_file_is_null_not_error() {
+        let root = make_crm_fixture_tree();
+        // A company with no crm-projection.json → JSON null (fall back to vault).
+        let value = read_crm_projection(&root, "acme").expect("missing projection → null");
+        assert!(value.is_null());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_crm_projection_unparseable_file_is_null_not_error() {
+        let root = make_crm_fixture_tree();
+        let bad = root.join("companies").join("acme");
+        fs::create_dir_all(&bad).unwrap();
+        fs::write(bad.join("crm-projection.json"), "{ not json").unwrap();
+        let value = read_crm_projection(&root, "acme").expect("garbage projection → null");
+        assert!(value.is_null());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_crm_projection_rejects_traversal_and_empty_slug() {
+        let root = make_crm_fixture_tree();
+        for evil in ["../../../etc", "..", ".", "foo/bar", "indigo/../secrets"] {
+            assert!(
+                read_crm_projection(&root, evil).is_err(),
+                "slug {evil:?} must be rejected"
+            );
+        }
+        assert!(read_crm_projection(&root, "   ").is_err(), "empty slug rejected");
         let _ = fs::remove_dir_all(&root);
     }
 

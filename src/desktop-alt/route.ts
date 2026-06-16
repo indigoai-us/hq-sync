@@ -28,11 +28,13 @@ export const DEFAULT_LIBRARY_TAB: LibraryTab = 'skills';
 
 /**
  * Company page sections — rows of the company secondary sidebar (SPEC section
- * 4: Overview / Goals / Projects / Tasks / Activity / Deployments / Secrets /
- * Library). Defaults to 'overview' when a company route carries no tab.
+ * 4: Overview / Accounts / Goals / Projects / Tasks / Activity / Deployments /
+ * Secrets / Library). "Accounts" is the hq-native-crm CRM surface (US-010).
+ * Defaults to 'overview' when a company route carries no tab.
  */
 export type CompanyTab =
   | 'overview'
+  | 'accounts'
   | 'goals'
   | 'projects'
   | 'tasks'
@@ -58,9 +60,14 @@ export type DesktopRouteKind = DesktopRoute['kind'];
 
 export const initialDesktopRoute: DesktopRoute = { kind: 'home' };
 
-/** The eight company secondary-sidebar rows, in SPEC display order. */
+/**
+ * The company secondary-sidebar rows, in SPEC display order. "Accounts" (the
+ * hq-native-crm CRM surface, US-010) sits directly under Overview — the
+ * "where is every client?" entry point ahead of the work-system sections.
+ */
 export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> = [
   { id: 'overview', label: 'Overview' },
+  { id: 'accounts', label: 'Accounts' },
   { id: 'goals', label: 'Goals' },
   { id: 'projects', label: 'Projects' },
   { id: 'tasks', label: 'Tasks' },
