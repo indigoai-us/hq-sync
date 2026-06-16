@@ -889,6 +889,17 @@ where
             Some(e) => e,
             None => continue,
         };
+        // The personal vault is assembled separately below (section 3) as the
+        // canonical kind=Personal / state=Personal row, and slug="personal" is
+        // dropped from the company list above. A cloud membership/entity for
+        // "personal" must NOT also surface here as a CloudOnly *company* row:
+        // dedupe keys by kind+slug, so a `company:personal` row survives next to
+        // `personal:personal` and drove a bogus "You've been added to Personal —
+        // sync to pull it" prompt. The personal vault auto-provisions; it is
+        // never a joinable membership.
+        if entity.slug == "personal" {
+            continue;
+        }
         if by_slug.contains_key(&entity.slug) {
             continue;
         }
@@ -1326,6 +1337,46 @@ mod tests {
         );
         assert_eq!(result.len(), 1);
         assert!(result[0].cloud_uid.is_none());
+    }
+
+    #[test]
+    fn personal_cloud_membership_does_not_become_a_joinable_company_row() {
+        // Regression (v0.8.3 "You've been added to Personal" prompt): an active
+        // cloud membership/entity for slug "personal" must NOT surface as a
+        // CloudOnly *company* row in section 2. The personal vault is assembled
+        // separately as the canonical kind=Personal row; a phantom
+        // `company:personal` cloud-only/active row survived dedupe (keyed by
+        // kind+slug) and drove the frontend's joinableMemberships to raise a
+        // bogus "sync to pull Personal" prompt.
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", Some("hq-vault-prs-x"));
+        let mut entities = BTreeMap::new();
+        entities.insert(
+            "cmp_personal".to_string(),
+            company_entity("cmp_personal", "personal", Some("Personal")),
+        );
+        let mems = [membership("mem_p", "prs_x", "cmp_personal", "active")];
+        let result = assemble_workspaces(
+            tmp.path(),
+            Some(&p),
+            &mems,
+            &entities,
+            &[],
+            true,
+            |_| None,
+        );
+        // "personal" appears exactly once, as the canonical Personal row — never
+        // a CloudOnly company row.
+        let personal_rows: Vec<_> = result.iter().filter(|w| w.slug == "personal").collect();
+        assert_eq!(personal_rows.len(), 1, "personal must appear exactly once");
+        assert_eq!(personal_rows[0].kind, WorkspaceKind::Personal);
+        assert_eq!(personal_rows[0].state, WorkspaceState::Personal);
+        assert!(
+            !result
+                .iter()
+                .any(|w| w.slug == "personal" && w.kind == WorkspaceKind::Company),
+            "no phantom company:personal cloud-only row may leak into the list"
+        );
     }
 
     #[test]
