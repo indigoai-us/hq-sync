@@ -566,6 +566,76 @@ fn tray_anchor_monitor(
     fallback
 }
 
+/// A monitor's geometry reduced to the fields the macOS popover positioner needs.
+///
+/// Mirrored into a plain struct (instead of querying `Monitor` inline) so the
+/// monitor-selection + placement math is a pure function we can unit-test with
+/// synthetic multi-display layouts — there's no live AppKit display in `cargo
+/// test`. All values are physical pixels in tao's global coordinate space
+/// (primary monitor's top-left at the origin), except `scale` (points→px).
+#[derive(Clone, Copy, Debug)]
+struct MonitorBox {
+    /// Work-area left edge (physical px) — usable region, menu bar excluded.
+    work_x: f64,
+    /// Work-area top edge (physical px) — i.e. just below this monitor's menu bar.
+    work_y: f64,
+    /// Work-area width (physical px). The menu bar trims height, not width, so
+    /// this is also the monitor's full horizontal span.
+    work_w: f64,
+    /// Backing scale factor (Retina = 2.0). Converts Cocoa points → physical px.
+    scale: f64,
+}
+
+/// Build a [`MonitorBox`] from a live `Monitor` (same field access pattern as
+/// `tray_anchor_monitor` / `position_below_tray`).
+fn monitor_box(m: &Monitor) -> MonitorBox {
+    let wa = m.work_area();
+    MonitorBox {
+        work_x: wa.position.x as f64,
+        work_y: wa.position.y as f64,
+        work_w: wa.size.width as f64,
+        scale: m.scale_factor(),
+    }
+}
+
+/// Place the popover under the menu-bar icon, on the monitor it was clicked on.
+///
+/// `anchor_x_points` is the icon's on-screen horizontal centre in Cocoa screen
+/// POINTS, which span ALL displays — a click on a secondary monitor reports an
+/// anchor inside that monitor's span, not the primary's. We pick the monitor
+/// whose horizontal span contains the anchor, then return the popover's top-left
+/// in physical px: centred under the anchor, clamped fully onto that monitor's
+/// work area, `gap_px` below its menu bar.
+///
+/// Returns `None` when no monitor's span contains the anchor (e.g. anchor never
+/// reported, or a stale value off every display) — the caller then falls back to
+/// the primary monitor's corner. Each monitor's span is derived from its OWN
+/// scale (`work_x / scale` … `(work_x + work_w) / scale`), so mixed-DPI rigs map
+/// correctly rather than assuming a single global points↔px factor.
+fn position_popover_under_anchor(
+    monitors: &[MonitorBox],
+    anchor_x_points: f64,
+    win_w: f64,
+    gap_px: f64,
+) -> Option<(i32, i32)> {
+    for m in monitors {
+        if m.scale <= 0.0 {
+            continue;
+        }
+        let span_left_pts = m.work_x / m.scale;
+        let span_right_pts = (m.work_x + m.work_w) / m.scale;
+        if anchor_x_points >= span_left_pts && anchor_x_points <= span_right_pts {
+            let center_px = anchor_x_points * m.scale;
+            let min_x = m.work_x;
+            let max_x = (m.work_x + m.work_w - win_w).max(min_x);
+            let pop_x = (center_px - win_w / 2.0).clamp(min_x, max_x).round() as i32;
+            let pop_y = (m.work_y + gap_px).round() as i32;
+            return Some((pop_x, pop_y));
+        }
+    }
+    None
+}
+
 /// Center the window horizontally under the tray icon, just below it.
 ///
 /// `Rect`'s `position` and `size` are enums (Physical | Logical); we
@@ -675,27 +745,40 @@ pub fn show_popover_window(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    if let (Ok(Some(monitor)), Ok(size)) = (window.primary_monitor(), window.outer_size()) {
-        let mon = monitor.size();
-        let scale = monitor.scale_factor();
-        let margin = (8.0 * scale) as i32;
-        let top = (28.0 * scale) as i32;
-        let width = size.width as i32;
-        // Anchor the popover's horizontal centre under the icon when the helper
-        // has reported its position (Cocoa points → physical pixels via the
-        // monitor scale; the menu bar lives on the primary monitor whose origin
-        // matches Cocoa's screen origin on the x axis). Clamp so it stays fully
-        // on-screen. Fall back to the top-right corner when the position is
-        // unknown — never off-screen, which is the whole reason we self-position.
-        let x = match tray_anchor_x_points() {
-            Some(center_pts) => {
-                let center_px = (center_pts * scale) as i32;
-                let max_x = (mon.width as i32 - width - margin).max(margin);
-                (center_px - width / 2).clamp(margin, max_x)
-            }
-            None => (mon.width as i32 - width - margin).max(margin),
-        };
-        let _ = window.set_position(PhysicalPosition::new(x, top));
+    if let Ok(size) = window.outer_size() {
+        let win_w = size.width as f64;
+
+        // Preferred: anchor the popover under the menu-bar icon, on the SAME
+        // monitor the icon was clicked on. The native helper reports the icon's
+        // horizontal centre in Cocoa screen POINTS, which span every display, so
+        // a click on a secondary monitor carries an anchor inside that monitor's
+        // span. `position_popover_under_anchor` picks that monitor and clamps the
+        // popover onto it — fixing the bug where a second-display click always
+        // re-opened the popover on the primary monitor.
+        let anchored = tray_anchor_x_points().and_then(|anchor_pts| {
+            window.available_monitors().ok().and_then(|mons| {
+                let boxes: Vec<MonitorBox> = mons.iter().map(monitor_box).collect();
+                position_popover_under_anchor(&boxes, anchor_pts, win_w, POPOVER_GAP_PX)
+            })
+        });
+
+        // Fallback: top-right of the primary display, just under the menu bar.
+        // Used when no click has reported an anchor yet, or the anchor falls
+        // outside every known monitor. Never off-screen — the whole reason we
+        // self-position rather than letting the OS place the window.
+        let position = anchored.or_else(|| {
+            window.primary_monitor().ok().flatten().map(|m| {
+                let b = monitor_box(&m);
+                let margin = (8.0 * b.scale).round();
+                let x = (b.work_x + b.work_w - win_w - margin).max(b.work_x + margin);
+                let y = b.work_y + POPOVER_GAP_PX;
+                (x.round() as i32, y.round() as i32)
+            })
+        });
+
+        if let Some((pop_x, pop_y)) = position {
+            let _ = window.set_position(PhysicalPosition::new(pop_x, pop_y));
+        }
     }
     let _ = window.show();
     let _ = window.set_focus();
@@ -1017,6 +1100,86 @@ mod tests {
         );
         assert_eq!(x, 1120);
         assert_eq!(y, 28);
+    }
+
+    // Multi-monitor popover anchoring (regression: the macOS popover always
+    // opened on the primary display, ignoring the monitor the menu-bar icon was
+    // clicked on). Two displays, both 2x Retina, 25pt menu bar (50px work-area
+    // top inset), arranged side-by-side: primary 1440x900pt @ origin, secondary
+    // 1920x1080pt to its right. All math is the pure positioner — no live AppKit.
+    fn primary_box() -> MonitorBox {
+        MonitorBox { work_x: 0.0, work_y: 50.0, work_w: 2880.0, scale: 2.0 }
+    }
+    fn secondary_box() -> MonitorBox {
+        // Cocoa points span [1440, 3360]; physical px span [2880, 6720].
+        MonitorBox { work_x: 2880.0, work_y: 50.0, work_w: 3840.0, scale: 2.0 }
+    }
+
+    #[test]
+    fn test_popover_anchors_on_secondary_monitor() {
+        let mons = [primary_box(), secondary_box()];
+        // Icon centre at 2000 points → inside the secondary's span [1440, 3360].
+        let (x, y) = position_popover_under_anchor(&mons, 2000.0, 360.0, 4.0).unwrap();
+        // center_px = 2000*2 = 4000; minus win_w/2 (180) = 3820; in [2880, 6360].
+        assert_eq!(x, 3820);
+        assert_eq!(y, 54); // work_y (50) + gap (4)
+        // The whole point of the fix: it lands on the secondary, not the primary.
+        assert!(x as f64 >= secondary_box().work_x);
+    }
+
+    #[test]
+    fn test_popover_anchors_on_primary_monitor() {
+        let mons = [primary_box(), secondary_box()];
+        // Icon centre at 700 points → inside the primary's span [0, 1440].
+        let (x, _) = position_popover_under_anchor(&mons, 700.0, 360.0, 4.0).unwrap();
+        // center_px = 1400; minus 180 = 1220; in [0, 2520].
+        assert_eq!(x, 1220);
+        assert!((x as f64) < secondary_box().work_x);
+    }
+
+    #[test]
+    fn test_popover_clamps_to_secondary_right_edge() {
+        let mons = [secondary_box()];
+        // Icon near the far right of the secondary (3340 points).
+        let (x, _) = position_popover_under_anchor(&mons, 3340.0, 360.0, 4.0).unwrap();
+        // center_px = 6680; minus 180 = 6500; clamped to max 2880+3840-360 = 6360.
+        assert_eq!(x, 6360);
+    }
+
+    #[test]
+    fn test_popover_anchor_outside_all_monitors_returns_none() {
+        let mons = [primary_box()];
+        // 5000 points is past the primary's [0, 1440] span — caller uses the
+        // primary-corner fallback instead.
+        assert!(position_popover_under_anchor(&mons, 5000.0, 360.0, 4.0).is_none());
+    }
+
+    #[test]
+    fn test_popover_single_monitor_centers_under_icon() {
+        let mons = [primary_box()];
+        // Icon at 720 points (centre of the 1440pt-wide display).
+        let (x, y) = position_popover_under_anchor(&mons, 720.0, 360.0, 4.0).unwrap();
+        assert_eq!(x, 1260); // 720*2 = 1440; minus 180 = 1260
+        assert_eq!(y, 54);
+    }
+
+    #[test]
+    fn test_popover_mixed_dpi_picks_by_each_monitors_own_scale() {
+        // Primary 2x; secondary 1x to the right. Cocoa points lay the secondary
+        // at x=1440pt, but tao's physical grid places it at x=2880px. Selecting
+        // by each monitor's own scale (not a single global factor) is what keeps
+        // a secondary-display click off the primary.
+        let primary = MonitorBox { work_x: 0.0, work_y: 50.0, work_w: 2880.0, scale: 2.0 };
+        let secondary = MonitorBox { work_x: 2880.0, work_y: 25.0, work_w: 1920.0, scale: 1.0 };
+        let mons = [primary, secondary];
+        // Each monitor's span uses its OWN scale: primary points span [0, 1440],
+        // secondary points span [2880, 4800]. 2000 points falls in the gap → None.
+        assert!(position_popover_under_anchor(&mons, 2000.0, 360.0, 4.0).is_none());
+        // A point genuinely on the 1x secondary (3000 points) lands there.
+        let (x, _) = position_popover_under_anchor(&mons, 3000.0, 360.0, 4.0).unwrap();
+        // center_px = 3000*1 = 3000; minus 180 = 2820; clamped to min 2880.
+        assert_eq!(x, 2880);
+        assert!(x as f64 >= secondary.work_x);
     }
 
     #[test]
