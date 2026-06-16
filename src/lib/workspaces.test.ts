@@ -128,6 +128,28 @@ describe('joinableMemberships', () => {
     ).toEqual([]);
   });
 
+  it('excludes a phantom company:personal cloud-only row (the v0.8.3 "added to Personal" bug)', () => {
+    // workspaces.rs §2 emitted the personal cloud membership as a
+    // `company:personal` CloudOnly/active row; dedupe (keyed by kind:slug)
+    // never collapsed it against the canonical `personal:personal` row, so it
+    // leaked into the "You've been added to Personal — sync to pull it" prompt.
+    // The personal vault auto-provisions for every user and is never joinable.
+    // This row is active + cloud-only (so the old state/status filter passed it)
+    // and only the slug guard keeps it out.
+    expect(
+      joinableMemberships([
+        ws({
+          slug: 'personal',
+          kind: 'company',
+          state: 'cloud-only',
+          membershipStatus: 'active',
+          hasLocalFolder: false,
+          localPath: null,
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
   it('offers a company present in both manifest and cloud only once (deduped)', () => {
     const dup = joinable();
     expect(joinableMemberships([dup, { ...dup }])).toHaveLength(1);

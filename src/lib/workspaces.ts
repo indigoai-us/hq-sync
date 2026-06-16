@@ -82,6 +82,16 @@ export function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
  */
 export function joinableMemberships(workspaces: Workspace[]): Workspace[] {
   return dedupeWorkspaces(workspaces).filter(
-    (w) => w.state === 'cloud-only' && w.membershipStatus === 'active',
+    (w) =>
+      w.state === 'cloud-only' &&
+      w.membershipStatus === 'active' &&
+      // The personal vault is NEVER a "you've been added — pull it" target: it
+      // auto-provisions for every user and is surfaced separately as the
+      // canonical Personal row (state === 'personal'). A phantom
+      // `company:personal` cloud-only row — emitted by workspaces.rs §2 when the
+      // personal cloud membership has no local match, and not collapsed by
+      // dedupe (different `kind`) — must not drive the prompt. Guard by slug so
+      // a row mis-typed as kind=company can't leak through either.
+      w.slug !== 'personal',
   );
 }
