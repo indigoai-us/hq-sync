@@ -119,15 +119,45 @@ export interface HistoryEvent {
 }
 
 /**
- * The full Mission Control payload (US-005): the merged local fleet plus the
- * history feed. This is BOTH the `list_agent_sessions` command return value AND
- * the `sessions:updated` poll-event payload — the Rust `MissionControlSnapshot`
- * serialises exactly this shape (`{ sessions, history }`), so the store reads it
- * without remapping.
+ * The box-level outpost status card (US-011). Mirrors the Rust
+ * `outpost::OutpostStatus` struct field-for-field (camelCase wire shape). Heads
+ * the outpost group in the Live panel; sourced from `GET /outpost/status` and
+ * aged by the heartbeat stale-after timeout (so `stale`/`lastSeenAt` reflect
+ * actual per-session reporting, not just the control-plane state).
+ */
+export interface OutpostStatus {
+  /** Whether the box reads as up (green card) vs down (red card). */
+  up: boolean;
+  /** The agent runtime the box runs (`claude` / `codex`) — the RUNTIME stat. */
+  runtime: string;
+  /** Relay connected (green "connected") vs disconnected (red) — the RELAY stat. */
+  relayConnected: boolean;
+  /** Static IP, when known (the `ip · region` meta line). */
+  ip: string;
+  /** Region, when known. */
+  region: string;
+  /** ISO-8601 of the most recent heartbeat (the LAST SEEN stat); '' if never. */
+  lastSeenAt: string;
+  /**
+   * `true` once the heartbeat has gone stale past the 90s timeout — the card
+   * renders its down/last-seen treatment + the stale-sessions note even if
+   * `/outpost/status` still reports the box exists.
+   */
+  stale: boolean;
+}
+
+/**
+ * The full Mission Control payload (US-005/US-011): the merged fleet (local +
+ * outpost), the history feed, and the box-level outpost status. This is BOTH the
+ * `list_agent_sessions` command return value AND the `sessions:updated`
+ * poll-event payload — the Rust `MissionControlSnapshot` serialises exactly this
+ * shape (`{ sessions, history, outpost? }`), so the store reads it without
+ * remapping. `outpost` is omitted by the backend when no outpost is known.
  */
 export interface MissionControlSnapshot {
   sessions: AgentSession[];
   history: HistoryEvent[];
+  outpost?: OutpostStatus | null;
 }
 
 /** The Tauri event name the polling loop emits on each re-scan (US-005). Kept
@@ -381,6 +411,102 @@ export function isActiveForLivePanel(
 // ───────────────────────────────────────────────────────────────────────────
 // Compact relative time (US-007 dense rows)
 // ───────────────────────────────────────────────────────────────────────────
+
+// ───────────────────────────────────────────────────────────────────────────
+// Outpost grouping + box-card presentation (US-011)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// design.md "Outpost status card (US-011)": outpost sessions render under the
+// SAME grouped model as local ones (origin badged), headed by a box-level status
+// card sourced from `GET /outpost/status`. The card is green-tinted when up and a
+// red card (relay disconnected + last-seen + the stale-sessions note) when down.
+//
+// The presentation decisions (up→green / down→red, relay text, the dropped-count
+// note) are pure functions here, NOT inline in the panel, so they are
+// unit-testable in the node test env (the panel itself is not component-mounted
+// under vitest) — exactly the pattern `deriveSessionKind` / `eventNodeTone` use.
+
+/** Partition a fleet into its local and outpost halves, preserving input order. */
+export function partitionByOrigin(sessions: AgentSession[]): {
+  local: AgentSession[];
+  outpost: AgentSession[];
+} {
+  const local: AgentSession[] = [];
+  const outpost: AgentSession[] = [];
+  for (const s of sessions) {
+    if (s.origin === 'outpost') outpost.push(s);
+    else local.push(s);
+  }
+  return { local, outpost };
+}
+
+/** The visual tone for the outpost box card — `ok` (green, up) or `down` (red). */
+export type OutpostCardTone = 'ok' | 'down';
+
+/**
+ * A fully-resolved, presentation-ready view of the outpost box card (US-011),
+ * derived purely from the {@link OutpostStatus} + the count of outpost sessions
+ * currently shown. The panel renders straight from this — no branching logic in
+ * markup — so every card-state decision is pinned here and unit-tested.
+ */
+export interface OutpostCardView {
+  /** `ok` → green-tinted card; `down` → red card. Drives the hairline tint. */
+  tone: OutpostCardTone;
+  /** State pill text — `UP` / `DOWN`. */
+  stateLabel: 'UP' | 'DOWN';
+  /** Runtime stat value (uppercased for the RUNTIME label), or `—` when unknown. */
+  runtimeLabel: string;
+  /** Relay stat value — `connected` (green) / `disconnected` (red). */
+  relayLabel: 'connected' | 'disconnected';
+  /** Whether the relay reads connected (drives the relay value color). */
+  relayConnected: boolean;
+  /** `ip · region` meta, or `—` when neither is known. */
+  metaLabel: string;
+  /**
+   * The amber stale-timeout note shown ONLY in the down/stale state when outpost
+   * sessions were dropped — `null` when there's nothing to note. design.md:
+   * "N outpost sessions dropped after the 90s stale timeout — they reappear when
+   * the box reports in."
+   */
+  staleNote: string | null;
+}
+
+/** The stale-timeout window the box card's note references (matches the Rust
+ *  `HEARTBEAT_STALE_AFTER` = 90s). Display-only. */
+export const OUTPOST_STALE_AFTER_SECONDS = 90;
+
+/**
+ * Resolve the outpost box card view (US-011) from the status + the number of
+ * outpost sessions just dropped by the stale timeout (i.e. how many were showing
+ * before the box went stale). Pure + deterministic; the single source of truth
+ * for the card's up/down treatment.
+ *
+ * - `up && !stale` → green `ok` card, no note.
+ * - otherwise → red `down` card; when `droppedCount > 0` it carries the
+ *   stale-sessions note (design.md down state).
+ */
+export function resolveOutpostCard(
+  status: OutpostStatus,
+  droppedCount: number = 0,
+): OutpostCardView {
+  const isUp = status.up && !status.stale;
+  const tone: OutpostCardTone = isUp ? 'ok' : 'down';
+  const metaParts = [status.ip, status.region].filter((p) => p && p.trim());
+  const staleNote =
+    !isUp && droppedCount > 0
+      ? `${droppedCount} outpost ${droppedCount === 1 ? 'session' : 'sessions'} dropped after the ${OUTPOST_STALE_AFTER_SECONDS}s stale timeout — ${droppedCount === 1 ? 'it reappears' : 'they reappear'} when the box reports in.`
+      : null;
+
+  return {
+    tone,
+    stateLabel: isUp ? 'UP' : 'DOWN',
+    runtimeLabel: status.runtime ? status.runtime.toUpperCase() : '—',
+    relayLabel: status.relayConnected ? 'connected' : 'disconnected',
+    relayConnected: status.relayConnected,
+    metaLabel: metaParts.length ? metaParts.join(' · ') : '—',
+    staleNote,
+  };
+}
 
 /**
  * Compact mono relative-activity label for a dense row / group header

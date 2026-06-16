@@ -542,6 +542,21 @@ fn main() {
             // pattern as the share/dm poller above.
             commands::sessions::setup_sessions_poller(app.handle().clone());
 
+            // Outpost sessions subscriber + box status (US-011). Subscribes to
+            // the per-person `hq/{personUid}/sessions` realtime topic (reusing the
+            // dm_mqtt MQTT-over-WSS credential/presign pattern), parses the remote
+            // AgentSession[] heartbeat into the shared outpost store (origin=
+            // outpost), and merges it into the SAME snapshot the sessions poller
+            // emits. The S3-heartbeat fallback + box-status pollers run on their
+            // own timers so an MQTT outage degrades to polling, and a stale-after
+            // timeout drops outpost sessions that stop reporting. macOS-gated like
+            // the rest of the realtime surface; every path is best-effort.
+            #[cfg(target_os = "macos")]
+            {
+                commands::sessions::outpost::setup_outpost_mqtt_receiver(app.handle().clone());
+                commands::sessions::outpost::setup_outpost_pollers(app.handle().clone());
+            }
+
             // SPIKE: env-var trigger to preview the custom notification banner
             // without devtools / real inbound events. Pops one representative
             // banner per source — DM (2s), share (10s), update (18s), meeting

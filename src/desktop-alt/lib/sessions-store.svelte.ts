@@ -5,6 +5,7 @@ import {
   type AgentSession,
   type HistoryEvent,
   type MissionControlSnapshot,
+  type OutpostStatus,
 } from './sessions';
 
 // ---------------------------------------------------------------------------
@@ -25,6 +26,14 @@ import {
 
 let sessions = $state<AgentSession[]>([]);
 let history = $state<HistoryEvent[]>([]);
+// The box-level outpost status card (US-011), or null when no outpost is known.
+// Replaced on every poll; the Live panel heads its outpost group with it.
+let outpost = $state<OutpostStatus | null>(null);
+// The number of outpost sessions showing in the *previous* snapshot. When the
+// box goes stale the backend drops them (sessions empty), so this lets the box
+// card surface "N sessions dropped after the stale timeout" (design.md down
+// state) — we remember how many we just lost.
+let lastOutpostCount = $state(0);
 // `true` until the very first snapshot lands — drives the loading skeleton.
 let loading = $state(true);
 // Set when the initial invoke fails; the panel can surface it instead of a
@@ -37,8 +46,19 @@ let unlisten: UnlistenFn | null = null;
 
 /** Apply a fresh snapshot to the reactive state. */
 function applySnapshot(snapshot: MissionControlSnapshot): void {
-  sessions = snapshot.sessions ?? [];
+  const next = snapshot.sessions ?? [];
+  // Track how many outpost sessions were showing BEFORE this snapshot, so when
+  // the stale timeout drops them to zero the box card can report the count that
+  // just vanished. Computed off the prior `sessions` (current state).
+  const priorOutpostCount = sessions.filter((s) => s.origin === 'outpost').length;
+  const nextOutpostCount = next.filter((s) => s.origin === 'outpost').length;
+  // Remember the last NON-zero count so a freshly-stale snapshot (now zero)
+  // still knows how many were dropped.
+  lastOutpostCount = nextOutpostCount > 0 ? nextOutpostCount : priorOutpostCount;
+
+  sessions = next;
   history = snapshot.history ?? [];
+  outpost = snapshot.outpost ?? null;
   loading = false;
 }
 
@@ -90,6 +110,8 @@ export function stopSessionsStore(): void {
   started = false;
   sessions = [];
   history = [];
+  outpost = null;
+  lastOutpostCount = 0;
   loading = true;
   error = '';
 }
@@ -101,6 +123,15 @@ export const sessionsStore = {
   },
   get history() {
     return history;
+  },
+  /** The box-level outpost status card (US-011), or null when no outpost known. */
+  get outpost() {
+    return outpost;
+  },
+  /** How many outpost sessions were showing before they were last dropped — feeds
+   *  the box card's stale-timeout "N sessions dropped" note. */
+  get lastOutpostCount() {
+    return lastOutpostCount;
   },
   get loading() {
     return loading;

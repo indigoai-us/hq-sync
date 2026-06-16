@@ -12,11 +12,14 @@ import {
   isActiveForLivePanel,
   isLiveStatus,
   isSessionStatus,
+  partitionByOrigin,
   relativeActivity,
+  resolveOutpostCard,
   sortHistoryNewestFirst,
   type AgentSession,
   type HistoryEvent,
   type HistoryEventKind,
+  type OutpostStatus,
   type SessionKind,
   type SessionStatus,
 } from './sessions';
@@ -421,4 +424,107 @@ describe('eventNodeTone (US-008 node color by kind)', () => {
       expect(eventNodeTone(kind)).toBe(tone);
     });
   }
+});
+
+// ── US-011: outpost subscriber + box status + merge ──────────────────────────
+
+const outpostStatus = (overrides: Partial<OutpostStatus> = {}): OutpostStatus => ({
+  up: true,
+  runtime: 'claude',
+  relayConnected: true,
+  ip: '203.0.113.7',
+  region: 'us-east-1',
+  lastSeenAt: '2026-06-15T18:43:20Z',
+  stale: false,
+  ...overrides,
+});
+
+describe('partitionByOrigin (US-011 outpost split)', () => {
+  it('splits a fleet into local and outpost, preserving input order', () => {
+    const fleet = [
+      session({ id: 'l1', origin: 'local' }),
+      session({ id: 'o1', origin: 'outpost' }),
+      session({ id: 'l2', origin: 'local' }),
+      session({ id: 'o2', origin: 'outpost' }),
+    ];
+    const { local, outpost } = partitionByOrigin(fleet);
+    expect(local.map((s) => s.id)).toEqual(['l1', 'l2']);
+    expect(outpost.map((s) => s.id)).toEqual(['o1', 'o2']);
+  });
+
+  it('handles a local-only fleet (no outpost) without dropping anything', () => {
+    const fleet = [session({ id: 'l1' }), session({ id: 'l2' })];
+    const { local, outpost } = partitionByOrigin(fleet);
+    expect(local).toHaveLength(2);
+    expect(outpost).toHaveLength(0);
+  });
+
+  it('groups an origin=outpost session into its own bucket (the e2e merge path)', () => {
+    // The US-011 e2e: a simulated outpost heartbeat → origin=outpost session →
+    // renders under the outpost group. partitionByOrigin is the split that puts
+    // it there; groupSessions then clusters it like any other.
+    const fleet = [session({ id: 'o1', origin: 'outpost', project: 'remote-thing' })];
+    const { local, outpost } = partitionByOrigin(fleet);
+    expect(local).toHaveLength(0);
+    expect(outpost).toHaveLength(1);
+    const groups = groupSessions(outpost);
+    expect(groups.flatMap((g) => g.sessions.map((s) => s.id))).toContain('o1');
+  });
+});
+
+describe('resolveOutpostCard (US-011 box-card up/down states)', () => {
+  it('renders an UP (green) card when the box is up and fresh', () => {
+    const card = resolveOutpostCard(outpostStatus({ up: true, stale: false }), 0);
+    expect(card.tone).toBe('ok');
+    expect(card.stateLabel).toBe('UP');
+    expect(card.relayLabel).toBe('connected');
+    expect(card.relayConnected).toBe(true);
+    expect(card.runtimeLabel).toBe('CLAUDE');
+    expect(card.metaLabel).toBe('203.0.113.7 · us-east-1');
+    // No stale note in the up state.
+    expect(card.staleNote).toBeNull();
+  });
+
+  it('renders a DOWN (red) card with the stale-timeout note when the box went stale', () => {
+    const card = resolveOutpostCard(
+      outpostStatus({ up: false, stale: true, relayConnected: false }),
+      3,
+    );
+    expect(card.tone).toBe('down');
+    expect(card.stateLabel).toBe('DOWN');
+    expect(card.relayLabel).toBe('disconnected');
+    expect(card.relayConnected).toBe(false);
+    // The down state carries the dropped-sessions note (design.md).
+    expect(card.staleNote).toMatch(/3 outpost sessions dropped after the 90s stale timeout/);
+    expect(card.staleNote).toMatch(/reappear when the box reports in/);
+  });
+
+  it('treats up-but-stale as DOWN (stale flips the card even if up is set)', () => {
+    // The backend ages a box: /outpost/status may still say up, but a missed
+    // heartbeat sets stale → the card MUST read down.
+    const card = resolveOutpostCard(outpostStatus({ up: true, stale: true }), 1);
+    expect(card.tone).toBe('down');
+    expect(card.stateLabel).toBe('DOWN');
+  });
+
+  it('omits the stale note when nothing was dropped (down but zero prior sessions)', () => {
+    const card = resolveOutpostCard(outpostStatus({ up: false, stale: true }), 0);
+    expect(card.tone).toBe('down');
+    expect(card.staleNote).toBeNull();
+  });
+
+  it('singularises the note for a single dropped session', () => {
+    const card = resolveOutpostCard(outpostStatus({ up: false, stale: true }), 1);
+    expect(card.staleNote).toMatch(/1 outpost session dropped/);
+    expect(card.staleNote).toMatch(/it reappears when the box reports in/);
+  });
+
+  it('falls back to — for an unknown runtime / empty meta', () => {
+    const card = resolveOutpostCard(
+      outpostStatus({ runtime: '', ip: '', region: '' }),
+      0,
+    );
+    expect(card.runtimeLabel).toBe('—');
+    expect(card.metaLabel).toBe('—');
+  });
 });

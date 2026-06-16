@@ -44,6 +44,13 @@ pub mod liveness;
 /// `workspace/threads/*.json` (dispatches, completions, checkpoints, handoffs).
 pub mod history;
 
+/// Desktop outpost subscriber + box-level status + merge (US-011) — subscribes
+/// to the outpost sessions topic (reusing the `dm_mqtt.rs` pattern), merges the
+/// remote `AgentSession[]` (origin=outpost) into this snapshot, and surfaces the
+/// box-level status card sourced from `GET /outpost/status`. S3-heartbeat fallback
+/// + a stale-after timeout keep it honest when the box stops reporting.
+pub mod outpost;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Status taxonomy
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,11 +164,18 @@ pub struct AgentSession {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MissionControlSnapshot {
-    /// The merged local `AgentSession[]` (Claude + Codex), liveness applied.
+    /// The merged fleet — local `AgentSession[]` (Claude + Codex, liveness
+    /// applied) PLUS any fresh outpost sessions (origin=outpost) folded in from
+    /// the realtime heartbeat (US-011), so local + remote agents are one list.
     pub sessions: Vec<AgentSession>,
     /// The derived history feed (tasks dispatched, stories completed,
     /// checkpoints, handoffs), newest-first.
     pub history: Vec<HistoryEvent>,
+    /// The box-level outpost status card (US-011), or `None` when no outpost is
+    /// known. Heads the outpost group in the UI; reflects up/down, runtime,
+    /// relay, and last-seen (aged by the heartbeat stale-after timeout).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outpost: Option<outpost::OutpostStatus>,
 }
 
 /// Event name the polling loop emits on each re-scan (US-005).
@@ -251,14 +265,43 @@ fn merge_sessions(
 /// contributes an empty list rather than failing the whole snapshot, so one bad
 /// store can't blank the fleet.
 async fn collect_snapshot() -> MissionControlSnapshot {
+    let now = SystemTime::now();
     let claude = claude::list_local_claude_sessions().await.unwrap_or_default();
     let codex = codex::list_local_codex_sessions().await.unwrap_or_default();
     let agents = scan_running_agents();
-    let sessions = merge_sessions(claude, codex, agents, SystemTime::now());
+    let local = merge_sessions(claude, codex, agents, now);
+
+    // Fold in the outpost fleet (US-011): the realtime subscriber + S3 fallback
+    // keep a stale-aware cache; `outpost_view` returns FRESH outpost sessions
+    // (empty past the stale timeout) plus the box-status card. Outpost sessions
+    // carry the emitter's own liveness — we do NOT re-run the local process scan
+    // against them (their processes live on the VM, not this box).
+    let outpost_view = outpost::outpost_view(now);
+    let sessions = append_outpost_sessions(local, outpost_view.sessions);
 
     let history = history::list_session_history().await.unwrap_or_default();
 
-    MissionControlSnapshot { sessions, history }
+    MissionControlSnapshot {
+        sessions,
+        history,
+        outpost: outpost_view.status,
+    }
+}
+
+/// Append the outpost fleet onto the local fleet for the merged snapshot
+/// (US-011). Pure over its inputs so the merge ordering (local first, then
+/// outpost) is unit-testable. Each outpost session is defensively re-stamped
+/// `origin=outpost` so the UI's origin grouping never mis-buckets a remote
+/// session as local, regardless of what the wire claimed.
+fn append_outpost_sessions(
+    mut local: Vec<AgentSession>,
+    outpost: Vec<AgentSession>,
+) -> Vec<AgentSession> {
+    local.extend(outpost.into_iter().map(|mut s| {
+        s.origin = AgentOrigin::Outpost;
+        s
+    }));
+    local
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -512,6 +555,80 @@ mod tests {
         assert_eq!(merged.len(), 1);
         // HARD rule: no live process → ended, regardless of freshness.
         assert_eq!(merged[0].status, SessionStatus::Ended);
+    }
+
+    // ── US-011: outpost merge into the same snapshot ────────────────────────
+
+    fn outpost_session(id: &str) -> AgentSession {
+        let mut s = session(id, AgentTool::Claude, "2026-06-15T18:43:20Z");
+        // Wire says LOCAL — `append_outpost_sessions` must force it to outpost.
+        s.origin = AgentOrigin::Local;
+        s.source = "outpost-heartbeat".to_string();
+        s
+    }
+
+    #[test]
+    fn append_outpost_sessions_merges_into_one_fleet_with_outpost_origin() {
+        let now = SystemTime::now();
+        let local = vec![session("c1", AgentTool::Claude, &iso_ago(now, 5))];
+        let outpost = vec![outpost_session("o1")];
+
+        let merged = append_outpost_sessions(local, outpost);
+
+        // Local first, then outpost — stable order.
+        assert_eq!(merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["c1", "o1"]);
+        // The local session stays local…
+        assert_eq!(merged[0].origin, AgentOrigin::Local);
+        // …and the outpost session is forced to origin=outpost (so the UI groups
+        // it under the outpost group), even though the wire said local.
+        assert_eq!(merged[1].origin, AgentOrigin::Outpost);
+    }
+
+    #[test]
+    fn append_outpost_sessions_with_no_outpost_is_identity() {
+        let now = SystemTime::now();
+        let local = vec![session("c1", AgentTool::Claude, &iso_ago(now, 5))];
+        let merged = append_outpost_sessions(local.clone(), Vec::new());
+        assert_eq!(merged, local);
+    }
+
+    #[test]
+    fn snapshot_omits_outpost_key_when_no_outpost() {
+        // `outpost: None` must serialise to NO `outpost` key (skip_serializing_if)
+        // so the existing frontend shape is unchanged when there's no box.
+        let snapshot = MissionControlSnapshot {
+            sessions: Vec::new(),
+            history: Vec::new(),
+            outpost: None,
+        };
+        let value = serde_json::to_value(&snapshot).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(obj.contains_key("sessions"));
+        assert!(obj.contains_key("history"));
+        assert!(!obj.contains_key("outpost"), "absent outpost is omitted from the wire");
+    }
+
+    #[test]
+    fn snapshot_carries_outpost_card_when_present() {
+        let snapshot = MissionControlSnapshot {
+            sessions: Vec::new(),
+            history: Vec::new(),
+            outpost: Some(outpost::OutpostStatus {
+                up: true,
+                runtime: "claude".to_string(),
+                relay_connected: true,
+                ip: "203.0.113.7".to_string(),
+                region: "us-east-1".to_string(),
+                last_seen_at: "2026-06-15T18:43:20Z".to_string(),
+                stale: false,
+            }),
+        };
+        let value = serde_json::to_value(&snapshot).unwrap();
+        let outpost = value.get("outpost").expect("outpost card present").as_object().unwrap();
+        // camelCase keys on the wire, matching the TS card type.
+        assert_eq!(outpost.get("up").unwrap(), true);
+        assert_eq!(outpost.get("relayConnected").unwrap(), true);
+        assert_eq!(outpost.get("lastSeenAt").unwrap(), "2026-06-15T18:43:20Z");
     }
 
     // ── US-005: command + event integration ─────────────────────────────────
