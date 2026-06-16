@@ -12,6 +12,7 @@ import {
   bumpChannelUnread,
   clearChannelUnread,
 } from './channels';
+import { mergeConversations } from '../components/messaging/contact-order';
 
 function ch(partial: Partial<Channel> & { channelId: string; name: string }): Channel {
   return {
@@ -219,5 +220,199 @@ describe('company label resolution never leaks a raw UID (REGRESSION)', () => {
     const companyGroup = groups.find((g) => g.scope === 'company');
     expect(companyGroup?.label).toBe('Company');
     expect(companyGroup?.label).not.toContain('cmp_');
+  });
+});
+
+describe('US-001 REPRO (intentionally RED): externally-created group DM does not surface live', () => {
+  // Reproduction for hq-sync-live-new-channel/US-001.
+  //
+  // ROOT CAUSE (frontend, unified rail sort): when a brand-new group DM created
+  // via `hq dm` by the SIGNED-IN user arrives on a channel poll, the
+  // `channel:updated` handler in MessagesShell.svelte DOES upsert it into the
+  // `channels` array (upsertChannel works) and the unified rail's
+  // `mergeConversations(contacts, channels)` DOES include it (no filter drops
+  // it). But the rail row inherits `time` from:
+  //
+  //     time: stamp || (unread > 0 ? now : 0)            // contact-order.ts
+  //
+  // A channel the caller CREATED/OWNS arrives with unread === 0 (the caller sent
+  // the only message, so it is not unread to them) AND — for a just-created
+  // channel — no server `lastActivityAt` / `lastMessageAt` yet (both optional on
+  // the wire, "older servers omit them"). So `stamp === 0` and `unread === 0`
+  // ⇒ `time === 0`: the freshly-arrived conversation sorts to the BOTTOM of a
+  // newest-first rail, buried under every existing thread. To the user the new
+  // group "never appeared" until a manual Sync re-ran loadChannels(). It is
+  // mis-sorted, not dropped.
+  //
+  // This test encodes the DESIRED behavior (a brand-new conversation the caller
+  // just created surfaces at the TOP of the rail). It FAILS against pre-fix code
+  // and is the RED reproduction signal for US-001. US-002 fixes the sort seam;
+  // US-003 keeps this guard green.
+  type RailChannel = Channel; // mergeConversations only needs ChannelRecencyFields
+  const NOW = Date.parse('2026-06-15T12:00:00Z');
+
+  function makeContact(personUid: string, lastIso: string) {
+    return { personUid, email: `${personUid}@x.com`, displayName: personUid, lastMessageAt: lastIso };
+  }
+
+  it('a just-upserted unnamed group DM (unread 0, no server stamps) surfaces at the TOP of the unified rail', () => {
+    // An existing, recently-active DM already in the rail.
+    const contacts = [makeContact('prs_alice', '2026-06-15T11:59:00Z')];
+
+    // The rail's current channel list (one older, read channel).
+    let channels: RailChannel[] = [
+      ch({
+        channelId: 'chn_existing',
+        name: 'existing-channel',
+        scope: 'company',
+        unread: 0,
+        lastActivityAt: '2026-06-15T11:50:00Z',
+      }),
+    ];
+
+    // The brand-new group DM the signed-in user created via `hq dm`, delivered
+    // through the channel:updated event: unnamed, participant-keyed, scope group,
+    // unread 0 (caller owns/created it), and NO server activity stamps yet.
+    const justCreated = ch({
+      channelId: 'chn_01KV6C02ARDJME1W2ZC9JAX4FX',
+      name: '',
+      scope: 'group',
+      memberCount: 5,
+      unread: 0,
+      lastActivityAt: null,
+      lastMessageAt: null,
+    });
+
+    // Exactly what MessagesShell's channel:updated handler does.
+    channels = upsertChannel(channels, justCreated);
+
+    const rail = mergeConversations(contacts, channels, { now: NOW });
+
+    // Sanity: the upsert + merge did include the new group (it is not dropped).
+    const newRow = rail.find((r) => r.channel?.channelId === justCreated.channelId);
+    expect(newRow, 'the freshly-upserted group DM should appear in the unified rail').toBeDefined();
+
+    // The actual bug: a brand-new conversation the caller just created must
+    // surface at (or near) the TOP — not be buried at the bottom by time:0.
+    // This assertion is RED against the current `time: stamp || (unread>0?now:0)`
+    // sort, where the new group sinks below every existing thread.
+    expect(
+      rail[0].channel?.channelId,
+      'a brand-new group DM should be the most-recent (top) conversation, not buried at the bottom',
+    ).toBe(justCreated.channelId);
+  });
+});
+
+describe("REGRESSION US-003: externally-created group DM surfaces live at top of rail", () => {
+  // Permanent regression guard for hq-sync-live-new-channel.
+  //
+  // The bug: a brand-new scope:'group' channel created OUTSIDE the app (e.g. via
+  // `hq dm`, including one the signed-in user created/owns) arrives on a channel
+  // poll through the `channel:updated` → upsertChannel path with unread === 0 and
+  // NO server `lastActivityAt` / `lastMessageAt` yet. The pre-fix rail sort was
+  // `time: stamp || (unread > 0 ? now : 0)`, so such a channel resolved to
+  // `time: 0` and sank to the BOTTOM of the newest-first rail — to the user it
+  // "never appeared" until a manual Sync re-ran loadChannels().
+  //
+  // The fix (US-002): upsertChannel stamps a client-only `arrivedAt` on first
+  // insert, and mergeConversations falls back `stamp || arrivedAt || (unread>0?now:0)`,
+  // so a freshly-arrived timeless group DM surfaces as recent (top) instead of
+  // sinking. This block locks ALL of acceptance-criterion-1 down: the new group
+  // is (a) upserted into the rail, (b) grouped under "Direct", (c) carries a
+  // non-empty participant-derived title, and (d) — the specific guard for this
+  // bug — surfaces at a visible (top) position of the newest-first rail.
+  //
+  // This test FAILS against the pre-fix sort (`time: stamp || (unread>0?now:0)`)
+  // and PASSES after US-002. Do NOT weaken these assertions to make it pass — a
+  // failure here means live-surfacing of new channels has regressed.
+  const NOW = Date.parse("2026-06-15T12:00:00Z");
+
+  function makeContact(personUid: string, lastIso: string) {
+    return { personUid, email: `${personUid}@x.com`, displayName: personUid, lastMessageAt: lastIso };
+  }
+
+  // The brand-new, unnamed, participant-keyed group DM delivered via the
+  // channel:updated event: scope group, unread 0 (caller created/owns it), and
+  // NO server activity stamps yet (both optional on the wire).
+  const NEW_GROUP_ID = "chn_01KV6C02ARDJME1W2ZC9JAX4FX";
+  function freshGroupDm(): Channel {
+    return ch({
+      channelId: NEW_GROUP_ID,
+      name: "",
+      scope: "group",
+      memberCount: 5,
+      unread: 0,
+      lastActivityAt: null,
+      lastMessageAt: null,
+    });
+  }
+
+  it("surfaces at the TOP of the newest-first rail, not buried at the bottom", () => {
+    // A recently-active DM and an older, read company channel already in the rail.
+    const contacts = [makeContact("prs_alice", "2026-06-15T11:59:00Z")];
+    let channels: Channel[] = [
+      ch({
+        channelId: "chn_existing",
+        name: "existing-channel",
+        scope: "company",
+        unread: 0,
+        lastActivityAt: "2026-06-15T11:50:00Z",
+      }),
+    ];
+
+    // Exactly what MessagesShell's channel:updated handler does — the single
+    // insert path stamps arrivedAt on first entry.
+    channels = upsertChannel(channels, freshGroupDm(), NOW);
+
+    const rail = mergeConversations(contacts, channels, { now: NOW });
+
+    // (a) It is upserted into the rail — not dropped or filtered.
+    const newRow = rail.find((r) => r.channel?.channelId === NEW_GROUP_ID);
+    expect(newRow, "the freshly-upserted group DM must appear in the unified rail").toBeDefined();
+
+    // (d) The bug guard: it must surface at the TOP of the newest-first rail,
+    // ahead of the existing DM and the older channel.
+    expect(
+      rail[0].channel?.channelId,
+      "a brand-new externally-created group DM must be the most-recent (top) conversation",
+    ).toBe(NEW_GROUP_ID);
+  });
+
+  it("is grouped under the 'Direct' header with a non-empty participant-derived title", () => {
+    const channels = upsertChannel([], freshGroupDm(), NOW);
+
+    // (b) It buckets under the "Direct" group, never into a company bucket.
+    const groups = groupChannels(channels);
+    const direct = groups.find((g) => g.scope === "group");
+    expect(direct, "an externally-created group DM must bucket under a 'Direct' header").toBeDefined();
+    expect(direct?.label).toBe("Direct");
+    expect(direct?.channels.map((c) => c.channelId)).toContain(NEW_GROUP_ID);
+
+    // (c) It renders a non-empty, participant-derived title — not a blank row.
+    const title = channelDisplayName(freshGroupDm());
+    expect(title.trim().length, "an unnamed group DM must render a non-empty title").toBeGreaterThan(0);
+    expect(title).toBe("Group · 5"); // member-count fallback for an unnamed 5-person group
+  });
+
+  it("does not re-float an already-known group on re-poll (no flicker / no reorder)", () => {
+    // First arrival stamps arrivedAt = NOW.
+    let channels = upsertChannel([], freshGroupDm(), NOW);
+
+    // A later DM arrives and is genuinely newer than the group's arrival.
+    const contacts = [makeContact("prs_bob", "2026-06-15T12:05:00Z")];
+    const LATER = NOW + 10 * 60_000;
+
+    // Re-poll delivers the SAME group again (still timeless) — upsertChannel must
+    // PRESERVE the original arrivedAt so it keeps its place instead of jumping
+    // back to the top on every poll.
+    channels = upsertChannel(channels, freshGroupDm(), LATER);
+    const group = channels.find((c) => c.channelId === NEW_GROUP_ID);
+    expect(group?.arrivedAt, "re-poll must preserve the original arrival stamp").toBe(NOW);
+
+    const rail = mergeConversations(contacts, channels, { now: LATER });
+    // The newer DM now sits above the (older-arrival) group — order is stable and
+    // recency-correct, the group did not re-float to the top.
+    expect(rail[0].contact?.personUid).toBe("prs_bob");
+    expect(rail[1].channel?.channelId).toBe(NEW_GROUP_ID);
   });
 });

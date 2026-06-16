@@ -233,13 +233,22 @@ export function contactPreviewAt(contact: ContactPreviewFields): string | null {
 /** Recency-relevant fields a channel contributes to the unified rail. Channels
  * may not carry a server timestamp yet (older servers omit `lastActivityAt` /
  * `lastMessageAt`); when absent, an unread channel still floats up via the
- * `now` fallback in `mergeConversations`. */
+ * `now` fallback in `mergeConversations`, and a freshly-arrived channel floats
+ * up via its client-stamped `arrivedAt` (see `upsertChannel`). */
 export interface ChannelRecencyFields {
   channelId: string;
   name?: string | null;
   unread?: number | null;
   lastActivityAt?: string | null;
   lastMessageAt?: string | null;
+  /** Client-only epoch-ms stamp of when this channel FIRST entered the rail
+   * (set once by `upsertChannel` on insert, never on re-poll). Lets a brand-new
+   * channel with no server timestamps and `unread: 0` — e.g. a group DM the
+   * signed-in user just created via `hq dm` — surface as recent instead of
+   * sinking to `time: 0`. Never sent to the server; absent on a channel built
+   * directly (not through `upsertChannel`), so steady-state ordering is
+   * unchanged. */
+  arrivedAt?: number | null;
 }
 
 export type ConversationKind = 'dm' | 'channel';
@@ -267,8 +276,10 @@ function channelLabel(channel: ChannelRecencyFields): string {
  * Sort: newest activity first. A DM's time folds in its own timestamps + the
  * local notification `events` index (same source as `sortContactsByRecentActivity`)
  * and its hydrated `previewAt`. A channel's time is its server `lastActivityAt` /
- * `lastMessageAt` when present; when absent, an UNREAD channel is treated as
- * `now` (it needs attention, so it sits among recent items) and a read, timeless
+ * `lastMessageAt` when present; when absent, it falls back (in order) to its
+ * client `arrivedAt` (a brand-new channel that just entered the rail surfaces as
+ * recent — see `upsertChannel`), then to `now` for an UNREAD timeless channel
+ * (it needs attention), and finally a read, never-arrival-stamped timeless
  * channel sinks to the bottom. Ties break by unread desc, then label.
  *
  * Pure + DOM-free so it's unit-tested like the other helpers here. Pass `now`
@@ -300,10 +311,14 @@ export function mergeConversations<
       parseTimestamp(channel.lastMessageAt),
     );
     const unread = channel.unread ?? 0;
+    const arrivedAt = channel.arrivedAt ?? 0;
     return {
       key: `ch:${channel.channelId}`,
       kind: 'channel',
-      time: stamp || (unread > 0 ? now : 0),
+      // Server stamp wins (real ordering untouched). Else a freshly-arrived
+      // channel surfaces at its `arrivedAt`. Else an unread timeless channel
+      // floats to `now`. Else (read + timeless + never-arrival-stamped) → 0.
+      time: stamp || arrivedAt || (unread > 0 ? now : 0),
       unread,
       channel,
     };
