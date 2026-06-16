@@ -59,3 +59,29 @@ export function dedupeWorkspaces(workspaces: Workspace[]): Workspace[] {
     return true;
   });
 }
+
+/**
+ * Companies the signed-in user has an ACTIVE membership in that are not on this
+ * machine yet — i.e. they accepted an invite (the cloud membership is `active`,
+ * which is what `claimByEmail` produces on first sign-in) but the workspace has
+ * never been pulled down (`state === 'cloud-only'`, no local folder).
+ *
+ * These are the rows the menubar surfaces a "You've been added to {company} —
+ * Sync to pull it" prompt for. The whole point: a teammate who accepts an
+ * invite (email link or HQ Console) shouldn't have to know any command — the
+ * app already knows about the membership, so it offers the one-click pull.
+ *
+ * Excluded on purpose:
+ *  - `membershipStatus === 'pending'` — an unaccepted/ungranted invite, nothing
+ *    to pull yet (the V4 Companies surface renders those as invite rows).
+ *  - `synced` / `personal` / `local-only` / `broken` — already local, or not a
+ *    fresh cloud membership to pull.
+ *
+ * Deduped first so a company present in both the manifest and cloud memberships
+ * is only offered once.
+ */
+export function joinableMemberships(workspaces: Workspace[]): Workspace[] {
+  return dedupeWorkspaces(workspaces).filter(
+    (w) => w.state === 'cloud-only' && w.membershipStatus === 'active',
+  );
+}
