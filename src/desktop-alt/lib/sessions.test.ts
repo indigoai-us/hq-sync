@@ -2,14 +2,21 @@ import { describe, expect, it } from 'vitest';
 import {
   SESSION_KINDS,
   SESSION_STATUSES,
+  deriveEventTool,
   deriveSessionKind,
+  eventNodeTone,
+  filterHistory,
   groupKeyFor,
   groupSessions,
+  historyCompanies,
   isActiveForLivePanel,
   isLiveStatus,
   isSessionStatus,
   relativeActivity,
+  sortHistoryNewestFirst,
   type AgentSession,
+  type HistoryEvent,
+  type HistoryEventKind,
   type SessionKind,
   type SessionStatus,
 } from './sessions';
@@ -281,4 +288,137 @@ describe('relativeActivity (compact mono token)', () => {
     expect(relativeActivity('', now)).toBe('—');
     expect(relativeActivity('not-a-date', now)).toBe('—');
   });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// History timeline (US-008)
+// ───────────────────────────────────────────────────────────────────────────
+
+const historyEvent = (overrides: Partial<HistoryEvent> = {}): HistoryEvent => ({
+  kind: 'completed',
+  title: 'US-007 completed',
+  company: 'indigo',
+  project: 'mission-control',
+  timestamp: '2026-06-15T18:40:00Z',
+  source: 'audit-log',
+  ...overrides,
+});
+
+describe('deriveEventTool (US-008 best-effort tool inference)', () => {
+  it('infers claude from a claude-flavoured source / title', () => {
+    expect(deriveEventTool(historyEvent({ source: 'claude-jsonl' }))).toBe('claude');
+    expect(deriveEventTool(historyEvent({ source: 'thread', title: 'Claude Code checkpoint' }))).toBe(
+      'claude',
+    );
+  });
+
+  it('infers codex from a codex-flavoured source / title', () => {
+    expect(deriveEventTool(historyEvent({ source: 'codex-rollout' }))).toBe('codex');
+    expect(deriveEventTool(historyEvent({ source: 'thread', title: 'Codex handoff' }))).toBe('codex');
+  });
+
+  it('returns null when the tool is indeterminate (plain audit-log row)', () => {
+    expect(deriveEventTool(historyEvent({ source: 'audit-log', title: 'US-007 completed' }))).toBe(
+      null,
+    );
+  });
+
+  it('is deterministic for the same input', () => {
+    const e = historyEvent({ source: 'codex-rollout' });
+    expect(deriveEventTool(e)).toBe(deriveEventTool(e));
+  });
+});
+
+describe('sortHistoryNewestFirst', () => {
+  it('orders events newest-first by timestamp without mutating the input', () => {
+    const feed = [
+      historyEvent({ title: 'old', timestamp: '2026-06-15T17:00:00Z' }),
+      historyEvent({ title: 'new', timestamp: '2026-06-15T18:00:00Z' }),
+      historyEvent({ title: 'mid', timestamp: '2026-06-15T17:30:00Z' }),
+    ];
+    const sorted = sortHistoryNewestFirst(feed);
+    expect(sorted.map((e) => e.title)).toEqual(['new', 'mid', 'old']);
+    // Input untouched (pure).
+    expect(feed.map((e) => e.title)).toEqual(['old', 'new', 'mid']);
+  });
+
+  it('sorts empty/unparseable timestamps last', () => {
+    const sorted = sortHistoryNewestFirst([
+      historyEvent({ title: 'blank', timestamp: '' }),
+      historyEvent({ title: 'real', timestamp: '2026-06-15T18:00:00Z' }),
+    ]);
+    expect(sorted.map((e) => e.title)).toEqual(['real', 'blank']);
+  });
+});
+
+describe('filterHistory (US-008 tool + company filter)', () => {
+  // A small mixed feed: 2 codex, 1 claude, 1 indeterminate — across two companies.
+  const feed: HistoryEvent[] = [
+    historyEvent({ title: 'codex-a', source: 'codex-rollout', company: 'indigo', timestamp: '2026-06-15T18:10:00Z' }),
+    historyEvent({ title: 'claude-a', source: 'claude-jsonl', company: 'indigo', timestamp: '2026-06-15T18:20:00Z' }),
+    historyEvent({ title: 'codex-b', source: 'thread', kind: 'handoff', company: 'liverecover', timestamp: '2026-06-15T18:30:00Z' }),
+    historyEvent({ title: 'plain', source: 'audit-log', company: 'liverecover', timestamp: '2026-06-15T18:40:00Z' }),
+  ];
+
+  it('all + no company keeps every event, newest-first (e2e: events render newest-first)', () => {
+    const out = filterHistory(feed, { tool: 'all', company: '' });
+    expect(out.map((e) => e.title)).toEqual(['plain', 'codex-b', 'claude-a', 'codex-a']);
+  });
+
+  it('tool=codex keeps only codex events (e2e: tool filter Codex → only Codex events)', () => {
+    const out = filterHistory(feed, { tool: 'codex', company: '' });
+    expect(out.map((e) => e.title)).toEqual(['codex-b', 'codex-a']);
+    expect(out.every((e) => deriveEventTool(e) === 'codex')).toBe(true);
+  });
+
+  it('tool=claude keeps only claude events and drops indeterminate ones', () => {
+    const out = filterHistory(feed, { tool: 'claude', company: '' });
+    expect(out.map((e) => e.title)).toEqual(['claude-a']);
+  });
+
+  it('narrows by company slug', () => {
+    const out = filterHistory(feed, { tool: 'all', company: 'liverecover' });
+    expect(out.map((e) => e.title)).toEqual(['plain', 'codex-b']);
+  });
+
+  it('combines tool + company filters', () => {
+    const out = filterHistory(feed, { tool: 'codex', company: 'liverecover' });
+    expect(out.map((e) => e.title)).toEqual(['codex-b']);
+  });
+
+  it('renders an empty result cleanly when nothing matches (empty-state path)', () => {
+    expect(filterHistory(feed, { tool: 'claude', company: 'liverecover' })).toEqual([]);
+    expect(filterHistory([], { tool: 'all', company: '' })).toEqual([]);
+  });
+});
+
+describe('historyCompanies', () => {
+  it('returns distinct, non-empty company slugs alphabetically', () => {
+    const companies = historyCompanies([
+      historyEvent({ company: 'liverecover' }),
+      historyEvent({ company: 'indigo' }),
+      historyEvent({ company: 'indigo' }),
+      historyEvent({ company: '' }),
+    ]);
+    expect(companies).toEqual(['indigo', 'liverecover']);
+  });
+
+  it('returns an empty list for an empty feed', () => {
+    expect(historyCompanies([])).toEqual([]);
+  });
+});
+
+describe('eventNodeTone (US-008 node color by kind)', () => {
+  const cases: Array<[HistoryEventKind, ReturnType<typeof eventNodeTone>]> = [
+    ['completed', 'ok'],
+    ['dispatched', 'neutral'],
+    ['handoff', 'neutral'],
+    ['checkpoint', 'faint'],
+    ['failed', 'error'],
+  ];
+  for (const [kind, tone] of cases) {
+    it(`maps ${kind} → ${tone}`, () => {
+      expect(eventNodeTone(kind)).toBe(tone);
+    });
+  }
 });

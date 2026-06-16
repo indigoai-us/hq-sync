@@ -401,3 +401,154 @@ export function relativeActivity(iso: string, now: number = Date.now()): string 
   const days = Math.floor(hours / 24);
   return `${days}d`;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// History timeline derivation (US-008)
+// ───────────────────────────────────────────────────────────────────────────
+//
+// The History panel renders the `history` half of the snapshot (US-005) as a
+// chronological timeline. The Rust `HistoryEvent` contract (US-001/US-004) is
+// fixed and carries no `tool` field — the derivation reads orchestration
+// artifacts (audit log + thread files) that don't always name the owning agent.
+// But design.md "History timeline panel (US-008)" requires a tool filter
+// (All · Claude · Codex), so — exactly like `deriveSessionKind` for the live
+// panel — we infer the tool best-effort from the strings the event DOES carry
+// (its `source` / `title` / `project`). This keeps the wire contract untouched
+// and the inference pure + unit-testable here, not buried in the panel.
+
+/**
+ * The tool-filter selection for the History panel's segmented control. `all`
+ * is the unfiltered default; `claude` / `codex` narrow to one agent (matching
+ * {@link AgentTool}). Kept as its own type so the filter UI and the pure filter
+ * helper share one vocabulary.
+ */
+export type HistoryToolFilter = 'all' | AgentTool;
+
+/** The segmented tool-filter options, in display order (design.md "Filters row"). */
+export const HISTORY_TOOL_FILTERS: ReadonlyArray<{ value: HistoryToolFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'claude', label: 'Claude' },
+  { value: 'codex', label: 'Codex' },
+];
+
+/**
+ * Each tool's heuristic, evaluated in array order — the FIRST match wins. Tests a
+ * lowercased haystack built from the event's `source`, `title`, and `project`.
+ * Codex is checked before Claude so a `codex-rollout` source wins even if the
+ * title also mentions "claude code". Kept as data (not a switch) so the rules are
+ * easy to read and extend.
+ */
+const EVENT_TOOL_MATCHERS: ReadonlyArray<{ tool: AgentTool; test: RegExp }> = [
+  { tool: 'codex', test: /\bcodex\b|codex-rollout|rollout/ },
+  { tool: 'claude', test: /\bclaude\b|claude-jsonl|claude-code/ },
+];
+
+/** Build the lowercased match haystack for an event's tool inference. */
+function eventToolHaystack(event: HistoryEvent): string {
+  return [event.source, event.title, event.project]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+/**
+ * Best-effort infer the agent tool that produced a history event (US-008).
+ *
+ * Returns `claude` / `codex` when the event's strings name one, else `null` when
+ * the tool is indeterminate (the common case for audit-log rows, which don't name
+ * the agent). A `null`-tool event is shown under the `all` filter but hidden by an
+ * explicit `claude`/`codex` filter — we never guess a tool we can't see. Pure and
+ * deterministic; never throws.
+ */
+export function deriveEventTool(event: HistoryEvent): AgentTool | null {
+  const hay = eventToolHaystack(event);
+  if (hay.trim() === '') return null;
+  for (const { tool, test } of EVENT_TOOL_MATCHERS) {
+    if (test.test(hay)) return tool;
+  }
+  return null;
+}
+
+/** The active filter selection the History panel passes to {@link filterHistory}. */
+export interface HistoryFilter {
+  /** Tool segment — `all` keeps every event; `claude`/`codex` narrow by inferred tool. */
+  tool: HistoryToolFilter;
+  /** Company slug to narrow to, or `''` for "All companies". */
+  company: string;
+}
+
+/** Epoch millis for an event timestamp; empty/unparseable sorts last (→ -Infinity). */
+function eventMillis(iso: string): number {
+  if (!iso) return Number.NEGATIVE_INFINITY;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * Sort a copy of the events newest-first by timestamp (US-008 "Newest first").
+ *
+ * The backend already returns newest-first, but the panel re-sorts defensively so
+ * the ordering is pinned by this module (and unit-tested) regardless of source
+ * order. Stable for equal timestamps. Pure — does not mutate the input.
+ */
+export function sortHistoryNewestFirst(events: HistoryEvent[]): HistoryEvent[] {
+  return [...events].sort((a, b) => eventMillis(b.timestamp) - eventMillis(a.timestamp));
+}
+
+/**
+ * Filter the history feed by tool + company (US-008), newest-first.
+ *
+ * - `tool: 'all'` keeps every event; `claude`/`codex` keep only events whose
+ *   {@link deriveEventTool} matches (indeterminate-tool events drop under an
+ *   explicit tool filter).
+ * - `company: ''` keeps every company; otherwise only exact-slug matches remain.
+ *
+ * Result is always sorted newest-first via {@link sortHistoryNewestFirst}. Pure;
+ * never mutates the input.
+ */
+export function filterHistory(events: HistoryEvent[], filter: HistoryFilter): HistoryEvent[] {
+  const matched = events.filter((event) => {
+    if (filter.tool !== 'all' && deriveEventTool(event) !== filter.tool) return false;
+    if (filter.company && event.company !== filter.company) return false;
+    return true;
+  });
+  return sortHistoryNewestFirst(matched);
+}
+
+/**
+ * Distinct, non-empty company slugs present in the feed, alphabetically sorted —
+ * the option set for the panel's company dropdown. Pure.
+ */
+export function historyCompanies(events: HistoryEvent[]): string[] {
+  const seen = new Set<string>();
+  for (const event of events) {
+    if (event.company) seen.add(event.company);
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * The timeline node tone for an event kind (design.md "Node color by event
+ * kind"): completed = green (`ok`); dispatched / handoff = neutral; checkpoint =
+ * faint; failed = error. Returns a stable CSS-class suffix the panel maps to a
+ * `--v4-*` color, so the color decision lives here (testable) not in markup.
+ */
+export type HistoryNodeTone = 'ok' | 'neutral' | 'faint' | 'error';
+
+export function eventNodeTone(kind: HistoryEventKind): HistoryNodeTone {
+  switch (kind) {
+    case 'completed':
+      return 'ok';
+    case 'failed':
+      return 'error';
+    case 'checkpoint':
+      return 'faint';
+    case 'dispatched':
+    case 'handoff':
+    default:
+      return 'neutral';
+  }
+}
+
+/** Max events the panel renders before the "+N more" roll-up (design.md "Paginates/limits"). */
+export const HISTORY_PAGE_SIZE = 30;

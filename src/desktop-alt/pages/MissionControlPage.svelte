@@ -4,27 +4,20 @@
    * and Codex agent sessions (local + outpost), observed best-effort with no
    * vendor auth (US-006).
    *
-   * THIS STORY IS THE SHELL. It renders the page chrome only:
+   * Renders the page chrome plus the two panels:
    *   1. Header — title + best-effort / poll-cadence subtitle.
    *   2. Summary strip — 4 inset stat tiles (RUNNING / AWAITING INPUT / IDLE /
    *      OUTPOST), per design.md "Page structure".
-   *   3. Two columns — clearly-marked mount points for the Live Sessions panel
-   *      (US-007) and the History timeline panel (US-008).
-   *
-   * The live + history panels are deliberately NOT built here — US-007 mounts
-   * LiveSessionsPanel into `.mc-live-mount` and US-008 mounts
-   * SessionHistoryPanel into `.mc-history-mount`. Until then those slots show a
-   * design-spec'd empty placeholder so the destination is navigable and the
-   * layout is fixed before the panels land.
+   *   3. Two columns — LiveSessionsPanel (US-007) into `.mc-live-mount` and
+   *      SessionHistoryPanel (US-008) into `.mc-history-mount`, both subscribing
+   *      to the shared sessions store.
    *
    * Built entirely on the V4 "Liquid Glass" tokens (src/desktop-alt/v4/tokens.css);
    * no new colors, fonts, or spacing primitives (design.md "Tokens used").
-   *
-   * US-007 wires the live panel + summary counts from the sessions store; US-008
-   * will replace the history mount placeholder.
    */
   import { onMount } from 'svelte';
   import LiveSessionsPanel from '../panels/LiveSessionsPanel.svelte';
+  import SessionHistoryPanel from '../panels/SessionHistoryPanel.svelte';
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
   import type { SessionStatus } from '../lib/sessions';
 
@@ -109,24 +102,11 @@
       <LiveSessionsPanel />
     </div>
 
-    <!-- US-008 mount point: SessionHistoryPanel renders into .mc-history-mount,
-         a chronological feed derived from the audit log + thread files. -->
+    <!-- US-008: SessionHistoryPanel renders into .mc-history-mount, a
+         chronological timeline derived from the snapshot's history feed
+         (audit log + thread files), filterable by tool + company. -->
     <div class="mc-col mc-col-history mc-history-mount" aria-label="History">
-      <div class="mc-panel-eyebrow">HISTORY</div>
-      <div class="mc-placeholder">
-        <div class="mc-placeholder-glyph" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 7v5l3 2" />
-          </svg>
-        </div>
-        <p class="mc-placeholder-title">No activity yet</p>
-        <p class="mc-placeholder-help">
-          Completed stories, checkpoints and handoffs will appear here as your
-          sessions work.
-        </p>
-      </div>
+      <SessionHistoryPanel />
     </div>
   </div>
 </section>
@@ -242,51 +222,6 @@
 
   .mc-col-history {
     flex: 3 1 0;
-  }
-
-  .mc-panel-eyebrow {
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    font-weight: 600;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-  }
-
-  /* Placeholder mount-point content — replaced by the real panels in
-     US-007 / US-008. Centered glyph + empty-state copy per design.md "States". */
-  .mc-placeholder {
-    display: flex;
-    flex: 1 1 auto;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    padding: 24px 16px;
-    text-align: center;
-  }
-
-  .mc-placeholder-glyph {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 40px;
-    height: 40px;
-    color: var(--v4-text-3);
-  }
-
-  .mc-placeholder-title {
-    margin: 0;
-    color: var(--v4-text-2);
-    font-size: var(--text-base);
-    font-weight: 500;
-  }
-
-  .mc-placeholder-help {
-    max-width: 38ch;
-    margin: 0;
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 1.4;
   }
 
   @media (max-width: 720px) {
