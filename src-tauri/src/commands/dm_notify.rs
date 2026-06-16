@@ -2540,6 +2540,58 @@ mod tests {
         assert!(diff.new_messages.is_empty());
     }
 
+    /// Builds an unnamed, participant-keyed group DM the caller CREATED/OWNS:
+    /// `scope: "group"`, empty name, and `unread == 0` (the caller sent the only
+    /// message, so it is not unread to them).
+    fn mk_owned_group(id: &str) -> crate::commands::messages::Channel {
+        crate::commands::messages::Channel {
+            channel_id: id.to_string(),
+            name: String::new(),
+            scope: "group".to_string(),
+            company_uid: None,
+            company_name: None,
+            post_policy: None,
+            visibility: None,
+            membership: Some("joined".to_string()),
+            unread: Some(0),
+            member_count: Some(5),
+        }
+    }
+
+    #[test]
+    fn diff_channels_emits_updated_for_self_created_owned_group_after_seed() {
+        // US-001 investigation: assert the channel-poll diff emits the new channel
+        // (→ EVENT_CHANNEL_UPDATED with the full payload in poll_channels) when the
+        // poll observes a channelId NOT in its known set after the initial seed —
+        // INCLUDING a group DM the signed-in user created/owns (unread 0, unnamed).
+        //
+        // This is the `hq dm`-created group DM scenario. The diff has NO creator
+        // filter: any id absent from `seen_unread` is `new_channels`. So the RUST
+        // poll layer is NOT the failing layer — it emits correctly for a
+        // self-created/owned channel. (The live-surfacing gap is downstream, in the
+        // unified-rail sort: see the RED repro in src/lib/channels.test.ts.)
+        let mut seen: HashMap<String, u32> = HashMap::new();
+        seen.insert("chn_existing".to_string(), 0); // post-seed known set
+
+        let current = vec![
+            mk_channel("chn_existing", 0),
+            mk_owned_group("chn_01KV6C02ARDJME1W2ZC9JAX4FX"),
+        ];
+        let diff = diff_channels(&seen, &current);
+
+        // The self-created group fires `updated` (full payload emitted upstream)…
+        assert_eq!(
+            diff.new_channels,
+            vec!["chn_01KV6C02ARDJME1W2ZC9JAX4FX".to_string()],
+            "a self-created/owned group DM not in the seen set must be detected as a new channel",
+        );
+        // …and raises NO new-message (the owner's own message is not unread).
+        assert!(
+            diff.new_messages.is_empty(),
+            "an owned channel with unread 0 must not raise a new-message event",
+        );
+    }
+
     #[test]
     fn thread_response_deserializes_camel_case_with_direction() {
         // Server tags `direction` relative to the caller; the window renders
