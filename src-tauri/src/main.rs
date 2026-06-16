@@ -307,6 +307,14 @@ fn main() {
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
+            // Mission Control (US-005): the merged-fleet command plus the
+            // per-reader commands the readers exposed in US-002/US-003/US-004
+            // (registered here so the frontend store can fall back to a single
+            // reader and the polling loop emits `sessions:updated`).
+            commands::sessions::list_agent_sessions,
+            commands::sessions::claude::list_local_claude_sessions,
+            commands::sessions::codex::list_local_codex_sessions,
+            commands::sessions::history::list_session_history,
             commands::meetings::meetings_feature_enabled,
             commands::desktop_alt::desktop_alt_enabled,
             commands::desktop_alt::desktop_alt_is_admin,
@@ -526,6 +534,13 @@ fn main() {
                     },
                 );
             }
+
+            // Mission Control polling loop (US-005). Re-scans the local Claude/
+            // Codex fleet on a configurable interval (HQ_SYNC_SESSIONS_POLL_SECS,
+            // default 5s) and emits the typed `sessions:updated` event so the UI
+            // stays fresh without a manual refresh — same independent-timer
+            // pattern as the share/dm poller above.
+            commands::sessions::setup_sessions_poller(app.handle().clone());
 
             // SPIKE: env-var trigger to preview the custom notification banner
             // without devtools / real inbound events. Pops one representative

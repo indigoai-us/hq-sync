@@ -11,7 +11,15 @@
 //! stories (US-002+) populate these records from on-disk Claude/Codex artifacts;
 //! this module owns only the type definitions and the status taxonomy.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Runtime};
+
+use crate::util::logfile::log;
+
+use self::history::HistoryEvent;
+use self::liveness::scan_running_agents;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Readers (per-tool submodules)
@@ -137,6 +145,183 @@ pub struct AgentSession {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Mission Control snapshot (US-005) — the command + polling payload
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The full Mission Control payload (US-005): the merged local fleet plus the
+/// history feed, in one shape so the command return value and the poll event
+/// carry exactly the same thing.
+///
+/// camelCase serialisation matches the rest of the sessions contract so the TS
+/// side reads it without remapping (`{ sessions, history }`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MissionControlSnapshot {
+    /// The merged local `AgentSession[]` (Claude + Codex), liveness applied.
+    pub sessions: Vec<AgentSession>,
+    /// The derived history feed (tasks dispatched, stories completed,
+    /// checkpoints, handoffs), newest-first.
+    pub history: Vec<HistoryEvent>,
+}
+
+/// Event name the polling loop emits on each re-scan (US-005).
+///
+/// Follows the established `<domain>:<event>` convention used across the app
+/// (`sync:*`, `share:*`, `meeting:*`) — see `events.rs`. The frontend store
+/// `listen`s for this to stay fresh without a manual refresh, mirroring how the
+/// share/sync surfaces consume their typed events.
+pub const EVENT_SESSIONS_UPDATED: &str = "sessions:updated";
+
+/// How often the polling loop re-scans the local fleet, in seconds. Configurable
+/// at runtime via the `HQ_SYNC_SESSIONS_POLL_SECS` env var (clamped to a sane
+/// floor so a typo can't busy-spin the readers); defaults to this value.
+/// Mirrors `share_notify::SHARE_POLL_INTERVAL_SECS` — a single named cadence the
+/// outpost emitter (US-009) is documented to match.
+const SESSIONS_POLL_INTERVAL_SECS: u64 = 5;
+
+/// Lower bound on the poll cadence (seconds). The readers are cheap (scandir +
+/// stat + bounded tail), but a sub-second interval would still be wasteful; clamp
+/// any override up to this floor.
+const SESSIONS_POLL_FLOOR_SECS: u64 = 2;
+
+/// Diagnostic-log tag for the sessions polling loop.
+const LOG_TAG: &str = "sessions";
+
+/// Resolve the effective poll interval: `HQ_SYNC_SESSIONS_POLL_SECS` when set to
+/// a parseable positive integer (clamped to [`SESSIONS_POLL_FLOOR_SECS`]),
+/// otherwise the [`SESSIONS_POLL_INTERVAL_SECS`] default. Pure over its input so
+/// the clamp/parse rules are unit-testable without touching the real env.
+fn resolve_poll_interval(env_value: Option<&str>) -> Duration {
+    let secs = env_value
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|n| *n > 0)
+        .map(|n| n.max(SESSIONS_POLL_FLOOR_SECS))
+        .unwrap_or(SESSIONS_POLL_INTERVAL_SECS);
+    Duration::from_secs(secs)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Merge + liveness (pure)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build the merged local fleet from the two readers' outputs, re-deriving each
+/// session's [`SessionStatus`] against the live-process inventory.
+///
+/// The readers (US-002/US-003) stamp a *coarse* mtime-only status; this is the
+/// one place the US-004 liveness engine is applied across the whole fleet. We run
+/// the (relatively expensive) process scan **once** and reuse the inventory for
+/// every session, so liveness for N sessions costs a single `pgrep`, not N.
+///
+/// Pure over its inputs (readers' output + the process inventory + injected
+/// `now`) so the merge + liveness rule is unit-testable without filesystem or
+/// process I/O. Output preserves the readers' ordering (Claude first, then
+/// Codex), which keeps the snapshot stable across polls.
+fn merge_sessions(
+    claude: Vec<AgentSession>,
+    codex: Vec<AgentSession>,
+    agents: liveness::RunningAgents,
+    now: SystemTime,
+) -> Vec<AgentSession> {
+    claude
+        .into_iter()
+        .chain(codex)
+        .map(|mut session| {
+            // The merged record only carries the ISO `lastActivityAt`; the raw
+            // mtime fallback isn't on the wire shape, so use the epoch as the
+            // fallback — the readers always stamp a parseable ISO, so the
+            // fallback is effectively never hit in practice.
+            session.status = liveness::derive_status(
+                &session.last_activity_at,
+                UNIX_EPOCH,
+                session.tool,
+                agents,
+                now,
+            );
+            session
+        })
+        .collect()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Snapshot assembly (async, real I/O)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Assemble a fresh [`MissionControlSnapshot`]: run both local readers, apply
+/// liveness, and derive the history feed. Best-effort — a reader that errors
+/// contributes an empty list rather than failing the whole snapshot, so one bad
+/// store can't blank the fleet.
+async fn collect_snapshot() -> MissionControlSnapshot {
+    let claude = claude::list_local_claude_sessions().await.unwrap_or_default();
+    let codex = codex::list_local_codex_sessions().await.unwrap_or_default();
+    let agents = scan_running_agents();
+    let sessions = merge_sessions(claude, codex, agents, SystemTime::now());
+
+    let history = history::list_session_history().await.unwrap_or_default();
+
+    MissionControlSnapshot { sessions, history }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tauri command
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// List the merged local agent sessions plus the history feed (US-005).
+///
+/// Returns the merged local `AgentSession[]` (Claude + Codex readers, with the
+/// US-004 liveness engine applied) and the derived history feed in one
+/// [`MissionControlSnapshot`]. Registered in `main.rs`'s `invoke_handler`; the
+/// frontend store calls this on mount and the polling loop re-emits the same
+/// shape on every tick.
+#[tauri::command]
+pub async fn list_agent_sessions() -> Result<MissionControlSnapshot, String> {
+    Ok(collect_snapshot().await)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Polling loop (mirrors the sync-stats / share-notify poller pattern)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Spawn the Mission Control polling loop. Called from `main.rs` setup.
+///
+/// Mirrors `share_notify::setup_share_notify_poller`: a launch poll after a short
+/// delay (lets the app finish initialising), then a re-scan on an independent
+/// interval timer. Each cycle assembles a fresh [`MissionControlSnapshot`] and
+/// emits it to the frontend as a typed [`EVENT_SESSIONS_UPDATED`] event — the
+/// same event-name convention and `app.emit` payload-typing approach the
+/// sync/share surfaces use — so the UI stays fresh without a manual refresh.
+///
+/// The cadence is configurable via `HQ_SYNC_SESSIONS_POLL_SECS`
+/// (see [`resolve_poll_interval`]); the outpost emitter (US-009) is documented to
+/// match it.
+pub fn setup_sessions_poller<R: Runtime>(app: AppHandle<R>) {
+    let interval = resolve_poll_interval(std::env::var("HQ_SYNC_SESSIONS_POLL_SECS").ok().as_deref());
+    tauri::async_runtime::spawn(async move {
+        // Launch delay — give the app a moment to finish setup before the first
+        // scan (mirrors the share/updater pollers' settle delay).
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        emit_snapshot(&app).await;
+
+        let mut ticker = tokio::time::interval(interval);
+        // The first tick fires immediately; consume it so the launch emit above
+        // isn't double-counted, then emit once per interval thereafter.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            emit_snapshot(&app).await;
+        }
+    });
+}
+
+/// Assemble one snapshot and emit it to the frontend as [`EVENT_SESSIONS_UPDATED`].
+/// Best-effort: a failed emit (e.g. no webview yet) is logged, never fatal.
+async fn emit_snapshot<R: Runtime>(app: &AppHandle<R>) {
+    let snapshot = collect_snapshot().await;
+    if let Err(e) = app.emit(EVENT_SESSIONS_UPDATED, &snapshot) {
+        log(LOG_TAG, &format!("SESSIONS_EMIT_FAILED {e}"));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -232,5 +417,144 @@ mod tests {
         assert_eq!(obj.get("tool").unwrap(), "claude");
         assert_eq!(obj.get("origin").unwrap(), "local");
         assert_eq!(obj.get("status").unwrap(), "running");
+    }
+
+    // ── US-005: poll-interval resolution ────────────────────────────────────
+
+    #[test]
+    fn poll_interval_defaults_when_env_absent() {
+        assert_eq!(
+            resolve_poll_interval(None),
+            Duration::from_secs(SESSIONS_POLL_INTERVAL_SECS)
+        );
+    }
+
+    #[test]
+    fn poll_interval_honours_a_valid_override() {
+        assert_eq!(resolve_poll_interval(Some("15")), Duration::from_secs(15));
+        // Whitespace is tolerated.
+        assert_eq!(resolve_poll_interval(Some("  20 ")), Duration::from_secs(20));
+    }
+
+    #[test]
+    fn poll_interval_clamps_to_the_floor_and_rejects_garbage() {
+        // Below the floor → clamped up.
+        assert_eq!(
+            resolve_poll_interval(Some("1")),
+            Duration::from_secs(SESSIONS_POLL_FLOOR_SECS)
+        );
+        // Zero / non-numeric / empty → default.
+        for bad in ["0", "abc", "", "-5"] {
+            assert_eq!(
+                resolve_poll_interval(Some(bad)),
+                Duration::from_secs(SESSIONS_POLL_INTERVAL_SECS),
+                "{bad:?} should fall back to the default"
+            );
+        }
+    }
+
+    // ── US-005: merge + liveness ────────────────────────────────────────────
+
+    fn session(id: &str, tool: AgentTool, last_activity_at: &str) -> AgentSession {
+        AgentSession {
+            id: id.to_string(),
+            tool,
+            origin: AgentOrigin::Local,
+            cwd: "/tmp".to_string(),
+            project: "p".to_string(),
+            company: "indigo".to_string(),
+            model: "m".to_string(),
+            // Deliberately a *stale* coarse status so we can prove the merge
+            // re-derives it rather than trusting the reader's value.
+            status: SessionStatus::Ended,
+            started_at: "2026-06-15T18:00:00Z".to_string(),
+            last_activity_at: last_activity_at.to_string(),
+            source: "test".to_string(),
+        }
+    }
+
+    /// RFC-3339 string for `now - age_secs` (seconds precision, `Z` suffix).
+    fn iso_ago(now: SystemTime, age_secs: u64) -> String {
+        let secs = now
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+            - age_secs as i64;
+        chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    }
+
+    #[test]
+    fn merge_preserves_order_and_reapplies_liveness() {
+        let now = SystemTime::now();
+        let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 10))];
+        let codex = vec![session("x1", AgentTool::Codex, &iso_ago(now, 10))];
+        let agents = liveness::RunningAgents { claude: true, codex: true };
+
+        let merged = merge_sessions(claude, codex, agents, now);
+
+        // Claude first, then Codex — readers' order preserved.
+        assert_eq!(merged.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), ["c1", "x1"]);
+        // Fresh activity + live process → re-derived to running (NOT the stale Ended).
+        assert!(merged.iter().all(|s| s.status == SessionStatus::Running));
+    }
+
+    #[test]
+    fn merge_marks_sessions_ended_when_no_live_process() {
+        let now = SystemTime::now();
+        // Fresh activity, but the owning tool has NO live process.
+        let claude = vec![session("c1", AgentTool::Claude, &iso_ago(now, 5))];
+        let agents = liveness::RunningAgents { claude: false, codex: false };
+
+        let merged = merge_sessions(claude, Vec::new(), agents, now);
+
+        assert_eq!(merged.len(), 1);
+        // HARD rule: no live process → ended, regardless of freshness.
+        assert_eq!(merged[0].status, SessionStatus::Ended);
+    }
+
+    // ── US-005: command + event integration ─────────────────────────────────
+
+    #[tokio::test]
+    async fn list_agent_sessions_returns_a_snapshot_shape() {
+        // The command never errors (best-effort readers) and returns the merged
+        // snapshot shape. On a CI box with no Claude/Codex dirs this is empty,
+        // which is a valid empty fleet — the shape is what we assert here.
+        let snapshot = list_agent_sessions().await.unwrap();
+        // Round-trips through camelCase JSON with the documented top-level keys.
+        let value = serde_json::to_value(&snapshot).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(obj.contains_key("sessions"));
+        assert!(obj.contains_key("history"));
+    }
+
+    #[tokio::test]
+    async fn emit_snapshot_fires_the_typed_event() {
+        use std::sync::{Arc, Mutex};
+        use tauri::Listener;
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        // Register a listener for the typed poll event BEFORE emitting, capturing
+        // the payload so we assert both that the event fired and that it carries
+        // the snapshot shape.
+        let seen: Arc<Mutex<Option<MissionControlSnapshot>>> = Arc::new(Mutex::new(None));
+        let seen_w = seen.clone();
+        handle.listen(EVENT_SESSIONS_UPDATED, move |event| {
+            let parsed: MissionControlSnapshot = serde_json::from_str(event.payload()).unwrap();
+            *seen_w.lock().unwrap() = Some(parsed);
+        });
+
+        // Drive one poll cycle directly (the loop body), then let the listener run.
+        emit_snapshot(&handle).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let captured = seen.lock().unwrap();
+        assert!(
+            captured.is_some(),
+            "expected an {EVENT_SESSIONS_UPDATED} event to be emitted"
+        );
     }
 }
