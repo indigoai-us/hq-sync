@@ -112,6 +112,14 @@ Each row carries a `connectState` (`connected | needs_connect | provisioning | e
 
 The `personal` row is special-cased: if it's missing from the manifest at sync time, `commands/personal.rs` auto-provisions the directory + bucket so first-time users always have a working sync target.
 
+### "You've been added" Membership Prompt
+
+When the signed-in user has an **active cloud membership with no local folder yet** (`state === 'cloud-only'` + `membershipStatus === 'active'`) — they accepted an invite via the email link or HQ Console but never pulled the workspace to this machine — the popover surfaces a one-click banner: "You've been added to {company} — Sync to pull it". This is the primary local-attach fix for modern tokenless, email-keyed invites: an accepted teammate shouldn't have to know any CLI command, since the membership already arrives in the `workspaces` data (recomputed on popover open / mount / post-sync).
+
+- The eligible rows are computed by the pure helper `joinableMemberships()` in `src/lib/workspaces.ts` (dedupe → keep only `cloud-only` + `active`), unit-tested in `src/lib/workspaces.test.ts`. Pending (unaccepted/ungranted) invites are excluded — those render as NOT CONNECTED invite rows on the V4 Companies surface instead.
+- The banner lives in `Popover.svelte` (reuses the existing banner markup). Its Sync action runs the existing full sync, which pulls the new company and flips the row to `synced`, clearing the prompt for good. Dismiss is session-scoped (`dismissedMemberships` `$state`) and non-destructive.
+- **No Rust changes** — it rides the data `list_syncable_workspaces` already returns. The proactive "notify even while the popover is closed" piece (native notification + idle poll) is a separate, not-yet-shipped story.
+
 ## First-Run Onboarding
 
 Three launch kinds are classified once at `.setup()` (`commands/first_run.rs`) and drive `App.svelte`:
