@@ -4,6 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { onMount, tick } from 'svelte';
   import { loadMeetingsCache } from '../lib/meetingsCache';
+  import { effectiveTotalFiles as computeEffectiveTotalFiles } from '../lib/effective-total-files';
   import type { Workspace, WorkspacesResult } from '../lib/workspaces';
   import HomePage from './pages/HomePage.svelte';
   import MissionControlPage from './pages/MissionControlPage.svelte';
@@ -126,6 +127,8 @@
   let syncFilesProgressed = $state(0);
   let syncTotalFiles = $state(0);
   let syncPlanTotalFiles = $state(0);
+  // True once a `sync:plan` event has arrived — see effective-total-files.ts.
+  let syncPlanReceived = $state(false);
   let syncFanoutFilesSkipped = $state(0);
   let syncLastSummary = $state<{
     companiesAttempted: number;
@@ -204,7 +207,13 @@
       hqFolderPath,
     }),
   );
-  const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles);
+  const effectiveTotalFiles = $derived(
+    computeEffectiveTotalFiles({
+      planReceived: syncPlanReceived,
+      syncPlanTotalFiles,
+      syncTotalFiles,
+    }),
+  );
   const observedVaultBytes = $derived.by(() => {
     const activityBytes = activity.reduce((sum, entry) => sum + entry.bytes, 0);
     const workspaceBytes = Object.values(statsBySlug).reduce(
@@ -389,6 +398,7 @@
     syncFilesProgressed = 0;
     syncTotalFiles = options.preserveTotalFiles ? previousTotalFiles : 0;
     syncPlanTotalFiles = 0;
+    syncPlanReceived = false;
     syncLastSummary = null;
     syncErrorMessage = '';
     syncErrorCompany = null;
@@ -854,6 +864,8 @@
           event.payload.filesToUpload +
           event.payload.filesToConflict;
         const plannedBytes = event.payload.bytesToDownload + event.payload.bytesToUpload;
+        // Plan is authoritative now — denominator is the transfer count even at 0.
+        syncPlanReceived = true;
         syncPlanTotalFiles += plannedFiles;
         updateWorkspaceStats(event.payload.company, (stats) => ({
           ...stats,
