@@ -94,9 +94,10 @@ describe('US-002 V4 desktop routes', () => {
     expect(visible.map((workspace) => workspace.displayName)).toEqual(['Dupe Local', 'Next']);
   });
 
-  it('declares the eight company sections in SPEC order with Overview first', () => {
+  it('declares the company sections in SPEC order with Overview first and Accounts second', () => {
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
+      'accounts',
       'goals',
       'projects',
       'tasks',
@@ -105,6 +106,14 @@ describe('US-002 V4 desktop routes', () => {
       'secrets',
       'library',
     ]);
+  });
+
+  it('resolves an accounts company deep-link to the accounts tab', () => {
+    expect(resolvePendingDesktopRoute('company:indigo:accounts')).toEqual({
+      kind: 'company',
+      slug: 'indigo',
+      tab: 'accounts',
+    });
   });
 
   it('declares the five library sections in SPEC order', () => {
@@ -237,7 +246,7 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     company({ slug: 'indigo', displayName: 'Indigo', state: 'synced', role: 'owner' }),
   ];
 
-  it('shows the 8 company sections with Overview active on a fresh company route', () => {
+  it('shows the company sections with Overview active and Accounts second on a fresh company route', () => {
     const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
     expect(model?.surface).toBe('company');
     expect(model?.header).toBe('Indigo');
@@ -245,6 +254,7 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     expect(model?.meta).toBe('Owner · synced just now');
     expect(model?.items.map((item) => item.label)).toEqual([
       'Overview',
+      'Accounts',
       'Goals',
       'Projects',
       'Tasks',

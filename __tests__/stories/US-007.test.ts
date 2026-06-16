@@ -55,7 +55,7 @@ function workspace(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('US-007: Company page shell — V4 sections + crumb (sections moved to the secondary sidebar in US-002)', () => {
-  it('renders the company shell with the crumb and the 8 sections when a sidebar company is selected', () => {
+  it('renders the company shell with the crumb and the company sections when a sidebar company is selected', () => {
     const workspaces: Workspace[] = [
       workspace({ slug: 'personal', displayName: 'Personal', kind: 'personal', role: null }),
       workspace({ slug: 'acme', displayName: 'Acme Corp', role: 'admin' }),
@@ -77,10 +77,12 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
     expect(page).toContain('<button type="button" onclick={openCompanySettings}>Settings</button>');
     expect(page).toContain('onclick={() => void startNewProject()}');
 
-    // The sections live in the V4 secondary sidebar — 8 of them, Overview
-    // first/default, role surfaced in the header meta line.
+    // The sections live in the V4 secondary sidebar — Overview first/default,
+    // Accounts (the hq-native-crm CRM surface) second, role surfaced in the
+    // header meta line.
     expect(COMPANY_SECTIONS.map((section) => section.id)).toEqual([
       'overview',
+      'accounts',
       'goals',
       'projects',
       'tasks',
