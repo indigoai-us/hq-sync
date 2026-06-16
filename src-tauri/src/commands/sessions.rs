@@ -21,6 +21,11 @@ use serde::{Deserialize, Serialize};
 /// `~/.claude/projects/**/<uuid>.jsonl` and maps to [`AgentSession`].
 pub mod claude;
 
+/// Local Codex session reader (US-003) — enumerates
+/// `~/.codex/session_index.jsonl` + `sessions/**/rollout-*.jsonl` (and
+/// `archived_sessions`) and maps to [`AgentSession`].
+pub mod codex;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Status taxonomy
 // ─────────────────────────────────────────────────────────────────────────────
