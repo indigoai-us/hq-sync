@@ -1,9 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  SESSION_KINDS,
   SESSION_STATUSES,
+  deriveSessionKind,
+  groupKeyFor,
+  groupSessions,
+  isActiveForLivePanel,
   isLiveStatus,
   isSessionStatus,
+  relativeActivity,
   type AgentSession,
+  type SessionKind,
   type SessionStatus,
 } from './sessions';
 
@@ -101,5 +108,177 @@ describe('AgentSession wire shape', () => {
     expect(isSessionStatus(wire.status)).toBe(true);
     const status: SessionStatus = wire.status;
     expect(status).toBe('awaiting_input');
+  });
+});
+
+describe('deriveSessionKind (US-007 best-effort heuristic)', () => {
+  // Each case names a project/cwd/source that should resolve to one kind. The
+  // heuristic keys off the lowercased project + cwd-tail + source haystack.
+  const cases: Array<[string, Partial<AgentSession>, SessionKind]> = [
+    [
+      'per-channel slack watcher (project)',
+      { project: 'slack-watcher-hq-dev', source: 'claude-jsonl' },
+      'slack-watcher',
+    ],
+    [
+      'run-bot watcher (source)',
+      { project: 'hassaan', source: 'run-bot' },
+      'slack-watcher',
+    ],
+    [
+      'PR babysitter (project)',
+      { project: 'babysit-pr-1421', source: 'claude-jsonl' },
+      'pr',
+    ],
+    [
+      'land-batch PR loop',
+      { project: 'land-batch', source: 'codex-rollout' },
+      'pr',
+    ],
+    [
+      'CI watcher beats deploy when both could match',
+      { project: 'ci-build-watch', cwd: '/repos/ci-watch', source: 'claude-jsonl' },
+      'ci',
+    ],
+    [
+      'deploy monitor (project)',
+      { project: 'deploy-monitor-prod', source: 'claude-jsonl' },
+      'deploy',
+    ],
+    [
+      'signup heartbeat',
+      { project: 'signup-heartbeat', source: 'claude-jsonl' },
+      'signup-heartbeat',
+    ],
+    [
+      'discover / ingest',
+      { project: 'discover-acme-repo', source: 'claude-jsonl' },
+      'discover',
+    ],
+    [
+      'plain interactive session falls through to interactive',
+      { project: 'mission-control', cwd: '/Users/x/HQ/repos/public/hq-sync', source: 'claude-jsonl' },
+      'interactive',
+    ],
+  ];
+
+  for (const [name, overrides, expected] of cases) {
+    it(name, () => {
+      expect(deriveSessionKind(session(overrides))).toBe(expected);
+    });
+  }
+
+  it('returns unknown when there is nothing to key on (empty project + cwd + source)', () => {
+    expect(deriveSessionKind(session({ project: '', cwd: '', source: '' }))).toBe('unknown');
+  });
+
+  it('only ever returns a member of SESSION_KINDS', () => {
+    const kind = deriveSessionKind(session());
+    expect(SESSION_KINDS).toContain(kind);
+  });
+
+  it('is deterministic — the same input yields the same kind', () => {
+    const s = session({ project: 'slack-watcher-x' });
+    expect(deriveSessionKind(s)).toBe(deriveSessionKind(s));
+  });
+});
+
+describe('groupKeyFor (graceful fallback)', () => {
+  it('keys on the inferred kind when one is inferred', () => {
+    expect(groupKeyFor(session({ project: 'deploy-monitor' }))).toBe('kind:deploy');
+  });
+
+  it('falls back to the project when no kind is inferred but a project exists', () => {
+    // No cwd/source signal and an unmatched project → interactive (which IS a
+    // kind), so to exercise the unknown fallback we strip everything but project.
+    const s = session({ project: 'orphan-proj', cwd: '', source: '' });
+    // `orphan-proj` matches no monitor pattern but is non-empty → interactive.
+    expect(groupKeyFor(s)).toBe('kind:interactive');
+  });
+
+  it('falls back to origin:tool when even the project is empty', () => {
+    const s = session({ project: '', cwd: '', source: '', origin: 'outpost', tool: 'codex' });
+    expect(groupKeyFor(s)).toBe('origin:outpost:codex');
+  });
+});
+
+describe('groupSessions (US-007 dense grouping)', () => {
+  it('clusters near-identical monitors into one group and never drops a session', () => {
+    const fleet = [
+      session({ id: 'a', project: 'slack-watcher-1', status: 'running', lastActivityAt: '2026-06-15T18:40:00Z' }),
+      session({ id: 'b', project: 'slack-watcher-2', status: 'idle', lastActivityAt: '2026-06-15T18:42:00Z' }),
+      session({ id: 'c', project: 'slack-watcher-3', status: 'running', lastActivityAt: '2026-06-15T18:41:00Z' }),
+      session({ id: 'd', project: 'mission-control', status: 'running', lastActivityAt: '2026-06-15T18:43:00Z' }),
+    ];
+    const groups = groupSessions(fleet);
+    const total = groups.reduce((n, g) => n + g.count, 0);
+    expect(total).toBe(4); // nothing dropped
+    const slack = groups.find((g) => g.key === 'kind:slack-watcher');
+    expect(slack?.count).toBe(3);
+    expect(slack?.statusCounts.running).toBe(2);
+    expect(slack?.statusCounts.idle).toBe(1);
+  });
+
+  it('orders rows within a group freshest-first', () => {
+    const groups = groupSessions([
+      session({ id: 'old', project: 'slack-watcher-1', lastActivityAt: '2026-06-15T18:00:00Z' }),
+      session({ id: 'new', project: 'slack-watcher-2', lastActivityAt: '2026-06-15T18:30:00Z' }),
+    ]);
+    const slack = groups.find((g) => g.key === 'kind:slack-watcher');
+    expect(slack?.sessions.map((s) => s.id)).toEqual(['new', 'old']);
+    expect(slack?.freshestActivityAt).toBe('2026-06-15T18:30:00Z');
+  });
+
+  it('orders groups by most-live first', () => {
+    const groups = groupSessions([
+      // 1 idle deploy monitor
+      session({ id: 'd1', project: 'deploy-monitor', status: 'idle' }),
+      // 2 running interactive sessions
+      session({ id: 'i1', project: 'mission-control', status: 'running' }),
+      session({ id: 'i2', project: 'indigo-site', status: 'running' }),
+    ]);
+    expect(groups[0].kind).toBe('interactive'); // most live leads
+  });
+
+  it('produces a stable status-count shape with all four statuses', () => {
+    const groups = groupSessions([session({ project: 'mission-control' })]);
+    expect(Object.keys(groups[0].statusCounts).sort()).toEqual(
+      [...SESSION_STATUSES].sort(),
+    );
+  });
+});
+
+describe('isActiveForLivePanel', () => {
+  const now = Date.parse('2026-06-15T18:43:00Z');
+
+  it('keeps running / awaiting_input / idle sessions', () => {
+    for (const status of ['running', 'awaiting_input', 'idle'] as SessionStatus[]) {
+      expect(isActiveForLivePanel(session({ status }), now)).toBe(true);
+    }
+  });
+
+  it('drops long-ended sessions', () => {
+    const s = session({ status: 'ended', lastActivityAt: '2026-06-15T18:00:00Z' });
+    expect(isActiveForLivePanel(s, now)).toBe(false);
+  });
+
+  it('keeps a recently-ended session inside the window', () => {
+    const s = session({ status: 'ended', lastActivityAt: '2026-06-15T18:42:30Z' });
+    expect(isActiveForLivePanel(s, now)).toBe(true);
+  });
+});
+
+describe('relativeActivity (compact mono token)', () => {
+  const now = Date.parse('2026-06-15T18:00:00Z');
+  it('renders compact units', () => {
+    expect(relativeActivity('2026-06-15T18:00:00Z', now)).toBe('now');
+    expect(relativeActivity('2026-06-15T17:59:30Z', now)).toBe('30s');
+    expect(relativeActivity('2026-06-15T17:55:00Z', now)).toBe('5m');
+    expect(relativeActivity('2026-06-15T16:00:00Z', now)).toBe('2h');
+    expect(relativeActivity('2026-06-13T18:00:00Z', now)).toBe('2d');
+  });
+  it('renders an em-dash for an empty/unparseable timestamp', () => {
+    expect(relativeActivity('', now)).toBe('—');
+    expect(relativeActivity('not-a-date', now)).toBe('—');
   });
 });

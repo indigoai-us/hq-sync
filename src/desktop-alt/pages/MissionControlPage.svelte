@@ -19,31 +19,63 @@
    *
    * Built entirely on the V4 "Liquid Glass" tokens (src/desktop-alt/v4/tokens.css);
    * no new colors, fonts, or spacing primitives (design.md "Tokens used").
+   *
+   * US-007 wires the live panel + summary counts from the sessions store; US-008
+   * will replace the history mount placeholder.
    */
+  import { onMount } from 'svelte';
+  import LiveSessionsPanel from '../panels/LiveSessionsPanel.svelte';
+  import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
+  import type { SessionStatus } from '../lib/sessions';
 
   /**
    * Desktop polling cadence, in seconds. The sessions store (US-005) re-scans on
    * this interval and emits a typed event the panels subscribe to; surfaced in
    * the header subtitle so the operator knows liveness is sampled, not live.
-   * Shown here as the shell's best-effort label until the store lands.
    */
   const POLL_CADENCE_SECONDS = 5;
 
+  onMount(() => {
+    // Lifetime singleton; idempotent. Starting here makes the page self-sufficient.
+    startSessionsStore();
+  });
+
+  // Live per-status counts off the store, for the summary strip. Derived so a
+  // poll snapshot repaints the tiles with no manual refresh.
+  const statusCounts = $derived.by(() => {
+    const counts: Record<SessionStatus, number> = {
+      running: 0,
+      awaiting_input: 0,
+      idle: 0,
+      ended: 0,
+    };
+    for (const s of sessionsStore.sessions) counts[s.status] += 1;
+    return counts;
+  });
+  const sessionTotal = $derived(sessionsStore.sessions.length);
+  const localTotal = $derived(
+    sessionsStore.sessions.filter((s) => s.origin === 'local').length,
+  );
+  const outpostTotal = $derived(
+    sessionsStore.sessions.filter((s) => s.origin === 'outpost').length,
+  );
+
   /**
-   * Summary tiles, in design.md "Page structure" order. Values stay em-dash
-   * placeholders in the shell — US-007 wires the live counts from the sessions
-   * store. The dot tone is the status taxonomy color (tokens.css `--v4-*`).
+   * Summary tiles, in design.md "Page structure" order. The value is read live
+   * from the store via the `value` accessor. The dot tone is the status taxonomy
+   * color (tokens.css `--v4-*`).
    */
   const SUMMARY_TILES: ReadonlyArray<{
     id: string;
     label: string;
     tone: 'ok' | 'warn' | 'idle';
-    hint: string;
+    hint: () => string;
+    value: () => number;
   }> = [
-    { id: 'running', label: 'RUNNING', tone: 'ok', hint: 'live now' },
-    { id: 'awaiting', label: 'AWAITING INPUT', tone: 'warn', hint: 'needs you' },
-    { id: 'idle', label: 'IDLE', tone: 'idle', hint: 'quiet' },
-    { id: 'outpost', label: 'OUTPOST', tone: 'idle', hint: 'not connected' },
+    { id: 'running', label: 'RUNNING', tone: 'ok', hint: () => 'live now', value: () => statusCounts.running },
+    { id: 'awaiting', label: 'AWAITING INPUT', tone: 'warn', hint: () => 'needs you', value: () => statusCounts.awaiting_input },
+    { id: 'idle', label: 'IDLE', tone: 'idle', hint: () => 'quiet', value: () => statusCounts.idle },
+    { id: 'outpost', label: 'OUTPOST', tone: 'idle', hint: () => (outpostTotal > 0 ? 'reporting' : 'not connected'), value: () => outpostTotal },
   ];
 </script>
 
@@ -51,7 +83,9 @@
   <header class="page-header mc-header">
     <h1 id="mc-page-title">Mission Control</h1>
     <p class="mc-subtitle">
-      Best-effort liveness · polled every {POLL_CADENCE_SECONDS}s · no sessions yet
+      Best-effort liveness · polled every {POLL_CADENCE_SECONDS}s ·
+      {sessionTotal} {sessionTotal === 1 ? 'session' : 'sessions'} ·
+      {localTotal} local · {outpostTotal} outpost
     </p>
   </header>
 
@@ -62,32 +96,17 @@
           <span class={`mc-dot ${tile.tone}`} aria-hidden="true"></span>
           {tile.label}
         </div>
-        <div class="mc-tile-value">—</div>
-        <div class="mc-tile-hint">{tile.hint}</div>
+        <div class="mc-tile-value">{tile.value()}</div>
+        <div class="mc-tile-hint">{tile.hint()}</div>
       </div>
     {/each}
   </div>
 
   <div class="mc-columns">
-    <!-- US-007 mount point: LiveSessionsPanel renders into .mc-live-mount,
-         subscribing to the sessions store and grouping live sessions by type. -->
+    <!-- US-007: LiveSessionsPanel renders into .mc-live-mount, subscribing to the
+         sessions store and grouping live sessions by inferred type. -->
     <div class="mc-col mc-col-live mc-live-mount" aria-label="Live sessions">
-      <div class="mc-panel-eyebrow">LIVE SESSIONS</div>
-      <div class="mc-placeholder">
-        <div class="mc-placeholder-glyph" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
-            stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M5 12a7 7 0 0 1 14 0" opacity="0.45" />
-            <path d="M2 12a10 10 0 0 1 20 0" opacity="0.2" />
-          </svg>
-        </div>
-        <p class="mc-placeholder-title">Nothing running right now</p>
-        <p class="mc-placeholder-help">
-          Claude Code and Codex sessions show up here the moment they start —
-          locally or on your outpost.
-        </p>
-      </div>
+      <LiveSessionsPanel />
     </div>
 
     <!-- US-008 mount point: SessionHistoryPanel renders into .mc-history-mount,
