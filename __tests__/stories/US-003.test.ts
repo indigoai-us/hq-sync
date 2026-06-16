@@ -55,10 +55,11 @@ const workspaces: Workspace[] = [
 ];
 
 describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V4 IA since US-002)', () => {
-  it('shows the V4 sidebar with the five nav destinations and the COMPANIES section on mount', () => {
+  it('shows the V4 sidebar with the six nav destinations and the COMPANIES section on mount', () => {
     // The V4 window redesign (US-001/US-002) replaced the 216px rail + 42px
     // titlebar with the 220px raised sidebar + 40px title bar + 200px
-    // contextual secondary sidebar.
+    // contextual secondary sidebar. Mission Control (US-006) added a sixth nav
+    // destination directly under Home.
     expect(V4_CHROME_LAYOUT).toEqual({
       titleBarHeightPx: 40,
       primarySidebarWidthPx: 220,
@@ -69,6 +70,7 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     const model = getV4SidebarModel(initialDesktopRoute, workspaces);
     expect(model.nav.map((row) => row.label)).toEqual([
       'Home',
+      'Mission Control',
       'Companies',
       'Messages',
       'Meetings',
@@ -87,10 +89,10 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     ).toBeNull();
   });
 
-  it('switches the main pane to Meetings when the user presses ⌘4', () => {
+  it('switches the main pane to Meetings when the user presses ⌘5', () => {
     const companies = getDesktopCompanies(workspaces);
     const nextRoute = getDesktopHotkeyRoute(
-      { key: '4', metaKey: true, ctrlKey: false },
+      { key: '5', metaKey: true, ctrlKey: false },
       companies,
     );
 
@@ -104,12 +106,12 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
     const companies = getDesktopCompanies(workspaces);
 
     // Personal is local-first and keeps its own desktop page — first company
-    // hotkey (⌘6, after the five primary destinations).
-    expect(
-      getDesktopHotkeyRoute({ key: '6', metaKey: true, ctrlKey: false }, companies),
-    ).toEqual({ kind: 'company', slug: 'personal' });
+    // hotkey (⌘7, after the six primary destinations incl. Mission Control).
     expect(
       getDesktopHotkeyRoute({ key: '7', metaKey: true, ctrlKey: false }, companies),
+    ).toEqual({ kind: 'company', slug: 'personal' });
+    expect(
+      getDesktopHotkeyRoute({ key: '8', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'company', slug: 'acme' });
 
     const nextRoute: DesktopRoute = { kind: 'company', slug: 'acme' };

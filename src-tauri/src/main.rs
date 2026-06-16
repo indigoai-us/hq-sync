@@ -307,6 +307,14 @@ fn main() {
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
             commands::activity::get_activity_log,
+            // Mission Control (US-005): the merged-fleet command plus the
+            // per-reader commands the readers exposed in US-002/US-003/US-004
+            // (registered here so the frontend store can fall back to a single
+            // reader and the polling loop emits `sessions:updated`).
+            commands::sessions::list_agent_sessions,
+            commands::sessions::claude::list_local_claude_sessions,
+            commands::sessions::codex::list_local_codex_sessions,
+            commands::sessions::history::list_session_history,
             commands::meetings::meetings_feature_enabled,
             commands::desktop_alt::desktop_alt_enabled,
             commands::desktop_alt::desktop_alt_is_admin,
@@ -525,6 +533,28 @@ fn main() {
                         });
                     },
                 );
+            }
+
+            // Mission Control polling loop (US-005). Re-scans the local Claude/
+            // Codex fleet on a configurable interval (HQ_SYNC_SESSIONS_POLL_SECS,
+            // default 5s) and emits the typed `sessions:updated` event so the UI
+            // stays fresh without a manual refresh — same independent-timer
+            // pattern as the share/dm poller above.
+            commands::sessions::setup_sessions_poller(app.handle().clone());
+
+            // Outpost sessions subscriber + box status (US-011). Subscribes to
+            // the per-person `hq/{personUid}/sessions` realtime topic (reusing the
+            // dm_mqtt MQTT-over-WSS credential/presign pattern), parses the remote
+            // AgentSession[] heartbeat into the shared outpost store (origin=
+            // outpost), and merges it into the SAME snapshot the sessions poller
+            // emits. The S3-heartbeat fallback + box-status pollers run on their
+            // own timers so an MQTT outage degrades to polling, and a stale-after
+            // timeout drops outpost sessions that stop reporting. macOS-gated like
+            // the rest of the realtime surface; every path is best-effort.
+            #[cfg(target_os = "macos")]
+            {
+                commands::sessions::outpost::setup_outpost_mqtt_receiver(app.handle().clone());
+                commands::sessions::outpost::setup_outpost_pollers(app.handle().clone());
             }
 
             // SPIKE: env-var trigger to preview the custom notification banner

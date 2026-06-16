@@ -84,12 +84,13 @@ describe('desktop-alt Board surface (US-007)', () => {
       expect(resolved?.kind).not.toBe('board');
     }
 
-    // ⌘1 maps to Home; ⌘4 to Meetings (V4 order: Home/Companies/Messages/Meetings/Library).
+    // ⌘1 maps to Home; ⌘5 to Meetings (V4 order: Home/Mission Control/Companies/
+    // Messages/Meetings/Library — Mission Control inserted under Home in US-006).
     expect(
       getDesktopHotkeyRoute({ key: '1', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'home' } satisfies DesktopRoute);
     expect(
-      getDesktopHotkeyRoute({ key: '4', metaKey: true, ctrlKey: false }, companies),
+      getDesktopHotkeyRoute({ key: '5', metaKey: true, ctrlKey: false }, companies),
     ).toEqual({ kind: 'meetings' } satisfies DesktopRoute);
   });
 
@@ -150,15 +151,17 @@ describe('desktop-alt Board surface (US-007)', () => {
     const route = readRepoFile('src/desktop-alt/route.ts');
     const sidebar = readRepoFile('src/desktop-alt/v4/V4Sidebar.svelte');
 
-    // Route kind union no longer carries 'board' (the V4 IA is Home /
-    // Companies / Messages / Meetings / Library plus settings, the default-deny
-    // moderation surface, and per-company routes — see route.ts).
-    expect(route).toContain("{ kind: 'home' | 'companies' | 'messages' | 'meetings' | 'moderation' }");
+    // Route kind union no longer carries 'board' (the V4 IA is Home / Mission
+    // Control / Companies / Messages / Meetings / Library plus settings, the
+    // default-deny moderation surface, and per-company routes — see route.ts).
+    expect(route).toContain(
+      "{ kind: 'home' | 'mission-control' | 'companies' | 'messages' | 'meetings' | 'moderation' }",
+    );
     expect(route).not.toContain("'board'");
     expect(desktopApp).not.toContain("import BoardPage from './pages/BoardPage.svelte'");
     expect(desktopApp).not.toContain("route.kind === 'board'");
 
-    // No Board sidebar row; the V4 sidebar renders the five nav destinations
+    // No Board sidebar row; the V4 sidebar renders the six nav destinations
     // and the COMPANIES section from the model, never a Board entry.
     expect(route).not.toContain("label: 'Board'");
     expect(sidebar).toContain('model.nav');

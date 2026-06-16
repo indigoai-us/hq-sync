@@ -9,8 +9,17 @@ import type { SyncState } from '../lib/sync-model';
  * (docs/design/v4/SPEC.md section 4 + chrome-master.png).
  */
 
-/** The five primary-nav destinations, in display order. */
-export type V4NavId = 'home' | 'companies' | 'messages' | 'meetings' | 'library';
+/**
+ * The primary-nav destinations, in display order. Mission Control sits directly
+ * under Home as a global, cross-company surface (US-006).
+ */
+export type V4NavId =
+  | 'home'
+  | 'mission-control'
+  | 'companies'
+  | 'messages'
+  | 'meetings'
+  | 'library';
 
 /**
  * Route shape the V4 chrome maps to an active row. `kind` is open-ended
@@ -24,6 +33,7 @@ export interface V4Route {
 
 export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'home', label: 'Home' },
+  { id: 'mission-control', label: 'Mission Control' },
   { id: 'companies', label: 'Companies' },
   { id: 'messages', label: 'Messages' },
   { id: 'meetings', label: 'Meetings' },
