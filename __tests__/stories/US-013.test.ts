@@ -27,10 +27,13 @@ describe('US-013: Status bar + global ⌘K command surface', () => {
     const bar = normalize(statusBar);
 
     expect(app).toContain('version={__APP_VERSION__}');
-    expect(tray).toContain(
-      'const effectiveTotalFiles = $derived( syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles );',
-    );
-    expect(app).toContain('const effectiveTotalFiles = $derived(syncPlanTotalFiles > 0 ? syncPlanTotalFiles : syncTotalFiles)');
+    // Progress denominator = "files being synced right now", not the full
+    // vault pre-walk. Both surfaces route through the shared, unit-tested
+    // `effectiveTotalFiles` helper, gated on `planReceived` so an up-to-date
+    // HQ shows 0 (→ "Up to date") instead of the whole-tree count. See
+    // src/lib/effective-total-files.test.ts for the regression coverage.
+    expect(tray).toContain('computeEffectiveTotalFiles({ planReceived: syncPlanReceived,');
+    expect(app).toContain('computeEffectiveTotalFiles({ planReceived: syncPlanReceived,');
     expect(app).toContain('filesProgressed={syncFilesProgressed}');
     expect(app).toContain('totalFiles={effectiveTotalFiles}');
 
