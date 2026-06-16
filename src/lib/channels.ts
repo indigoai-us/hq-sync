@@ -45,6 +45,12 @@ export interface Channel {
    * unread-aware ordering. */
   lastActivityAt?: string | null;
   lastMessageAt?: string | null;
+  /** Client-only epoch-ms stamp of when this channel first entered the rail,
+   * set once by `upsertChannel` on insert. NOT part of the server wire shape —
+   * it lets a brand-new channel with no server timestamps surface as recent in
+   * the unified rail (`mergeConversations`) instead of sinking to the bottom.
+   * Never serialized back to the server. */
+  arrivedAt?: number | null;
 }
 
 /** One member of a channel. Mirrors the Rust `ChannelMember` wire shape. */
@@ -211,12 +217,25 @@ export function totalChannelUnread(channels: Channel[]): number {
 }
 
 /** Upsert a channel into a list by channelId (replace if present, else append),
- * preserving order. Returns a new array (callers reassign $state). */
-export function upsertChannel(list: Channel[], next: Channel): Channel[] {
+ * preserving order. Returns a new array (callers reassign $state).
+ *
+ * On a NEW insert the channel is stamped with `arrivedAt` (epoch-ms, default
+ * `Date.now()`) so a brand-new channel with no server timestamps still surfaces
+ * as recent in the unified rail (`mergeConversations`) — fixing the bug where an
+ * externally-/self-created group DM (unread 0, no `lastActivityAt`) sank to the
+ * bottom and looked like it never arrived. On a REPLACE the prior `arrivedAt` is
+ * preserved (a re-poll of an already-known channel must not re-float it →
+ * no flicker, no reorder), unless the incoming payload already carries one.
+ * `now` is injectable for deterministic tests. */
+export function upsertChannel(list: Channel[], next: Channel, now: number = Date.now()): Channel[] {
   const idx = list.findIndex((c) => c.channelId === next.channelId);
-  if (idx === -1) return [...list, next];
+  if (idx === -1) {
+    return [...list, { ...next, arrivedAt: next.arrivedAt ?? now }];
+  }
   const copy = list.slice();
-  copy[idx] = next;
+  // Preserve the original arrival stamp across re-polls so an existing channel
+  // keeps its place; honor an explicit incoming `arrivedAt` if the caller set one.
+  copy[idx] = { ...next, arrivedAt: next.arrivedAt ?? list[idx].arrivedAt };
   return copy;
 }
 
