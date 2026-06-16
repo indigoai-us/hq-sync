@@ -26,6 +26,16 @@ pub mod claude;
 /// `archived_sessions`) and maps to [`AgentSession`].
 pub mod codex;
 
+/// Liveness engine (US-004) — refines the readers' coarse mtime status into the
+/// [`SessionStatus`] taxonomy via a last-activity window cross-checked against
+/// running `claude`/`codex` processes (no live process → [`SessionStatus::Ended`]).
+pub mod liveness;
+
+/// Session history derivation (US-004) — builds the chronological Mission Control
+/// history feed from `workspace/metrics/audit-log.jsonl` and
+/// `workspace/threads/*.json` (dispatches, completions, checkpoints, handoffs).
+pub mod history;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Status taxonomy
 // ─────────────────────────────────────────────────────────────────────────────
