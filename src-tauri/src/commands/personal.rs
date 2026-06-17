@@ -624,6 +624,12 @@ where
                     size,
                     synced_at: now.clone(),
                     direction: Direction::Up,
+                    // Rust authors neither remoteEtag nor mtimeMs (see
+                    // JournalEntry docs). This is the seed path only; the
+                    // hq-cloud runner stamps both on the next steady-state sync.
+                    remote_etag: None,
+                    mtime_ms: None,
+                    extra: Default::default(),
                 },
             );
             write_journal(PERSONAL_VAULT_JOURNAL_SLUG, &journal)?;
@@ -1751,6 +1757,9 @@ mod tests {
                     size: content.len() as u64,
                     synced_at: "2026-06-10T18:00:00Z".into(),
                     direction: Direction::Down,
+                    remote_etag: None,
+                    mtime_ms: None,
+                    extra: Default::default(),
                 },
             );
             write_journal(PERSONAL_VAULT_JOURNAL_SLUG, &runner).unwrap();
