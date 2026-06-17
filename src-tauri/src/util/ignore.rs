@@ -14,7 +14,13 @@ pub const DEFAULT_IGNORES: &[&str] = &[
     // alongside in hq_core_drift::excluded_scope_paths().
     ".claude/worktrees/", ".claude/worktrees",
     // Node / JS
-    "node_modules/", "dist/", "build/", ".next/", ".nuxt/",
+    // `.pnpm-store/` is pnpm's content-addressed cache — tens of thousands of
+    // hard-linked blobs that regenerate on `pnpm install`. It MUST be excluded
+    // to match the hq-cloud engine's DEFAULT_IGNORES; without it the personal
+    // first-push pre-walk counted the whole cache (~12.8k files), so the
+    // menubar showed "Syncing Personal … of 13,660 files" while the actual
+    // sync moved a handful. See the engine list in @indigoai-us/hq-cloud.
+    "node_modules/", ".pnpm-store/", "dist/", "build/", ".next/", ".nuxt/",
     ".svelte-kit/", ".turbo/", ".parcel-cache/", ".vite/", "coverage/",
     // Company-local: secrets/config, datasets, prompt libraries — all stay
     // on-disk and never round-trip through the company vault bucket. Anchored
@@ -158,6 +164,22 @@ mod tests {
         let root = tmp.path();
         let filter = IgnoreFilter::for_hq_root(root).unwrap();
         assert!(!filter.should_sync(&root.join("companies/indigo/node_modules/x")));
+    }
+
+    #[test]
+    fn pnpm_store_is_ignored() {
+        // REGRESSION: the personal first-push pre-walk counted pnpm's
+        // content-addressed cache (~12.8k files) because this filter lacked
+        // `.pnpm-store/`, so the menubar showed "Syncing Personal … of 13,660
+        // files" while the engine excluded it and synced a handful. The Rust
+        // filter must match the hq-cloud engine's DEFAULT_IGNORES.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let filter = IgnoreFilter::for_hq_root(root).unwrap();
+        assert!(!filter.should_sync(&root.join(".pnpm-store/v10/files/00/abc")));
+        assert!(!filter.should_sync(&root.join("packages/foo/.pnpm-store/v3/x")));
+        // A real file with the substring in its name must still sync.
+        assert!(filter.should_sync(&root.join("docs/pnpm-store-notes.md")));
     }
 
     #[test]
