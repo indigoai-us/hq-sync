@@ -368,7 +368,13 @@ const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 /// with `HQ_OP_LOCK_TIMEOUT=<secs>` (0 = refuse immediately). The `~6.6.0` ->
 /// `~6.8.0` bump keeps the npx pin on the same release train as hq-cli. See
 /// indigoai-us/hq-cloud#73 (DEV-1772).
-pub const HQ_CLOUD_VERSION: &str = "~6.11.5";
+// HQ-59 floor: 6.11.6 is the first hq-cloud release whose sync-runner reads
+// company vaults over presign and stops calling the cmp_ /sts/vend route, so it
+// passes the hq-pro min-version gate. ~6.11.5 resolves 6.11.6 by latest-match,
+// but a desktop with a stale npx cache of 6.11.5 (which lacks the change) would
+// keep spawning a non-compliant runner — tightening the floor to ~6.11.6 makes
+// every desktop deterministically resolve a compliant runner.
+pub const HQ_CLOUD_VERSION: &str = "~6.11.6";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
