@@ -101,6 +101,20 @@ pub(crate) const PERSONAL_VAULT_EXCLUDED_TOP_LEVEL: &[&str] = &[
 /// makes the skip-unchanged decision correct again.
 pub(crate) const PERSONAL_VAULT_JOURNAL_SLUG: &str = "__hq_personal_vault__";
 
+/// Steady-state gate predicate: true once the hq-cloud runner's personal
+/// journal (`sync-journal.__hq_personal_vault__.json`) exists, meaning the
+/// runner owns bidirectional personal sync. The warm-up first-push only seeds
+/// a brand-new vault; after that it must NOT re-walk/upload (it compares
+/// against a baseline the runner's pulls never update, causing split-brain
+/// re-uploads, repeated upload failures, and an inflated "Syncing Personal …
+/// of N" count). Used by `ensure_personal_bucket_and_first_push`.
+pub(crate) fn engine_owns_personal_steady_state() -> bool {
+    matches!(
+        crate::util::journal::journal_path(PERSONAL_VAULT_JOURNAL_SLUG),
+        Ok(p) if p.exists()
+    )
+}
+
 /// True when a relative path (relative to hq_root, forward-slash separators)
 /// is part of the personal vault — i.e. its top-level segment is NOT in
 /// `PERSONAL_VAULT_EXCLUDED_TOP_LEVEL`. Empty paths return false (no top
@@ -759,6 +773,34 @@ pub(crate) async fn ensure_impl<R: tauri::Runtime + 'static>(
         }
     };
 
+    // ── Steady-state gate ──────────────────────────────────────────────────
+    // The warm-up first-push exists ONLY to seed a brand-new personal vault
+    // before the hq-cloud runner has ever synced it. Once the runner's journal
+    // (sync-journal.__hq_personal_vault__.json) exists, the runner owns the
+    // personal vault bidirectionally. Re-walking + uploading here compares
+    // files against a baseline the runner's pulls never update, so any file
+    // another machine pushed (and the runner pulled) looks "locally changed"
+    // and gets re-uploaded over newer cloud state — split-brain. In the field
+    // this ALSO failed every cycle ("permanent upload error") while surfacing
+    // an inflated "Syncing Personal … of N" count (N = files the runner then
+    // skips). Provisioning above still runs every cycle; only the upload walk
+    // is gated. Emit COMPLETE so the popover's personal slot latches normally.
+    if engine_owns_personal_steady_state() {
+        log(
+            "personal",
+            "personal first-push skipped — engine journal exists, runner owns steady-state personal sync",
+        );
+        let _ = app.emit(
+            EVENT_SYNC_PERSONAL_FIRST_PUSH_COMPLETE,
+            SyncPersonalFirstPushCompleteEvent {
+                person_uid: person_uid.clone(),
+                files_uploaded: 0,
+                files_skipped: 0,
+            },
+        );
+        return Ok(());
+    }
+
     // Obtain STS credentials via /sts/vend-self (never vend-child)
     let vend_result = match vault
         .vend_self(&VendSelfInput {
@@ -904,6 +946,34 @@ mod tests {
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn steady_state_gate_closes_once_runner_journal_exists() {
+        // REGRESSION: in the field the warm-up first-push ran every cycle
+        // (no gate), re-uploading files the runner skips, failing with
+        // "permanent upload error", and surfacing an inflated "Syncing
+        // Personal … of N" count. The gate must skip the upload once the
+        // runner's personal journal exists.
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp_state = TempDir::new().unwrap();
+        std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+        // Brand-new vault — no runner journal yet → gate OPEN (seed path runs).
+        assert!(
+            !engine_owns_personal_steady_state(),
+            "with no runner journal the warm-up first-push must be allowed to seed",
+        );
+
+        // Runner has synced at least once → its journal exists → gate CLOSED.
+        let jp = crate::util::journal::journal_path(PERSONAL_VAULT_JOURNAL_SLUG).unwrap();
+        std::fs::write(&jp, "{\"files\":{},\"last_sync\":\"\"}").unwrap();
+        assert!(
+            engine_owns_personal_steady_state(),
+            "once the runner journal exists the first-push upload must be gated off",
+        );
+
+        std::env::remove_var("HQ_STATE_DIR");
+    }
 
     fn make_uploader(calls: Arc<Mutex<Vec<String>>>) -> UploaderFn {
         Arc::new(move |key: String, _data: Bytes, _sha256: String| -> BoxFuture<UploadOutcome> {
@@ -1435,6 +1505,14 @@ mod tests {
             ensure_impl(&handle, &vault, tmp_hq.path(), Some(make_counter_uploader(Arc::new(AtomicUsize::new(0))))).await.unwrap();
             // Delete cache so Run 2 re-lists (reversed order)
             delete_cache();
+            // Remove the runner journal Run 1 wrote so Run 2 takes the seed
+            // path again — otherwise the steady-state gate skips Run 2's
+            // vend_self entirely. This test exercises canonical person pick
+            // across re-lists, not the gate (see
+            // steady_state_gate_closes_once_runner_journal_exists).
+            let _ = std::fs::remove_file(
+                crate::util::journal::journal_path(PERSONAL_VAULT_JOURNAL_SLUG).unwrap(),
+            );
             // Run 2: list = [prs_x, prs_y] → canonical sort still picks prs_x
             ensure_impl(&handle, &vault, tmp_hq.path(), Some(make_counter_uploader(Arc::new(AtomicUsize::new(0))))).await.unwrap();
 
