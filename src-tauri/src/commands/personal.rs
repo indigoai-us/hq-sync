@@ -151,6 +151,11 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
     // the count reflects a stale baseline. See PERSONAL_VAULT_JOURNAL_SLUG.
     let personal_journal = crate::util::journal::read_journal(PERSONAL_VAULT_JOURNAL_SLUG)
         .unwrap_or_default();
+    // Session-continuity carve-out: the active thread file the pointer
+    // references is a dynamic name, so it can't be a pure-predicate match —
+    // resolve it once (reads handoff.json) and OR it into the per-file gate.
+    let continuity: std::collections::HashSet<String> =
+        continuity_pointer_rel_paths(hq_root).into_iter().collect();
     for entry in WalkDir::new(hq_root).into_iter().filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
             continue;
@@ -162,7 +167,7 @@ pub(crate) fn count_files_to_transfer(hq_root: &Path, company_slugs: &[String]) 
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
-        if !is_personal_vault_path(&rel) {
+        if !is_personal_vault_path(&rel) && !continuity.contains(rel.as_str()) {
             continue;
         }
         if file_needs_upload(entry.path(), &rel, &personal_journal) {
@@ -233,11 +238,117 @@ pub(crate) fn is_personal_vault_path(rel: &str) -> bool {
     if rel == "companies/manifest.yaml" {
         return true;
     }
+    // workspace/threads/handoff.json is the session-continuity pointer — the
+    // ONE file under the otherwise machine-local `workspace/` that must travel
+    // across machines so a `/handoff` on one box reaches a second box. Same
+    // shape as the manifest special-case. The ACTIVE THREAD FILE the pointer
+    // references is NOT a fixed name, so it cannot be a pure-predicate match —
+    // it is resolved from `handoff.json` by `continuity_pointer_rel_paths`
+    // and OR-ed into the walk filter at the two call sites. Mirrors the TS
+    // `computeContinuityPointerPaths` carve-out in @indigoai-us/hq-cloud.
+    if rel == CONTINUITY_POINTER_REL {
+        return true;
+    }
     let top = rel.split('/').next().unwrap_or("");
     if top.is_empty() {
         return false;
     }
     !PERSONAL_VAULT_EXCLUDED_TOP_LEVEL.contains(&top)
+}
+
+/// Fixed hq-root-relative path (forward-slash separators) of the session
+/// continuity pointer. Mirrors `CONTINUITY_POINTER_REL` in
+/// `@indigoai-us/hq-cloud` (`src/personal-vault.ts`).
+pub(crate) const CONTINUITY_POINTER_REL: &str = "workspace/threads/handoff.json";
+
+/// Compute the hq-root-relative paths of the session-continuity carve-out:
+/// `workspace/threads/handoff.json` plus the single thread file it references
+/// via `thread_path`. `workspace/` is otherwise machine-local (it is in
+/// `PERSONAL_VAULT_EXCLUDED_TOP_LEVEL`); this is the ONE exception, so a
+/// `/handoff` on one machine reaches a second machine — the durable output
+/// already syncs, only the session pointer didn't travel.
+///
+/// Mirrors `computeContinuityPointerPaths` in `@indigoai-us/hq-cloud`
+/// (`src/personal-vault.ts`). Returns forward-slash, hq-root-relative strings
+/// that match exactly what the personal-vault walk computes via
+/// `entry.path().strip_prefix(hq_root)`, so they can be OR-ed straight into
+/// the walk filter.
+///
+/// The thread file is included ONLY when `thread_path` is a relative path that
+/// resolves (canonicalize) to an existing regular file STRICTLY inside
+/// `workspace/threads/`. Absolute paths, traversal (`../../.env`), paths under
+/// `workspace/` but outside `threads/`, and symlink escapes are all rejected —
+/// a malformed or tampered `handoff.json` must never smuggle an arbitrary file
+/// into the personal vault. Fail-soft throughout: a missing / unreadable /
+/// malformed pointer, or an out-of-bounds / missing `thread_path`, degrades to
+/// "the pointer alone" or `[]`.
+pub(crate) fn continuity_pointer_rel_paths(hq_root: &Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let threads_dir = hq_root.join("workspace").join("threads");
+    let handoff = threads_dir.join("handoff.json");
+
+    // No pointer on this machine yet (or unreadable) — nothing to carry.
+    let raw = match std::fs::read_to_string(&handoff) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    out.push(CONTINUITY_POINTER_REL.to_string());
+
+    // Resolve the active thread file from the pointer's `thread_path`. Any
+    // failure leaves the pointer itself in `out` and skips the thread body —
+    // the next handoff (or a peer's push) re-converges it.
+    let thread_path = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) => v
+            .get("thread_path")
+            .and_then(|t| t.as_str())
+            .map(|s| s.to_string()),
+        Err(_) => return out,
+    };
+    let thread_path = match thread_path {
+        Some(p) if !p.is_empty() => p,
+        _ => return out,
+    };
+
+    // Reject absolute paths up front.
+    if Path::new(&thread_path).is_absolute() {
+        return out;
+    }
+    // Normalize to clean forward-slash segments; reject traversal outright so
+    // `..` can never climb out of the threads dir, and drop `.`/empty segments
+    // so the emitted rel matches the walk's `strip_prefix` form exactly.
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in thread_path.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => return out,
+            s => segments.push(s),
+        }
+    }
+    let rel = segments.join("/");
+    // String-level containment: must live under workspace/threads/.
+    if !rel.starts_with("workspace/threads/") {
+        return out;
+    }
+    // realpath-level containment: canonicalize and re-check, which catches a
+    // symlink inside threads/ whose target escapes (the string check alone
+    // cannot). Then require a regular file.
+    let candidate = hq_root.join(&rel);
+    let threads_canon = match std::fs::canonicalize(&threads_dir) {
+        Ok(p) => p,
+        Err(_) => return out,
+    };
+    let real = match std::fs::canonicalize(&candidate) {
+        Ok(p) => p,
+        Err(_) => return out, // pointer references a thread file absent here
+    };
+    if !real.starts_with(&threads_canon) {
+        return out;
+    }
+    if !real.is_file() {
+        return out;
+    }
+    out.push(rel);
+    out
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
@@ -391,6 +502,11 @@ where
 {
     let filter = IgnoreFilter::for_hq_root(hq_root)?;
 
+    // Session-continuity carve-out: the active thread file the pointer
+    // references is a dynamic name, so it can't be a pure-predicate match —
+    // resolve it once (reads handoff.json) and OR it into the per-file gate.
+    let continuity: std::collections::HashSet<String> =
+        continuity_pointer_rel_paths(hq_root).into_iter().collect();
     let mut file_paths: Vec<PathBuf> = Vec::new();
     for entry in WalkDir::new(hq_root).into_iter().filter_map(|e| e.ok()) {
         if !entry.file_type().is_file() {
@@ -404,7 +520,7 @@ where
             Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
-        if !is_personal_vault_path(&rel) {
+        if !is_personal_vault_path(&rel) && !continuity.contains(rel.as_str()) {
             continue;
         }
         file_paths.push(abs);
@@ -1246,6 +1362,17 @@ mod tests {
         assert!(!is_personal_vault_path("repos/foo/README.md"), "repos/ have their own remotes");
         assert!(!is_personal_vault_path("workspace/threads/T-1.md"), "workspace/ is local session state");
         assert!(!is_personal_vault_path(".git/HEAD"), ".git/ is never synced");
+        // workspace/threads/handoff.json is the ONE workspace/ exception — the
+        // session-continuity pointer, included despite the workspace/
+        // exclusion. Mirrors hq-cloud computeContinuityPointerPaths. Sibling
+        // thread files (the T-1.md above) stay excluded — only the pointer
+        // gets the pure-predicate bypass; the active thread is OR-ed in at the
+        // walk sites via continuity_pointer_rel_paths.
+        assert!(
+            is_personal_vault_path(CONTINUITY_POINTER_REL),
+            "continuity pointer special-cased — included in personal vault despite workspace/ exclusion",
+        );
+        assert_eq!(CONTINUITY_POINTER_REL, "workspace/threads/handoff.json");
         // companies/manifest.yaml is the ONE special-case: routing
         // source-of-truth, included despite the companies/ exclusion.
         // Mirrors hq-cloud@5.39.0 computePersonalVaultPaths.
@@ -1265,6 +1392,212 @@ mod tests {
         );
         // Empty input still false (no top segment to evaluate).
         assert!(!is_personal_vault_path(""));
+    }
+
+    // ── continuity_pointer_rel_paths (session-continuity carve-out) ───────
+    //
+    // Mirrors the hq-cloud `computeContinuityPointerPaths` tests: the pointer
+    // + the single active thread it references travel; nothing else under
+    // workspace/ does; and a malformed/tampered pointer can never smuggle a
+    // file out of workspace/threads/.
+    #[test]
+    fn test_continuity_pointer_rel_paths() {
+        const POINTER: &str = "workspace/threads/handoff.json";
+
+        // (a) No handoff.json at all → empty (nothing to carry).
+        {
+            let tmp = TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("workspace/threads")).unwrap();
+            assert!(continuity_pointer_rel_paths(tmp.path()).is_empty());
+        }
+
+        // (b) Pointer + a valid active thread → both, nothing else.
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path();
+            let active = "workspace/threads/T-20260617-1000-active.json";
+            write_file(&root.join(active), b"{}");
+            write_file(&root.join("workspace/threads/T-old-inactive.json"), b"{}");
+            write_file(&root.join("workspace/threads/INDEX.md"), b"#");
+            write_file(
+                &root.join(POINTER),
+                format!("{{\"thread_path\":\"{active}\"}}").as_bytes(),
+            );
+            let mut got = continuity_pointer_rel_paths(root);
+            got.sort();
+            assert_eq!(got, vec![active.to_string(), POINTER.to_string()]);
+        }
+
+        // (c) Pointer present, thread_path absent → only the pointer.
+        {
+            let tmp = TempDir::new().unwrap();
+            write_file(&tmp.path().join(POINTER), b"{\"message\":\"no pointer field\"}");
+            assert_eq!(
+                continuity_pointer_rel_paths(tmp.path()),
+                vec![POINTER.to_string()]
+            );
+        }
+
+        // (d) Malformed JSON → fail-soft to pointer-only (no panic).
+        {
+            let tmp = TempDir::new().unwrap();
+            write_file(&tmp.path().join(POINTER), b"{ not json ]");
+            assert_eq!(
+                continuity_pointer_rel_paths(tmp.path()),
+                vec![POINTER.to_string()]
+            );
+        }
+
+        // (e) thread_path points at a missing file → only the pointer.
+        {
+            let tmp = TempDir::new().unwrap();
+            write_file(
+                &tmp.path().join(POINTER),
+                b"{\"thread_path\":\"workspace/threads/T-ghost.json\"}",
+            );
+            assert_eq!(
+                continuity_pointer_rel_paths(tmp.path()),
+                vec![POINTER.to_string()]
+            );
+        }
+
+        // (f) Absolute thread_path → rejected (only the pointer). Put a REAL
+        //     file at the absolute target so only the containment guard, not a
+        //     missing-file fallthrough, is what rejects it.
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path();
+            let evil = root.join("secret.txt");
+            write_file(&evil, b"top secret");
+            write_file(
+                &root.join(POINTER),
+                format!("{{\"thread_path\":\"{}\"}}", evil.display()).as_bytes(),
+            );
+            assert_eq!(
+                continuity_pointer_rel_paths(root),
+                vec![POINTER.to_string()]
+            );
+        }
+
+        // (g) Traversal thread_path (../../.env) → rejected.
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path();
+            write_file(&root.join(".env"), b"SECRET=1");
+            write_file(
+                &root.join(POINTER),
+                b"{\"thread_path\":\"workspace/threads/../../.env\"}",
+            );
+            let got = continuity_pointer_rel_paths(root);
+            assert_eq!(got, vec![POINTER.to_string()]);
+            assert!(!got.iter().any(|p| p.ends_with(".env")));
+        }
+
+        // (h) Under workspace/ but outside threads/ → rejected.
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path();
+            write_file(&root.join("workspace/reports/secret.md"), b"x");
+            write_file(
+                &root.join(POINTER),
+                b"{\"thread_path\":\"workspace/reports/secret.md\"}",
+            );
+            assert_eq!(
+                continuity_pointer_rel_paths(root),
+                vec![POINTER.to_string()]
+            );
+        }
+
+        // (i) Symlink inside threads/ whose target escapes → rejected by the
+        //     realpath re-check. (Unix-only; skipped where symlinks are not
+        //     supported.)
+        #[cfg(unix)]
+        {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path();
+            write_file(&root.join("outside.txt"), b"secret");
+            std::fs::create_dir_all(root.join("workspace/threads")).unwrap();
+            std::os::unix::fs::symlink(
+                root.join("outside.txt"),
+                root.join("workspace/threads/escape.json"),
+            )
+            .unwrap();
+            write_file(
+                &root.join(POINTER),
+                b"{\"thread_path\":\"workspace/threads/escape.json\"}",
+            );
+            assert_eq!(
+                continuity_pointer_rel_paths(root),
+                vec![POINTER.to_string()]
+            );
+        }
+    }
+
+    // End-to-end through the real personal first-push walk: the pointer + its
+    // active thread upload; an inactive sibling thread and unrelated workspace
+    // litter stay machine-local. This is the parity counterpart to the hq-cloud
+    // `computePersonalVaultPaths` carve-out test.
+    #[tokio::test]
+    async fn test_continuity_pointer_carve_out_uploads_pointer_and_active_thread() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+
+        // A normal included file so the walk has non-continuity content too.
+        write_file(&root.join("knowledge/notes.md"), b"knowledge");
+        // The continuity pointer + its active thread (must travel).
+        let active = "workspace/threads/T-20260617-1000-active.json";
+        write_file(&root.join(active), b"{\"task\":\"active\"}");
+        write_file(
+            &root.join("workspace/threads/handoff.json"),
+            format!("{{\"thread_path\":\"{active}\"}}").as_bytes(),
+        );
+        // Must NOT travel: an inactive thread, the threads INDEX, and a lock.
+        write_file(&root.join("workspace/threads/T-old-inactive.json"), b"{}");
+        write_file(&root.join("workspace/threads/INDEX.md"), b"# threads");
+        write_file(&root.join("workspace/locks/x.lock"), b"1");
+
+        let calls = Arc::new(Mutex::new(vec![]));
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+            let _ = run_personal_first_push(
+                root,
+                make_uploader(calls.clone()),
+                |_, _, _| {},
+                |_, _, _| {},
+                |_, _| {},
+            )
+            .await;
+            std::env::remove_var("HQ_STATE_DIR");
+        }
+
+        let captured = calls.lock().unwrap();
+        assert!(
+            captured.iter().any(|k| k == "workspace/threads/handoff.json"),
+            "continuity pointer must upload; got: {captured:?}",
+        );
+        assert!(
+            captured.iter().any(|k| k == active),
+            "active thread file must upload; got: {captured:?}",
+        );
+        assert!(
+            captured.iter().any(|k| k == "knowledge/notes.md"),
+            "ordinary personal-vault content still uploads; got: {captured:?}",
+        );
+        // The carve-out must NOT broaden the rest of workspace/.
+        assert!(
+            !captured.iter().any(|k| k == "workspace/threads/T-old-inactive.json"),
+            "inactive thread must stay machine-local; got: {captured:?}",
+        );
+        assert!(
+            !captured.iter().any(|k| k == "workspace/threads/INDEX.md"),
+            "threads INDEX must stay machine-local; got: {captured:?}",
+        );
+        assert!(
+            !captured.iter().any(|k| k.starts_with("workspace/locks/")),
+            "workspace/locks must stay machine-local; got: {captured:?}",
+        );
     }
 
     // Regression: upload-phase progress totals must reflect the CHANGED-file
