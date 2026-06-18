@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { flattenTree, sortNodes, type FileNode } from './file-tree';
+import {
+  dirEntryToLazyNode,
+  flattenLazy,
+  flattenTree,
+  sortNodes,
+  type DirEntry,
+  type FileNode,
+  type LazyNode,
+} from './file-tree';
 
 /**
  * US-006 — Frontend unit tests for the pure company-file-tree helpers.
@@ -180,5 +188,120 @@ describe('file-tree flattenTree (US-006)', () => {
       3,
     );
     expect(rows[0].depth).toBe(3);
+  });
+});
+
+describe('file-tree lazy helpers (US-010)', () => {
+  function entry(overrides: Partial<DirEntry>): DirEntry {
+    return {
+      name: 'x',
+      path: 'x',
+      isDir: false,
+      hasChildren: false,
+      ...overrides,
+    };
+  }
+
+  /** Convenience: a loaded lazy directory node with children. */
+  function lazyDir(
+    name: string,
+    path: string,
+    children: LazyNode[] | undefined = undefined,
+  ): LazyNode {
+    return {
+      name,
+      path,
+      isDir: true,
+      hasChildren: true,
+      loaded: children !== undefined,
+      children,
+    };
+  }
+
+  function lazyFile(name: string, path: string): LazyNode {
+    return { name, path, isDir: false, hasChildren: false, loaded: false };
+  }
+
+  it('dirEntryToLazyNode maps a DirEntry to an unloaded node', () => {
+    const node = dirEntryToLazyNode(
+      entry({ name: 'repos', path: 'repos', isDir: true, hasChildren: true }),
+    );
+    expect(node).toEqual({
+      name: 'repos',
+      path: 'repos',
+      isDir: true,
+      hasChildren: true,
+      loaded: false,
+      children: undefined,
+    });
+  });
+
+  it('clears hasChildren for files (only dirs can be expandable)', () => {
+    const node = dirEntryToLazyNode(
+      // A backend that erroneously set hasChildren on a file must not produce
+      // an expandable file row.
+      entry({ name: 'README.md', path: 'README.md', isDir: false, hasChildren: true }),
+    );
+    expect(node.hasChildren).toBe(false);
+  });
+
+  it('flattenLazy emits only loaded+expanded subtrees (lazy: unloaded dirs show no children)', () => {
+    const tree: LazyNode[] = [
+      // Loaded + has a child.
+      lazyDir('companies', 'companies', [lazyFile('manifest.yaml', 'companies/manifest.yaml')]),
+      // hasChildren but NOT loaded yet → no children even if "expanded".
+      lazyDir('repos', 'repos', undefined),
+    ];
+    const expanded = new Set(['companies', 'repos']);
+    const rows = flattenLazy(tree, (p) => expanded.has(p));
+
+    expect(rows.map((r) => ({ path: r.node.path, depth: r.depth }))).toEqual([
+      { path: 'companies', depth: 0 },
+      { path: 'companies/manifest.yaml', depth: 1 },
+      // repos is expanded but unloaded → no children rows yet (lazy).
+      { path: 'repos', depth: 0 },
+    ]);
+  });
+
+  it('flattenLazy hides a collapsed (loaded) directory subtree', () => {
+    const tree: LazyNode[] = [
+      lazyDir('core', 'core', [lazyFile('core.yaml', 'core/core.yaml')]),
+    ];
+    // Not expanded → child hidden even though it is loaded.
+    const rows = flattenLazy(tree, () => false);
+    expect(rows.map((r) => r.node.path)).toEqual(['core']);
+  });
+
+  it('flattenLazy sorts folders-before-files, case-insensitive alphabetical', () => {
+    const tree: LazyNode[] = [
+      lazyFile('zeta.txt', 'zeta.txt'),
+      lazyDir('Beta', 'Beta'),
+      lazyDir('alpha', 'alpha'),
+      lazyFile('Apple.txt', 'Apple.txt'),
+    ];
+    const rows = flattenLazy(tree, () => false);
+    expect(rows.map((r) => r.node.name)).toEqual([
+      'alpha',
+      'Beta',
+      'Apple.txt',
+      'zeta.txt',
+    ]);
+  });
+
+  it('flattenLazy tracks depth across nested loaded dirs', () => {
+    const tree: LazyNode[] = [
+      lazyDir('repos', 'repos', [
+        lazyDir('public', 'repos/public', [
+          lazyFile('hq-sync', 'repos/public/hq-sync'),
+        ]),
+      ]),
+    ];
+    const expanded = new Set(['repos', 'repos/public']);
+    const rows = flattenLazy(tree, (p) => expanded.has(p));
+    expect(rows.map((r) => ({ path: r.node.path, depth: r.depth }))).toEqual([
+      { path: 'repos', depth: 0 },
+      { path: 'repos/public', depth: 1 },
+      { path: 'repos/public/hq-sync', depth: 2 },
+    ]);
   });
 });

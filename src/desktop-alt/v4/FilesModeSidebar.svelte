@@ -1,26 +1,31 @@
 <script lang="ts">
   /**
    * FilesModeSidebar — the file-explorer sidebar that REPLACES the 220px V4
-   * primary sidebar when the app is in top-level Files mode (US-009).
+   * primary sidebar when the app is in top-level Files mode (US-009, reworked in
+   * US-010).
    *
-   * Obsidian vault-switcher layout: a compact connected-first mini company list
-   * at the TOP (reusing the shared US-007 sort so the order matches the primary
-   * sidebar's COMPANIES list exactly) and the selected company's file tree
-   * BELOW. Picking a company reloads the tree; selecting a file fires
-   * `onselectfile` so the shell can preview it in the main content area.
+   * US-010 changes the model in three ways, all driven by live-beta feedback:
+   *  1. EXIT CONTROL — a clear back/exit button in the header returns the app to
+   *     the previous view (default Home) and restores the normal sidebar.
+   *     Leaving Files mode is reversible without restarting.
+   *  2. ROOT-BY-DEFAULT — with no company selected the tree shows the HQ ROOT
+   *     (top-level `companies/`, `repos/`, `core/`, `personal/`, `workspace/`…),
+   *     noise-filtered. The mini company list is an OPTIONAL FILTER, not a
+   *     prerequisite.
+   *  3. COMPANY-AS-FILTER — selecting a company scopes the tree to
+   *     `companies/<slug>/`; an active-filter chip shows the scope and clears
+   *     it back to the full root. The filter simply sets the tree's root path.
    *
-   * The tree is fetched here (mirrors the old CompanyFilesPanel $effect) via the
-   * already-noise-filtered `get_company_file_tree` command, keyed on the active
-   * slug with a cancel flag. The presentational CompanyFileTree renders the
-   * 28px fixed-height rows; this component imposes NO floating-card / box-shadow
-   * wrapper (that was the prior overlap bug) — the tree sits flush and scrolls
-   * inside its own region.
+   * The tree LAZY-LOADS children per folder (US-010) via the `list_hq_dir`
+   * command so the large HQ root (esp. `repos/`) is never eagerly walked.
+   * Selecting a file fires `onselectfile` so the shell previews it in the main
+   * content area.
    *
    * No purple anywhere (hard Indigo policy); V4 tokens only, status as 6px dots.
    */
   import { invoke } from '@tauri-apps/api/core';
   import type { Workspace } from '../../lib/workspaces';
-  import type { FileNode } from '../lib/file-tree';
+  import type { DirEntry } from '../lib/file-tree';
   import CompanyFileTree from '../components/CompanyFileTree.svelte';
   import { sortV4CompaniesConnectedFirst } from './model';
   import './tokens.css';
@@ -28,57 +33,43 @@
   interface Props {
     /** `list_syncable_workspaces` workspaces — the mini company list source. */
     companies: Workspace[];
-    /** The active company in Files mode (drives the tree below). */
+    /** The active company FILTER (null = show the full HQ root). */
     activeSlug: string | null;
     /** The currently-selected file's HQ-relative path; highlights the tree row. */
     selectedPath: string | null;
-    onselectcompany?: (slug: string) => void;
+    /** Toggle the company filter (slug to scope, null to clear back to root). */
+    onselectcompany?: (slug: string | null) => void;
     onselectfile?: (path: string) => void;
+    /** Leave Files mode and restore the previous view (default Home). */
+    onexit?: () => void;
   }
 
-  let { companies, activeSlug, selectedPath, onselectcompany, onselectfile }: Props = $props();
+  let {
+    companies,
+    activeSlug,
+    selectedPath,
+    onselectcompany,
+    onselectfile,
+    onexit,
+  }: Props = $props();
 
   // Connected-first mini list — same ordering as the primary sidebar (US-007).
   const companyRows = $derived(sortV4CompaniesConnectedFirst(companies, activeSlug));
 
-  let tree = $state<FileNode | null>(null);
-  let loading = $state(false);
-  let error = $state<string | null>(null);
+  // The active company's display label (for the filter chip).
+  const activeLabel = $derived(
+    activeSlug ? (companyRows.find((row) => row.slug === activeSlug)?.label ?? activeSlug) : null,
+  );
 
-  // Fetch the active company's tree on every slug change. Cancel-flag guards
-  // against an out-of-order completion when the user clicks through companies.
-  $effect(() => {
-    const slug = activeSlug;
-    tree = null;
-    error = null;
+  // The tree's root path: HQ root by default, scoped to the company subtree
+  // when the filter is active. This is the ONLY thing the filter changes.
+  const treeRootPath = $derived(activeSlug ? `companies/${activeSlug}` : '');
 
-    if (!slug) {
-      loading = false;
-      return;
-    }
-
-    let cancelled = false;
-    loading = true;
-
-    void invoke<FileNode>('get_company_file_tree', { slug })
-      .then((result) => {
-        if (!cancelled) tree = result ?? null;
-      })
-      .catch((err) => {
-        console.error('get_company_file_tree failed:', err);
-        if (!cancelled) {
-          error = String(err);
-          tree = null;
-        }
-      })
-      .finally(() => {
-        if (!cancelled) loading = false;
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  });
+  // Lazy children loader — the per-directory `list_hq_dir` command. Returns one
+  // directory's immediate children (noise-filtered, path-guarded in Rust).
+  function loadChildren(relPath: string): Promise<DirEntry[]> {
+    return invoke<DirEntry[]>('list_hq_dir', { relPath });
+  }
 
   function handleSelectFile(path: string): void {
     onselectfile?.(path);
@@ -86,16 +77,29 @@
 </script>
 
 <aside class="files-sidebar" aria-label="Files explorer">
+  <div class="fs-header">
+    <button type="button" class="fs-exit" onclick={() => onexit?.()}>
+      <span class="fs-exit-icon" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="14" height="14">
+          <path d="M10 3.5 L5.5 8 L10 12.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </span>
+      <span class="fs-exit-label">Back</span>
+    </button>
+    <span class="fs-title">Files</span>
+  </div>
+
   <div class="fs-companies-area">
-    <div class="fs-section-label" id="fs-companies-label">Companies</div>
+    <div class="fs-section-label" id="fs-companies-label">Filter by company</div>
     <nav class="fs-company-list" aria-labelledby="fs-companies-label">
       {#each companyRows as row (row.slug)}
         <button
           type="button"
           class="fs-company-row"
           class:active={row.slug === activeSlug}
-          aria-current={row.slug === activeSlug ? 'page' : undefined}
-          onclick={() => onselectcompany?.(row.slug)}
+          aria-pressed={row.slug === activeSlug}
+          onclick={() =>
+            onselectcompany?.(row.slug === activeSlug ? null : row.slug)}
         >
           <span class={`fs-dot ${row.tone}`} aria-hidden="true"></span>
           <span class="fs-company-name">{row.label}</span>
@@ -106,22 +110,36 @@
 
   <div class="fs-divider" aria-hidden="true"></div>
 
-  <div class="fs-tree-area" aria-label="Company files" aria-busy={loading}>
-    {#if !activeSlug}
-      <div class="fs-empty">Pick a company to browse its files</div>
-    {:else if loading}
-      <div class="fs-skeleton" aria-label="Loading files">
-        {#each Array(6) as _, index (index)}
-          <span style={`width: ${88 - index * 8}%`}></span>
-        {/each}
-      </div>
-    {:else if error}
-      <div class="fs-empty" role="alert">Files unavailable</div>
-    {:else if tree && tree.children.length > 0}
-      <CompanyFileTree root={tree} onselect={handleSelectFile} {selectedPath} />
+  <div class="fs-scope">
+    {#if activeSlug}
+      <span class="fs-scope-chip">
+        <span class="fs-scope-label">companies/{activeSlug}</span>
+        <button
+          type="button"
+          class="fs-scope-clear"
+          aria-label={`Clear ${activeLabel} filter`}
+          title="Clear filter"
+          onclick={() => onselectcompany?.(null)}
+        >
+          <svg viewBox="0 0 12 12" width="11" height="11" aria-hidden="true">
+            <path d="M3 3 L9 9 M9 3 L3 9" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          </svg>
+        </button>
+      </span>
     {:else}
-      <div class="fs-empty">No files yet</div>
+      <span class="fs-scope-root">HQ root</span>
     {/if}
+  </div>
+
+  <div class="fs-tree-area" aria-label="File tree">
+    {#key treeRootPath}
+      <CompanyFileTree
+        rootPath={treeRootPath}
+        {loadChildren}
+        onselect={handleSelectFile}
+        {selectedPath}
+      />
+    {/key}
   </div>
 </aside>
 
@@ -147,6 +165,51 @@
       sans-serif;
   }
 
+  /* Header: a prominent Back/exit control + the mode title. */
+  .fs-header {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 var(--v4-space-3);
+    padding: 0 2px;
+  }
+
+  .fs-exit {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 26px;
+    padding: 0 10px 0 6px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 6px;
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--text-base);
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  .fs-exit:hover {
+    background: var(--v4-control-bg);
+    border-color: var(--v4-text-3);
+  }
+
+  .fs-exit-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .fs-title {
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
   .fs-section-label {
     flex: 0 0 auto;
     margin: 0 0 6px;
@@ -158,14 +221,14 @@
     text-transform: uppercase;
   }
 
-  /* Mini company list: caps at ~40% of the sidebar and scrolls on overflow so
+  /* Mini company list: caps at ~36% of the sidebar and scrolls on overflow so
      the tree below always gets its own region. */
   .fs-companies-area {
     display: flex;
     flex: 0 1 auto;
     flex-direction: column;
     min-height: 0;
-    max-height: 40%;
+    max-height: 36%;
   }
 
   .fs-company-list {
@@ -266,6 +329,64 @@
     border-top: 1px solid var(--v4-hairline);
   }
 
+  /* Active-scope indicator: shows whether the tree is the full HQ root or a
+     company filter, and offers a clear affordance for the latter. */
+  .fs-scope {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    min-height: 22px;
+    margin: 0 0 var(--v4-space-2);
+    padding: 0 6px;
+  }
+
+  .fs-scope-root {
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    font-weight: 500;
+  }
+
+  .fs-scope-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    padding: 2px 4px 2px 8px;
+    border: 1px solid var(--v4-hairline);
+    border-radius: 999px;
+    background: var(--v4-control-faint);
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    font-weight: 500;
+  }
+
+  .fs-scope-label {
+    overflow: hidden;
+    min-width: 0;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .fs-scope-clear {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--v4-text-3);
+    cursor: pointer;
+  }
+
+  .fs-scope-clear:hover {
+    background: var(--v4-control-bg);
+    color: var(--v4-text-1);
+  }
+
   /* The tree region takes the remaining height and is the tree's scroller. No
      card/box-shadow wrapper (the prior overlap bug); small flush padding only. */
   .fs-tree-area {
@@ -284,47 +405,5 @@
   .fs-tree-area::-webkit-scrollbar-thumb {
     border-radius: 999px;
     background: var(--v4-hairline);
-  }
-
-  .fs-empty {
-    padding: 20px 12px;
-    color: var(--v4-text-3);
-    font-size: var(--text-base);
-    line-height: 1.4;
-    text-align: center;
-  }
-
-  .fs-skeleton {
-    display: grid;
-    gap: 10px;
-    padding: 8px;
-  }
-
-  .fs-skeleton span {
-    height: 16px;
-    border-radius: 5px;
-    background: linear-gradient(
-      90deg,
-      var(--v4-control-faint),
-      var(--v4-hairline),
-      var(--v4-control-faint)
-    );
-    background-size: 200% 100%;
-    animation: fs-skeleton 1.2s ease-in-out infinite;
-  }
-
-  @keyframes fs-skeleton {
-    from {
-      background-position: 0 0;
-    }
-    to {
-      background-position: -200% 0;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .fs-skeleton span {
-      animation: none;
-    }
   }
 </style>

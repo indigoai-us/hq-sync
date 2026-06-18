@@ -1,101 +1,201 @@
 <script lang="ts">
   /**
-   * CompanyFileTree — Obsidian-style collapsible folder tree for the selected
-   * company's local files (US-002).
+   * CompanyFileTree — Obsidian-style collapsible folder tree (US-002, made LAZY
+   * in US-010).
    *
-   * PRESENTATIONAL only: it receives the `get_company_file_tree` result as a
-   * `root: FileNode` prop and renders its children as an indented, collapsible
-   * tree. It never calls `invoke()` — US-003 wires the data in. Folders expand /
-   * collapse with a chevron and clicking a folder toggles expansion only; files
-   * are leaf rows and clicking one fires `onselect(node.path)` with the
-   * HQ-folder-relative path. Expansion state (a `Set<string>` of expanded paths)
-   * is held in component `$state`, so it persists across re-renders within the
-   * same company session.
+   * The tree now LOADS CHILDREN ON FOLDER EXPAND instead of consuming a fully
+   * pre-walked tree. This keeps the large HQ root (esp. `repos/`) fast: only
+   * the visible level is fetched, and a folder's children are requested the
+   * first time it is expanded.
    *
-   * Styling mirrors V4SecondarySidebar's `.v4-row` look (28px fixed height, 6px
-   * radius, faint hover) using the V4 tokens. No purple anywhere (hard Indigo
-   * policy); this tree needs no status color at all.
+   * Data flow:
+   *  - `rootPath` is the HQ-relative directory the tree is rooted at (`''` = HQ
+   *    root; `companies/<slug>` when the company filter is active). Changing it
+   *    resets the tree and reloads the top level.
+   *  - `loadChildren(relPath)` is supplied by the parent and returns that
+   *    directory's immediate children as `DirEntry[]` (the lazy `list_hq_dir`
+   *    command). This component never calls `invoke()` directly — it stays
+   *    presentational + cache-managing.
+   *
+   * Clicking a folder toggles expansion (and lazily fetches its children once);
+   * clicking a file fires `onselect(node.path)` with the HQ-relative path.
+   *
+   * Styling mirrors V4SecondarySidebar's `.v4-row` (28px fixed height, 6px
+   * radius, faint hover) via V4 tokens. No purple (hard Indigo policy).
    */
-  import { flattenTree, type FileNode } from '../lib/file-tree';
+  import {
+    dirEntryToLazyNode,
+    flattenLazy,
+    type DirEntry,
+    type LazyNode,
+  } from '../lib/file-tree';
   import '../v4/tokens.css';
 
   interface Props {
     /**
-     * The tree root (the company node, whose `name` is the slug). Its children
-     * are rendered; the root row itself is not shown. The data contract from
-     * US-001's `get_company_file_tree` returns exactly this shape.
+     * HQ-relative directory the tree is rooted at. `''` (or `'.'`) = HQ root;
+     * `companies/<slug>` scopes to a company. The root row itself is not shown —
+     * its immediate children are the top-level rows.
      */
-    root: FileNode;
+    rootPath?: string;
+    /** Lazy children loader (the `list_hq_dir` command), supplied by the parent. */
+    loadChildren: (relPath: string) => Promise<DirEntry[]>;
     /** Fired when a FILE row is activated, with its HQ-folder-relative path. */
     onselect?: (path: string) => void;
     /** The currently-selected file path; the matching row is highlighted. */
     selectedPath?: string | null;
   }
 
-  let { root, onselect, selectedPath = null }: Props = $props();
+  let { rootPath = '', loadChildren, onselect, selectedPath = null }: Props = $props();
 
-  // Expansion state keyed by node `path`. Held here (not derived from props) so
-  // toggling persists across prop ticks within the same company session.
-  // Default: collapsed (top-level folders start closed) for a calm deep tree.
+  // The lazily-built top-level node list (children of `rootPath`).
+  let roots = $state<LazyNode[]>([]);
+  // Expansion state keyed by node `path`. Reassigned (new Set) on every change
+  // so Svelte's reactivity fires.
   let expanded = $state(new Set<string>());
+  // Per-directory load state keyed by path so a spinner / re-fetch guard works.
+  let loadingPaths = $state(new Set<string>());
+  let rootLoading = $state(false);
+  let rootError = $state<string | null>(null);
 
-  // Flatten to display order on every render. `flattenTree` sorts internally
-  // (folders-before-files, case-insensitive alphabetical), so we are robust to
-  // unsorted input and independently correct from the Rust side.
-  const rows = $derived(
-    flattenTree(root?.children ?? [], (path) => expanded.has(path)),
-  );
+  // (Re)load the top level whenever the root path changes. A cancel flag guards
+  // against an out-of-order completion when the user switches the filter fast.
+  $effect(() => {
+    const base = rootPath;
+    roots = [];
+    expanded = new Set();
+    loadingPaths = new Set();
+    rootError = null;
+    rootLoading = true;
 
-  function toggle(path: string): void {
-    // Reassign a NEW Set so Svelte's reactivity picks up the change.
+    let cancelled = false;
+    void loadChildren(base)
+      .then((entries) => {
+        if (!cancelled) roots = entries.map(dirEntryToLazyNode);
+      })
+      .catch((err) => {
+        console.error('list_hq_dir failed:', err);
+        if (!cancelled) {
+          rootError = String(err);
+          roots = [];
+        }
+      })
+      .finally(() => {
+        if (!cancelled) rootLoading = false;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  const rows = $derived(flattenLazy(roots, (path) => expanded.has(path)));
+
+  /** Recursively replace the node at `path` with its loaded children. Pure-ish:
+   *  returns a NEW array so Svelte sees the change. */
+  function withLoadedChildren(
+    nodes: LazyNode[],
+    path: string,
+    children: LazyNode[],
+  ): LazyNode[] {
+    return nodes.map((node) => {
+      if (node.path === path) {
+        return { ...node, loaded: true, children };
+      }
+      if (node.isDir && node.children && path.startsWith(`${node.path}/`)) {
+        return { ...node, children: withLoadedChildren(node.children, path, children) };
+      }
+      return node;
+    });
+  }
+
+  async function ensureLoaded(node: LazyNode): Promise<void> {
+    if (node.loaded || loadingPaths.has(node.path)) return;
+    const next = new Set(loadingPaths);
+    next.add(node.path);
+    loadingPaths = next;
+    try {
+      const entries = await loadChildren(node.path);
+      roots = withLoadedChildren(roots, node.path, entries.map(dirEntryToLazyNode));
+    } catch (err) {
+      console.error('list_hq_dir failed:', err);
+      // Mark loaded with empty children so we don't spin forever; the empty
+      // folder simply shows nothing under it.
+      roots = withLoadedChildren(roots, node.path, []);
+    } finally {
+      const done = new Set(loadingPaths);
+      done.delete(node.path);
+      loadingPaths = done;
+    }
+  }
+
+  function toggle(node: LazyNode): void {
     const next = new Set(expanded);
-    if (next.has(path)) {
-      next.delete(path);
+    if (next.has(node.path)) {
+      next.delete(node.path);
     } else {
-      next.add(path);
+      next.add(node.path);
+      // Lazily fetch this folder's children the first time it opens.
+      if (!node.loaded) void ensureLoaded(node);
     }
     expanded = next;
   }
 
-  function onRowClick(node: FileNode): void {
+  function onRowClick(node: LazyNode): void {
     if (node.isDir) {
-      toggle(node.path); // Folders toggle expansion only — no select fires.
+      toggle(node); // Folders toggle expansion only — no select fires.
     } else {
       onselect?.(node.path);
     }
   }
 </script>
 
-<div class="file-tree" role="tree" aria-label={`${root?.name ?? 'Company'} files`}>
-  {#each rows as { node, depth } (node.path)}
-    {#if node.isDir}
-      <button
-        type="button"
-        class="ft-row ft-dir"
-        style={`padding-left: ${8 + depth * 14}px`}
-        aria-expanded={expanded.has(node.path)}
-        onclick={() => onRowClick(node)}
-      >
-        <span class="ft-chevron" class:open={expanded.has(node.path)} aria-hidden="true">
-          <svg viewBox="0 0 12 12" width="12" height="12">
-            <path d="M4.5 2.5 L8 6 L4.5 9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </span>
-        <span class="ft-label">{node.name}</span>
-      </button>
-    {:else}
-      <button
-        type="button"
-        class="ft-row ft-file"
-        class:selected={node.path === selectedPath}
-        aria-current={node.path === selectedPath ? 'true' : undefined}
-        style={`padding-left: ${8 + (depth + 1) * 14}px`}
-        onclick={() => onRowClick(node)}
-      >
-        <span class="ft-label">{node.name}</span>
-      </button>
-    {/if}
-  {/each}
+<div class="file-tree" role="tree" aria-label="Files">
+  {#if rootLoading}
+    <div class="ft-status" aria-label="Loading files">Loading…</div>
+  {:else if rootError}
+    <div class="ft-status" role="alert">Files unavailable</div>
+  {:else if rows.length === 0}
+    <div class="ft-status">No files</div>
+  {:else}
+    {#each rows as { node, depth } (node.path)}
+      {#if node.isDir}
+        <button
+          type="button"
+          class="ft-row ft-dir"
+          style={`padding-left: ${8 + depth * 14}px`}
+          aria-expanded={expanded.has(node.path)}
+          onclick={() => onRowClick(node)}
+        >
+          <span
+            class="ft-chevron"
+            class:open={expanded.has(node.path)}
+            class:hidden={!node.hasChildren}
+            aria-hidden="true"
+          >
+            <svg viewBox="0 0 12 12" width="12" height="12">
+              <path d="M4.5 2.5 L8 6 L4.5 9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <span class="ft-label">{node.name}</span>
+          {#if loadingPaths.has(node.path)}
+            <span class="ft-spinner" aria-hidden="true"></span>
+          {/if}
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="ft-row ft-file"
+          class:selected={node.path === selectedPath}
+          aria-current={node.path === selectedPath ? 'true' : undefined}
+          style={`padding-left: ${8 + (depth + 1) * 14}px`}
+          onclick={() => onRowClick(node)}
+        >
+          <span class="ft-label">{node.name}</span>
+        </button>
+      {/if}
+    {/each}
+  {/if}
 </div>
 
 <style>
@@ -166,8 +266,42 @@
     transform: rotate(90deg);
   }
 
+  /* Empty dirs keep the chevron column for alignment but hide the glyph. */
+  .ft-chevron.hidden {
+    visibility: hidden;
+  }
+
   /* Files have no chevron; pad the label so it aligns past the chevron column. */
   .ft-file .ft-label {
     padding-left: 18px;
+  }
+
+  .ft-spinner {
+    flex: 0 0 10px;
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid var(--v4-hairline);
+    border-top-color: var(--v4-text-3);
+    border-radius: 50%;
+    animation: ft-spin 0.7s linear infinite;
+  }
+
+  @keyframes ft-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ft-spinner {
+      animation: none;
+    }
+  }
+
+  .ft-status {
+    padding: 12px;
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    text-align: center;
   }
 </style>
