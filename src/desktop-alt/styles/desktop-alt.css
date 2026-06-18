@@ -339,11 +339,11 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .empty-row {
-  height: 28px;
+  height: var(--v4-row-h);
   padding: 0 8px;
   color: var(--muted-2);
   font-size: var(--text-base);
-  line-height: 28px;
+  line-height: var(--v4-row-h);
 }
 
 .desktop-content,

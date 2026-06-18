@@ -126,7 +126,7 @@
     display: flex;
     flex-direction: column;
     flex: 0 0 auto;
-    gap: 1px;
+    gap: var(--v4-row-gap);
   }
 
   .v4-row {
@@ -134,7 +134,7 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    height: 28px;
+    height: var(--v4-row-h);
     padding: 0 8px;
     border: none;
     border-radius: 6px;
@@ -175,7 +175,7 @@
     flex: 1 1 auto;
     flex-direction: column;
     min-height: 0;
-    margin-top: 18px;
+    margin-top: var(--v4-space-5);
   }
 
   .v4-company-nav {
@@ -220,15 +220,21 @@
   }
 
   .v4-company-name {
+    flex: 1 1 auto;
     overflow: hidden;
     min-width: 0;
-    text-overflow: ellipsis;
     white-space: nowrap;
+    /* Right-edge fade-out instead of an ellipsis cutoff: the last 24px fades to
+       transparent. When the name fits, the fade region sits past the text and is
+       invisible; only an overflowing name actually clips. -webkit- prefix is
+       required for the WKWebView this app runs in. */
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 calc(100% - 24px), transparent 100%);
   }
 
   .v4-spacer {
-    flex: 0 0 14px;
-    min-height: 14px;
+    flex: 0 0 var(--v4-space-4);
+    min-height: var(--v4-space-4);
   }
 
   .v4-footer {
