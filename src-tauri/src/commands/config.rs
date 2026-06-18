@@ -87,6 +87,15 @@ pub struct MenubarPrefs {
     /// (see `is_instant_sync_enabled` in daemon.rs and `get_settings`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instant_sync: Option<bool>,
+    /// Remote-pull cadence for the Auto-sync watch daemon, in SECONDS. Maps to
+    /// `hq-sync-runner --poll-remote-ms` (× 1000) in `build_watch_runner_args`.
+    /// When absent, the daemon falls back to the `HQ_CLOUD_DEV_POLL_MS` env
+    /// override and then the 600s (10-minute) default. The resolved value is
+    /// floored at 15s so a bad setting can't hammer S3. This is the persisted
+    /// replacement for the dev-only env override — the Settings "Auto-sync"
+    /// interval control writes it via `save_settings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_poll_seconds: Option<u64>,
     /// Staging repo (`owner/name`) for Core-Drift staging classification.
     /// When set, drifted locked-scope files are cross-referenced against this
     /// repo's `main` tree + open PRs and tagged (`staging main` / `PR #n` /
