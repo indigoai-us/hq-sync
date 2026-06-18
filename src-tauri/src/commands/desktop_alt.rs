@@ -1920,6 +1920,124 @@ fn read_file_content_capped(
     String::from_utf8(bytes).map_err(|_| format!("cannot preview binary file: {rel_path:?}"))
 }
 
+// ---- Lazy HQ-root file explorer (US-010) ----------------------------------
+
+/// One entry in a single directory listing for the lazy file explorer (US-010).
+///
+/// Unlike [`FileNode`], a `DirEntry` is NOT recursive — `list_hq_dir` returns
+/// only the *immediate* children of one directory so the large HQ root (esp.
+/// `repos/`) never triggers a full eager walk. The frontend lazily fetches a
+/// folder's children on expand. `has_children` lets the UI render an
+/// expand chevron for non-empty directories WITHOUT walking them first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntry {
+    pub name: String,
+    /// HQ-folder-relative path, forward-slash separated (e.g.
+    /// `repos/public/hq-sync`).
+    pub path: String,
+    pub is_dir: bool,
+    /// For directories, whether the dir contains at least one non-noise child
+    /// (so the UI can show an expand affordance without recursing). Always
+    /// `false` for files.
+    pub has_children: bool,
+}
+
+/// List the immediate children of an HQ-relative directory for the lazy file
+/// explorer (US-010).
+///
+/// `rel_path` is HQ-folder-relative with forward slashes; an empty string (or
+/// `"."`) lists the HQ ROOT (top-level `companies/`, `repos/`, `core/`,
+/// `personal/`, `workspace/`, …). Children are filtered through the SAME
+/// curated dev-noise set ([`DEV_NOISE_NAMES`] + dot-directories) as the eager
+/// tree, and the SAME `is_within` HQ-folder guard rejects `..` traversal /
+/// absolute escapes. Returns only immediate children (no recursion), sorted
+/// directories-before-files then case-insensitive alphabetical.
+#[tauri::command]
+pub async fn list_hq_dir(rel_path: String) -> Result<Vec<DirEntry>, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("file explorer requires a signed-in user".to_string());
+    }
+    let hq = resolve_hq_folder();
+    list_dir_entries(&hq, &rel_path)
+}
+
+/// Pure body for `list_hq_dir` — takes an explicit HQ root so the traversal
+/// guard + noise filter + sort order are unit-testable without the gate.
+fn list_dir_entries(hq_root: &Path, rel_path: &str) -> Result<Vec<DirEntry>, String> {
+    // Empty / "." / "/" all mean the HQ root.
+    let rel = rel_path.trim().trim_matches('/');
+    let abs = if rel.is_empty() || rel == "." {
+        hq_root.to_path_buf()
+    } else {
+        hq_root.join(rel)
+    };
+
+    // Defense-in-depth: reject any path that escapes the HQ folder.
+    if !is_within(hq_root, &abs) {
+        return Err(format!("path escapes the HQ folder: {rel_path:?}"));
+    }
+    if !abs.is_dir() {
+        return Err(format!("directory not found: {rel_path:?}"));
+    }
+
+    let entries =
+        std::fs::read_dir(&abs).map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
+    let mut out: Vec<DirEntry> = Vec::new();
+    for entry in entries.flatten() {
+        let name = match entry.file_name().into_string() {
+            Ok(n) => n,
+            // Non-UTF-8 names can't round-trip through the JSON contract — skip.
+            Err(_) => continue,
+        };
+        let child_abs = entry.path();
+        let is_dir = child_abs.is_dir();
+        if is_dev_noise(&name, is_dir) {
+            continue;
+        }
+        let child_rel = if rel.is_empty() || rel == "." {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        // Cheap one-level peek so the UI knows whether to show an expand
+        // chevron — does NOT recurse, so a giant subtree is never walked here.
+        let has_children = is_dir && dir_has_visible_children(&child_abs);
+        out.push(DirEntry {
+            name,
+            path: child_rel,
+            is_dir,
+            has_children,
+        });
+    }
+    // Directories before files, each group case-insensitive alphabetical.
+    out.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    Ok(out)
+}
+
+/// True if directory `abs` has at least one child that survives the dev-noise
+/// filter. A single-level peek (no recursion) used only to decide whether to
+/// render an expand affordance.
+fn dir_has_visible_children(abs: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(abs) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let is_dir = entry.path().is_dir();
+        if !is_dev_noise(&name, is_dir) {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -3314,6 +3432,127 @@ mod tests {
                 read_file_content_capped(&root, "companies/test/ok.txt", 4).unwrap(),
                 "abcd"
             );
+        }
+
+        // ---- list_hq_dir / list_dir_entries (US-010) ----------------------
+
+        /// Build a fixture HQ root with the canonical top-level folders plus
+        /// some noise, returning the root path.
+        fn make_hq_root(tmp: &TempDir) -> PathBuf {
+            let root = tmp.path().to_path_buf();
+            for dir in ["companies", "repos", "core", "personal", "workspace"] {
+                fs::create_dir_all(root.join(dir)).unwrap();
+            }
+            // A child under repos/ so it reports has_children.
+            fs::create_dir_all(root.join("repos").join("public").join("hq-sync")).unwrap();
+            // core/ has a file so it is non-empty too.
+            fs::write(root.join("core").join("core.yaml"), "version: 1\n").unwrap();
+            // workspace/ is empty (no visible children).
+            // Top-level noise that MUST be filtered.
+            fs::create_dir_all(root.join("node_modules")).unwrap();
+            fs::create_dir_all(root.join(".git")).unwrap();
+            fs::write(root.join(".DS_Store"), "x").unwrap();
+            // A top-level real file stays visible.
+            fs::write(root.join("README.md"), "# hq\n").unwrap();
+            root
+        }
+
+        #[test]
+        fn list_dir_entries_lists_hq_root_top_level() {
+            use super::super::list_dir_entries;
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+
+            // Empty path = HQ root.
+            let entries = list_dir_entries(&root, "").unwrap();
+            let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+
+            // Canonical top-level folders present.
+            for dir in ["companies", "repos", "core", "personal", "workspace"] {
+                assert!(names.contains(&dir), "missing top-level {dir}");
+            }
+            // Real top-level file present.
+            assert!(names.contains(&"README.md"));
+            // Noise filtered at the root.
+            assert!(!names.contains(&"node_modules"));
+            assert!(!names.contains(&".git"));
+            assert!(!names.contains(&".DS_Store"));
+
+            // Dirs sort before files (README.md last), each group alphabetical.
+            assert_eq!(
+                names,
+                vec![
+                    "companies",
+                    "core",
+                    "personal",
+                    "repos",
+                    "workspace",
+                    "README.md"
+                ]
+            );
+
+            // Only immediate children — paths are single-segment at the root.
+            for e in &entries {
+                assert!(!e.path.contains('/'), "root entry path not flat: {}", e.path);
+            }
+        }
+
+        #[test]
+        fn list_dir_entries_reports_has_children_without_recursing() {
+            use super::super::list_dir_entries;
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+
+            let entries = list_dir_entries(&root, "").unwrap();
+            let by_name = |n: &str| entries.iter().find(|e| e.name == n).unwrap();
+
+            // repos/ has a child (repos/public) → has_children true; no recursion
+            // means its own `children`/payload is not walked (DirEntry is flat).
+            assert!(by_name("repos").is_dir);
+            assert!(by_name("repos").has_children);
+            assert!(by_name("core").has_children);
+            // workspace/ is empty → no expand affordance.
+            assert!(!by_name("workspace").has_children);
+            // Files never report has_children.
+            assert!(!by_name("README.md").is_dir);
+            assert!(!by_name("README.md").has_children);
+        }
+
+        #[test]
+        fn list_dir_entries_lists_nested_path() {
+            use super::super::list_dir_entries;
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+
+            let entries = list_dir_entries(&root, "repos").unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].name, "public");
+            // Child paths are HQ-relative, forward-slash joined.
+            assert_eq!(entries[0].path, "repos/public");
+            assert!(entries[0].has_children);
+        }
+
+        #[test]
+        fn list_dir_entries_rejects_traversal_and_missing() {
+            use super::super::list_dir_entries;
+            let tmp = TempDir::new().unwrap();
+            let root = make_hq_root(&tmp);
+
+            // Traversal escapes the HQ folder.
+            let err = list_dir_entries(&root, "../../etc").unwrap_err();
+            assert!(err.contains("escapes the HQ folder"), "got: {err}");
+            // A `..` segment embedded mid-path also escapes.
+            let mid_err = list_dir_entries(&root, "repos/../../etc").unwrap_err();
+            assert!(mid_err.contains("escapes the HQ folder"), "got: {mid_err}");
+            // A leading slash is normalized to an HQ-relative segment (so an
+            // "absolute"-looking input can never read outside the HQ folder);
+            // `/etc` becomes `etc`, which simply does not exist under the root.
+            let abs_err = list_dir_entries(&root, "/etc").unwrap_err();
+            assert!(abs_err.contains("directory not found"), "got: {abs_err}");
+            // Nonexistent dir.
+            assert!(list_dir_entries(&root, "nope").is_err());
+            // A file path (not a dir) is rejected.
+            assert!(list_dir_entries(&root, "README.md").is_err());
         }
     }
 }

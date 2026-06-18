@@ -31,6 +31,95 @@ export interface FileNode {
 }
 
 /**
+ * One immediate child returned by the LAZY `list_hq_dir` command (US-010).
+ *
+ * Mirrors the Rust `DirEntry` struct (camelCase on the wire). Unlike
+ * {@link FileNode} it is NOT recursive — `list_hq_dir` returns only one
+ * directory's immediate children so the large HQ root (esp. `repos/`) is never
+ * eagerly walked. `hasChildren` lets the UI show an expand chevron for
+ * non-empty directories without fetching their contents first.
+ */
+export interface DirEntry {
+  name: string;
+  /** HQ-folder-relative, forward-slash separated (e.g. `repos/public`). */
+  path: string;
+  isDir: boolean;
+  /** Directories: true iff they hold ≥1 non-noise child. Files: always false. */
+  hasChildren: boolean;
+}
+
+/**
+ * A node in the LAZY file tree (US-010). Children are loaded on demand when a
+ * directory is first expanded; until then `loaded` is false and `children` is
+ * undefined. `hasChildren` (from the backend peek) decides whether an expand
+ * affordance renders, so empty dirs don't pretend to be expandable.
+ */
+export interface LazyNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  hasChildren: boolean;
+  /** True once this directory's children have been fetched. */
+  loaded: boolean;
+  /** Loaded children (undefined until `loaded`). */
+  children?: LazyNode[];
+}
+
+/** Convert a backend `DirEntry` into an unloaded {@link LazyNode}. Pure. */
+export function dirEntryToLazyNode(entry: DirEntry): LazyNode {
+  return {
+    name: entry.name,
+    path: entry.path,
+    isDir: entry.isDir,
+    hasChildren: entry.isDir && entry.hasChildren,
+    loaded: false,
+    children: undefined,
+  };
+}
+
+/**
+ * Compare two `DirEntry`/`LazyNode`-shaped values for display order:
+ * directories before files, then case-insensitive alphabetical by name.
+ * The backend already sorts, but sorting again keeps the UI independently
+ * correct and robust to unsorted input. Pure comparator.
+ */
+function compareEntries(
+  a: { name: string; isDir: boolean },
+  b: { name: string; isDir: boolean },
+): number {
+  if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+  return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+}
+
+/**
+ * Flatten a lazy tree (a list of sibling {@link LazyNode}s) into display order
+ * `{ node, depth }` rows. A directory's loaded children are emitted only when
+ * `isExpanded(path)` is true AND the children are present. Sorts siblings via
+ * {@link compareEntries}. Pure and side-effect-free — the UI fetches children
+ * separately (on expand) and feeds the updated tree back in.
+ */
+export function flattenLazy(
+  nodes: LazyNode[],
+  isExpanded: (path: string) => boolean,
+  depth = 0,
+): LazyRow[] {
+  const rows: LazyRow[] = [];
+  for (const node of [...nodes].sort(compareEntries)) {
+    rows.push({ node, depth });
+    if (node.isDir && isExpanded(node.path) && node.children) {
+      rows.push(...flattenLazy(node.children, isExpanded, depth + 1));
+    }
+  }
+  return rows;
+}
+
+/** One row of the flattened lazy tree, paired with its indentation depth. */
+export interface LazyRow {
+  node: LazyNode;
+  depth: number;
+}
+
+/**
  * One row in the flattened display order, paired with its indentation depth.
  * `depth` is 0 for the nodes passed in at the top level and increases by one
  * per level of nesting (used by the UI to scale padding-left).

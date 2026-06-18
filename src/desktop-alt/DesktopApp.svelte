@@ -42,7 +42,7 @@
     type LibraryTab,
     type SettingsTab,
   } from './route';
-  import { V4_CHROME_LAYOUT, sortV4CompaniesConnectedFirst } from './v4/model';
+  import { V4_CHROME_LAYOUT } from './v4/model';
   import type { HomeConflict, HomeCoreState } from './v4/home-model';
   import V4Sidebar from './v4/V4Sidebar.svelte';
   import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
@@ -229,11 +229,6 @@
   const filesSelectedPath = $derived<string | null>(
     route.kind === 'files' ? route.path ?? null : null,
   );
-  // First connected company (shared US-007 connected-first ordering) — the
-  // default active company when Files mode is entered with no slug yet.
-  const firstConnectedSlug = $derived<string | null>(
-    sortV4CompaniesConnectedFirst(shellCompanies)[0]?.slug ?? null,
-  );
   // Secondary (contextual) sidebar — only on company / library / settings
   // surfaces (SPEC section 4); null hides the column entirely.
   const secondarySidebar = $derived(
@@ -418,15 +413,25 @@
     Object.values(statsBySlug).reduce((sum, stats) => sum + stats.transferredBytes, 0),
   );
 
+  // The last non-Files route, remembered so the Files-mode exit control can
+  // return the user to where they were (default Home). Updated on every
+  // navigation AWAY from a non-files route (US-010).
+  let routeBeforeFiles = $state<DesktopRoute>({ kind: 'home' });
+
   function navigate(nextRoute: DesktopRoute) {
-    // Entering Files mode with no company yet → default to the first connected
-    // company (shared US-007 ordering). The FilesModeSidebar can still switch.
-    if (nextRoute.kind === 'files' && !nextRoute.slug) {
-      const slug = firstConnectedSlug;
-      route = slug ? { kind: 'files', slug } : nextRoute;
-      return;
+    // Remember where we were before entering Files mode so the exit control can
+    // restore it. US-010: Files now defaults to the HQ ROOT tree (no company),
+    // so a slug-less files route is the intended default — do NOT auto-pick a
+    // company; the mini list is an optional filter.
+    if (nextRoute.kind === 'files' && route.kind !== 'files') {
+      routeBeforeFiles = route;
     }
     route = nextRoute;
+  }
+
+  /** Leave Files mode, restoring the view the user came from (default Home). */
+  function exitFilesMode() {
+    navigate(routeBeforeFiles ?? { kind: 'home' });
   }
 
   // Persist Files-mode routes for reload survival (US-009). Non-files routes
@@ -1174,9 +1179,11 @@
         companies={renderCompanies}
         activeSlug={filesActiveSlug}
         selectedPath={filesSelectedPath}
-        onselectcompany={(slug) => navigate({ kind: 'files', slug })}
+        onselectcompany={(slug) =>
+          navigate({ kind: 'files', slug: slug ?? undefined })}
         onselectfile={(path) =>
           navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })}
+        onexit={exitFilesMode}
       />
     {:else}
       <V4Sidebar
@@ -1299,7 +1306,7 @@
               {:else}
                 <div class="files-empty">
                   <strong>Select a file to preview it</strong>
-                  <span>Pick a company and file from the sidebar.</span>
+                  <span>Browse the HQ files in the sidebar — or filter to a company.</span>
                 </div>
               {/if}
             </div>
