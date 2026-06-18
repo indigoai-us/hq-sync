@@ -75,6 +75,7 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
       'Messages',
       'Meetings',
       'Library',
+      'Files',
     ]);
     // Home is the initial route and the only active row.
     expect(model.nav.find((row) => row.active)?.id).toBe('home');

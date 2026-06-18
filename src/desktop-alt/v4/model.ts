@@ -19,7 +19,8 @@ export type V4NavId =
   | 'companies'
   | 'messages'
   | 'meetings'
-  | 'library';
+  | 'library'
+  | 'files';
 
 /**
  * Route shape the V4 chrome maps to an active row. `kind` is open-ended
@@ -38,6 +39,7 @@ export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'messages', label: 'Messages' },
   { id: 'meetings', label: 'Meetings' },
   { id: 'library', label: 'Library' },
+  { id: 'files', label: 'Files' },
 ];
 
 /** Chrome metrics (SPEC section 4) — exported for shell composition in US-002. */
@@ -106,8 +108,17 @@ export function v4CompanyConnected(workspace: Workspace): boolean {
  * all local-first/cloud-visible companies render directly in the sidebar; a
  * company route whose slug isn't in the list falls back to the Companies nav row.
  */
-export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
-  const settingsActive = route.kind === 'settings';
+/**
+ * Shared dedupe + connected-first + alpha sort for the COMPANIES list (US-007).
+ * Both the primary V4Sidebar (via getV4SidebarModel) and the FilesModeSidebar
+ * mini company list consume this, so their ordering matches exactly. Pass
+ * `activeSlug` to mark one row active; the dedupe keeps the first occurrence per
+ * slug and the sort is stable so the active row and survivor are untouched.
+ */
+export function sortV4CompaniesConnectedFirst(
+  workspaces: Workspace[],
+  activeSlug?: string | null,
+): V4SidebarCompanyRow[] {
   const seenCompanySlugs = new Set<string>();
 
   // Dedupe by slug (first occurrence wins), capturing the connected flag so the
@@ -122,7 +133,7 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
         slug: workspace.slug,
         label: workspace.displayName,
         tone: v4CompanyDotTone(workspace),
-        active: route.kind === 'company' && route.slug === workspace.slug,
+        active: activeSlug != null && activeSlug === workspace.slug,
       },
     });
   }
@@ -136,7 +147,16 @@ export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4Si
     return a.row.label.localeCompare(b.row.label, undefined, { sensitivity: 'base' });
   });
 
-  const companies: V4SidebarCompanyRow[] = deduped.map((entry) => entry.row);
+  return deduped.map((entry) => entry.row);
+}
+
+export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
+  const settingsActive = route.kind === 'settings';
+
+  const companies: V4SidebarCompanyRow[] = sortV4CompaniesConnectedFirst(
+    workspaces,
+    route.kind === 'company' ? route.slug : null,
+  );
 
   const companyRowActive = companies.some((row) => row.active);
   // Company route with no matching row (e.g. not connected yet) → fall back

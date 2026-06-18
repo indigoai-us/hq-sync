@@ -1,122 +1,140 @@
 import { describe, expect, it } from 'vitest';
+import {
+  COMPANY_SECTIONS,
+  getDesktopSecondarySidebar,
+} from '../../src/desktop-alt/route';
+import type { Workspace } from '../../src/lib/workspaces';
 import { readRepoFile } from './harness';
 
 /**
- * US-006 — Company "Files" surface: tree renders + a file select drives preview.
+ * US-009 — Top-level Files mode: explorer sidebar + company switcher.
  *
- * Source-contract harness (same style as file-preview.spec.ts /
- * open-in-claude-code.spec.ts). Does NOT mount components — asserts on source
- * text to lock down the end-to-end wiring contract of the Files surface so the
- * explorer and its select→preview data flow don't regress.
+ * Source-contract harness (same style as file-preview.spec.ts). Does NOT mount
+ * components — asserts on source text to lock down the Files-mode wiring so the
+ * explorer sidebar, the connected-first company switcher, and the
+ * select→preview data flow into the MAIN content area don't regress. Also
+ * verifies the per-company Files secondary-sidebar tab is GONE.
  *
- * This spec is COMPLEMENTARY to file-preview.spec.ts (US-004), which exercises
- * FilePreviewPane internals (markdown rendering, claude:// reuse, unsupported
- * placeholder). Here the focus is the PANEL-LEVEL integration the US-006
- * e2eTest calls out:
- *   1. The Files surface fetches the tree via get_company_file_tree(slug) and
- *      renders CompanyFileTree only when the tree has children.
- *   2. A file select in the tree (onselect) sets selectedPath, which drives
- *      FilePreviewPane — i.e. selecting a file shows preview content.
- *   3. The tree's onselect contract: files fire onselect(path); folders toggle
- *      expansion only (no select), so previewing is driven by file rows only.
- *   4. The Files surface is reachable: 'files' is a company tab + secondary
- *      sidebar section in route.ts (the surface exists in the IA).
+ * Covers the three US-009 e2eTests:
+ *   1. Given Files mode, when opened, the sidebar shows a connected-first
+ *      company list + a tree (not the company nav).
+ *   2. Given a company is picked in Files mode, when a file is selected, the
+ *      preview renders in the main area.
+ *   3. Given a company view, when its secondary sidebar renders, there is NO
+ *      'Files' item.
  */
 
-describe('desktop-alt company Files surface — tree + select-drives-preview (US-006)', () => {
-  const panel = readRepoFile('src/desktop-alt/panels/CompanyFilesPanel.svelte');
-  const tree = readRepoFile('src/desktop-alt/components/CompanyFileTree.svelte');
+function workspace(overrides: Partial<Workspace>): Workspace {
+  return {
+    slug: 'indigo',
+    displayName: 'Indigo',
+    kind: 'company',
+    state: 'synced',
+    cloudUid: 'cmp_1',
+    bucketName: 'bucket',
+    hasLocalFolder: true,
+    localPath: '/tmp/HQ/companies/indigo',
+    membershipStatus: 'active',
+    role: 'owner',
+    lastSyncedAt: null,
+    brokenReason: null,
+    invitedBy: null,
+    invitedAt: null,
+    ...overrides,
+  };
+}
+
+describe('desktop-alt Files mode — explorer sidebar + company switcher (US-009)', () => {
+  const sidebar = readRepoFile('src/desktop-alt/v4/FilesModeSidebar.svelte');
+  const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const route = readRepoFile('src/desktop-alt/route.ts');
+  const model = readRepoFile('src/desktop-alt/v4/model.ts');
 
   // -------------------------------------------------------------------------
-  // US-006 e2eTest: the Files surface loads the tree and renders it
+  // e2eTest 1: Files mode shows a connected-first company list + a tree
   // -------------------------------------------------------------------------
-  it('fetches the company file tree via get_company_file_tree(slug) and renders CompanyFileTree when it has children', () => {
-    // The panel imports the presentational tree component.
-    expect(panel).toContain(
+  it('FilesModeSidebar renders a connected-first company list and fetches the company tree', () => {
+    // Reuses the presentational tree component (28px fixed rows).
+    expect(sidebar).toContain(
       "import CompanyFileTree from '../components/CompanyFileTree.svelte'",
     );
-
-    // It fetches the tree for the active company slug.
-    expect(panel).toContain(
-      "invoke<FileNode>('get_company_file_tree', { slug })",
+    // Fetches the (noise-filtered) tree for the active company slug.
+    expect(sidebar).toContain("invoke<FileNode>('get_company_file_tree', { slug })");
+    // Uses the SHARED connected-first sort so ordering matches the primary
+    // sidebar (US-007), not a duplicated sort.
+    expect(sidebar).toContain(
+      "import { sortV4CompaniesConnectedFirst } from './model'",
     );
+    expect(sidebar).toContain('sortV4CompaniesConnectedFirst(companies, activeSlug)');
+    // The mini company list rows fire onselectcompany; the tree is rendered
+    // only when it has children, with loading/empty states otherwise.
+    expect(sidebar).toContain('onselectcompany?.(row.slug)');
+    expect(sidebar).toContain('<CompanyFileTree');
+    expect(sidebar).toContain('tree && tree.children.length > 0');
+    expect(sidebar).toContain('No files yet');
+  });
 
-    // The tree is rendered with the fetched root.
-    expect(panel).toContain('<CompanyFileTree');
-    expect(panel).toContain('root={tree}');
+  it('the model exports the shared connected-first sort used by both sidebars', () => {
+    expect(model).toContain('export function sortV4CompaniesConnectedFirst(');
+    // The primary sidebar model delegates to it (no duplicated sort logic).
+    expect(model).toContain('sortV4CompaniesConnectedFirst(');
+  });
 
-    // The tree only renders when there is content; otherwise the empty/loading
-    // states show (so an empty company doesn't render a bare tree).
-    expect(panel).toContain('tree && tree.children.length > 0');
-    expect(panel).toContain("No files yet");
+  it('DesktopApp swaps the primary sidebar for FilesModeSidebar in Files mode', () => {
+    expect(desktopApp).toContain(
+      "import FilesModeSidebar from './v4/FilesModeSidebar.svelte'",
+    );
+    expect(desktopApp).toContain("{#if route.kind === 'files'}");
+    expect(desktopApp).toContain('<FilesModeSidebar');
+    expect(desktopApp).toContain('activeSlug={filesActiveSlug}');
+    // Picking a company navigates to a files route for that company (clearing
+    // any selected file — no path on the company switch).
+    expect(desktopApp).toContain("onselectcompany={(slug) => navigate({ kind: 'files', slug })}");
   });
 
   // -------------------------------------------------------------------------
-  // US-006 e2eTest: selecting a file shows preview content (select→preview)
+  // e2eTest 2: selecting a file renders the preview in the MAIN content area
   // -------------------------------------------------------------------------
-  it('a file select sets selectedPath which drives FilePreviewPane (select → preview)', () => {
-    // The panel imports the preview pane.
-    expect(panel).toContain(
-      "import FilePreviewPane from '../components/FilePreviewPane.svelte'",
-    );
+  it('a file select drives the FilePreviewPane in the main content area', () => {
+    // The sidebar fires onselectfile when a tree file row is selected.
+    expect(sidebar).toContain('onselectfile?: (path: string) => void');
+    expect(sidebar).toContain('onselect={handleSelectFile}');
+    // The shell turns a file select into a files route carrying the path.
+    expect(desktopApp).toContain('onselectfile={(path) =>');
+    expect(desktopApp).toContain("navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })");
+    // The main area renders FilePreviewPane driven by the selected path, with a
+    // friendly prompt before any selection.
+    expect(desktopApp).toContain("import FilePreviewPane from './components/FilePreviewPane.svelte'");
+    expect(desktopApp).toContain('<FilePreviewPane path={filesSelectedPath}');
+    expect(desktopApp).toContain('{#if filesSelectedPath}');
+    expect(desktopApp).toContain('Select a file to preview it');
+  });
 
-    // selectedPath state drives the preview.
-    expect(panel).toContain('let selectedPath = $state<string | null>(null)');
+  it('the files route + Files nav destination exist in the IA', () => {
+    // route.ts declares the files route kind.
+    expect(route).toContain("kind: 'files'");
+    expect(route).toMatch(/kind === 'files'/);
+    // model.ts / V4_NAV_ITEMS includes Files as a primary destination.
+    expect(model).toContain("{ id: 'files', label: 'Files' }");
+    expect(model).toContain("| 'files'");
+  });
 
-    // The tree's onselect is bound to a handler that sets selectedPath.
-    expect(panel).toContain('onselect={handleSelect}');
-    expect(panel).toMatch(
-      /function handleSelect\(path: string\): void \{\s*selectedPath = path;\s*\}/,
-    );
-
-    // The preview pane is rendered with the selected path (the data flow:
-    // tree select → selectedPath → FilePreviewPane path).
-    expect(panel).toContain('path={selectedPath}');
-    expect(panel).toContain('<FilePreviewPane path={selectedPath}');
-
-    // The preview is conditional on a selection — before any select, an empty
-    // prompt shows instead of a preview.
-    expect(panel).toContain('{#if selectedPath}');
-    expect(panel).toContain('Select a file to preview it');
-
-    // The selected path is also passed back to the tree for row highlighting,
-    // closing the loop (selection is reflected in both panes).
-    expect(panel).toContain('<CompanyFileTree root={tree} onselect={handleSelect} {selectedPath} />');
+  it('Files mode survives a desktop-alt window reload via persisted route state', () => {
+    expect(desktopApp).toContain('hq-sync.desktop.route.v1');
+    expect(desktopApp).toContain('readStoredFilesRoute');
   });
 
   // -------------------------------------------------------------------------
-  // US-006 e2eTest: files drive select; folders only toggle (no preview)
+  // e2eTest 3: the company secondary sidebar has NO 'Files' item
   // -------------------------------------------------------------------------
-  it('CompanyFileTree fires onselect for file rows only — folders toggle expansion without selecting', () => {
-    // onselect is an optional callback carrying the node path.
-    expect(tree).toContain('onselect?: (path: string) => void');
-
-    // Row click routes dirs to toggle() and files to onselect() — the two are
-    // mutually exclusive (folders never fire a select, so they never preview).
-    expect(tree).toMatch(
-      /function onRowClick\(node: FileNode\): void \{[\s\S]*if \(node\.isDir\) \{[\s\S]*toggle\(node\.path\);[\s\S]*\} else \{[\s\S]*onselect\?\.\(node\.path\);[\s\S]*\}[\s\S]*\}/,
-    );
-
-    // File rows are buttons that invoke onRowClick (the select path).
-    expect(tree).toContain('class="ft-row ft-file"');
-    expect(tree).toContain('onclick={() => onRowClick(node)}');
-
-    // The tree renders rows from the flattenTree display order (US-002 lib).
-    expect(tree).toContain(
-      "import { flattenTree, type FileNode } from '../lib/file-tree'",
-    );
-    expect(tree).toContain('flattenTree(root?.children ?? []');
-  });
-
-  // -------------------------------------------------------------------------
-  // US-006: the Files surface is reachable in the desktop-alt IA
-  // -------------------------------------------------------------------------
-  it("exposes a 'files' company tab + secondary-sidebar section so the surface is reachable", () => {
-    // 'files' is a valid company tab.
-    expect(route).toMatch(/'files'/);
-    // The Files surface is listed among the company sections (secondary sidebar)
-    // with the 'files' tab id + 'Files' label.
-    expect(route).toMatch(/id: 'files', label: 'Files'/);
+  it("the company secondary sidebar no longer exposes a 'Files' item", () => {
+    const companies = [workspace({})];
+    const secondary = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
+    expect(secondary?.surface).toBe('company');
+    expect(secondary?.items.some((item) => item.label === 'Files')).toBe(false);
+    // COMPANY_SECTIONS no longer carries the 'files' tab.
+    expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'files')).toBe(false);
+    // route.ts no longer declares the company Files section.
+    expect(route).not.toContain("{ id: 'files', label: 'Files' }");
   });
 });

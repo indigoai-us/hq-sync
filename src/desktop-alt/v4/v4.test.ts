@@ -3,6 +3,7 @@ import type { Workspace } from '../../lib/workspaces';
 import {
   getV4SidebarModel,
   getV4TitleBarModel,
+  sortV4CompaniesConnectedFirst,
   V4_NAV_ITEMS,
   v4CompanyConnected,
   v4CompanyDotTone,
@@ -63,7 +64,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
     }
   });
 
-  it('renders nav rows in the SPEC order Home/Mission Control/Companies/Messages/Meetings/Library', () => {
+  it('renders nav rows in the SPEC order Home/Mission Control/Companies/Messages/Meetings/Library/Files', () => {
     const model = getV4SidebarModel({ kind: 'home' }, workspaces);
     expect(model.nav.map((row) => row.label)).toEqual([
       'Home',
@@ -72,6 +73,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
       'Messages',
       'Meetings',
       'Library',
+      'Files',
     ]);
   });
 
@@ -252,6 +254,44 @@ describe('US-007 V4 sidebar connected-first sort', () => {
     expect(v4CompanyConnected(personal)).toBe(true);
     expect(v4CompanyConnected(company({ state: 'local-only' }))).toBe(false);
     expect(v4CompanyConnected(company({ state: 'broken' }))).toBe(false);
+  });
+});
+
+describe('US-009 Files nav row + shared connected-first sort', () => {
+  const workspaces = [
+    company({ slug: 'indigo', displayName: 'Indigo' }),
+    company({ slug: 'hpo', displayName: 'hpo' }),
+    personal,
+  ];
+
+  it('includes Files as the last primary nav row', () => {
+    expect(V4_NAV_ITEMS.at(-1)).toEqual({ id: 'files', label: 'Files' });
+  });
+
+  it('marks the Files nav row active in Files mode with exactly one active row', () => {
+    const model = getV4SidebarModel({ kind: 'files' }, workspaces);
+    expect(model.nav.filter((row) => row.active).map((row) => row.id)).toEqual(['files']);
+    expect(model.companies.every((row) => !row.active)).toBe(true);
+    expect(model.settingsActive).toBe(false);
+    expect(activeRowCount(model)).toBe(1);
+  });
+
+  it('sortV4CompaniesConnectedFirst groups connected-first, alpha within group', () => {
+    const rows = sortV4CompaniesConnectedFirst([
+      company({ slug: 'zed', displayName: 'Zed', state: 'local-only' }),
+      company({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
+      company({ slug: 'beta', displayName: 'Beta', state: 'local-only' }),
+      company({ slug: 'cloudco', displayName: 'CloudCo', state: 'cloud-only', hasLocalFolder: false }),
+      personal,
+    ]);
+    // Connected (Acme synced, CloudCo cloud-only, Personal) lead alpha; idle follow.
+    expect(rows.map((row) => row.label)).toEqual(['Acme', 'CloudCo', 'Personal', 'Beta', 'Zed']);
+    expect(rows.every((row) => !row.active)).toBe(true);
+  });
+
+  it('marks the passed activeSlug row active (the FilesModeSidebar contract)', () => {
+    const rows = sortV4CompaniesConnectedFirst(workspaces, 'hpo');
+    expect(rows.filter((row) => row.active).map((row) => row.slug)).toEqual(['hpo']);
   });
 });
 
