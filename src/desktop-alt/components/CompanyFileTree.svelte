@@ -28,9 +28,11 @@
     root: FileNode;
     /** Fired when a FILE row is activated, with its HQ-folder-relative path. */
     onselect?: (path: string) => void;
+    /** The currently-selected file path; the matching row is highlighted. */
+    selectedPath?: string | null;
   }
 
-  let { root, onselect }: Props = $props();
+  let { root, onselect, selectedPath = null }: Props = $props();
 
   // Expansion state keyed by node `path`. Held here (not derived from props) so
   // toggling persists across prop ticks within the same company session.
@@ -85,6 +87,8 @@
       <button
         type="button"
         class="ft-row ft-file"
+        class:selected={node.path === selectedPath}
+        aria-current={node.path === selectedPath ? 'true' : undefined}
         style={`padding-left: ${8 + (depth + 1) * 14}px`}
         onclick={() => onRowClick(node)}
       >
@@ -130,6 +134,13 @@
   .ft-row:hover {
     background: var(--v4-control-faint);
     color: var(--v4-text-1);
+  }
+
+  /* Selected file row — neutral emphasis (no purple, hard Indigo policy). */
+  .ft-row.selected {
+    background: var(--v4-control-bg);
+    color: var(--v4-text-1);
+    font-weight: 600;
   }
 
   .ft-label {

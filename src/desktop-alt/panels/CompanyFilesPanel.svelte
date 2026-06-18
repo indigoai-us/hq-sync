@@ -8,13 +8,17 @@
    * gate on `cloudBacked` — the prop is accepted to match the sibling panels'
    * shape but the tree exists regardless of cloud state.
    *
-   * Selecting a file is a placeholder no-op here: it only records the selected
-   * path in local `$state`. The preview pane / open-in-editor actions are US-004,
-   * so this panel intentionally imports no preview or open component.
+   * Selecting a file fetches + previews it (US-004): the tree and a
+   * `FilePreviewPane` lay out side-by-side, the preview self-fetches the file
+   * content, and the open actions (Open in Claude Code / Reveal in Finder) live
+   * in the preview header. `hqFolderPath` is loaded once here (the data owner)
+   * via `get_config` and passed down so the preview can build the claude://
+   * session folder and the absolute reveal path.
    */
   import { invoke } from '@tauri-apps/api/core';
   import type { FileNode } from '../lib/file-tree';
   import CompanyFileTree from '../components/CompanyFileTree.svelte';
+  import FilePreviewPane from '../components/FilePreviewPane.svelte';
 
   interface Props {
     slug: string;
@@ -30,8 +34,29 @@
   let loading = $state(false);
   let error = $state<string | null>(null);
   let reloadToken = $state(0);
-  // Placeholder selection only — US-004 builds the preview from this.
+  // The currently-selected file's HQ-relative path; drives the preview pane.
   let selectedPath = $state<string | null>(null);
+  // Absolute HQ root for the open actions (claude:// session folder + the
+  // absolute reveal path). Loaded once via get_config; empty until resolved.
+  let hqFolderPath = $state('');
+
+  // Load the HQ root once (mirrors SecretsPanel / ActivityPanel). Errors fall
+  // back to '' — the preview's open actions self-suppress when the root is
+  // empty, so a config-load failure degrades gracefully rather than throwing.
+  $effect(() => {
+    let cancelled = false;
+    void invoke<{ hqFolderPath?: string }>('get_config')
+      .then((config) => {
+        if (!cancelled) hqFolderPath = config.hqFolderPath ?? '';
+      })
+      .catch((err) => {
+        console.error('get_config failed:', err);
+        if (!cancelled) hqFolderPath = '';
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
 
   $effect(() => {
     reloadToken;
@@ -76,7 +101,6 @@
   }
 
   function handleSelect(path: string): void {
-    // Placeholder selection state only. US-004 wires the preview pane.
     selectedPath = path;
   }
 </script>
@@ -111,8 +135,17 @@
         {/each}
       </div>
     {:else if tree && tree.children.length > 0}
-      <div class="files-tree-wrap">
-        <CompanyFileTree root={tree} onselect={handleSelect} />
+      <div class="files-split">
+        <div class="files-tree-col">
+          <CompanyFileTree root={tree} onselect={handleSelect} {selectedPath} />
+        </div>
+        <div class="files-preview-col">
+          {#if selectedPath}
+            <FilePreviewPane path={selectedPath} {hqFolderPath} />
+          {:else}
+            <div class="preview-empty">Select a file to preview it</div>
+          {/if}
+        </div>
       </div>
     {:else if !error}
       <div class="empty-state">No files yet</div>
@@ -244,8 +277,53 @@
     white-space: nowrap;
   }
 
-  .files-tree-wrap {
+  /* Tree + preview side-by-side. Tree column is width-limited; preview flexes.
+     Both get min-width:0 and their own scroll so long content scrolls inside
+     the card rather than pushing the window wide. A bounded max-height keeps the
+     split from growing past the viewport. */
+  .files-split {
+    display: grid;
+    grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+    align-items: stretch;
+    min-width: 0;
+    max-height: min(640px, calc(100vh - 220px));
+  }
+
+  .files-tree-col {
+    min-width: 0;
     padding: 8px;
+    overflow: auto;
+    border-right: 1px solid var(--border);
+  }
+
+  .files-preview-col {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .preview-empty {
+    display: grid;
+    flex: 1 1 auto;
+    place-items: center;
+    min-height: 160px;
+    padding: 26px 13px;
+    color: var(--muted);
+    font-size: var(--text-base);
+    text-align: center;
+  }
+
+  @media (max-width: 720px) {
+    .files-split {
+      grid-template-columns: 1fr;
+      max-height: none;
+    }
+
+    .files-tree-col {
+      border-right: 0;
+      border-bottom: 1px solid var(--border);
+    }
   }
 
   .files-skeleton {
