@@ -19,6 +19,10 @@
   import LiveSessionsPanel from '../panels/LiveSessionsPanel.svelte';
   import SessionHistoryPanel from '../panels/SessionHistoryPanel.svelte';
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
+  import AgencyQuestionsPanel from '../panels/AgencyQuestionsPanel.svelte';
+  import AgencyTeamsPanel from '../panels/AgencyTeamsPanel.svelte';
+  import AgencyChatPanel from '../panels/AgencyChatPanel.svelte';
+  import { startAgencyStore } from '../lib/agency-store.svelte';
   import type { SessionStatus } from '../lib/sessions';
 
   /**
@@ -31,6 +35,8 @@
   onMount(() => {
     // Lifetime singleton; idempotent. Starting here makes the page self-sufficient.
     startSessionsStore();
+    // Agency teams + answerable questions surface (see AgencyQuestionsPanel).
+    startAgencyStore();
   });
 
   // Live per-status counts off the store, for the summary strip. Derived so a
@@ -94,6 +100,15 @@
       </div>
     {/each}
   </div>
+
+  <!-- Agency teams + answerable questions (mirror alongside the liaison). -->
+  <div class="mc-agency">
+    <div class="mc-col mc-agency-q" aria-label="Agency questions"><AgencyQuestionsPanel /></div>
+    <div class="mc-col mc-agency-t" aria-label="Agency teams"><AgencyTeamsPanel /></div>
+  </div>
+
+  <!-- Manager ⇄ Liaison conversation + operator composer (decision context). -->
+  <div class="mc-col mc-agency-chat" aria-label="Agency conversation"><AgencyChatPanel /></div>
 
   <div class="mc-columns">
     <!-- US-007: LiveSessionsPanel renders into .mc-live-mount, subscribing to the
@@ -196,6 +211,17 @@
     background: var(--v4-idle);
   }
 
+  /* Agency row — questions (wider) left, teams right. */
+  .mc-agency {
+    display: flex;
+    gap: 18px;
+  }
+  .mc-agency-q { flex: 3 1 0; }
+  .mc-agency-t { flex: 2 1 0; }
+
+  /* Manager ⇄ Liaison conversation — full width below the agency row. */
+  .mc-agency-chat { display: flex; flex-direction: column; }
+
   /* Two columns — Live (flex-grow 5) left, History (flex-grow 3) right. */
   .mc-columns {
     display: flex;
@@ -230,6 +256,10 @@
     }
 
     .mc-columns {
+      flex-direction: column;
+    }
+
+    .mc-agency {
       flex-direction: column;
     }
   }

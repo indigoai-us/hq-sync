@@ -315,6 +315,12 @@ fn main() {
             commands::sessions::claude::list_local_claude_sessions,
             commands::sessions::codex::list_local_codex_sessions,
             commands::sessions::history::list_session_history,
+            // Mission Control — agency teams + answerable questions (read + answer).
+            commands::agency::list_agency_teams,
+            commands::agency::list_agency_questions,
+            commands::agency::answer_agency_question,
+            commands::agency::list_agency_chat,
+            commands::agency::send_agency_message,
             commands::meetings::meetings_feature_enabled,
             commands::desktop_alt::desktop_alt_enabled,
             commands::desktop_alt::desktop_alt_is_admin,
