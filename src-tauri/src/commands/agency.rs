@@ -44,6 +44,12 @@ pub struct AgencyWorker {
     pub status: String,
     /// True once the worker has posted its `type:"ready"` handshake to its inbox.
     pub ready: bool,
+    /// ISO `started_at` from `status.json` — when the worker was last spawned;
+    /// empty when absent. Drives the "up 12m" uptime label.
+    pub started_at: String,
+    /// ISO `updated_at` from `status.json` — last status write for this worker;
+    /// empty when absent. Drives the "seen 30s ago" freshness label.
+    pub updated_at: String,
 }
 
 /// One running agency team.
@@ -66,6 +72,9 @@ pub struct AgencyQuestion {
     pub id: String,
     pub question: String,
     pub ts: String,
+    /// Bounded answer choices the manager attached to the ASK (`"options"` on the
+    /// chat line); empty for a free-text question. Rendered as one-tap answer chips.
+    pub options: Vec<String>,
 }
 
 // ---- POSIX cksum (the [ans:<id>] dedup key the liaison uses) ----------------
@@ -103,6 +112,24 @@ fn cksum(bytes: &[u8]) -> u32 {
 }
 
 // ---- helpers ---------------------------------------------------------------
+
+/// Bounded answer choices the manager attached to an ASK line (`"options"` — an
+/// array of strings). Empty when the field is absent, not an array, or carries
+/// no non-blank string entries — i.e. a free-text question. Mirrors how the
+/// producer (`agency.sh ask --option …`) writes them, and is forward-compatible:
+/// older ASK lines with no `options` key simply yield `[]`.
+fn parse_options(line: &serde_json::Value) -> Vec<String> {
+    line.get("options")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 fn resolve_hq_folder() -> PathBuf {
     let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
@@ -212,18 +239,21 @@ pub async fn list_agency_teams() -> Result<Vec<AgencyTeam>, String> {
                 let wdir = tdir.join(&worker);
                 for instance in child_dirs(&wdir) {
                     let inbox = wdir.join(&instance).join("chat.jsonl");
-                    let st = status
-                        .get(&worker)
-                        .and_then(|w| w.get(&instance))
-                        .and_then(|i| i.get("status"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string();
+                    let wstat = status.get(&worker).and_then(|w| w.get(&instance));
+                    let field = |key: &str, default: &str| {
+                        wstat
+                            .and_then(|i| i.get(key))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(default)
+                            .to_string()
+                    };
                     workers.push(AgencyWorker {
                         worker: worker.clone(),
-                        instance,
-                        status: st,
                         ready: inbox_ready(&inbox),
+                        status: field("status", "unknown"),
+                        started_at: field("started_at", ""),
+                        updated_at: field("updated_at", ""),
+                        instance,
                     });
                 }
             }
@@ -265,6 +295,7 @@ pub async fn list_agency_questions() -> Result<Vec<AgencyQuestion>, String> {
                                 id,
                                 question: q.to_string(),
                                 ts: o.get("ts").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                                options: parse_options(&o),
                             });
                         }
                     }
@@ -337,5 +368,23 @@ mod tests {
         assert_eq!(cksum(b"test"), 3_076_352_578);
         assert_eq!(cksum(b"Approve deploy to prod?"), 1_221_633_456);
         assert_eq!(cksum(b"Deploy nick to prod & resolve #1234?"), 2_811_623_944);
+    }
+
+    #[test]
+    fn parse_options_reads_string_array() {
+        // Trims, drops blanks + non-strings, preserves order.
+        let line = serde_json::json!({
+            "text": "ASK: Deploy?",
+            "options": ["Ship it", "  Hold  ", "", "   ", 42, true]
+        });
+        assert_eq!(parse_options(&line), vec!["Ship it".to_string(), "Hold".to_string()]);
+    }
+
+    #[test]
+    fn parse_options_absent_or_malformed_is_empty() {
+        // No key, wrong type, and all-blank all collapse to a free-text question.
+        assert!(parse_options(&serde_json::json!({"text": "ASK: x"})).is_empty());
+        assert!(parse_options(&serde_json::json!({"options": "yes/no"})).is_empty());
+        assert!(parse_options(&serde_json::json!({"options": ["", "  "]})).is_empty());
     }
 }

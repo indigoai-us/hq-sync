@@ -7,7 +7,7 @@
    * either side from double-answering.
    */
   import { agencyStore, submitAnswer } from '../lib/agency-store.svelte';
-  import type { AgencyQuestion } from '../lib/agency';
+  import { relativeTime, type AgencyQuestion } from '../lib/agency';
 
   let drafts = $state<Record<string, string>>({});
   let busy = $state<Record<string, boolean>>({});
@@ -15,12 +15,13 @@
 
   const questions = $derived(agencyStore.questions);
 
-  async function send(q: AgencyQuestion) {
-    const answer = (drafts[q.id] ?? '').trim();
-    if (!answer || busy[q.id]) return;
+  /** Deliver `answer` for `q` (shared by the option chips and the free-text box). */
+  async function deliver(q: AgencyQuestion, answer: string) {
+    const text = answer.trim();
+    if (!text || busy[q.id]) return;
     busy = { ...busy, [q.id]: true };
     try {
-      const res = await submitAnswer(q, answer);
+      const res = await submitAnswer(q, text);
       note = { ...note, [q.id]: res === 'already-answered' ? 'Already answered' : 'Sent ✓' };
       drafts = { ...drafts, [q.id]: '' };
     } catch (err) {
@@ -31,10 +32,12 @@
     }
   }
 
+  const send = (q: AgencyQuestion) => void deliver(q, drafts[q.id] ?? '');
+
   function onKey(e: KeyboardEvent, q: AgencyQuestion) {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
-      void send(q);
+      send(q);
     }
   }
 </script>
@@ -51,12 +54,22 @@
     <ul class="qlist">
       {#each questions as q (q.company + '/' + q.team + '/' + q.id)}
         <li class="qcard">
-          <div class="qmeta"><span class="team">{q.company}/{q.team}</span></div>
+          <div class="qmeta">
+            <span class="team">{q.company}/{q.team}</span>
+            {#if q.ts}<span class="age" title={q.ts}>{relativeTime(q.ts)}</span>{/if}
+          </div>
           <p class="qtext">{q.question}</p>
+          {#if q.options.length}
+            <div class="qopts" role="group" aria-label="Suggested answers">
+              {#each q.options as opt (opt)}
+                <button class="opt" onclick={() => deliver(q, opt)} disabled={busy[q.id]}>{opt}</button>
+              {/each}
+            </div>
+          {/if}
           <div class="qanswer">
             <textarea
               rows="2"
-              placeholder="Your answer… (⌘↵ to send)"
+              placeholder={q.options.length ? 'Or type a custom answer… (⌘↵)' : 'Your answer… (⌘↵ to send)'}
               bind:value={drafts[q.id]}
               onkeydown={(e) => onKey(e, q)}
             ></textarea>
@@ -104,13 +117,28 @@
     padding: 12px;
     display: flex; flex-direction: column; gap: 8px;
   }
+  .qmeta { display: flex; align-items: baseline; gap: 8px; }
   .qmeta .team {
     color: var(--v4-text-3);
     font-size: var(--text-base);
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
+  .qmeta .age { color: var(--v4-text-3); font-size: var(--text-base); margin-left: auto; }
   .qtext { margin: 0; color: var(--v4-text-1); font-size: var(--text-base); line-height: 1.35; }
+  .qopts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opt {
+    border: 1px solid var(--v4-hairline);
+    border-radius: 999px;
+    background: var(--v4-raised);
+    color: var(--v4-text-1);
+    font: inherit;
+    font-size: var(--text-base);
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  .opt:hover { border-color: var(--v4-ok); }
+  .opt:disabled { opacity: 0.45; cursor: default; }
   .qanswer { display: flex; flex-direction: column; gap: 8px; }
   textarea {
     width: 100%;
