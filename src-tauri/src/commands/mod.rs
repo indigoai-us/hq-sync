@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod agency;
 pub mod app;
 pub mod auth;
 pub mod autostart;
