@@ -1739,14 +1739,64 @@ fn lexically_normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// Curated dev-noise exclusion set for the local file explorer.
+///
+/// These entry names are filtered out at **every level** of the tree so users
+/// see meaningful company content instead of build/dependency/artifact noise.
+/// This is the single source of truth for the filter — extend this list (and
+/// `is_dev_noise` for pattern-based rules like dot-directories) to hide more.
+///
+/// Deliberately NOT excluded: `settings/`, `data/`, `workers/` — those are real
+/// company content and stay visible in this local-only read viewer (only noise
+/// is filtered, never company content; see PRD US-008). Dotfiles that are NOT
+/// dot-*directories* (e.g. `.gitignore`, `.env.example`) also stay visible.
+const DEV_NOISE_NAMES: &[&str] = &[
+    // VCS / dependency / build / artifact directories.
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    ".next",
+    ".svelte-kit",
+    ".turbo",
+    ".vercel",
+    ".cache",
+    "coverage",
+    // OS cruft.
+    ".DS_Store",
+    "Thumbs.db",
+    // Lockfiles.
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "Cargo.lock",
+];
+
+/// True if a directory entry named `name` (with `is_dir` set for directories)
+/// is curated dev noise that the explorer should hide at every level.
+///
+/// Matches the explicit [`DEV_NOISE_NAMES`] set, plus any *dot-directory*
+/// (a directory whose name starts with `.`). Dot-*files* are intentionally kept
+/// (e.g. `.gitignore`, `.env.example`) — only dot-directories are swept, since
+/// they are overwhelmingly tooling/cache state rather than authored content.
+fn is_dev_noise(name: &str, is_dir: bool) -> bool {
+    if DEV_NOISE_NAMES.contains(&name) {
+        return true;
+    }
+    // Other dot-directories (e.g. `.idea`, `.pytest_cache`) are noise too.
+    is_dir && name.starts_with('.')
+}
+
 /// Build a nested file tree rooted at `companies/<slug>/` for the local file
 /// explorer.
 ///
-/// Visibility per product decision is **everything except any `.git/`
-/// directory** at every level — this is a local viewer, NOT the sync surface,
-/// so `settings/`, `data/`, and `workers/` ARE included (the sync ignore filter
-/// is deliberately not applied here). Directories sort before files, each group
-/// alphabetically (case-insensitive). Files have an empty `children` vec.
+/// Visibility per product decision is **everything except curated dev noise**
+/// ([`DEV_NOISE_NAMES`] + dot-directories) at every level — this is a local
+/// viewer, NOT the sync surface, so `settings/`, `data/`, and `workers/` ARE
+/// included (the sync ignore filter is deliberately not applied here).
+/// Directories sort before files, each group alphabetically (case-insensitive).
+/// Files have an empty `children` vec.
 #[tauri::command]
 pub async fn get_company_file_tree(slug: String) -> Result<FileNode, String> {
     if !crate::util::feature_gate::desktop_features_enabled().await {
@@ -1792,11 +1842,12 @@ fn build_node(abs: &Path, name: String, rel_path: String) -> Result<FileNode, St
                 // contract — skip them rather than fail the whole tree.
                 Err(_) => continue,
             };
-            // Exclude .git directories at every level.
-            if child_name == ".git" {
+            let child_abs = entry.path();
+            // Exclude curated dev noise (deps/build/artifacts/OS cruft/lockfiles
+            // and dot-directories) at every level — keeps the tree meaningful.
+            if is_dev_noise(&child_name, child_abs.is_dir()) {
                 continue;
             }
-            let child_abs = entry.path();
             let child_rel = format!("{rel_path}/{child_name}");
             children.push(build_node(&child_abs, child_name, child_rel)?);
         }
@@ -3041,6 +3092,141 @@ mod tests {
                 }
             }
             assert_no_git_name(&tree);
+        }
+
+        #[test]
+        fn is_dev_noise_classifies_correctly() {
+            use super::super::is_dev_noise;
+            // Explicit noise dirs.
+            assert!(is_dev_noise("node_modules", true));
+            assert!(is_dev_noise(".git", true));
+            assert!(is_dev_noise("dist", true));
+            assert!(is_dev_noise("build", true));
+            assert!(is_dev_noise("target", true));
+            assert!(is_dev_noise(".next", true));
+            assert!(is_dev_noise(".svelte-kit", true));
+            assert!(is_dev_noise(".turbo", true));
+            assert!(is_dev_noise(".vercel", true));
+            assert!(is_dev_noise(".cache", true));
+            assert!(is_dev_noise("coverage", true));
+            // Lockfiles + OS cruft (files).
+            assert!(is_dev_noise("package-lock.json", false));
+            assert!(is_dev_noise("pnpm-lock.yaml", false));
+            assert!(is_dev_noise("yarn.lock", false));
+            assert!(is_dev_noise("Cargo.lock", false));
+            assert!(is_dev_noise(".DS_Store", false));
+            assert!(is_dev_noise("Thumbs.db", false));
+            // Any other dot-directory is noise.
+            assert!(is_dev_noise(".idea", true));
+            assert!(is_dev_noise(".pytest_cache", true));
+            // NOT noise: company content + dot-FILES (kept) + normal files.
+            assert!(!is_dev_noise("settings", true));
+            assert!(!is_dev_noise("data", true));
+            assert!(!is_dev_noise("workers", true));
+            assert!(!is_dev_noise("README.md", false));
+            assert!(!is_dev_noise("policies", true));
+            assert!(!is_dev_noise(".gitignore", false));
+            assert!(!is_dev_noise(".env.example", false));
+        }
+
+        #[test]
+        fn build_file_tree_excludes_dev_noise_keeps_content() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let company = root.join("companies").join("test");
+
+            // --- Dev noise that MUST be filtered (top-level + nested). ---
+            for dir in [
+                "node_modules",
+                "dist",
+                "build",
+                "target",
+                ".next",
+                ".svelte-kit",
+                ".turbo",
+                ".vercel",
+                ".cache",
+                "coverage",
+                ".idea",
+            ] {
+                fs::create_dir_all(company.join(dir)).unwrap();
+                fs::write(company.join(dir).join("noise.txt"), "x").unwrap();
+            }
+            for file in [
+                "package-lock.json",
+                "pnpm-lock.yaml",
+                "yarn.lock",
+                "Cargo.lock",
+                ".DS_Store",
+                "Thumbs.db",
+            ] {
+                fs::write(company.join(file), "x").unwrap();
+            }
+            // Nested noise under a real content dir must also be filtered.
+            fs::create_dir_all(company.join("projects").join("node_modules")).unwrap();
+            fs::write(
+                company
+                    .join("projects")
+                    .join("node_modules")
+                    .join("dep.js"),
+                "x",
+            )
+            .unwrap();
+
+            // --- Company content that MUST stay visible. ---
+            fs::write(company.join("README.md"), "# readme\n").unwrap();
+            fs::write(company.join(".gitignore"), "node_modules\n").unwrap();
+            fs::create_dir_all(company.join("settings")).unwrap();
+            fs::write(company.join("settings").join("vault.json"), "{}").unwrap();
+            fs::create_dir_all(company.join("data")).unwrap();
+            fs::write(company.join("data").join("rows.csv"), "a,b\n").unwrap();
+            fs::create_dir_all(company.join("workers")).unwrap();
+            fs::write(company.join("workers").join("w.md"), "worker").unwrap();
+            fs::create_dir_all(company.join("projects")).unwrap();
+            fs::write(company.join("projects").join("prd.json"), "{}").unwrap();
+
+            let tree = build_file_tree(&root, "test").unwrap();
+            let mut paths = Vec::new();
+            collect_paths(&tree, &mut paths);
+
+            // Noise dirs/files absent at every level.
+            for noise in [
+                "node_modules",
+                "dist",
+                "build",
+                "target",
+                ".next",
+                ".svelte-kit",
+                ".turbo",
+                ".vercel",
+                ".cache",
+                "coverage",
+                ".idea",
+                "package-lock.json",
+                "pnpm-lock.yaml",
+                "yarn.lock",
+                "Cargo.lock",
+                ".DS_Store",
+                "Thumbs.db",
+            ] {
+                assert!(
+                    !paths.iter().any(|p| p.contains(&format!("/{noise}"))),
+                    "dev noise leaked into tree: {noise}"
+                );
+            }
+            // Nested node_modules gone too.
+            assert!(
+                !paths.contains(&"companies/test/projects/node_modules/dep.js"),
+                "nested node_modules leaked"
+            );
+
+            // Real content present.
+            assert!(paths.contains(&"companies/test/README.md"));
+            assert!(paths.contains(&"companies/test/.gitignore"));
+            assert!(paths.contains(&"companies/test/settings/vault.json"));
+            assert!(paths.contains(&"companies/test/data/rows.csv"));
+            assert!(paths.contains(&"companies/test/workers/w.md"));
+            assert!(paths.contains(&"companies/test/projects/prd.json"));
         }
 
         #[test]
