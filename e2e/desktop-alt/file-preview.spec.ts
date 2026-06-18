@@ -20,8 +20,9 @@ import { readRepoFile } from './harness';
  *      triggers the catch path, which drives the unsupported state).
  *   5. Reveal in Finder uses plugin-shell open() (shell:allow-open grant) for
  *      reveal only — it is not used for Open-in-Claude-Code.
- *   6. CompanyFilesPanel imports FilePreviewPane and lays tree + preview
- *      side-by-side (two-column grid layout).
+ *   6. Files mode wires the tree + preview: FilesModeSidebar owns the tree and
+ *      file select, DesktopApp renders FilePreviewPane in the main area driven
+ *      by the selected path (US-009 moved this off the per-company panel).
  *   7. CompanyFileTree accepts selectedPath prop and highlights the selected
  *      row with .selected + aria-current="true".
  *   8. No purple and no hardcoded hex in FilePreviewPane's <style> block.
@@ -31,9 +32,10 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
   const preview = readRepoFile(
     'src/desktop-alt/components/FilePreviewPane.svelte',
   );
-  const panel = readRepoFile(
-    'src/desktop-alt/panels/CompanyFilesPanel.svelte',
+  const sidebar = readRepoFile(
+    'src/desktop-alt/v4/FilesModeSidebar.svelte',
   );
+  const desktopApp = readRepoFile('src/desktop-alt/DesktopApp.svelte');
   const tree = readRepoFile(
     'src/desktop-alt/components/CompanyFileTree.svelte',
   );
@@ -195,33 +197,30 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
   });
 
   // -------------------------------------------------------------------------
-  // Additional acceptance criteria: CompanyFilesPanel two-column layout
+  // Additional acceptance criteria (US-009): Files mode wires tree → preview
+  // The tree lives in the explorer sidebar; the preview fills the MAIN area.
   // -------------------------------------------------------------------------
-  it('CompanyFilesPanel imports FilePreviewPane and renders tree + preview in a two-column grid', () => {
-    // Imports both components.
-    expect(panel).toContain(
+  it('Files mode wires the tree (sidebar) and FilePreviewPane (main area) via the selected path', () => {
+    // The explorer sidebar owns the tree + file select.
+    expect(sidebar).toContain(
       "import CompanyFileTree from '../components/CompanyFileTree.svelte'",
     );
-    expect(panel).toContain(
-      "import FilePreviewPane from '../components/FilePreviewPane.svelte'",
+    expect(sidebar).toContain('<CompanyFileTree');
+    expect(sidebar).toContain('onselectfile?: (path: string) => void');
+
+    // The shell renders FilePreviewPane in the main content area, driven by the
+    // route-carried selected path + the loaded HQ root.
+    expect(desktopApp).toContain(
+      "import FilePreviewPane from './components/FilePreviewPane.svelte'",
     );
+    expect(desktopApp).toContain('<FilePreviewPane path={filesSelectedPath}');
+    expect(desktopApp).toContain('hqFolderPath={hqFolderPath ?? \'\'}');
 
-    // Renders both.
-    expect(panel).toContain('<CompanyFileTree');
-    expect(panel).toContain('<FilePreviewPane');
-
-    // FilePreviewPane receives selectedPath and hqFolderPath.
-    expect(panel).toContain('path={selectedPath}');
-    expect(panel).toContain('{hqFolderPath}');
-
-    // hqFolderPath loaded via get_config (same pattern as SecretsPanel).
-    expect(panel).toContain("invoke<{ hqFolderPath?: string }>('get_config')");
-
-    // Two-column grid layout (tree col + preview col side-by-side).
-    expect(panel).toContain('grid-template-columns');
-    expect(panel).toContain('files-split');
-    expect(panel).toContain('class="files-tree-col"');
-    expect(panel).toContain('class="files-preview-col"');
+    // A file select flows: tree onselect → onselectfile → files route path.
+    expect(desktopApp).toContain('onselectfile={(path) =>');
+    expect(desktopApp).toContain(
+      "navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })",
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -252,11 +251,15 @@ describe('desktop-alt file preview pane + open actions (US-004 file-explorer)', 
     expect(styleBlock.toLowerCase()).not.toContain('purple');
   });
 
-  it('CompanyFilesPanel style block is token-driven — no hardcoded hex colors', () => {
-    const styleBlock = panel.split('<style>')[1] ?? '';
+  it('FilesModeSidebar style block is token-driven — no hardcoded hex colors (except the mask sentinel)', () => {
+    const styleBlock = sidebar.split('<style>')[1] ?? '';
 
-    // The panel may use rgba() for amber error state (design-approved) but
-    // must not use plain #hex color literals.
-    expect(styleBlock).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+    // No purple anywhere (hard Indigo policy).
+    expect(styleBlock.toLowerCase()).not.toContain('purple');
+
+    // The only #hex allowed is the opaque mask sentinel (#000) used by the
+    // name fade-out mask — same pattern as V4Sidebar. No other hex literals.
+    const hexMatches = styleBlock.match(/#[0-9a-fA-F]{3,8}\b/g) ?? [];
+    expect(hexMatches.every((hex) => hex === '#000')).toBe(true);
   });
 });

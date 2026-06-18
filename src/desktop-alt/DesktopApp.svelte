@@ -42,9 +42,11 @@
     type LibraryTab,
     type SettingsTab,
   } from './route';
-  import { V4_CHROME_LAYOUT } from './v4/model';
+  import { V4_CHROME_LAYOUT, sortV4CompaniesConnectedFirst } from './v4/model';
   import type { HomeConflict, HomeCoreState } from './v4/home-model';
   import V4Sidebar from './v4/V4Sidebar.svelte';
+  import FilesModeSidebar from './v4/FilesModeSidebar.svelte';
+  import FilePreviewPane from './components/FilePreviewPane.svelte';
   import V4SecondarySidebar from './v4/V4SecondarySidebar.svelte';
   import { open as openExternal } from '@tauri-apps/plugin-shell';
   import { companyConsoleUrl } from './lib/hq-console';
@@ -76,6 +78,25 @@
   import './styles/desktop-alt.css';
 
   const WORKSPACE_CACHE_KEY = 'hq-sync.desktop.workspaces.v1';
+  const ROUTE_CACHE_KEY = 'hq-sync.desktop.route.v1';
+
+  // Reload survival for Files mode (US-009): persist the files route so a
+  // desktop-alt window reload returns to the same company + selected file. Only
+  // Files-mode routes are persisted; the backend pending-route always wins on
+  // mount (read below), so this is a fallback, not a competitor.
+  function readStoredFilesRoute(): DesktopRoute | null {
+    try {
+      const raw = window.localStorage.getItem(ROUTE_CACHE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.kind !== 'files') return null;
+      const slug = typeof parsed.slug === 'string' ? parsed.slug : undefined;
+      const path = typeof parsed.path === 'string' ? parsed.path : undefined;
+      return { kind: 'files', slug, path };
+    } catch {
+      return null;
+    }
+  }
 
   function readCachedWorkspaces(): Workspace[] {
     try {
@@ -199,6 +220,20 @@
   const companyTab = $derived<CompanyTab>(
     route.kind === 'company' ? route.tab ?? DEFAULT_COMPANY_TAB : DEFAULT_COMPANY_TAB,
   );
+  // Files mode (US-009): the active company + selected file live IN THE ROUTE,
+  // so they survive a reload (persisted below) and reactive updates don't
+  // remount the shell (routeKey is 'files' regardless of slug/path).
+  const filesActiveSlug = $derived<string | null>(
+    route.kind === 'files' ? route.slug ?? null : null,
+  );
+  const filesSelectedPath = $derived<string | null>(
+    route.kind === 'files' ? route.path ?? null : null,
+  );
+  // First connected company (shared US-007 connected-first ordering) — the
+  // default active company when Files mode is entered with no slug yet.
+  const firstConnectedSlug = $derived<string | null>(
+    sortV4CompaniesConnectedFirst(shellCompanies)[0]?.slug ?? null,
+  );
   // Secondary (contextual) sidebar — only on company / library / settings
   // surfaces (SPEC section 4); null hides the column entirely.
   const secondarySidebar = $derived(
@@ -320,6 +355,12 @@
       }),
     ),
     {
+      id: 'command-go-files',
+      label: 'Go to Files',
+      detail: 'Browse a company vault and preview files',
+      action: () => navigate({ kind: 'files' }),
+    },
+    {
       id: 'command-go-settings',
       label: 'Go to Settings',
       detail: 'Sync preferences and account',
@@ -378,8 +419,32 @@
   );
 
   function navigate(nextRoute: DesktopRoute) {
+    // Entering Files mode with no company yet → default to the first connected
+    // company (shared US-007 ordering). The FilesModeSidebar can still switch.
+    if (nextRoute.kind === 'files' && !nextRoute.slug) {
+      const slug = firstConnectedSlug;
+      route = slug ? { kind: 'files', slug } : nextRoute;
+      return;
+    }
     route = nextRoute;
   }
+
+  // Persist Files-mode routes for reload survival (US-009). Non-files routes
+  // clear the stored entry so a stale files route can't strand a later reload.
+  $effect(() => {
+    try {
+      if (route.kind === 'files') {
+        window.localStorage.setItem(
+          ROUTE_CACHE_KEY,
+          JSON.stringify({ kind: 'files', slug: route.slug, path: route.path }),
+        );
+      } else {
+        window.localStorage.removeItem(ROUTE_CACHE_KEY);
+      }
+    } catch {
+      // Best-effort persistence only.
+    }
+  });
 
   function hydrateMeetingStatus() {
     const snapshot = loadMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>();
@@ -821,6 +886,14 @@
         const pendingRoute = resolvePendingDesktopRoute(pending);
         if (mounted && pendingRoute) {
           navigate(pendingRoute);
+          return;
+        }
+        // No backend pending route — restore a persisted Files-mode route so a
+        // desktop-alt window reload returns to the same company + file (US-009).
+        // Backend pending always takes priority (handled above).
+        const stored = readStoredFilesRoute();
+        if (mounted && stored) {
+          navigate(stored);
         }
       })
       .catch(() => undefined);
@@ -1096,11 +1169,22 @@
   />
 
   <div class="desktop-body">
-    <V4Sidebar
-      {route}
-      companies={renderCompanies}
-      onnavigate={(next) => navigate(fromV4Route(next))}
-    />
+    {#if route.kind === 'files'}
+      <FilesModeSidebar
+        companies={renderCompanies}
+        activeSlug={filesActiveSlug}
+        selectedPath={filesSelectedPath}
+        onselectcompany={(slug) => navigate({ kind: 'files', slug })}
+        onselectfile={(path) =>
+          navigate({ kind: 'files', slug: filesActiveSlug ?? undefined, path })}
+      />
+    {:else}
+      <V4Sidebar
+        {route}
+        companies={renderCompanies}
+        onnavigate={(next) => navigate(fromV4Route(next))}
+      />
+    {/if}
 
     {#if secondarySidebar}
       <V4SecondarySidebar
@@ -1208,6 +1292,17 @@
                 </div>
               </section>
             {/if}
+          {:else if route.kind === 'files'}
+            <div class="files-main">
+              {#if filesSelectedPath}
+                <FilePreviewPane path={filesSelectedPath} hqFolderPath={hqFolderPath ?? ''} />
+              {:else}
+                <div class="files-empty">
+                  <strong>Select a file to preview it</strong>
+                  <span>Pick a company and file from the sidebar.</span>
+                </div>
+              {/if}
+            </div>
           {:else if activeCompany}
             <div class="page">
               <CompanyPage
@@ -1276,6 +1371,40 @@
     width: 100%;
     height: 100%;
     min-height: 0;
+  }
+
+  /* Files mode main area: full-height host so the preview pane fills it and
+     scrolls internally (no floating card around it — the prior overlap bug). */
+  .files-main {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .files-empty {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-height: 0;
+    padding: 40px 16px;
+    text-align: center;
+  }
+
+  .files-empty strong {
+    color: var(--v4-text-1);
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+
+  .files-empty span {
+    color: var(--v4-text-3);
+    font-size: var(--text-base);
+    line-height: 1.4;
   }
 
   /* Transient confirmation for the hq-* palette actions (Deploy / Share / Run a

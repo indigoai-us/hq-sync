@@ -105,7 +105,6 @@ describe('US-002 V4 desktop routes', () => {
       'deployments',
       'secrets',
       'library',
-      'files',
     ]);
   });
 
@@ -263,7 +262,6 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
       'Deployments',
       'Secrets',
       'Library',
-      'Files',
     ]);
     expect(model?.activeId).toBe('overview');
     expect(model?.footer).toEqual({
@@ -334,6 +332,52 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
     ] as const) {
       expect(getDesktopSecondarySidebar({ kind }, companies)).toBeNull();
     }
+  });
+});
+
+describe('US-009 top-level Files mode', () => {
+  const companies = [company({ slug: 'indigo', displayName: 'Indigo', state: 'synced' })];
+
+  it('resolves the files pending-route, with and without a slug + path', () => {
+    expect(resolvePendingDesktopRoute('files')).toEqual({ kind: 'files' });
+    expect(resolvePendingDesktopRoute('files:indigo')).toEqual({ kind: 'files', slug: 'indigo' });
+    // File paths contain '/', which the normaliser turns into ':'. The path
+    // remainder after the slug must survive intact (restored to slashes).
+    expect(resolvePendingDesktopRoute('files:indigo:companies/indigo/a.md')).toEqual({
+      kind: 'files',
+      slug: 'indigo',
+      path: 'companies/indigo/a.md',
+    });
+  });
+
+  it('keys Files mode on its kind only so company/file changes never remount the shell', () => {
+    expect(getDesktopRouteKey({ kind: 'files' })).toBe('files');
+    expect(getDesktopRouteKey({ kind: 'files', slug: 'indigo' })).toBe('files');
+    expect(getDesktopRouteKey({ kind: 'files', slug: 'indigo', path: 'a/b.md' })).toBe('files');
+  });
+
+  it('treats every Files-mode route as the same active destination', () => {
+    const route: DesktopRoute = { kind: 'files', slug: 'indigo', path: 'a/b.md' };
+    expect(isDesktopRouteActive(route, { kind: 'files' })).toBe(true);
+    expect(isDesktopRouteActive(route, { kind: 'files', slug: 'other' })).toBe(true);
+    expect(isDesktopRouteActive(route, { kind: 'home' })).toBe(false);
+  });
+
+  it('renders no secondary sidebar in Files mode', () => {
+    expect(getDesktopSecondarySidebar({ kind: 'files', slug: 'indigo' }, companies)).toBeNull();
+    expect(
+      getDesktopSecondarySidebar({ kind: 'files', slug: 'indigo', path: 'a/b.md' }, companies),
+    ).toBeNull();
+  });
+
+  it('narrows the Files nav payload onto the DesktopRoute union with no slug', () => {
+    expect(fromV4Route({ kind: 'files' })).toEqual({ kind: 'files' });
+  });
+
+  it('has dropped the company Files secondary-sidebar section', () => {
+    expect(COMPANY_SECTIONS.some((section) => (section.id as string) === 'files')).toBe(false);
+    const model = getDesktopSecondarySidebar({ kind: 'company', slug: 'indigo' }, companies);
+    expect(model?.items.some((item) => item.label === 'Files')).toBe(false);
   });
 });
 

@@ -11,7 +11,6 @@
   import CompanyTasksPage from './CompanyTasksPage.svelte';
   import DeploymentsPanel from '../panels/DeploymentsPanel.svelte';
   import SecretsPanel from '../panels/SecretsPanel.svelte';
-  import CompanyFilesPanel from '../panels/CompanyFilesPanel.svelte';
   import CompanyLibraryPanel from '../panels/CompanyLibraryPanel.svelte';
   import AccountView from '../../lib/crm/AccountView.svelte';
   import { DEFAULT_COMPANY_TAB, type CompanyTab } from '../route';
@@ -130,8 +129,6 @@
         <CompanyLibraryPanel slug={company.slug} />
       {:else if tab === 'secrets'}
         <SecretsPanel slug={company.slug} {cloudBacked} />
-      {:else if tab === 'files'}
-        <CompanyFilesPanel slug={company.slug} {cloudBacked} />
       {/if}
     </div>
   {/key}

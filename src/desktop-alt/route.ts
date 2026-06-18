@@ -41,8 +41,7 @@ export type CompanyTab =
   | 'activity'
   | 'deployments'
   | 'secrets'
-  | 'library'
-  | 'files';
+  | 'library';
 
 export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview';
 
@@ -55,6 +54,7 @@ export type DesktopRoute =
   | { kind: 'home' | 'mission-control' | 'companies' | 'messages' | 'meetings' | 'moderation' }
   | { kind: 'library'; tab?: LibraryTab }
   | { kind: 'settings'; tab?: SettingsTab }
+  | { kind: 'files'; slug?: string; path?: string }
   | { kind: 'company'; slug: string; tab?: CompanyTab };
 
 export type DesktopRouteKind = DesktopRoute['kind'];
@@ -76,7 +76,6 @@ export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> 
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
   { id: 'library', label: 'Library' },
-  { id: 'files', label: 'Files' },
 ];
 
 /** The five Library secondary-sidebar rows, in SPEC display order. */
@@ -126,6 +125,10 @@ export function getDesktopCompanies(workspaces: Workspace[]): Workspace[] {
  */
 export function getDesktopRouteKey(route: DesktopRoute): string {
   if (route.kind === 'company') return `company:${route.slug}`;
+  // Files mode keys on its kind only (NOT slug/path): the FilesModeSidebar
+  // handles company/file changes reactively, so switching company or file
+  // inside Files mode must not remount the whole shell.
+  if (route.kind === 'files') return 'files';
   return route.kind;
 }
 
@@ -134,6 +137,8 @@ export function isDesktopRouteActive(route: DesktopRoute, candidate: DesktopRout
   if (route.kind === 'company' && candidate.kind === 'company') {
     return route.slug === candidate.slug;
   }
+  // Any Files-mode route is the same active destination regardless of the
+  // active company / selected file it carries.
   return true;
 }
 
@@ -189,10 +194,23 @@ export function companyHotkey(index: number): string | undefined {
  * 'sync' deep-links — the pre-V4 home surface — land on Home.
  */
 export function resolvePendingDesktopRoute(name: string | null | undefined): DesktopRoute | null {
-  const normalized = name?.trim().replace(/\//g, ':');
-  if (!normalized) return null;
+  const trimmed = name?.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/\//g, ':');
 
   const [kind, first, second] = normalized.split(':');
+
+  // Files mode: `files`, `files:<slug>`, `files:<slug>:<path…>`. File paths
+  // contain '/', so we must NOT collapse the path into the slug. Split only the
+  // first two ':' segments off (kind + slug) and keep the REMAINDER as the path
+  // (re-join everything after the second ':' — the normaliser turned the path's
+  // own slashes into colons, so restore them).
+  if (kind === 'files') {
+    if (!first) return { kind: 'files' };
+    const rest = normalized.split(':').slice(2);
+    if (rest.length === 0) return { kind: 'files', slug: first };
+    return { kind: 'files', slug: first, path: rest.join('/') };
+  }
 
   if (kind === 'company' && first) {
     const tab = isCompanyTab(second) ? second : undefined;
@@ -263,6 +281,10 @@ export function fromV4Route(route: V4Route): DesktopRoute {
       return { kind: 'meetings' };
     case 'library':
       return { kind: 'library' };
+    case 'files':
+      // The Files nav row emits { kind: 'files' } with no slug — the shell
+      // fills in the default connected company before navigating.
+      return { kind: 'files' };
     case 'settings':
       return { kind: 'settings' };
     default:

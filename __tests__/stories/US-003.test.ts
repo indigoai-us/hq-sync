@@ -75,13 +75,17 @@ describe('US-003: Desktop-alt app shell — sidebar, route state, ⌘ hotkeys (V
       'Messages',
       'Meetings',
       'Library',
+      'Files',
     ]);
     // Home is the initial route and the only active row.
     expect(model.nav.find((row) => row.active)?.id).toBe('home');
+    // Connected-first sort (US-007): personal (always live), acme (synced) and
+    // globex (cloud-only) are all connected, so they list alphabetically by
+    // display name within the single connected group.
     expect(model.companies.map((row) => row.label)).toEqual([
-      'Personal',
       'Acme Corp',
       'Globex',
+      'Personal',
     ]);
     // The initial route is a non-company surface — no active company resolves.
     expect(

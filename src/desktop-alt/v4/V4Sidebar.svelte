@@ -111,6 +111,10 @@
     width: 220px;
     min-height: 0;
     height: 100%;
+    /* Clip at the sidebar boundary so the ONLY scroller is .v4-company-nav —
+       the nav above and the Settings footer below stay pinned even with the
+       full ~25-company list (US-007). */
+    overflow: hidden;
     padding: 14px 10px 0;
     border-right: 1px solid var(--v4-hairline);
     background: var(--v4-raised);
@@ -133,8 +137,15 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    box-sizing: border-box;
     width: 100%;
     height: var(--v4-row-h);
+    /* Lock the row to exactly --v4-row-h so a tall glyph, the name's mask layer,
+       or sub-pixel font metrics can never grow/shrink it (US-007). flex-shrink:0
+       stops the scroll container from compressing rows when the list overflows. */
+    min-height: var(--v4-row-h);
+    max-height: var(--v4-row-h);
+    flex: 0 0 auto;
     padding: 0 8px;
     border: none;
     border-radius: 6px;
@@ -198,6 +209,7 @@
 
   .v4-dot {
     flex: 0 0 6px;
+    align-self: center;
     width: 6px;
     height: 6px;
     border-radius: 50%;
@@ -224,6 +236,11 @@
     overflow: hidden;
     min-width: 0;
     white-space: nowrap;
+    /* Match the line box to the row height so the name is centered identically
+       on every row regardless of glyph ascenders/descenders — without this the
+       text box height tracks the font metrics and rows read as uneven (US-007).
+       overflow:hidden keeps a 28px line box from spilling outside the row. */
+    line-height: var(--v4-row-h);
     /* Right-edge fade-out instead of an ellipsis cutoff: the last 24px fades to
        transparent. When the name fits, the fade region sits past the text and is
        invisible; only an overflowing name actually clips. -webkit- prefix is
@@ -241,6 +258,9 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
+    /* Pinned: never shrink under list pressure so the footer stays on-screen
+       and the overflow goes to .v4-company-nav instead (US-007). */
+    flex: 0 0 auto;
     gap: 2px;
     margin: 0 -10px;
     padding: 12px 18px 14px;

@@ -19,7 +19,8 @@ export type V4NavId =
   | 'companies'
   | 'messages'
   | 'meetings'
-  | 'library';
+  | 'library'
+  | 'files';
 
 /**
  * Route shape the V4 chrome maps to an active row. `kind` is open-ended
@@ -38,6 +39,7 @@ export const V4_NAV_ITEMS: ReadonlyArray<{ id: V4NavId; label: string }> = [
   { id: 'messages', label: 'Messages' },
   { id: 'meetings', label: 'Meetings' },
   { id: 'library', label: 'Library' },
+  { id: 'files', label: 'Files' },
 ];
 
 /** Chrome metrics (SPEC section 4) — exported for shell composition in US-002. */
@@ -83,6 +85,22 @@ export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
 }
 
 /**
+ * Cloud-connected = a live vault link the user can sync against right now:
+ * `synced` (local + cloud in step) or `cloud-only` (cloud membership, not yet
+ * pulled). Personal is local-first and always live, so it counts as connected
+ * too (it renders the same green dot). These rows sort to the TOP of the
+ * COMPANIES list (US-007) so the user's active workspaces lead; idle/broken
+ * rows follow. Mirrors the "green dot = connected" product framing.
+ */
+export function v4CompanyConnected(workspace: Workspace): boolean {
+  return (
+    workspace.kind === 'personal' ||
+    workspace.state === 'synced' ||
+    workspace.state === 'cloud-only'
+  );
+}
+
+/**
  * Derive the primary-sidebar render model from the route + the
  * `list_syncable_workspaces` result. Invariant (locked by v4.test.ts):
  * EXACTLY ONE active row per sidebar — a nav item, a company row, or the
@@ -90,21 +108,55 @@ export function v4CompanyDotTone(workspace: Workspace): V4DotTone {
  * all local-first/cloud-visible companies render directly in the sidebar; a
  * company route whose slug isn't in the list falls back to the Companies nav row.
  */
-export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
-  const settingsActive = route.kind === 'settings';
+/**
+ * Shared dedupe + connected-first + alpha sort for the COMPANIES list (US-007).
+ * Both the primary V4Sidebar (via getV4SidebarModel) and the FilesModeSidebar
+ * mini company list consume this, so their ordering matches exactly. Pass
+ * `activeSlug` to mark one row active; the dedupe keeps the first occurrence per
+ * slug and the sort is stable so the active row and survivor are untouched.
+ */
+export function sortV4CompaniesConnectedFirst(
+  workspaces: Workspace[],
+  activeSlug?: string | null,
+): V4SidebarCompanyRow[] {
   const seenCompanySlugs = new Set<string>();
 
-  const companies: V4SidebarCompanyRow[] = [];
+  // Dedupe by slug (first occurrence wins), capturing the connected flag so the
+  // sort below can group without re-reading the source workspace.
+  const deduped: Array<{ row: V4SidebarCompanyRow; connected: boolean }> = [];
   for (const workspace of workspaces) {
     if (seenCompanySlugs.has(workspace.slug)) continue;
     seenCompanySlugs.add(workspace.slug);
-    companies.push({
-      slug: workspace.slug,
-      label: workspace.displayName,
-      tone: v4CompanyDotTone(workspace),
-      active: route.kind === 'company' && route.slug === workspace.slug,
+    deduped.push({
+      connected: v4CompanyConnected(workspace),
+      row: {
+        slug: workspace.slug,
+        label: workspace.displayName,
+        tone: v4CompanyDotTone(workspace),
+        active: activeSlug != null && activeSlug === workspace.slug,
+      },
     });
   }
+
+  // Connected-first (US-007): cloud-connected companies (synced / cloud-only,
+  // plus always-live personal) lead; everything else follows. Alphabetical by
+  // display name (case-insensitive) WITHIN each group. Sort is stable so the
+  // active-highlight and dedupe survivor are untouched — only order changes.
+  deduped.sort((a, b) => {
+    if (a.connected !== b.connected) return a.connected ? -1 : 1;
+    return a.row.label.localeCompare(b.row.label, undefined, { sensitivity: 'base' });
+  });
+
+  return deduped.map((entry) => entry.row);
+}
+
+export function getV4SidebarModel(route: V4Route, workspaces: Workspace[]): V4SidebarModel {
+  const settingsActive = route.kind === 'settings';
+
+  const companies: V4SidebarCompanyRow[] = sortV4CompaniesConnectedFirst(
+    workspaces,
+    route.kind === 'company' ? route.slug : null,
+  );
 
   const companyRowActive = companies.some((row) => row.active);
   // Company route with no matching row (e.g. not connected yet) → fall back
