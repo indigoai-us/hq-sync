@@ -37,7 +37,7 @@ function workspace(overrides: Partial<Workspace>): Workspace {
 }
 
 describe('desktop-alt V4 chrome (US-002)', () => {
-  it('a company row click opens the company page with the 9 sections and Overview active', () => {
+  it('a company row click opens the company page with the 10 sections and Overview active', () => {
     const companies = [workspace({})];
 
     // The V4Sidebar company row emits { kind: 'company', slug } — the shell
@@ -58,6 +58,7 @@ describe('desktop-alt V4 chrome (US-002)', () => {
       'Deployments',
       'Secrets',
       'Library',
+      'Files',
     ]);
     expect(secondary?.activeId).toBe('overview');
   });

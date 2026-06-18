@@ -339,11 +339,13 @@ html[data-window='messages'] ::-webkit-scrollbar-thumb:hover {
 }
 
 .empty-row {
-  height: 28px;
+  /* --v4-row-h comes from v4/tokens.css (always mounted in the desktop-alt
+     window); 28px fallback keeps the row height if the cascade ever changes. */
+  height: var(--v4-row-h, 28px);
   padding: 0 8px;
   color: var(--muted-2);
   font-size: var(--text-base);
-  line-height: 28px;
+  line-height: var(--v4-row-h, 28px);
 }
 
 .desktop-content,

@@ -152,7 +152,7 @@
   .v4-menu {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: var(--v4-row-gap);
   }
 
   .v4-row {
@@ -160,7 +160,7 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    height: 28px;
+    height: var(--v4-row-h);
     padding: 0 8px;
     border: none;
     border-radius: 6px;

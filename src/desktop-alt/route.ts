@@ -41,7 +41,8 @@ export type CompanyTab =
   | 'activity'
   | 'deployments'
   | 'secrets'
-  | 'library';
+  | 'library'
+  | 'files';
 
 export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview';
 
@@ -75,6 +76,7 @@ export const COMPANY_SECTIONS: ReadonlyArray<{ id: CompanyTab; label: string }> 
   { id: 'deployments', label: 'Deployments' },
   { id: 'secrets', label: 'Secrets' },
   { id: 'library', label: 'Library' },
+  { id: 'files', label: 'Files' },
 ];
 
 /** The five Library secondary-sidebar rows, in SPEC display order. */

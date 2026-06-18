@@ -20,6 +20,7 @@
 //! command shape, but `desktop_features_enabled()` itself never errors — the
 //! Ok arm is always taken.
 use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use chrono::{DateTime, Utc};
@@ -28,9 +29,12 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
+use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::commands::sync::resolve_vault_api_url;
 use crate::commands::workspaces::{Workspace, WorkspaceState};
 use crate::util::client_info::build_client;
+use crate::util::ignore::MAX_FILE_BYTES;
+use crate::util::paths;
 
 const WINDOW_LABEL: &str = "desktop-alt";
 const HQ_DEPLOY_API_BASE: &str = "https://api.indigo-hq.com";
@@ -451,7 +455,10 @@ pub async fn get_company_project_creators(slug: String) -> Result<Vec<ProjectCre
         .await
         .map_err(|e| format!("creators fetch: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("creators read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("creators read: {e}"))?;
     // A missing / unprovisioned board (or no ACL) is not an error here — the
     // Lead column simply falls back to "Unassigned". Only the body parse below
     // can fail, and only on a 2xx with malformed JSON.
@@ -1666,6 +1673,202 @@ fn is_url_safe_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
+// ---- Company file explorer (US-001) ---------------------------------------
+
+/// A node in a company's local file tree. Directories carry `children`; files
+/// have an empty `children` vec. `path` is HQ-folder-relative with forward
+/// slashes so the frontend can pass it straight back to
+/// `get_company_file_content`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileNode {
+    pub name: String,
+    /// HQ-folder-relative path, forward-slash separated (e.g.
+    /// `companies/indigo/policies/foo.md`).
+    pub path: String,
+    pub is_dir: bool,
+    pub children: Vec<FileNode>,
+}
+
+/// Resolve the user's HQ folder using the standard 4-tier resolver (mirrors
+/// `projects_local.rs::resolve_hq_folder`). desktop_alt.rs keeps its own copy
+/// rather than reaching across modules for the private helper.
+fn resolve_hq_folder() -> PathBuf {
+    let menubar_prefs: Option<MenubarPrefs> = paths::menubar_json_path()
+        .ok()
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let config = read_hq_config_lenient().ok().flatten();
+    paths::resolve_hq_folder(
+        config.as_ref().and_then(|c| c.hq_folder_path.as_deref()),
+        menubar_prefs.as_ref().and_then(|p| p.hq_path.as_deref()),
+    )
+}
+
+/// True iff `candidate`, after lexical normalization, is contained within
+/// `root`. Rejects `..` traversal and absolute escapes WITHOUT touching the
+/// filesystem (so it works on non-existent paths too). Each module in this repo
+/// keeps its own copy (projects_local.rs / library_local.rs both do).
+fn is_within(root: &Path, candidate: &Path) -> bool {
+    let normalized = lexically_normalize(candidate);
+    let root_norm = lexically_normalize(root);
+    normalized.starts_with(&root_norm)
+}
+
+/// Collapse `.` and `..` components lexically. A leading `..` that would escape
+/// the prefix is preserved as a `ParentDir` component so `is_within` rejects it.
+fn lexically_normalize(path: &Path) -> PathBuf {
+    let mut stack: Vec<Component> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match stack.last() {
+                Some(Component::Normal(_)) => {
+                    stack.pop();
+                }
+                _ => stack.push(component),
+            },
+            other => stack.push(other),
+        }
+    }
+    let mut out = PathBuf::new();
+    for c in stack {
+        out.push(c.as_os_str());
+    }
+    out
+}
+
+/// Build a nested file tree rooted at `companies/<slug>/` for the local file
+/// explorer.
+///
+/// Visibility per product decision is **everything except any `.git/`
+/// directory** at every level — this is a local viewer, NOT the sync surface,
+/// so `settings/`, `data/`, and `workers/` ARE included (the sync ignore filter
+/// is deliberately not applied here). Directories sort before files, each group
+/// alphabetically (case-insensitive). Files have an empty `children` vec.
+#[tauri::command]
+pub async fn get_company_file_tree(slug: String) -> Result<FileNode, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("file explorer requires a signed-in user".to_string());
+    }
+    let hq = resolve_hq_folder();
+    build_file_tree(&hq, &slug)
+}
+
+/// Pure body for `get_company_file_tree` — takes an explicit HQ root so the
+/// traversal + `.git` exclusion + sort order are unit-testable without the gate.
+fn build_file_tree(hq_root: &Path, slug: &str) -> Result<FileNode, String> {
+    let slug = slug.trim();
+    if slug.is_empty() {
+        return Err("company slug is required".to_string());
+    }
+    let root = hq_root.join("companies").join(slug);
+    // Defense-in-depth: a slug containing `..` (or separators) must not let the
+    // walk escape the HQ folder.
+    if !is_within(hq_root, &root) {
+        return Err(format!("company slug escapes the HQ folder: {slug:?}"));
+    }
+    if !root.is_dir() {
+        return Err(format!("company '{slug}' has no local folder"));
+    }
+    let rel = format!("companies/{slug}");
+    build_node(&root, slug.to_string(), rel)
+}
+
+/// Recursively build a `FileNode` for a directory or file at `abs`. The node's
+/// `name`/`path` are passed in by the caller (already computed). Any directory
+/// entry literally named `.git` is skipped at every level.
+fn build_node(abs: &Path, name: String, rel_path: String) -> Result<FileNode, String> {
+    let is_dir = abs.is_dir();
+    let mut children: Vec<FileNode> = Vec::new();
+    if is_dir {
+        let entries = std::fs::read_dir(abs)
+            .map_err(|e| format!("could not read directory {rel_path:?}: {e}"))?;
+        for entry in entries.flatten() {
+            let child_name = match entry.file_name().into_string() {
+                Ok(n) => n,
+                // Non-UTF-8 names can't round-trip through the JSON path
+                // contract — skip them rather than fail the whole tree.
+                Err(_) => continue,
+            };
+            // Exclude .git directories at every level.
+            if child_name == ".git" {
+                continue;
+            }
+            let child_abs = entry.path();
+            let child_rel = format!("{rel_path}/{child_name}");
+            children.push(build_node(&child_abs, child_name, child_rel)?);
+        }
+        // Directories before files, each group alphabetical (case-insensitive).
+        children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        });
+    }
+    Ok(FileNode {
+        name,
+        path: rel_path,
+        is_dir,
+        children,
+    })
+}
+
+/// Read a single file's UTF-8 text content by HQ-folder-relative path.
+///
+/// Enforces the same `MAX_FILE_BYTES` (50MB) size cap the sync filter uses —
+/// the cap is checked from file metadata BEFORE any bytes are read, so an
+/// oversized file never gets loaded into memory. Binary (non-UTF-8) files
+/// return a clear "cannot preview binary file" error rather than mojibake.
+#[tauri::command]
+pub async fn get_company_file_content(path: String) -> Result<String, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("file explorer requires a signed-in user".to_string());
+    }
+    let hq = resolve_hq_folder();
+    read_file_content(&hq, &path)
+}
+
+/// Pure body for `get_company_file_content` — takes an explicit HQ root so the
+/// traversal guard + size cap + binary detection are unit-testable.
+fn read_file_content(hq_root: &Path, rel_path: &str) -> Result<String, String> {
+    read_file_content_capped(hq_root, rel_path, MAX_FILE_BYTES)
+}
+
+/// Size-cap-parameterized core of `read_file_content`. Split out so tests can
+/// exercise the real cap path with a tiny `max_bytes` instead of writing a
+/// 50MB fixture. Mirrors `IgnoreFilter::within_size_limit`: the cap is checked
+/// from `std::fs::metadata` length BEFORE the file is read.
+fn read_file_content_capped(
+    hq_root: &Path,
+    rel_path: &str,
+    max_bytes: u64,
+) -> Result<String, String> {
+    let rel = rel_path.trim();
+    if rel.is_empty() {
+        return Err("path is required".to_string());
+    }
+    let abs = hq_root.join(rel);
+    if !is_within(hq_root, &abs) {
+        return Err(format!("path escapes the HQ folder: {rel_path:?}"));
+    }
+    if !abs.is_file() {
+        return Err(format!("file not found: {rel_path:?}"));
+    }
+    // Check the size cap from metadata FIRST — never read an oversized file.
+    let len = std::fs::metadata(&abs)
+        .map_err(|e| format!("could not stat {rel_path:?}: {e}"))?
+        .len();
+    if len > max_bytes {
+        return Err(format!(
+            "file is too large to preview ({len} bytes; limit is {max_bytes} bytes)"
+        ));
+    }
+    let bytes = std::fs::read(&abs).map_err(|e| format!("could not read {rel_path:?}: {e}"))?;
+    String::from_utf8(bytes).map_err(|_| format!("cannot preview binary file: {rel_path:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
@@ -1774,7 +1977,10 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let p1 = rows.iter().find(|r| r.id == "p1").unwrap();
         assert_eq!(p1.creator, "maya@x.com");
-        assert_eq!(p1.prd_path.as_deref(), Some("companies/co/projects/a/prd.json"));
+        assert_eq!(
+            p1.prd_path.as_deref(),
+            Some("companies/co/projects/a/prd.json")
+        );
         let p4 = rows.iter().find(|r| r.id == "p4").unwrap();
         assert_eq!(p4.creator, "corey@x.com");
         assert!(p4.prd_path.is_none());
@@ -1782,8 +1988,14 @@ mod tests {
 
     #[test]
     fn parse_project_creators_tolerates_empty_or_missing_projects() {
-        assert!(super::parse_project_creators(r#"{"companyUid":"c","goals":[]}"#).unwrap().is_empty());
-        assert!(super::parse_project_creators(r#"{"projects":[]}"#).unwrap().is_empty());
+        assert!(
+            super::parse_project_creators(r#"{"companyUid":"c","goals":[]}"#)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(super::parse_project_creators(r#"{"projects":[]}"#)
+            .unwrap()
+            .is_empty());
         assert!(super::parse_project_creators("not json").is_err());
     }
 
@@ -1945,14 +2157,20 @@ mod tests {
         // 404 (route not deployed yet) / not-provisioned / empty body all become
         // JSON null — the surface renders its calm empty state, not an error.
         for (status, body) in [
-            (reqwest::StatusCode::NOT_FOUND, r#"{"code":"crm-not-provisioned"}"#),
+            (
+                reqwest::StatusCode::NOT_FOUND,
+                r#"{"code":"crm-not-provisioned"}"#,
+            ),
             (reqwest::StatusCode::NOT_FOUND, "route not found"),
             (reqwest::StatusCode::OK, "  \n "),
             (reqwest::StatusCode::INTERNAL_SERVER_ERROR, "boom"),
         ] {
             let value = super::parse_crm_projection_response(status, body)
                 .expect("non-auth failure degrades to null");
-            assert!(value.is_null(), "status {status} body {body:?} should be null");
+            assert!(
+                value.is_null(),
+                "status {status} body {body:?} should be null"
+            );
         }
     }
 
@@ -1971,7 +2189,10 @@ mod tests {
     fn crm_projection_url_is_company_scoped() {
         let url =
             super::crm_projection_url("https://hqapi.getindigo.ai", "cmp_01ABC").expect("url");
-        assert_eq!(url, "https://hqapi.getindigo.ai/companies/cmp_01ABC/crm-projection");
+        assert_eq!(
+            url,
+            "https://hqapi.getindigo.ai/companies/cmp_01ABC/crm-projection"
+        );
         assert!(super::crm_projection_url("https://x", "bad uid!").is_err());
     }
 
@@ -2743,5 +2964,170 @@ mod tests {
             super::secrets_url("https://hqapi.getindigo.ai", "cmp/bad").unwrap_err(),
             "company uid has invalid characters: \"cmp/bad\""
         );
+    }
+
+    // ---- Company file explorer (US-001) -----------------------------------
+
+    mod file_explorer {
+        use super::super::{
+            build_file_tree, read_file_content, read_file_content_capped, FileNode,
+        };
+        use std::fs;
+        use std::path::PathBuf;
+        use tempfile::TempDir;
+
+        /// Flatten a tree into the set of every node's path for easy assertions.
+        fn collect_paths<'a>(node: &'a FileNode, out: &mut Vec<&'a str>) {
+            out.push(&node.path);
+            for child in &node.children {
+                collect_paths(child, out);
+            }
+        }
+
+        /// Build a fixture company tree under a temp HQ root and return the root.
+        fn make_company_tree(tmp: &TempDir) -> PathBuf {
+            let root = tmp.path().to_path_buf();
+            let company = root.join("companies").join("test");
+            // .git internals that MUST be excluded everywhere.
+            fs::create_dir_all(company.join(".git")).unwrap();
+            fs::write(company.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+            fs::create_dir_all(company.join("policies").join(".git")).unwrap();
+            fs::write(company.join("policies").join(".git").join("config"), "x").unwrap();
+            // Visible content, including settings/data/workers (NOT sync-ignored
+            // here — local viewer shows everything but .git).
+            fs::create_dir_all(company.join("policies")).unwrap();
+            fs::write(company.join("policies").join("foo.md"), "# foo\n").unwrap();
+            fs::create_dir_all(company.join("settings")).unwrap();
+            fs::write(company.join("settings").join("vault.json"), "{}").unwrap();
+            fs::create_dir_all(company.join("data")).unwrap();
+            fs::write(company.join("data").join("rows.csv"), "a,b\n").unwrap();
+            fs::create_dir_all(company.join("workers")).unwrap();
+            fs::write(company.join("workers").join("w.md"), "worker").unwrap();
+            root
+        }
+
+        #[test]
+        fn build_file_tree_excludes_git_includes_local_dirs() {
+            let tmp = TempDir::new().unwrap();
+            let root = make_company_tree(&tmp);
+            let tree = build_file_tree(&root, "test").unwrap();
+
+            assert_eq!(tree.name, "test");
+            assert_eq!(tree.path, "companies/test");
+            assert!(tree.is_dir);
+
+            let mut paths = Vec::new();
+            collect_paths(&tree, &mut paths);
+
+            // Visible content present.
+            assert!(paths.contains(&"companies/test/policies/foo.md"));
+            // settings/data/workers ARE included (local viewer, not sync).
+            assert!(paths.contains(&"companies/test/settings/vault.json"));
+            assert!(paths.contains(&"companies/test/data/rows.csv"));
+            assert!(paths.contains(&"companies/test/workers/w.md"));
+
+            // No node may be a .git dir or live under one at any level.
+            for p in &paths {
+                assert!(
+                    !p.contains("/.git/") && !p.ends_with("/.git"),
+                    "path leaked a .git entry: {p}"
+                );
+            }
+            // And no node should be named ".git".
+            fn assert_no_git_name(node: &FileNode) {
+                assert_ne!(node.name, ".git", "node named .git leaked: {}", node.path);
+                for c in &node.children {
+                    assert_no_git_name(c);
+                }
+            }
+            assert_no_git_name(&tree);
+        }
+
+        #[test]
+        fn build_file_tree_sorts_dirs_before_files() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let company = root.join("companies").join("test");
+            fs::create_dir_all(company.join("zeta")).unwrap();
+            fs::create_dir_all(company.join("alpha")).unwrap();
+            fs::write(company.join("aaa.txt"), "a").unwrap();
+            fs::write(company.join("bbb.txt"), "b").unwrap();
+            let tree = build_file_tree(&root, "test").unwrap();
+            let names: Vec<&str> = tree.children.iter().map(|c| c.name.as_str()).collect();
+            // Dirs first (alpha, zeta), then files (aaa.txt, bbb.txt).
+            assert_eq!(names, vec!["alpha", "zeta", "aaa.txt", "bbb.txt"]);
+        }
+
+        #[test]
+        fn build_file_tree_rejects_empty_and_missing() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            assert!(build_file_tree(&root, "").is_err());
+            assert!(build_file_tree(&root, "   ").is_err());
+            // Slug with traversal must be rejected before touching the fs.
+            assert!(build_file_tree(&root, "../../etc").is_err());
+            // Nonexistent company.
+            assert!(build_file_tree(&root, "nope").is_err());
+        }
+
+        #[test]
+        fn read_file_content_rejects_path_traversal() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let err = read_file_content(&root, "../../etc/passwd").unwrap_err();
+            assert!(err.contains("escapes the HQ folder"), "got: {err}");
+
+            // Absolute path also escapes.
+            let abs_err = read_file_content(&root, "/etc/passwd").unwrap_err();
+            assert!(abs_err.contains("escapes the HQ folder"), "got: {abs_err}");
+
+            // Empty path is rejected.
+            assert!(read_file_content(&root, "   ").is_err());
+        }
+
+        #[test]
+        fn read_file_content_reads_small_text() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let company = root.join("companies").join("test").join("policies");
+            fs::create_dir_all(&company).unwrap();
+            fs::write(company.join("foo.md"), "# hello\nworld\n").unwrap();
+            let content = read_file_content(&root, "companies/test/policies/foo.md").unwrap();
+            assert_eq!(content, "# hello\nworld\n");
+        }
+
+        #[test]
+        fn read_file_content_rejects_binary() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            // Invalid UTF-8 bytes.
+            fs::write(dir.join("blob.bin"), [0xff, 0xfe, 0x00, 0x80]).unwrap();
+            let err = read_file_content(&root, "companies/test/blob.bin").unwrap_err();
+            assert!(err.contains("cannot preview binary file"), "got: {err}");
+        }
+
+        #[test]
+        fn read_file_content_capped_enforces_size_limit() {
+            let tmp = TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let dir = root.join("companies").join("test");
+            fs::create_dir_all(&dir).unwrap();
+            // 10 bytes against a 4-byte cap → size-limit error, no contents.
+            fs::write(dir.join("big.txt"), "0123456789").unwrap();
+            let result = read_file_content_capped(&root, "companies/test/big.txt", 4);
+            let err = result.unwrap_err();
+            assert!(err.contains("too large to preview"), "got: {err}");
+            // Crucially the error must NOT contain the file contents.
+            assert!(!err.contains("0123456789"), "contents leaked: {err}");
+
+            // A file at/under the cap reads fine.
+            fs::write(dir.join("ok.txt"), "abcd").unwrap();
+            assert_eq!(
+                read_file_content_capped(&root, "companies/test/ok.txt", 4).unwrap(),
+                "abcd"
+            );
+        }
     }
 }

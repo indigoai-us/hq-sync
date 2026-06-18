@@ -32,6 +32,18 @@
   --v4-control-border: rgba(255, 255, 255, 0.12); /* secondary button border */
   --v4-control-faint: rgba(255, 255, 255, 0.06); /* chips, search field, segmented track */
   --v4-active-row: rgba(255, 255, 255, 0.08); /* sidebar/list selection */
+
+  /* spacing scale — 4px base step (mirrors popover.css --space-*). Use these
+     instead of magic px for row height, vertical gaps, and section margins so
+     V4 sidebars and desktop-alt list rows share one rhythm. */
+  --v4-space-1: 4px;
+  --v4-space-2: 8px;
+  --v4-space-3: 12px;
+  --v4-space-4: 16px;
+  --v4-space-5: 20px;
+  --v4-space-6: 24px;
+  --v4-row-h: 28px; /* canonical sidebar/list row height */
+  --v4-row-gap: 2px; /* vertical gap between rows in a nav group */
 }
 
 /* ── Light mode ─────────────────────────────────────────────────────────────
