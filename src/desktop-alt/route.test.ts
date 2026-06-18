@@ -105,6 +105,7 @@ describe('US-002 V4 desktop routes', () => {
       'deployments',
       'secrets',
       'library',
+      'files',
     ]);
   });
 
@@ -262,6 +263,7 @@ describe('US-002 secondary sidebar — company / library / settings only', () =>
       'Deployments',
       'Secrets',
       'Library',
+      'Files',
     ]);
     expect(model?.activeId).toBe('overview');
     expect(model?.footer).toEqual({

@@ -90,6 +90,7 @@ describe('US-007: Company page shell — V4 sections + crumb (sections moved to 
       'deployments',
       'secrets',
       'library',
+      'files',
     ]);
     const secondary = getDesktopSecondarySidebar({ kind: 'company', slug: 'acme' }, companies);
     expect(secondary?.header).toBe('Acme Corp');

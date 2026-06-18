@@ -113,7 +113,7 @@ describe('desktop-alt board is the default company section (US-011 → V4 US-002
   const route = readRepoFile('src/desktop-alt/route.ts');
   const company = readRepoFile('src/desktop-alt/pages/CompanyPage.svelte');
 
-  it('route.ts declares Overview FIRST among the nine company sections', () => {
+  it('route.ts declares Overview FIRST among the ten company sections', () => {
     expect(route).toContain("export const DEFAULT_COMPANY_TAB: CompanyTab = 'overview'");
     const sectionsStart = route.indexOf('export const COMPANY_SECTIONS');
     const overviewIdx = route.indexOf("{ id: 'overview', label: 'Overview' }", sectionsStart);
