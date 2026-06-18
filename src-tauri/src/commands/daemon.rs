@@ -104,7 +104,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
-///   - `--poll-remote-ms 600000` — pulls remote changes every 10 minutes
+///   - `--poll-remote-ms 15000` — pulls remote changes every 15 seconds (fixed)
 ///   - `--event-push` — when the user's Instant-sync setting is ON (Phase 2 GA)
 ///
 /// As of hq-cloud 5.26 the runner's chokidar watcher is real. Phase 2 GA
@@ -114,7 +114,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// filesystem event. Toggling Instant-sync OFF drops back to poll-only without
 /// disabling Auto-sync.
 ///
-/// Instant-sync OFF stays poll-only: the remote→local pull runs on the 10-minute
+/// Instant-sync OFF stays poll-only: the remote→local pull runs on the 15-second
 /// cadence and a local push waits for the next pass — there is no second-by-second
 /// upload of local edits. (The remote→local pull is poll-driven for most users.
 /// The server side shipped in hq-pro US-015/US-016 — `POST /v1/sync/subscribe`
@@ -122,7 +122,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// of hq-cloud ≥6.3.1 the runner brings up real event-driven pull INSIDE
 /// `--event-push` for accounts enrolled in its Phase 3 rollout gate
 /// (`resolveEventSync`, exact-email allowlist + `HQ_SYNC_EVENT_SYNC` override);
-/// no new menubar flag is involved. The 10-minute poll stays regardless, as
+/// no new menubar flag is involved. The 15-second poll stays regardless, as
 /// the correctness backstop.)
 /// Conflict policy is `keep` (skip-and-surface) — local
 /// edits win and the conflict store routes them through the existing modal so
@@ -159,13 +159,11 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // can't find node/npx. See paths::child_path.
     env.insert("PATH".to_string(), paths::child_path());
 
-    // Dev override: HQ_CLOUD_DEV_POLL_MS lets us tighten the 10-minute
-    // production cadence for hands-on testing. Defaults to 600_000ms.
-    let poll_ms = std::env::var("HQ_CLOUD_DEV_POLL_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(600_000);
+    // Remote-pull cadence, fixed at 15 seconds. event-push + event-sync handle
+    // real-time propagation; this poll is only the correctness backstop. It is
+    // intentionally NOT user-configurable.
+    const SYNC_POLL_REMOTE_MS: u64 = 15_000;
+    let poll_ms = SYNC_POLL_REMOTE_MS;
 
     let mut runner_args = vec![
         "--companies".to_string(),
@@ -404,7 +402,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     log("daemon", "spawn: hq-sync-runner --watch");
 
     // Per-pass totals. Watch mode emits a full Complete/AllComplete cycle on
-    // every chokidar tick + every 10-minute poll, so we reset on each
+    // every chokidar tick + every 15-second poll, so we reset on each
     // AllComplete instead of accumulating forever.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     let hq_folder = hq_folder_path.clone();
@@ -672,7 +670,7 @@ mod tests {
     // Auto-sync reuses the same hq-sync-runner binary as the manual Sync Now
     // button (see commands/sync.rs::build_sync_spawn_args), but adds:
     //   --watch                  — keep the runner alive after the first pass
-    //   --poll-remote-ms 600000  — pull from S3 every 10 minutes
+    //   --poll-remote-ms 15000   — pull from S3 every 15 seconds (fixed)
     //
     // Conflict policy stays `keep` (skip-and-surface) — local edits win and
     // the conflict store routes them through the existing modal. Direction
@@ -715,8 +713,8 @@ mod tests {
             .expect("--poll-remote-ms flag missing");
         assert_eq!(
             args.args.get(poll_idx + 1).map(|s| s.as_str()),
-            Some("600000"),
-            "expected 10-minute (600000ms) poll interval"
+            Some("15000"),
+            "expected the fixed 15-second (15000ms) poll interval"
         );
     }
 

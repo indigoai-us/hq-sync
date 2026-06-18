@@ -555,7 +555,7 @@
           <div class="setting-row">
             <div class="setting-info">
               <label class="setting-label" for="toggle-realtime-sync">Auto-sync</label>
-              <span class="setting-desc">Syncs every 10 minutes with no clicks needed</span>
+              <span class="setting-desc">Syncs every 15 seconds with no clicks needed</span>
             </div>
             <button
               id="toggle-realtime-sync"
@@ -579,7 +579,7 @@
           <div class="setting-row">
             <div class="setting-info">
               <label class="setting-label" for="toggle-instant-sync">Instant sync</label>
-              <span class="setting-desc">Push local edits within seconds instead of every 10 minutes</span>
+              <span class="setting-desc">Push local edits within seconds instead of waiting for the periodic sync</span>
             </div>
             <button
               id="toggle-instant-sync"
