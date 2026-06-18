@@ -38,9 +38,6 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
             release_channel: None,
             meeting_detect_notify: Some(default_meeting_detect_notify()),
             default_recording_company_uid: None,
-            // Auto-sync poll interval — absent on a fresh install; the daemon
-            // falls back to the env override / 600s default.
-            sync_poll_seconds: None,
             // Telemetry is opt-in; absent → off (mirrors
             // telemetry.rs::read_local_telemetry_enabled's unwrap_or(false)).
             telemetry_enabled: Some(false),
@@ -108,9 +105,6 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         // surfaces this as the "Personal" option (same shape as the
         // URL-invite picker in MeetingsWindow).
         default_recording_company_uid: prefs.default_recording_company_uid,
-        // Auto-sync poll interval — pass through verbatim (None = use the
-        // env override / 600s default in build_watch_runner_args).
-        sync_poll_seconds: prefs.sync_poll_seconds,
         // Telemetry defaults OFF (opt-in). Re-read untyped from menubar.json by
         // the collector each sync, so the toggle takes effect without restart.
         telemetry_enabled: Some(prefs.telemetry_enabled.unwrap_or(false)),
@@ -209,7 +203,6 @@ mod tests {
             realtime_sync: None,
             personal_sync_enabled: None,
             instant_sync: None,
-            sync_poll_seconds: None,
             drift_staging_repo: None,
             share_notifications: None,
             dm_notifications: None,
@@ -237,7 +230,6 @@ mod tests {
             realtime_sync: Some(prefs.realtime_sync.unwrap_or(true)),
             personal_sync_enabled: Some(prefs.personal_sync_enabled.unwrap_or(true)),
             instant_sync: Some(prefs.instant_sync.unwrap_or(true)),
-            sync_poll_seconds: prefs.sync_poll_seconds,
             drift_staging_repo: prefs.drift_staging_repo,
             share_notifications: Some(prefs.share_notifications.unwrap_or(true)),
             dm_notifications: Some(prefs.dm_notifications.unwrap_or(true)),
@@ -311,7 +303,6 @@ mod tests {
             release_channel: Some("alpha".to_string()),
             meeting_detect_notify: None,
             default_recording_company_uid: Some("co_xyz".to_string()),
-            sync_poll_seconds: Some(120),
             telemetry_enabled: Some(true),
         };
 
@@ -329,8 +320,6 @@ mod tests {
         assert_eq!(result.staging_channel, Some(false));
         // explicit telemetry opt-in survives the default-off coercion
         assert_eq!(result.telemetry_enabled, Some(true));
-        // explicit poll interval passes through apply_defaults untouched
-        assert_eq!(result.sync_poll_seconds, Some(120));
         // release_channel passes through apply_defaults untouched; the
         // indigo-gating coercion is verified separately in
         // `util::release_channel::tests::non_indigo_always_coerced_to_stable`.
@@ -356,7 +345,6 @@ mod tests {
             release_channel: Some("beta".to_string()),
             meeting_detect_notify: None,
             default_recording_company_uid: None,
-            sync_poll_seconds: Some(120),
             telemetry_enabled: Some(true),
         };
 
@@ -370,12 +358,6 @@ mod tests {
         assert_eq!(parsed.share_notifications, prefs.share_notifications);
         assert_eq!(parsed.staging_channel, Some(true));
         assert_eq!(parsed.telemetry_enabled, Some(true));
-        // sync_poll_seconds round-trips as the camelCase key `syncPollSeconds`.
-        assert_eq!(parsed.sync_poll_seconds, Some(120));
-        assert!(
-            json.contains("\"syncPollSeconds\": 120"),
-            "expected camelCase key 'syncPollSeconds' in serialized output, got: {json}"
-        );
         // releaseChannel round-trips as a camelCase string (matches the
         // #[serde(rename_all = "camelCase")] on MenubarPrefs).
         assert_eq!(parsed.release_channel, Some("beta".to_string()));
