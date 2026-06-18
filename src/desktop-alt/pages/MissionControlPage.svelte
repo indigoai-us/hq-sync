@@ -21,6 +21,7 @@
   import { sessionsStore, startSessionsStore } from '../lib/sessions-store.svelte';
   import AgencyQuestionsPanel from '../panels/AgencyQuestionsPanel.svelte';
   import AgencyTeamsPanel from '../panels/AgencyTeamsPanel.svelte';
+  import AgencyChatPanel from '../panels/AgencyChatPanel.svelte';
   import { startAgencyStore } from '../lib/agency-store.svelte';
   import type { SessionStatus } from '../lib/sessions';
 
@@ -105,6 +106,9 @@
     <div class="mc-col mc-agency-q" aria-label="Agency questions"><AgencyQuestionsPanel /></div>
     <div class="mc-col mc-agency-t" aria-label="Agency teams"><AgencyTeamsPanel /></div>
   </div>
+
+  <!-- Manager ⇄ Liaison conversation + operator composer (decision context). -->
+  <div class="mc-col mc-agency-chat" aria-label="Agency conversation"><AgencyChatPanel /></div>
 
   <div class="mc-columns">
     <!-- US-007: LiveSessionsPanel renders into .mc-live-mount, subscribing to the
@@ -214,6 +218,9 @@
   }
   .mc-agency-q { flex: 3 1 0; }
   .mc-agency-t { flex: 2 1 0; }
+
+  /* Manager ⇄ Liaison conversation — full width below the agency row. */
+  .mc-agency-chat { display: flex; flex-direction: column; }
 
   /* Two columns — Live (flex-grow 5) left, History (flex-grow 3) right. */
   .mc-columns {

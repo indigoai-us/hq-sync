@@ -39,10 +39,30 @@ export interface AgencyQuestion {
   options: string[];
 }
 
+/** One line of the Manager ⇄ Liaison conversation (mirrors Rust `AgencyMessage`). */
+export interface AgencyMessage {
+  /** `manager` | `liaison` | `operator` | a worker name. */
+  from: string;
+  /** `ask` | `fyi` | `answer` | `learn` | `ready` | `reply` | `close` | `msg`. */
+  kind: string;
+  /** Display text (prefix + `[ans:<id>]` tag already stripped server-side). */
+  text: string;
+  ts: string;
+  inbox: string;
+}
+
 /** Map a worker status to a status-dot tone (tokens.css `--v4-*`). */
 export function statusTone(status: string, ready: boolean): 'ok' | 'warn' | 'idle' {
   if (status === 'running') return ready ? 'ok' : 'warn';
   if (status === 'crash-loop') return 'warn';
+  return 'idle';
+}
+
+/** Accent tone for a chat message sender (tokens.css `--v4-*`). */
+export function senderTone(from: string): 'ok' | 'warn' | 'unread' | 'idle' {
+  if (from === 'manager') return 'ok';
+  if (from === 'liaison') return 'warn';
+  if (from === 'operator') return 'unread';
   return 'idle';
 }
 

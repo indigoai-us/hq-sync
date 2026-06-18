@@ -77,6 +77,22 @@ pub struct AgencyQuestion {
     pub options: Vec<String>,
 }
 
+/// One line of the Manager ⇄ Liaison conversation, normalised for display so the
+/// operator can read the full context behind a pending question.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgencyMessage {
+    /// Sender — `manager` | `liaison` | `operator` | a worker name.
+    pub from: String,
+    /// Classified kind — `ask` | `fyi` | `answer` | `learn` | `ready` | `reply` | `close` | `msg`.
+    pub kind: String,
+    /// Display text with the known prefix and any trailing `[ans:<id>]` tag stripped.
+    pub text: String,
+    pub ts: String,
+    /// Which inbox the line lives in — `team-manager` | `team-liaison`.
+    pub inbox: String,
+}
+
 // ---- POSIX cksum (the [ans:<id>] dedup key the liaison uses) ----------------
 
 fn crc_table() -> [u32; 256] {
@@ -129,6 +145,58 @@ fn parse_options(line: &serde_json::Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Normalise one chat.jsonl line from `inbox_owner`'s inbox into a display
+/// message: resolve the sender, classify the kind, and strip the `ASK:`/`FYI:`/
+/// `ANSWER:`/`LEARN:` prefix + the trailing `[ans:<id>]` dedup tag so the chat
+/// reads cleanly. Pure + lenient — unit-tested.
+fn classify_message(inbox_owner: &str, line: &serde_json::Value) -> AgencyMessage {
+    let role = line.get("role").and_then(|v| v.as_str()).unwrap_or("");
+    let typ = line.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let from_field = line.get("from").and_then(|v| v.as_str()).unwrap_or("");
+    let raw = line
+        .get("text")
+        .and_then(|v| v.as_str())
+        .or_else(|| line.get("reason").and_then(|v| v.as_str()))
+        .unwrap_or("");
+
+    let owner_short = match inbox_owner {
+        "team-manager" => "manager",
+        "team-liaison" => "liaison",
+        other => other,
+    };
+    // Assistant lines are authored by the inbox owner; `user` lines carry a
+    // `from` tag (an empty `from` on a user line is an operator-posted message).
+    let from = match role {
+        "assistant" => owner_short.to_string(),
+        "manager" => "manager".to_string(),
+        "user" if from_field.is_empty() => "operator".to_string(),
+        _ => from_field.to_string(),
+    };
+
+    let (kind, text) = if !typ.is_empty() {
+        (typ.to_string(), raw.to_string())
+    } else if let Some(r) = raw.strip_prefix("ASK: ") {
+        ("ask".to_string(), r.to_string())
+    } else if let Some(r) = raw.strip_prefix("FYI: ") {
+        ("fyi".to_string(), r.to_string())
+    } else if let Some(r) = raw.strip_prefix("ANSWER: ") {
+        let clean = r.rfind(" [ans:").map(|i| &r[..i]).unwrap_or(r);
+        ("answer".to_string(), clean.to_string())
+    } else if let Some(r) = raw.strip_prefix("LEARN: ") {
+        ("learn".to_string(), r.to_string())
+    } else {
+        ("msg".to_string(), raw.to_string())
+    };
+
+    AgencyMessage {
+        from,
+        kind,
+        text,
+        ts: line.get("ts").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        inbox: inbox_owner.to_string(),
+    }
 }
 
 fn resolve_hq_folder() -> PathBuf {
@@ -355,6 +423,82 @@ pub async fn answer_agency_question(
     Ok("delivered".to_string())
 }
 
+/// The Manager ⇄ Liaison conversation for one team — both inboxes merged and
+/// sorted chronologically — so the operator can read the full context behind a
+/// pending question. Path-guarded; empty (not an error) when nothing exists.
+#[tauri::command]
+pub async fn list_agency_chat(company: String, team: String) -> Result<Vec<AgencyMessage>, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("agency chat requires a signed-in user".to_string());
+    }
+    let root = agency_root(&resolve_hq_folder());
+    let tdir = root.join(&company).join(&team);
+    if !is_within(&root, &tdir) {
+        return Err("invalid team path".to_string());
+    }
+    let mut msgs = Vec::new();
+    for owner in ["team-manager", "team-liaison"] {
+        let inbox = tdir.join(owner).join("main").join("chat.jsonl");
+        for line in read_jsonl(&inbox) {
+            let m = classify_message(owner, &line);
+            if !m.text.trim().is_empty() {
+                msgs.push(m);
+            }
+        }
+    }
+    // Chronological by ISO ts (lexical sort is correct for the `…Z` format);
+    // stable so same-timestamp lines keep their per-inbox order.
+    msgs.sort_by(|a, b| a.ts.cmp(&b.ts));
+    Ok(msgs)
+}
+
+/// Post an operator message straight into the team-manager inbox — the same
+/// chat.jsonl transport the manager's `listen` loop consumes — so the operator
+/// can talk to the team directly. Path-guarded; rejects an empty body.
+#[tauri::command]
+pub async fn send_agency_message(
+    company: String,
+    team: String,
+    text: String,
+) -> Result<String, String> {
+    if !crate::util::feature_gate::desktop_features_enabled().await {
+        return Err("sending requires a signed-in user".to_string());
+    }
+    let body = text.trim();
+    if body.is_empty() {
+        return Err("empty message".to_string());
+    }
+    let root = agency_root(&resolve_hq_folder());
+    let manager = root
+        .join(&company)
+        .join(&team)
+        .join("team-manager")
+        .join("main")
+        .join("chat.jsonl");
+    if !is_within(&root, &manager) {
+        return Err("invalid team path".to_string());
+    }
+    if let Some(parent) = manager.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    // Append-only, matching chat.sh `user`/`say`: one compact JSON line.
+    let line = serde_json::json!({
+        "role": "user",
+        "from": "operator",
+        "text": body,
+        "ts": now_iso(),
+    });
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&manager)
+        .map_err(|e| e.to_string())?;
+    writeln!(f, "{}", serde_json::to_string(&line).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    Ok("sent".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +530,36 @@ mod tests {
         assert!(parse_options(&serde_json::json!({"text": "ASK: x"})).is_empty());
         assert!(parse_options(&serde_json::json!({"options": "yes/no"})).is_empty());
         assert!(parse_options(&serde_json::json!({"options": ["", "  "]})).is_empty());
+    }
+
+    #[test]
+    fn classify_message_resolves_sender_kind_and_clean_text() {
+        // manager's ASK lives in the liaison inbox; prefix stripped, kind=ask.
+        let ask = classify_message(
+            "team-liaison",
+            &serde_json::json!({"role":"user","from":"manager","text":"ASK: Deploy?","ts":"t1"}),
+        );
+        assert_eq!((ask.from.as_str(), ask.kind.as_str(), ask.text.as_str()), ("manager", "ask", "Deploy?"));
+
+        // liaison's ANSWER lives in the manager inbox; prefix + [ans:] tag stripped.
+        let ans = classify_message(
+            "team-manager",
+            &serde_json::json!({"role":"user","from":"liaison","text":"ANSWER: Ship it [ans:123]","ts":"t2"}),
+        );
+        assert_eq!((ans.from.as_str(), ans.kind.as_str(), ans.text.as_str()), ("liaison", "answer", "Ship it"));
+
+        // user line with no `from` is an operator-posted message.
+        let op = classify_message(
+            "team-manager",
+            &serde_json::json!({"role":"user","text":"hold off until QA signs off","ts":"t3"}),
+        );
+        assert_eq!((op.from.as_str(), op.kind.as_str()), ("operator", "msg"));
+
+        // assistant `ready` line is authored by the inbox owner.
+        let rdy = classify_message(
+            "team-manager",
+            &serde_json::json!({"role":"assistant","type":"ready","text":"online","ts":"t0"}),
+        );
+        assert_eq!((rdy.from.as_str(), rdy.kind.as_str()), ("manager", "ready"));
     }
 }

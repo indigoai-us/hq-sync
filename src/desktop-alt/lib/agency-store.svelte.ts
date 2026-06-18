@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import type { AgencyTeam, AgencyQuestion } from './agency';
+import type { AgencyTeam, AgencyQuestion, AgencyMessage } from './agency';
 
 // ---------------------------------------------------------------------------
 // Agency store (Mission Control). Module-level runes singleton — the same shape
@@ -10,6 +10,9 @@ import type { AgencyTeam, AgencyQuestion } from './agency';
 
 let teams = $state<AgencyTeam[]>([]);
 let questions = $state<AgencyQuestion[]>([]);
+let messages = $state<AgencyMessage[]>([]);
+// The team whose Manager ⇄ Liaison conversation is shown + posted to.
+let selected = $state<{ company: string; team: string } | null>(null);
 let loading = $state(true);
 let error = $state('');
 
@@ -17,6 +20,12 @@ let started = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 
 const REFRESH_MS = 4000;
+
+/** Keep `selected` pointing at a team that still exists (default: the first). */
+function reconcileSelection(): void {
+  const ok = selected && teams.some((t) => t.company === selected!.company && t.team === selected!.team);
+  if (!ok) selected = teams.length ? { company: teams[0].company, team: teams[0].team } : null;
+}
 
 async function refresh(): Promise<void> {
   try {
@@ -26,6 +35,13 @@ async function refresh(): Promise<void> {
     ]);
     teams = t ?? [];
     questions = q ?? [];
+    reconcileSelection();
+    messages = selected
+      ? (await invoke<AgencyMessage[]>('list_agency_chat', {
+          company: selected.company,
+          team: selected.team,
+        })) ?? []
+      : [];
     error = '';
     loading = false;
   } catch (err) {
@@ -62,12 +78,36 @@ export async function submitAnswer(q: AgencyQuestion, answer: string): Promise<s
   return res;
 }
 
+/** Switch which team's conversation is shown; refreshes immediately. */
+export function selectAgencyTeam(company: string, team: string): void {
+  selected = { company, team };
+  void refresh();
+}
+
+/** Post an operator message into the selected team's manager inbox, then refresh. */
+export async function sendAgencyMessage(text: string): Promise<string> {
+  if (!selected) return 'no-team';
+  const res = await invoke<string>('send_agency_message', {
+    company: selected.company,
+    team: selected.team,
+    text,
+  });
+  await refresh();
+  return res;
+}
+
 export const agencyStore = {
   get teams() {
     return teams;
   },
   get questions() {
     return questions;
+  },
+  get messages() {
+    return messages;
+  },
+  get selected() {
+    return selected;
   },
   get loading() {
     return loading;
