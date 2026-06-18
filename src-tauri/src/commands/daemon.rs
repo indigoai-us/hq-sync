@@ -104,7 +104,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 ///
 /// Mirrors `build_sync_spawn_args` (manual Sync Now) and adds:
 ///   - `--watch` — runner stays alive after the first pass
-///   - `--poll-remote-ms 600000` — pulls remote changes every 10 minutes
+///   - `--poll-remote-ms 15000` — pulls remote changes every 15 seconds (fixed)
 ///   - `--event-push` — when the user's Instant-sync setting is ON (Phase 2 GA)
 ///
 /// As of hq-cloud 5.26 the runner's chokidar watcher is real. Phase 2 GA
@@ -114,7 +114,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// filesystem event. Toggling Instant-sync OFF drops back to poll-only without
 /// disabling Auto-sync.
 ///
-/// Instant-sync OFF stays poll-only: the remote→local pull runs on the 10-minute
+/// Instant-sync OFF stays poll-only: the remote→local pull runs on the 15-second
 /// cadence and a local push waits for the next pass — there is no second-by-second
 /// upload of local edits. (The remote→local pull is poll-driven for most users.
 /// The server side shipped in hq-pro US-015/US-016 — `POST /v1/sync/subscribe`
@@ -122,7 +122,7 @@ fn resolve_hq_folder_path() -> Result<String, String> {
 /// of hq-cloud ≥6.3.1 the runner brings up real event-driven pull INSIDE
 /// `--event-push` for accounts enrolled in its Phase 3 rollout gate
 /// (`resolveEventSync`, exact-email allowlist + `HQ_SYNC_EVENT_SYNC` override);
-/// no new menubar flag is involved. The 10-minute poll stays regardless, as
+/// no new menubar flag is involved. The 15-second poll stays regardless, as
 /// the correctness backstop.)
 /// Conflict policy is `keep` (skip-and-surface) — local
 /// edits win and the conflict store routes them through the existing modal so
@@ -159,14 +159,11 @@ pub fn build_watch_runner_args(hq_folder_path: &str) -> SpawnArgs {
     // can't find node/npx. See paths::child_path.
     env.insert("PATH".to_string(), paths::child_path());
 
-    // Remote-pull cadence for `--poll-remote-ms`. See `resolve_poll_remote_ms`
-    // for the precedence (persisted Setting > env override > 600s default,
-    // floored at 15s).
-    let env_poll_ms = std::env::var("HQ_CLOUD_DEV_POLL_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .filter(|&n| n > 0);
-    let poll_ms = resolve_poll_remote_ms(sync_poll_seconds_setting(), env_poll_ms);
+    // Remote-pull cadence, fixed at 15 seconds. event-push + event-sync handle
+    // real-time propagation; this poll is only the correctness backstop. It is
+    // intentionally NOT user-configurable.
+    const SYNC_POLL_REMOTE_MS: u64 = 15_000;
+    let poll_ms = SYNC_POLL_REMOTE_MS;
 
     let mut runner_args = vec![
         "--companies".to_string(),
@@ -296,40 +293,6 @@ fn read_menubar_bool<F: FnOnce(&MenubarPrefs) -> Option<bool>>(field: F, default
     prefs.and_then(|p| field(&p)).unwrap_or(default)
 }
 
-/// Read the user-configured Auto-sync remote-poll interval (seconds) from
-/// menubar.json. `None` when unset or non-positive, in which case
-/// `build_watch_runner_args` falls back to the `HQ_CLOUD_DEV_POLL_MS` env
-/// override and then the 600s default. This is the persisted replacement for
-/// the env-only override.
-pub fn sync_poll_seconds_setting() -> Option<u64> {
-    let menubar_path = paths::menubar_json_path().ok()?;
-    if !menubar_path.exists() {
-        return None;
-    }
-    let prefs: MenubarPrefs = std::fs::read_to_string(&menubar_path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())?;
-    prefs.sync_poll_seconds.filter(|&n| n > 0)
-}
-
-/// The 10-minute production default for `--poll-remote-ms`.
-const POLL_REMOTE_DEFAULT_MS: u64 = 600_000;
-/// Floor for `--poll-remote-ms` — a misconfigured value can't poll faster
-/// than this, so the daemon can never hammer S3.
-const POLL_REMOTE_FLOOR_MS: u64 = 15_000;
-
-/// Resolve the runner's `--poll-remote-ms` value (milliseconds). Precedence:
-/// the persisted `syncPollSeconds` Setting (× 1000) > the `HQ_CLOUD_DEV_POLL_MS`
-/// env override (ms) > the 600s default. The result is floored at 15s. Pure so
-/// the precedence + floor are unit-testable without touching menubar.json/env.
-fn resolve_poll_remote_ms(setting_seconds: Option<u64>, env_ms: Option<u64>) -> u64 {
-    setting_seconds
-        .map(|secs| secs.saturating_mul(1000))
-        .or(env_ms)
-        .unwrap_or(POLL_REMOTE_DEFAULT_MS)
-        .max(POLL_REMOTE_FLOOR_MS)
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Watch-mode ndjson handler
 // ─────────────────────────────────────────────────────────────────────────────
@@ -439,7 +402,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     log("daemon", "spawn: hq-sync-runner --watch");
 
     // Per-pass totals. Watch mode emits a full Complete/AllComplete cycle on
-    // every chokidar tick + every 10-minute poll, so we reset on each
+    // every chokidar tick + every 15-second poll, so we reset on each
     // AllComplete instead of accumulating forever.
     let totals: Arc<Mutex<RunTotals>> = Arc::new(Mutex::new(RunTotals::default()));
     let hq_folder = hq_folder_path.clone();
@@ -707,7 +670,7 @@ mod tests {
     // Auto-sync reuses the same hq-sync-runner binary as the manual Sync Now
     // button (see commands/sync.rs::build_sync_spawn_args), but adds:
     //   --watch                  — keep the runner alive after the first pass
-    //   --poll-remote-ms 600000  — pull from S3 every 10 minutes
+    //   --poll-remote-ms 15000   — pull from S3 every 15 seconds (fixed)
     //
     // Conflict policy stays `keep` (skip-and-surface) — local edits win and
     // the conflict store routes them through the existing modal. Direction
@@ -748,35 +711,11 @@ mod tests {
             .iter()
             .position(|a| a == "--poll-remote-ms")
             .expect("--poll-remote-ms flag missing");
-        // The exact value is environment-dependent now (persisted Setting >
-        // HQ_CLOUD_DEV_POLL_MS env > 600s default); the precedence + floor are
-        // covered by `test_resolve_poll_remote_ms_precedence_and_floor`. Here we
-        // only assert the flag carries a parseable, floored interval.
-        let poll_ms: u64 = args
-            .args
-            .get(poll_idx + 1)
-            .expect("--poll-remote-ms value missing")
-            .parse()
-            .expect("--poll-remote-ms value must be a u64");
-        assert!(
-            poll_ms >= POLL_REMOTE_FLOOR_MS,
-            "poll interval {poll_ms}ms is below the 15s floor"
+        assert_eq!(
+            args.args.get(poll_idx + 1).map(|s| s.as_str()),
+            Some("15000"),
+            "expected the fixed 15-second (15000ms) poll interval"
         );
-    }
-
-    #[test]
-    fn test_resolve_poll_remote_ms_precedence_and_floor() {
-        // Persisted Setting (seconds) wins and is converted to ms — even over
-        // the env override.
-        assert_eq!(resolve_poll_remote_ms(Some(60), Some(300_000)), 60_000);
-        // No Setting → the HQ_CLOUD_DEV_POLL_MS env override (ms) wins.
-        assert_eq!(resolve_poll_remote_ms(None, Some(120_000)), 120_000);
-        // Neither → the 10-minute default.
-        assert_eq!(resolve_poll_remote_ms(None, None), POLL_REMOTE_DEFAULT_MS);
-        // Floor: a too-small Setting or env value is clamped to 15s so the
-        // daemon can never hammer S3.
-        assert_eq!(resolve_poll_remote_ms(Some(5), None), POLL_REMOTE_FLOOR_MS);
-        assert_eq!(resolve_poll_remote_ms(None, Some(1_000)), POLL_REMOTE_FLOOR_MS);
     }
 
     #[test]

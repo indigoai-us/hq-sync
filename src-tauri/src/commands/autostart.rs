@@ -186,7 +186,6 @@ mod tests {
             release_channel: None,
             meeting_detect_notify: None,
             default_recording_company_uid: None,
-            sync_poll_seconds: None,
             telemetry_enabled: None,
         }
     }
