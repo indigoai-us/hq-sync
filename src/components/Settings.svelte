@@ -3,6 +3,12 @@
   import { getVersion } from '@tauri-apps/api/app';
   import { open as openUrl } from '@tauri-apps/plugin-shell';
   import { permissionState, loadMeetingPermissions } from '../lib/permissionState.svelte';
+  import {
+    DEFAULT_SYNC_POLL_SECONDS,
+    SYNC_POLL_INTERVAL_OPTIONS,
+    humanizeSyncPollInterval,
+    normalizeSyncPollSeconds,
+  } from '../lib/sync-poll-interval';
 
   interface Props {
     onback: () => void;
@@ -18,6 +24,9 @@
   let notifications = $state(true);
   let startAtLogin = $state(true);
   let realtimeSync = $state(true);
+  // Auto-sync remote-poll interval (seconds). Defaults to the 10-min cadence;
+  // the daemon resolves the real value (setting > HQ_CLOUD_DEV_POLL_MS > 600s).
+  let syncPollSeconds = $state(DEFAULT_SYNC_POLL_SECONDS);
   // Defaults to true so a brand-new install matches pre-5.25 behavior.
   // When false, Sync Now (and Auto-sync) drop the personal target from
   // the spawned hq-sync-runner's fanout — only cloud-enabled company
@@ -151,6 +160,7 @@
           realtimeSync: boolean | null;
           personalSyncEnabled: boolean | null;
           instantSync: boolean | null;
+          syncPollSeconds?: number | null;
           shareNotifications: boolean | null;
           dmNotifications: boolean | null;
           cliAutoUpdate: boolean | null;
@@ -186,6 +196,7 @@
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
       instantSync = settings.instantSync ?? true;
+      syncPollSeconds = normalizeSyncPollSeconds(settings.syncPollSeconds);
       shareNotifications = settings.shareNotifications ?? true;
       dmNotifications = settings.dmNotifications ?? true;
       cliAutoUpdate = settings.cliAutoUpdate ?? true;
@@ -239,6 +250,7 @@
           realtimeSync,
           personalSyncEnabled,
           instantSync,
+          syncPollSeconds,
           shareNotifications,
           dmNotifications,
           cliAutoUpdate,
@@ -378,6 +390,22 @@
       // Surface in console — the toggle's persisted state is still authoritative,
       // and main.rs auto-starts the daemon on next launch when the flag is set.
       console.error('Auto-sync daemon command failed:', err);
+    }
+  }
+
+  async function handleSyncIntervalChange(event: Event) {
+    const next = Number((event.currentTarget as HTMLSelectElement).value);
+    syncPollSeconds = normalizeSyncPollSeconds(next);
+    await saveAll();
+    // Respawn the watch daemon so the new --poll-remote-ms takes effect now,
+    // not on next launch. Only meaningful when Auto-sync is currently on.
+    if (realtimeSync) {
+      try {
+        await invoke('stop_daemon');
+        await invoke('start_daemon');
+      } catch (err) {
+        console.error('Auto-sync daemon restart after interval change failed:', err);
+      }
     }
   }
 
@@ -555,7 +583,7 @@
           <div class="setting-row">
             <div class="setting-info">
               <label class="setting-label" for="toggle-realtime-sync">Auto-sync</label>
-              <span class="setting-desc">Syncs every 10 minutes with no clicks needed</span>
+              <span class="setting-desc">Syncs {humanizeSyncPollInterval(syncPollSeconds)} with no clicks needed</span>
             </div>
             <button
               id="toggle-realtime-sync"
@@ -570,6 +598,30 @@
             </button>
           </div>
 
+          <!-- Auto-sync interval — the watch daemon's --poll-remote-ms cadence.
+               Persisted via syncPollSeconds; the daemon respawns on change so
+               the new interval takes effect immediately. Only shown while
+               Auto-sync is on (a poll interval is meaningless when off). -->
+          {#if realtimeSync}
+            <div class="setting-row setting-row-stacked">
+              <div class="setting-info">
+                <label class="setting-label" for="sync-poll-interval">Sync interval</label>
+                <span class="setting-desc">How often Auto-sync pulls remote changes</span>
+              </div>
+              <select
+                id="sync-poll-interval"
+                class="default-recording-company"
+                aria-label="Auto-sync interval"
+                value={String(syncPollSeconds)}
+                onchange={handleSyncIntervalChange}
+              >
+                {#each SYNC_POLL_INTERVAL_OPTIONS as opt}
+                  <option value={String(opt.value)}>{opt.label}</option>
+                {/each}
+              </select>
+            </div>
+          {/if}
+
           <!-- Instant sync (event-driven) — when ON, the daemon spawns the
                hq-sync-runner with --event-push so local edits upload within
                seconds of the filesystem event instead of waiting for the
@@ -579,7 +631,7 @@
           <div class="setting-row">
             <div class="setting-info">
               <label class="setting-label" for="toggle-instant-sync">Instant sync</label>
-              <span class="setting-desc">Push local edits within seconds instead of every 10 minutes</span>
+              <span class="setting-desc">Push local edits within seconds instead of waiting for the periodic sync</span>
             </div>
             <button
               id="toggle-instant-sync"
