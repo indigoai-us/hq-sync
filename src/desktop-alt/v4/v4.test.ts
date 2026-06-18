@@ -4,6 +4,7 @@ import {
   getV4SidebarModel,
   getV4TitleBarModel,
   V4_NAV_ITEMS,
+  v4CompanyConnected,
   v4CompanyDotTone,
   type V4Route,
   type V4SidebarModel,
@@ -115,7 +116,7 @@ describe('US-001 V4 sidebar active-state mapping', () => {
 });
 
 describe('US-001 V4 sidebar companies-list rendering', () => {
-  it('renders one row per workspace with the display name and status dot tone', () => {
+  it('renders one row per workspace with the display name and status dot tone (connected-first, alpha within group)', () => {
     const model = getV4SidebarModel({ kind: 'home' }, [
       company({ slug: 'synced', displayName: 'Synced Co', state: 'synced' }),
       company({ slug: 'broken', displayName: 'Broken Co', state: 'broken' }),
@@ -124,12 +125,14 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
       personal,
     ]);
 
+    // Connected (synced / cloud-only / personal) lead, alphabetical by name;
+    // the rest (broken, local-only) follow, alphabetical. Tones are unchanged.
     expect(model.companies.map((row) => [row.slug, row.label, row.tone])).toEqual([
+      ['cloud', 'Cloud Co', 'idle'],
+      ['personal', 'Personal', 'ok'],
       ['synced', 'Synced Co', 'ok'],
       ['broken', 'Broken Co', 'error'],
       ['local', 'Local Co', 'idle'],
-      ['cloud', 'Cloud Co', 'idle'],
-      ['personal', 'Personal', 'ok'],
     ]);
   });
 
@@ -165,10 +168,13 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
     const model = getV4SidebarModel({ kind: 'company', slug: 'dupe' }, [
       company({ slug: 'dupe', displayName: 'Dupe Local', state: 'local-only' }),
       company({ slug: 'dupe', displayName: 'Dupe Cloud', state: 'cloud-only' }),
-      company({ slug: 'next', displayName: 'Next' }),
+      company({ slug: 'next', displayName: 'Next', state: 'synced' }),
     ]);
 
-    expect(model.companies.map((row) => row.slug)).toEqual(['dupe', 'next']);
+    // First occurrence wins the dedupe (Dupe Local, local-only → idle/not
+    // connected), so the connected-first sort puts 'next' (synced) ahead of it.
+    expect(model.companies.map((row) => row.slug)).toEqual(['next', 'dupe']);
+    expect(model.companies.find((row) => row.slug === 'dupe')?.label).toBe('Dupe Local');
     expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual([
       'dupe',
     ]);
@@ -184,6 +190,68 @@ describe('US-001 V4 sidebar companies-list rendering', () => {
     expect(model.companies).toHaveLength(9);
     expect(model.companies.find((row) => row.slug === 'co-8')?.active).toBe(true);
     expect(activeRowCount(model)).toBe(1);
+  });
+});
+
+describe('US-007 V4 sidebar connected-first sort', () => {
+  it('sorts cloud-connected companies (synced / cloud-only) above idle ones, alphabetical within group', () => {
+    const model = getV4SidebarModel({ kind: 'home' }, [
+      company({ slug: 'zed', displayName: 'Zed', state: 'local-only' }),
+      company({ slug: 'acme', displayName: 'Acme', state: 'synced' }),
+      company({ slug: 'beta', displayName: 'Beta', state: 'local-only' }),
+      company({ slug: 'cloudco', displayName: 'CloudCo', state: 'cloud-only', hasLocalFolder: false }),
+      company({ slug: 'orbit', displayName: 'Orbit', state: 'synced' }),
+    ]);
+
+    // Connected (Acme synced, CloudCo cloud-only, Orbit synced) lead in alpha
+    // order; idle (Beta, Zed local-only) follow in alpha order.
+    expect(model.companies.map((row) => row.label)).toEqual([
+      'Acme',
+      'CloudCo',
+      'Orbit',
+      'Beta',
+      'Zed',
+    ]);
+  });
+
+  it('sorts case-insensitively within each group', () => {
+    const model = getV4SidebarModel({ kind: 'home' }, [
+      company({ slug: 'b', displayName: 'banana', state: 'synced' }),
+      company({ slug: 'a', displayName: 'Apple', state: 'synced' }),
+      company({ slug: 'c', displayName: 'Cherry', state: 'synced' }),
+    ]);
+    expect(model.companies.map((row) => row.label)).toEqual(['Apple', 'banana', 'Cherry']);
+  });
+
+  it('treats personal as connected (green dot) and groups it with synced/cloud-only', () => {
+    const model = getV4SidebarModel({ kind: 'home' }, [
+      company({ slug: 'idle1', displayName: 'Idle One', state: 'local-only' }),
+      personal,
+      company({ slug: 'sync1', displayName: 'Aardvark', state: 'synced' }),
+    ]);
+    // personal + synced lead (alpha: Aardvark, Personal), then the idle row.
+    expect(model.companies.map((row) => row.slug)).toEqual(['sync1', 'personal', 'idle1']);
+  });
+
+  it('keeps the active company highlighted after the connected-first reorder', () => {
+    const model = getV4SidebarModel({ kind: 'company', slug: 'idle-active' }, [
+      company({ slug: 'idle-active', displayName: 'Idle Active', state: 'local-only' }),
+      company({ slug: 'conn', displayName: 'Connected', state: 'synced' }),
+    ]);
+    // Connected row sorts first, but the idle active row stays the only active one.
+    expect(model.companies.map((row) => row.slug)).toEqual(['conn', 'idle-active']);
+    expect(model.companies.filter((row) => row.active).map((row) => row.slug)).toEqual([
+      'idle-active',
+    ]);
+    expect(activeRowCount(model)).toBe(1);
+  });
+
+  it('exposes v4CompanyConnected as the grouping predicate (synced/cloud-only/personal)', () => {
+    expect(v4CompanyConnected(company({ state: 'synced' }))).toBe(true);
+    expect(v4CompanyConnected(company({ state: 'cloud-only' }))).toBe(true);
+    expect(v4CompanyConnected(personal)).toBe(true);
+    expect(v4CompanyConnected(company({ state: 'local-only' }))).toBe(false);
+    expect(v4CompanyConnected(company({ state: 'broken' }))).toBe(false);
   });
 });
 
