@@ -5,9 +5,13 @@
    * shared LibraryBrowser (Workers|Skills toggle + text filter + detail).
    *
    * Load convention mirrors the other company panels: slug-keyed $effect with a
-   * cancel flag so switching companies fast can't paint stale data.
+   * cancel flag so switching companies fast can't paint stale data. A second
+   * $effect subscribes to window focus / sync:complete and bumps `refreshNonce`,
+   * so a worker created in another tool surfaces without remounting the panel.
    */
   import { loadLibraryCompany, type LibraryItems } from '../lib/library';
+  import { subscribeLibraryRefresh } from '../lib/library-refresh';
+  import type { UnlistenFn } from '@tauri-apps/api/event';
   import LibraryBrowser from '../components/LibraryBrowser.svelte';
 
   interface Props {
@@ -20,9 +24,13 @@
   let items = $state<LibraryItems>({ workers: [], skills: [] });
   let loading = $state(true);
   let error = $state<string | null>(null);
+  /** Bumped by the focus / sync:complete refresh subscription to re-fetch. */
+  let refreshNonce = $state(0);
 
   $effect(() => {
     const activeSlug = slug;
+    // Re-run whenever the refresh subscription bumps the nonce.
+    refreshNonce;
     items = { workers: [], skills: [] };
     error = null;
 
@@ -51,6 +59,25 @@
 
     return () => {
       cancelled = true;
+    };
+  });
+
+  // Re-fetch on window focus / sync:complete so a worker created elsewhere
+  // appears without remounting the panel. Wired once.
+  $effect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+
+    void subscribeLibraryRefresh(() => {
+      refreshNonce += 1;
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   });
 </script>

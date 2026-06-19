@@ -4,10 +4,15 @@
    * destination, ⌘3). Lists every shared/public worker plus root + personal
    * skills, with a Workers|Skills toggle, a text filter, and a detail slide-over.
    *
-   * Data is loaded once from the local FS via get_library_root; the shared
-   * LibraryBrowser owns the filter/toggle/list/detail UI.
+   * Data is loaded from the local FS via get_library_root on mount and re-loaded
+   * on `refreshNonce` bumps. The shared LibraryBrowser owns the filter/toggle/
+   * list/detail UI. `subscribeLibraryRefresh` re-fetches when the window regains
+   * focus or a sync completes, so a worker created in another tool surfaces
+   * without leaving and returning to the page.
    */
   import { loadLibraryRoot, type LibraryItems } from '../lib/library';
+  import { subscribeLibraryRefresh } from '../lib/library-refresh';
+  import type { UnlistenFn } from '@tauri-apps/api/event';
   import type { LibraryTab } from '../route';
   import LibraryBrowser from '../components/LibraryBrowser.svelte';
 
@@ -21,6 +26,8 @@
   let items = $state<LibraryItems>({ workers: [], skills: [] });
   let loading = $state(true);
   let error = $state<string | null>(null);
+  /** Bumped by the focus / sync:complete refresh subscription to re-fetch. */
+  let refreshNonce = $state(0);
 
   const HEADINGS: Record<LibraryTab, string> = {
     skills: 'Skills',
@@ -44,6 +51,8 @@
   );
 
   $effect(() => {
+    // Re-run whenever the refresh subscription bumps the nonce.
+    refreshNonce;
     loading = true;
     error = null;
     let cancelled = false;
@@ -65,6 +74,25 @@
 
     return () => {
       cancelled = true;
+    };
+  });
+
+  // Re-fetch on window focus / sync:complete so a worker created elsewhere
+  // (e.g. `/newworker`) appears without remounting the page. Wired once.
+  $effect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let disposed = false;
+
+    void subscribeLibraryRefresh(() => {
+      refreshNonce += 1;
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
     };
   });
 </script>
