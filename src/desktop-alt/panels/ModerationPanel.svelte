@@ -41,6 +41,7 @@
     decideCreatorApplication,
     decideModerationListing,
     highlightInstruction,
+    isInitPromptDoc,
     loadCreatorApplications,
     loadModerationQueue,
     yankMarketplaceListing,
@@ -90,10 +91,15 @@
 
   const approveEnabled = $derived(canApprove({ acknowledged, busy: deciding }));
 
-  // The highlighted instruction segments for the selected item, per doc.
+  // The highlighted instruction segments for the selected item, per doc. The
+  // `initialization.prompt` doc (the post-install setup prompt handed to users to
+  // paste into an agent) is flagged so the UI can call it out as elevated-risk —
+  // it's the highest-trust-sensitivity prose in the pack and runs through the
+  // SAME injection highlighting as every other doc.
   const instructionViews = $derived(
     (selected?.instructions ?? []).map((doc) => ({
       path: doc.path,
+      isInitPrompt: isInitPromptDoc(doc),
       segments: highlightInstruction(doc, selected?.injectionScan ?? []),
     })),
   );
@@ -450,8 +456,33 @@
             <h5 class="block-title">Instructions (prompt-injection review)</h5>
             {#if instructionViews.length > 0}
               {#each instructionViews as view (view.path)}
-                <p class="doc-path">{view.path}</p>
-                <pre class="doc-text">{#each view.segments as seg, i (i)}{#if seg.flagged}<mark
+                {#if view.isInitPrompt}
+                  <!-- Elevated-risk: this prose is handed to users to paste into
+                       their agent post-install. Highest trust-sensitivity doc in
+                       the pack — call it out so the reviewer reads it knowing it
+                       becomes a copy/paste-into-agent instruction. -->
+                  <div
+                    class="init-prompt-banner"
+                    data-testid="moderation-init-prompt-banner"
+                  >
+                    <span class="init-prompt-tag">Setup prompt</span>
+                    Post-install prompt shown to users to paste into their agent —
+                    elevated risk. Read it as if it will run in an agent.
+                  </div>
+                {/if}
+                <p class="doc-path" class:init-prompt={view.isInitPrompt}>
+                  {view.path}
+                  {#if view.isInitPrompt}
+                    <span
+                      class="doc-path-badge"
+                      data-testid="moderation-init-prompt-badge"
+                      title="The post-install setup prompt handed to users to paste into an agent">⚠ setup prompt</span>
+                  {/if}
+                </p>
+                <pre
+                  class="doc-text"
+                  class:init-prompt={view.isInitPrompt}
+                  data-testid={view.isInitPrompt ? 'moderation-init-prompt-text' : undefined}>{#each view.segments as seg, i (i)}{#if seg.flagged}<mark
                       class="flagged"
                       data-testid="moderation-flag"
                       title={seg.reason}>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</pre>
@@ -1111,6 +1142,53 @@
     color: var(--muted-3);
     font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
     font-size: var(--text-micro);
+  }
+
+  .doc-path.init-prompt {
+    color: var(--fg);
+  }
+
+  /* Monospace micro-label flagging the init-prompt doc as elevated-risk. */
+  .doc-path-badge {
+    margin-left: var(--space-1);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--amber);
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--amber) 14%, transparent);
+    color: var(--amber);
+    font-size: var(--text-micro);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  /* Elevated-risk callout above the init-prompt doc text. */
+  .init-prompt-banner {
+    margin-top: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--amber);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--amber) 12%, transparent);
+    color: var(--fg);
+    font-size: var(--text-micro);
+    line-height: 16px;
+  }
+
+  .init-prompt-tag {
+    display: inline-block;
+    margin-right: var(--space-2);
+    padding: 0 var(--space-1);
+    border-radius: 2px;
+    background: var(--amber);
+    color: #1a1205;
+    font-size: var(--text-micro);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  /* The init-prompt text block gets a warm hairline so it reads as elevated. */
+  .doc-text.init-prompt {
+    border-color: var(--amber);
   }
 
   .doc-text {
