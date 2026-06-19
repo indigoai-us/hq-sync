@@ -289,6 +289,37 @@ export interface InstructionDoc {
 }
 
 /**
+ * Conventional virtual path for the reviewable `initialization.prompt` doc.
+ *
+ * A pack's optional `initialization.prompt` is author free-text the user is told
+ * to paste into their agent — an UNTRUSTED, highest-trust-sensitivity prose blob
+ * and a prime prompt-injection vector. It MUST be reviewed exactly like every
+ * other instruction doc (injection-scanned + moderator-approved) before it is
+ * ever shown to a user for copy/paste (US-008). The server (hq-pro / the Rust
+ * `ModerationQueueItem` mirror) is responsible for surfacing it as an
+ * `InstructionDoc` under THIS conventional path inside `instructions` (and
+ * scanning it into `injectionScan`); the client then highlights + labels it like
+ * any other doc — but calls it out as elevated-risk (`isInitPromptDoc`).
+ *
+ * It is NOT a real file in the tarball — it lives inside `package.yaml`, so the
+ * fragment (`#initialization.prompt`) disambiguates it from the manifest itself.
+ */
+export const INIT_PROMPT_DOC_PATH = 'package.yaml#initialization.prompt';
+
+/**
+ * Is this instruction doc the pack's `initialization.prompt` (the post-install
+ * setup prompt handed to users to paste into an agent)? The init-prompt doc is
+ * the highest-trust-sensitivity prose in a pack, so the moderation UI flags it as
+ * elevated-risk. Pure + DOM-free so it's unit-testable.
+ *
+ * Matches the conventional virtual path emitted by the server, tolerant of
+ * surrounding whitespace and case (the fragment is the load-bearing part).
+ */
+export function isInitPromptDoc(doc: Pick<InstructionDoc, 'path'>): boolean {
+  return (doc?.path ?? '').trim().toLowerCase() === INIT_PROMPT_DOC_PATH;
+}
+
+/**
  * One pending_review listing in the moderation queue (mirrors Rust
  * `ModerationQueueItem` 1:1). A superset of `MarketplaceListing` with the
  * moderation-only fields a reviewer needs.
