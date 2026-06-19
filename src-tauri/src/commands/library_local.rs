@@ -1356,6 +1356,65 @@ skills:
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Regression for the "I created a `glm-5-2` worker but it isn't in the
+    /// library" report: a company-scoped worker whose id carries digits + hyphens
+    /// must surface in BOTH the root (all-scopes) and the per-company library —
+    /// via the generated registry AND, when the registry hasn't regenerated yet,
+    /// via the on-disk worker.yaml fallback.
+    #[test]
+    fn hyphenated_numeric_worker_id_surfaces_in_library() {
+        let root = make_fixture_tree();
+        let dir = root.join("companies/indigo/workers/glm-5-2");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("worker.yaml"),
+            "worker:\n  id: glm-5-2\n  name: \"GLM 5 2\"\n  type: CodeWorker\n  version: \"1.0\"\n  description: \"A glm-5-2 worker\"\n",
+        )
+        .unwrap();
+
+        // Case 1: the registry still has its original (pre-creation) entries — the
+        // reindex hook hasn't run yet. The on-disk worker.yaml fallback must still
+        // surface glm-5-2.
+        let stale = scan_root_library(&root);
+        let from_fs = stale
+            .workers
+            .iter()
+            .find(|w| w.path == "companies/indigo/workers/glm-5-2/")
+            .expect("glm-5-2 surfaces from worker.yaml even with a stale registry");
+        assert_eq!(from_fs.id, "glm-5-2");
+        assert_eq!(from_fs.scope, "company");
+        assert_eq!(from_fs.company.as_deref(), Some("indigo"));
+
+        let stale_company = scan_company_library(&root, "indigo").expect("indigo library");
+        assert!(
+            stale_company
+                .workers
+                .iter()
+                .any(|w| w.id == "glm-5-2"),
+            "glm-5-2 must appear in the per-company library from worker.yaml"
+        );
+
+        // Case 2: the registry regenerates and now lists glm-5-2 as a private
+        // company worker. It must still surface (and stay unique, not doubled).
+        fs::write(
+            root.join("core/workers/registry.yaml"),
+            "version: \"5.0\"\nworkers:\n  - id: glm-5-2\n    path: companies/indigo/workers/glm-5-2/\n    type: CodeWorker\n    visibility: private\n    company: indigo\n    status: active\n    description: \"A glm-5-2 worker\"\n",
+        )
+        .unwrap();
+
+        let fresh = scan_root_library(&root);
+        let matches: Vec<_> = fresh
+            .workers
+            .iter()
+            .filter(|w| w.path == "companies/indigo/workers/glm-5-2/")
+            .collect();
+        assert_eq!(matches.len(), 1, "glm-5-2 listed exactly once, not duplicated");
+        assert_eq!(matches[0].id, "glm-5-2");
+        assert_eq!(matches[0].scope, "company");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn split_frontmatter_handles_no_fence() {
         let (front, body) = split_frontmatter("# Just markdown\n\nNo frontmatter.");
