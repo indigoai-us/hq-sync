@@ -37,6 +37,9 @@
   let logLines = $state<string[]>([]);
   let errorMsg = $state<string | null>(null);
   let confirmUninstall = $state<string | null>(null);
+  // Per-pack "copied" feedback for the Get started copy button, keyed by pack name.
+  let copiedPack = $state<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | null = null;
 
   const installed = $derived(view?.packs?.installed ?? []);
   const available = $derived(view?.packs?.available ?? []);
@@ -138,6 +141,43 @@
     return parts.join(', ') || 'no contributions';
   }
 
+  /**
+   * Normalize a pack's `initialization.entrypoint` into a slash-prefixed command
+   * token (e.g. `email-assistant` → `/email-assistant`). Returns `null` when the
+   * pack declares no usable entrypoint, so the Get started affordance is hidden.
+   *
+   * PHASE 1: we render ONLY this safe, author-declared entrypoint — never the
+   * free-text `initialization.prompt` prose (that is a later, moderation-gated
+   * story). Deriving the line purely from the entrypoint keeps it un-spoofable.
+   */
+  function getStartedCommand(p: InstalledPack): string | null {
+    const raw = p.initialization?.entrypoint?.trim();
+    if (!raw) return null;
+    return raw.startsWith('/') ? raw : `/${raw}`;
+  }
+
+  /** The ready-to-paste line for a pack — the same text the copy button writes. */
+  function getStartedLine(p: InstalledPack): string | null {
+    const cmd = getStartedCommand(p);
+    return cmd ? `Run ${cmd} to get started` : null;
+  }
+
+  async function copyGetStarted(p: InstalledPack): Promise<void> {
+    const line = getStartedLine(p);
+    if (!line) return;
+    try {
+      await navigator.clipboard.writeText(line);
+      copiedPack = p.name;
+      if (copiedTimer) clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => {
+        copiedPack = null;
+        copiedTimer = null;
+      }, 1800);
+    } catch (err) {
+      console.error('installed-packs: clipboard write failed', err);
+    }
+  }
+
   function isGatedOff(a: AvailablePack): boolean {
     return a.conditionalStatus === 'fail';
   }
@@ -216,6 +256,23 @@
             <div class="row-sub">
               {#if p.error}{p.error}{:else}{contributeSummary(p)}{/if}
             </div>
+            {#if getStartedCommand(p)}
+              {@const cmd = getStartedCommand(p)}
+              <div class="get-started" data-testid="installed-get-started">
+                <span class="get-started-label">Get started</span>
+                <code class="get-started-cmd">{cmd}</code>
+                <button
+                  type="button"
+                  class="get-started-copy"
+                  data-testid="installed-get-started-copy"
+                  onclick={() => copyGetStarted(p)}
+                  aria-label={`Copy "Run ${cmd} to get started"`}
+                  title={`Run ${cmd} to get started`}
+                >
+                  {copiedPack === p.name ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            {/if}
           </div>
           <div class="row-actions">
             {#if p.updateAvailable}
@@ -456,6 +513,67 @@
     text-overflow: ellipsis;
   }
 
+  /* ---- post-install "Get started" affordance (entrypoint-derived only) --- */
+  .get-started {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+    min-width: 0;
+  }
+
+  .get-started-label {
+    color: var(--muted-3);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .get-started-cmd {
+    padding: 1px 7px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--row-hover);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    line-height: 15px;
+    white-space: nowrap;
+  }
+
+  .get-started-copy {
+    height: 22px;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--row-hover);
+    color: var(--muted);
+    font: inherit;
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition:
+      background 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease;
+  }
+
+  .get-started-copy:hover {
+    border-color: var(--border-strong);
+    background: var(--row-active);
+    color: var(--fg);
+  }
+
+  .get-started-copy:focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 2px;
+  }
+
   .row-actions {
     display: flex;
     flex-shrink: 0;
@@ -622,7 +740,8 @@
 
   @media (prefers-reduced-motion: reduce) {
     .refresh,
-    .action {
+    .action,
+    .get-started-copy {
       transition: none;
     }
     .spinner,

@@ -12,6 +12,23 @@ export type LinkCounts = {
   foreign: number;
 };
 
+/**
+ * A pack's optional post-install `initialization` block (declared in
+ * `package.yaml`, validated by the `hq` CLI on install — US-004). `entrypoint`
+ * is a safe, author-declared skill/command name (resolves to a `contributes.*`
+ * entry); `prompt` is OPTIONAL author free-text. Phase 1 of the UI renders ONLY
+ * the safe entrypoint-derived "get started" line — the free-text `prompt` is
+ * suppressed pending a later moderation-gated story.
+ *
+ * Surfaced to the frontend only once `hq packs list --json` includes it; when
+ * absent (legacy packs, or an older CLI that doesn't emit it) the field is
+ * `undefined` and the UI renders exactly as before.
+ */
+export interface PackInitialization {
+  entrypoint: string;
+  prompt?: string;
+}
+
 export interface InstalledPack {
   name: string;
   version?: string;
@@ -25,6 +42,7 @@ export interface InstalledPack {
   brokenLinks: Array<{ key: string; item: string; dst: string }>;
   inCatalog: boolean;
   updateAvailable: boolean | null;
+  initialization?: PackInitialization;
   error?: string;
 }
 
