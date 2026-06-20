@@ -162,6 +162,16 @@ pub fn menubar_json_path() -> Result<PathBuf, String> {
     Ok(hq_config_dir()?.join("menubar.json"))
 }
 
+/// Returns the path to ~/.hq/sync-version.json.
+///
+/// This app records its own version here on launch so the hq-cli can attach
+/// the installed hq-sync version to feedback submissions — the CLI has no
+/// other way to learn the running menubar app version. Owned exclusively by
+/// this app; the CLI only reads it (best-effort, absent => "not installed").
+pub fn sync_version_json_path() -> Result<PathBuf, String> {
+    Ok(hq_config_dir()?.join("sync-version.json"))
+}
+
 /// Returns the path to ~/.hq/deploy-prefs.json.
 ///
 /// This file is owned exclusively by hq-core's `/deploy` skill — it persists
