@@ -452,6 +452,14 @@ fn main() {
             // diagnostic file and don't abort launch.
             commands::config::migrate_legacy_config_stub();
 
+            // Record this app's version to ~/.hq/sync-version.json so the
+            // hq-cli can attach the installed hq-sync version to feedback
+            // submissions — the CLI has no other way to learn the running
+            // menubar-app version. Best-effort; never aborts launch.
+            commands::config::record_sync_version(
+                &app.package_info().version.to_string(),
+            );
+
             // Default-on autostart: ensure the LaunchAgent plist matches the
             // effective `startAtLogin` pref (default true) so a fresh install
             // opens HQ Sync at login without the user opening Settings first.

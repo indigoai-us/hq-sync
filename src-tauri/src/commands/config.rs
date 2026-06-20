@@ -490,6 +490,36 @@ fn atomic_write_json(path: &std::path::Path, value: &Value) -> Result<(), String
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+/// Record the running hq-sync app version to `~/.hq/sync-version.json` so the
+/// hq-cli can read it and attach the installed menubar-app version to feedback
+/// submissions. The CLI has no other channel to learn this version.
+///
+/// Called once from `main.rs` `.setup()`. Best-effort and idempotent — a
+/// failure here must never affect launch, so errors are logged and swallowed.
+/// Returns the resolved path on success purely so the unit test can assert
+/// what was written.
+pub fn record_sync_version(version: &str) -> Option<std::path::PathBuf> {
+    use crate::util::logfile::log;
+    let path = match paths::sync_version_json_path() {
+        Ok(p) => p,
+        Err(e) => {
+            log("sync-version", &format!("path resolve failed: {e}"));
+            return None;
+        }
+    };
+    let value = serde_json::json!({
+        "version": version,
+        "updatedAt": chrono::Utc::now().to_rfc3339(),
+    });
+    match atomic_write_json(&path, &value) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            log("sync-version", &format!("write failed: {e}"));
+            None
+        }
+    }
+}
+
 /// Response returned to the frontend from get_config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1129,5 +1159,55 @@ mod lenient_reader_and_migration_tests {
         migrate_legacy_config_stub();
         let second = fs::read_to_string(tmp.path().join(".hq/config.json")).unwrap();
         assert_eq!(first, second, "second migrate must be a no-op");
+    }
+}
+
+#[cfg(test)]
+mod record_sync_version_tests {
+    use super::*;
+    use crate::util::test_support::ENV_MUTEX;
+    use serde_json::Value;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn read_marker(home: &std::path::Path) -> Value {
+        let body = fs::read_to_string(home.join(".hq/sync-version.json")).unwrap();
+        serde_json::from_str(&body).unwrap()
+    }
+
+    // Writes ~/.hq/sync-version.json with the version + an RFC3339 timestamp,
+    // creating ~/.hq when it does not yet exist.
+    #[test]
+    fn record_sync_version_writes_marker() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+
+        let path = record_sync_version("0.8.22-beta.1").expect("write should succeed");
+        assert_eq!(path, tmp.path().join(".hq/sync-version.json"));
+
+        let v = read_marker(tmp.path());
+        assert_eq!(v["version"], Value::String("0.8.22-beta.1".into()));
+        // updatedAt is an RFC3339 instant (date + 'T' + time).
+        let updated = v["updatedAt"].as_str().expect("updatedAt is a string");
+        assert!(updated.contains('T'), "updatedAt should be RFC3339: {updated}");
+    }
+
+    // The marker is fully overwritten on each launch (idempotent record).
+    #[test]
+    fn record_sync_version_overwrites_previous() {
+        let _g = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("HOME", tmp.path());
+        fs::create_dir_all(tmp.path().join(".hq")).unwrap();
+        fs::write(
+            tmp.path().join(".hq/sync-version.json"),
+            r#"{"version":"0.0.1-old","updatedAt":"2020-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+
+        record_sync_version("1.0.0").unwrap();
+        let v = read_marker(tmp.path());
+        assert_eq!(v["version"], Value::String("1.0.0".into()));
     }
 }
