@@ -19,6 +19,4 @@ jobs:
       node-version: "22"
       pnpm-install-args: "--frozen-lockfile"
       run-build: false
-      run-typecheck: false
-      run-lint: true
     secrets: inherit
