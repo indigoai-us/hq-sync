@@ -187,6 +187,12 @@ pub(crate) fn excluded_scope_paths() -> Vec<String> {
     [
         ".claude/settings.local.json",
         ".claude/state",
+        // Scheduler runtime state under the locked `.claude/` scope: the task
+        // store and its lock. The lock carries a sessionId/pid and can arrive
+        // via sync stamped with a foreign machine's pid — transient,
+        // machine-local, never authored content, never in the upstream tree.
+        ".claude/scheduled-tasks",
+        ".claude/scheduled_tasks.lock",
         ".claude/audit",     // runtime audit logs; not authored content
         ".claude/worktrees", // Claude Code per-Agent worktree sandboxes
         ".claude/commands",  // legacy — consolidated into .claude/skills/
@@ -477,5 +483,24 @@ mod tests {
         assert!(!path_in_locked_scope(".claude/CLAUDE.md.bak", &locked));
         // Out of scope.
         assert!(!path_in_locked_scope("workspace/threads/foo.json", &locked));
+    }
+
+    #[test]
+    fn scheduler_lock_and_store_are_excluded_from_drift() {
+        // Regression: the transient scheduler lock + task store live under the
+        // locked `.claude/` scope but are runtime/machine-local state (the lock
+        // even carries a foreign sessionId/pid after a sync), never authored and
+        // never shipped upstream — so they must not surface as "Added" drift.
+        let excluded = excluded_scope_paths();
+        assert!(path_in_excluded_scope(".claude/scheduled_tasks.lock", &excluded));
+        assert!(path_in_excluded_scope(".claude/scheduled-tasks", &excluded));
+        assert!(path_in_excluded_scope(
+            ".claude/scheduled-tasks/job-123.json",
+            &excluded
+        ));
+        // Existing exclusions still hold (guards against list churn).
+        assert!(path_in_excluded_scope(".claude/settings.local.json", &excluded));
+        // A genuinely-authored locked file is NOT excluded.
+        assert!(!path_in_excluded_scope(".claude/CLAUDE.md", &excluded));
     }
 }
