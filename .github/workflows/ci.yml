@@ -2,32 +2,23 @@ name: CI
 
 on:
   pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  frontend:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: svelte-check (errors only)
-        run: pnpm lint
-
-      - name: Unit + story tests
-        run: pnpm test
+  ci:
+    uses: indigoai-us/.github/.github/workflows/_node-ci.yml@main
+    with:
+      package-manager: pnpm
+      pnpm-version: "9"
+      node-version: "22"
+      pnpm-install-args: "--frozen-lockfile"
+      run-build: false
+      run-typecheck: false
+      run-lint: true
+      job-timeout-minutes: 15
+    secrets: inherit
