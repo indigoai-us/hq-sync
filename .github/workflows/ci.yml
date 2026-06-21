@@ -32,4 +32,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: pnpm test
+      - run: pnpm coverage
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo "## Coverage"
+            if [ -f coverage/coverage-summary.json ]; then
+              node -e "const c=require('./coverage/coverage-summary.json').total; for (const k of ['lines','statements','functions','branches']) console.log('- '+k+': '+c[k].pct+'%')"
+            else
+              echo "_(no coverage/coverage-summary.json produced)_"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

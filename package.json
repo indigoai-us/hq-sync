@@ -12,6 +12,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "test": "vitest run",
+    "coverage": "vitest run --coverage --coverage.reporter=text-summary --coverage.reporter=json-summary",
     "sidecar:install": "pnpm -C sidecar/recall-sdk-bridge install --config.minimumReleaseAge=1440",
     "bundle:debug": "npm run sidecar:install && tauri build --debug; bash scripts/fix-recall-framework-symlinks.sh \"src-tauri/target/debug/bundle/macos/HQ Sync.app\" && bash scripts/sign-bundle.sh \"src-tauri/target/debug/bundle/macos/HQ Sync.app\"",
     "bundle:release": "npm run sidecar:install && tauri build; bash scripts/fix-recall-framework-symlinks.sh \"src-tauri/target/release/bundle/macos/HQ Sync.app\" && bash scripts/sign-bundle.sh \"src-tauri/target/release/bundle/macos/HQ Sync.app\"",
@@ -36,6 +37,7 @@
     "svelte": "^5.0.0",
     "svelte-check": "^4.4.8",
     "typescript": "^5.6.0",
+    "@vitest/coverage-v8": "4.1.5",
     "vite": "^6.0.0",
     "vitest": "^4.1.5"
   }
