@@ -112,7 +112,12 @@ fn main() {
     };
     let _guard = sentry::init(ClientOptions {
         dsn,
-        release: Some(format!("hq-sync@{}", env!("CARGO_PKG_VERSION")).into()),
+        // APP_VERSION is the shipped package.json/tauri.conf.json version
+        // (emitted by build.rs). CARGO_PKG_VERSION is the internal crate
+        // version, which drifts from the release — using it made crash reports
+        // report the wrong version AND miss the source maps (uploaded keyed off
+        // the package.json version).
+        release: Some(format!("hq-sync@{}", env!("APP_VERSION")).into()),
         environment: Some(
             option_env!("SENTRY_ENVIRONMENT")
                 .unwrap_or("production")
