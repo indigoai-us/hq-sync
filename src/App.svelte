@@ -21,6 +21,7 @@
   import { transferCountDelta } from './lib/transfer-count';
   import { effectiveTotalFiles as computeEffectiveTotalFiles } from './lib/effective-total-files';
   import { shouldSkipSignIn } from './lib/auth';
+  import { friendlyCompanyLabel } from './lib/company-label';
   import type { Workspace, WorkspacesResult } from './lib/workspaces';
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
@@ -688,9 +689,21 @@
     try {
       await invoke('start_sync');
     } catch (err) {
+      const msg = String(err);
+      // A sync already holds the runner singleton (the watch daemon or a prior
+      // run) — not a failure worth alarming the user with a red error. Reflect
+      // it as syncing and let the active sync's events / cross-process file
+      // resolve it back to idle.
+      if (msg.toLowerCase().includes('already running')) {
+        manualSyncActive = false;
+        externalSyncActive = true;
+        syncState = 'syncing';
+        await invoke('set_tray_state', { state: 'syncing' });
+        return;
+      }
       console.error('start_sync failed:', err);
       syncState = 'error';
-      syncErrorMessage = String(err);
+      syncErrorMessage = msg;
       syncErrorCompany = '';
       await invoke('set_tray_state', { state: 'error' });
     }
@@ -995,7 +1008,7 @@
         async (event) => {
           syncState = 'syncing';
           syncProgress = {
-            company: event.payload.company,
+            company: friendlyCompanyLabel(event.payload.company, syncCompanies),
             path: event.payload.path,
             bytes: event.payload.bytes,
           };
@@ -1027,7 +1040,7 @@
         syncState = 'syncing';
         const p = event.payload;
         syncProgress = {
-          company: p.company ?? 'Personal',
+          company: friendlyCompanyLabel(p.company, syncCompanies),
           path: p.currentFile ?? '',
           bytes: 0,
         };
