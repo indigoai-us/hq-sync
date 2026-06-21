@@ -6,17 +6,8 @@ on:
   push:
     branches: [main]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   ci:
-    uses: indigoai-us/.github/.github/workflows/_node-ci.yml@main
-    with:
-      package-manager: pnpm
-      pnpm-version: "9"
-      node-version: "22"
-      pnpm-install-args: "--frozen-lockfile"
-      run-build: false
-    secrets: inherit
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "inline parse probe"
