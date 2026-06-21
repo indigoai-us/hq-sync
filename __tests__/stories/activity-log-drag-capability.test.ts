@@ -38,6 +38,17 @@ describe('HQ-SYNC-WEB-3: activity-log window drag capability', () => {
     expect(cap.permissions).toContain('core:window:allow-start-dragging');
   });
 
+  it('grants event IPC (ActivityLog listen() is denied without it — Sentry HQ-SYNC-WEB-J)', () => {
+    // ActivityLog.svelte subscribes via listen('activity:list') /
+    // listen('activity:append') (@tauri-apps/api/event). That `listen` is the
+    // core `event` plugin command — denied by the ACL unless the window's
+    // capability grants core:event (default bundles allow-listen). Same window
+    // and same root cause as HQ-SYNC-WEB-3 (the window had no capability at
+    // all); this pins the event grant so a future edit can't drop it and
+    // reintroduce `Command plugin:event|listen not allowed by ACL`.
+    expect(cap.permissions).toContain('core:event:default');
+  });
+
   it('renders the ActivityLog header as a Tauri drag region', () => {
     expect(activityLog).toMatch(/<header[^>]*\bdata-tauri-drag-region\b/);
   });
