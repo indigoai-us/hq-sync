@@ -20,5 +20,4 @@ jobs:
       run-build: false
       run-typecheck: false
       run-lint: true
-      job-timeout-minutes: 15
     secrets: inherit
