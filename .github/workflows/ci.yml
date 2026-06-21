@@ -1,13 +1,35 @@
 name: CI
 
+# NOTE: hq-sync intentionally keeps its CI inline rather than calling the org
+# reusable workflow (indigoai-us/.github _node-ci). The identical reusable call
+# works from every other repo but is rejected here with an opaque
+# "workflow file issue" (visible only in the Actions web UI, not the API).
+# Until that is root-caused in the UI, this inline workflow still delivers the
+# improvements: concurrency cancellation + a main-push run.
+
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - run: echo "inline parse probe"
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm test
