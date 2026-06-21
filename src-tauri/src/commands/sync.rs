@@ -367,8 +367,11 @@ const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 /// line never pollutes the ndjson stdout stream. Scripts can bound the wait
 /// with `HQ_OP_LOCK_TIMEOUT=<secs>` (0 = refuse immediately). The `~6.6.0` ->
 /// `~6.8.0` bump keeps the npx pin on the same release train as hq-cli. See
-/// indigoai-us/hq-cloud#73 (DEV-1772).
-pub const HQ_CLOUD_VERSION: &str = "~6.11.7";
+/// indigoai-us/hq-cloud#73 (DEV-1772). Floored at `~6.11.14` so the spawned
+/// runner always carries the cross-process `sync-progress.json` producer
+/// (hq-cloud#107) that powers live menubar progress for ANY sync — auto-sync
+/// and CLI, not just a menubar-spawned Sync Now.
+pub const HQ_CLOUD_VERSION: &str = "~6.11.14";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
