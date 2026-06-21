@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "activity-log",
+  "description": "Capability set for the activity-log (Recent Changes) secondary window built in commands/activity.rs and routed to ActivityLog.svelte in main.ts. Needs event IPC for the activity:list / activity:append stream plus close + set-focus. ActivityLog's <header> is a Tauri drag region (data-tauri-drag-region), so the window MUST also grant core:window:allow-start-dragging — without it the webview's start_dragging invoke is denied by the ACL and surfaces as an UnhandledRejection (Sentry HQ-SYNC-WEB-3). Supersedes the retired notification-history capability (the separate notification-history window was retired in favor of the inline NotificationFeed + this standalone Recent Changes window).",
+  "windows": ["activity-log"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging"
+  ]
+}
