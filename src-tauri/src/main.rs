@@ -508,6 +508,9 @@ fn main() {
             // See `commands::version_gate` for the rationale.
             commands::version_gate::setup_version_gate(app.handle());
             updater::setup_update_checker(app.handle());
+            // Surface live progress for ANY sync (auto-sync / CLI), not just
+            // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
+            commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
 
             // Share-notification poller. Gated solely on the shareNotifications
             // menubar preference (the @getindigo.ai dogfood gate was removed

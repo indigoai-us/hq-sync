@@ -47,6 +47,14 @@
   let expiresAt = $state('');
   let checking = $state(true);
   let syncState = $state<'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error'>('idle');
+  // True while a manual "Sync Now" owns the progress UI — its richer
+  // stdout-driven stream (fanout-aware) drives the card. Gates out the
+  // cross-process file-watcher so the two sources never fight. Set on the Sync
+  // Now click, cleared when the run ends.
+  let manualSyncActive = $state(false);
+  // True while the cross-process watcher (auto-sync / CLI `hq sync`) owns the
+  // card — lets sync:external-idle know it should reset back to idle.
+  let externalSyncActive = $state(false);
   let config = $state<Config | null>(null);
   // Phase 7 runner protocol — progress is per-file with a path + bytes.
   // We also track the company currently syncing (last progress event) and
@@ -657,6 +665,8 @@
   async function handleSyncNow() {
     if (syncState === 'syncing') return;
     syncState = 'syncing';
+    manualSyncActive = true;
+    externalSyncActive = false;
     syncProgress = null;
     syncFanoutTotal = 0;
     syncFanoutDoneCount = 0;
@@ -918,6 +928,8 @@
     unlisteners.push(
       await listen<{ message: string }>('sync:auth-error', async (event) => {
         syncState = 'auth-error';
+        manualSyncActive = false;
+        externalSyncActive = false;
         syncProgress = null;
         syncErrorMessage = event.payload.message;
         syncErrorCompany = '';
@@ -994,6 +1006,46 @@
           await invoke('set_tray_state', { state: 'syncing' });
         }
       )
+    );
+
+    // Cross-process progress — any sync the menubar did NOT spawn (the
+    // auto-sync watch daemon, a CLI `hq sync`) writes ~/.hq/sync-progress.json,
+    // surfaced by the Rust file-watcher as sync:external-progress. Drive the
+    // same progress card — but never while a manual Sync Now owns it (its
+    // stdout stream is richer + fanout-aware).
+    unlisteners.push(
+      await listen<{
+        company: string | null;
+        phase: string;
+        filesTotal: number;
+        filesDone: number;
+        conflicts: number;
+        currentFile: string | null;
+      }>('sync:external-progress', async (event) => {
+        if (manualSyncActive) return;
+        externalSyncActive = true;
+        syncState = 'syncing';
+        const p = event.payload;
+        syncProgress = {
+          company: p.company ?? 'Personal',
+          path: p.currentFile ?? '',
+          bytes: 0,
+        };
+        syncFilesProgressed = p.filesDone;
+        syncPlanTotalFiles = p.filesTotal;
+        syncPlanReceived = true;
+        await invoke('set_tray_state', { state: 'syncing' });
+      })
+    );
+
+    unlisteners.push(
+      await listen('sync:external-idle', async () => {
+        if (!externalSyncActive) return;
+        externalSyncActive = false;
+        syncState = 'idle';
+        syncProgress = null;
+        await invoke('set_tray_state', { state: 'idle' });
+      })
     );
 
     // ── Personal-first-push events ────────────────────────────────────────
@@ -1122,6 +1174,8 @@
         bytesDownloaded: number;
         errors: Array<{ company: string; message: string }>;
       }>('sync:all-complete', async (event) => {
+        manualSyncActive = false;
+        externalSyncActive = false;
         syncLastSummary = {
           companiesAttempted: event.payload.companiesAttempted,
           filesDownloaded: event.payload.filesDownloaded,
@@ -1160,6 +1214,8 @@
               ...(event.payload.company ? { company: event.payload.company } : {}),
             },
           });
+          manualSyncActive = false;
+          externalSyncActive = false;
           syncState = 'error';
           syncProgress = null;
           syncErrorMessage = event.payload.message;
