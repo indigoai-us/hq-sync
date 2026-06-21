@@ -136,6 +136,14 @@ const SIGKILL_DELAY: Duration = Duration::from_secs(5);
 /// never escalate it to a Sentry alert. See `should_alert_on_nonzero_exit`.
 const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 
+/// POSIX SIGTERM. When the runner exits killed by this signal it was OUR
+/// cancellation: `cancel_process_impl` sends SIGTERM (escalating to SIGKILL
+/// only if the runner ignores it) on every expected cancel — the Stop button,
+/// the 1-hour timeout watchdog, app quit, or a newer sync superseding this one.
+/// An expected cancellation must never escalate to a Sentry alert (HQ-SYNC-WEB-H:
+/// 23 "killed by SIGTERM (cancelled)" events). See `should_alert_on_nonzero_exit`.
+const SIGTERM_SIGNAL: i32 = 15;
+
 /// Semver range for `@indigoai-us/hq-cloud` that ships `hq-sync-runner`.
 ///
 /// Format is npm's `package-spec` — a tilde-prefixed minor floor
@@ -724,11 +732,21 @@ fn is_alertable_company_error(err: &SyncErrorEvent) -> bool {
 /// An *unexplained* non-zero exit — no company error seen at all, e.g. the
 /// runner panicked or was OOM-killed before emitting protocol — still alerts,
 /// preserving the original "bailed before emitting a useful stream" signal.
+///
+/// A SIGTERM kill is the one signal that is NEVER a defect: it is our own
+/// `cancel_process_impl` ending the run (Stop / timeout / quit / supersede), so
+/// it is suppressed regardless of any in-flight company errors. Other signals
+/// stay loud — SIGSEGV/SIGBUS/SIGABRT are crashes, and SIGKILL is OOM or a
+/// force-quit worth seeing; only the cooperative SIGTERM is "expected".
 fn should_alert_on_nonzero_exit(
     code: Option<i32>,
+    signal: Option<i32>,
     saw_company_error: bool,
     saw_alertable_company_error: bool,
 ) -> bool {
+    if signal == Some(SIGTERM_SIGNAL) {
+        return false;
+    }
     if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
         return false;
     }
@@ -1254,7 +1272,7 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                         .lock()
                         .map(|t| (t.saw_company_error, t.saw_alertable_company_error))
                         .unwrap_or((false, false));
-                    if should_alert_on_nonzero_exit(code, saw_company_error, saw_alertable) {
+                    if should_alert_on_nonzero_exit(code, signal, saw_company_error, saw_alertable) {
                         let _ = report_sync_error(
                             &app_bg,
                             crate::events::SyncErrorEvent {
@@ -2093,22 +2111,46 @@ mod tests {
     #[test]
     fn test_exit_alert_suppressed_for_operation_locked() {
         // Exit 17 = another sync holds the lock — a normal concurrent race.
-        assert!(!should_alert_on_nonzero_exit(Some(17), false, false));
+        assert!(!should_alert_on_nonzero_exit(Some(17), None, false, false));
         // Even if it somehow co-occurred with an alertable error, locked wins.
-        assert!(!should_alert_on_nonzero_exit(Some(17), true, true));
+        assert!(!should_alert_on_nonzero_exit(Some(17), None, true, true));
+    }
+
+    #[test]
+    fn test_exit_alert_suppressed_for_sigterm_cancellation() {
+        // HQ-SYNC-WEB-H: the runner killed by SIGTERM (signal 15, code None) is
+        // OUR own cancel_process_impl ending the run — Stop button, timeout
+        // watchdog, app quit, or a newer sync superseding this one. An expected
+        // cancellation must NEVER alert, even with no protocol seen…
+        assert!(!should_alert_on_nonzero_exit(None, Some(15), false, false));
+        // …and even if company errors (benign or alertable) were mid-flight when
+        // the cancel landed — the cancellation is the cause, not the errors.
+        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, false));
+        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, true));
+    }
+
+    #[test]
+    fn test_exit_alert_fires_for_genuine_crash_signals() {
+        // A real crash signal is NOT a cancellation and must stay loud:
+        // SIGSEGV (11) / SIGBUS (10) / SIGABRT (6) are crashes, and SIGKILL (9)
+        // is an OOM or force-quit worth seeing — only SIGTERM is suppressed.
+        assert!(should_alert_on_nonzero_exit(None, Some(11), false, false));
+        assert!(should_alert_on_nonzero_exit(None, Some(10), false, false));
+        assert!(should_alert_on_nonzero_exit(None, Some(6), false, false));
+        assert!(should_alert_on_nonzero_exit(None, Some(9), false, false));
     }
 
     #[test]
     fn test_exit_alert_suppressed_when_all_company_errors_benign() {
         // The HQ-SYNC-WEB-6 latest-event shape: exit 2 driven solely by a
         // transient ECONNRESET on one company → no alert.
-        assert!(!should_alert_on_nonzero_exit(Some(2), true, false));
+        assert!(!should_alert_on_nonzero_exit(Some(2), None, true, false));
     }
 
     #[test]
     fn test_exit_alert_fires_for_real_company_error() {
         // exit 2 with at least one alertable company error (e.g. EISDIR) → alert.
-        assert!(should_alert_on_nonzero_exit(Some(2), true, true));
+        assert!(should_alert_on_nonzero_exit(Some(2), None, true, true));
     }
 
     #[test]
@@ -2116,9 +2158,10 @@ mod tests {
         // Non-zero exit with NO company error seen — runner panicked / was
         // OOM-killed before emitting protocol. This is the original
         // "bailed before a useful stream" signal and must keep alerting.
-        assert!(should_alert_on_nonzero_exit(Some(1), false, false));
-        // Signal-kill (code None) with no protocol is likewise unexplained.
-        assert!(should_alert_on_nonzero_exit(None, false, false));
+        assert!(should_alert_on_nonzero_exit(Some(1), None, false, false));
+        // Signal-kill with neither code nor a recognized signal is likewise
+        // unexplained (only a SIGTERM cancel is suppressed).
+        assert!(should_alert_on_nonzero_exit(None, None, false, false));
     }
 
     // ── accumulate: company-error classification ─────────────────────────────
