@@ -26,6 +26,7 @@
   import { loadMeetingDetectEligible } from './lib/permissionState.svelte';
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
+  import { isTransientSyncTransportError } from './lib/transient-sync-error';
   import {
     handleMeetingDetected,
     type MeetingDetectedPayload,
@@ -1220,13 +1221,26 @@
           // still receives the issue when the Rust build is missing
           // `HQ_SYNC_SENTRY_DSN` or its DSN parses to None at startup. Sentry
           // groups by message text so duplicate captures merge into one issue.
-          Sentry.captureMessage(`[sync] ${event.payload.message}`, {
-            level: 'error',
-            tags: {
-              path: event.payload.path,
-              ...(event.payload.company ? { company: event.payload.company } : {}),
-            },
-          });
+          //
+          // EXCEPT a transport-level transient (the reqwest request never
+          // reached a response — DNS/connect/TLS/send dropped): a background
+          // step like the personal first-push is retried by the runner on the
+          // next pass, so it is recoverable noise, not an actionable error
+          // (HQ-SYNC-WEB-18). The user still sees the recoverable error state
+          // below; only the Sentry capture is skipped. Genuine, server-answered
+          // failures (4xx/5xx, parse/logic errors) carry a different message and
+          // still capture.
+          if (!isTransientSyncTransportError(event.payload.message)) {
+            Sentry.captureMessage(`[sync] ${event.payload.message}`, {
+              level: 'error',
+              tags: {
+                path: event.payload.path,
+                ...(event.payload.company
+                  ? { company: event.payload.company }
+                  : {}),
+              },
+            });
+          }
           manualSyncActive = false;
           externalSyncActive = false;
           syncState = 'error';
