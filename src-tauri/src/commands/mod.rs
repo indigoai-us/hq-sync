@@ -43,6 +43,7 @@ pub mod share_notify;
 pub mod status;
 pub mod sync;
 pub mod sync_mode;
+pub mod sync_progress_watch;
 pub mod telemetry;
 pub mod un_notify;
 pub mod vault_client;
