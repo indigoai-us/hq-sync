@@ -275,26 +275,56 @@ fn report_unreadable_version(latest: &str) {
     );
 }
 
-/// Capture an auto/manual CLI-install failure to Sentry. The npm stderr tail
-/// (scrubbed of tokens/home paths by `sentry_scrub`) is the useful signal —
-/// most commonly an `EACCES` against a system npm prefix that needs sudo.
-fn report_install_failure(exit_code: Option<i32>, detail: &str) {
+/// Whether an npm install failure is the EXPECTED "global npm prefix needs
+/// sudo" condition — an `EACCES`/permission-denied against a root-owned prefix
+/// (the classic `/usr/local/lib/node_modules`). The menubar app runs as the
+/// user and cannot `sudo`, so `npm install -g` can NEVER succeed on these
+/// machines; it is a client-side environment fault, not an app/server bug.
+pub(crate) fn is_prefix_permission_failure(detail: &str) -> bool {
+    detail.contains("EACCES") || detail.contains("permission denied")
+}
+
+/// Decide whether a CLI-install failure should be reported to Sentry, and with
+/// what message. Returns `None` for the expected prefix-permission (EACCES)
+/// case — the app already handles it gracefully (the UI falls back to the
+/// copy-the-command path and the failure is kept in the local diagnostic log
+/// for Connect diagnostics), so an Error-level capture on every auto-update
+/// cycle is pure noise (HQ-SYNC-WEB-Y: exit 243, 180 events / 7 users, all
+/// EACCES). Returns `Some(message)` for every genuine, unexpected failure
+/// (network, disk, npm bugs, any other exit code) — that is the real signal we
+/// want to stay loud at Error level.
+pub(crate) fn install_failure_report(exit_code: Option<i32>, detail: &str) -> Option<String> {
+    if is_prefix_permission_failure(detail) {
+        return None;
+    }
     let exit_str = exit_code
         .map(|c| c.to_string())
         .unwrap_or_else(|| "signal/none".to_string());
-    let eacces = detail.contains("EACCES") || detail.contains("permission denied");
+    Some(format!("[hq-cli-update] install failed (exit {exit_str})"))
+}
+
+/// Capture an auto/manual CLI-install failure to Sentry — but only when it is a
+/// genuine, unexpected failure (see `install_failure_report`). The expected
+/// prefix-permission (EACCES) case is deliberately NOT captured: it floods
+/// Sentry with an unactionable Error every auto-update cycle while the user
+/// already has the copy-the-command fallback. The npm stderr tail (scrubbed of
+/// tokens/home paths by `sentry_scrub`) rides along as the useful signal.
+fn report_install_failure(exit_code: Option<i32>, detail: &str) {
+    let Some(message) = install_failure_report(exit_code, detail) else {
+        return;
+    };
+    let exit_str = exit_code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "signal/none".to_string());
     sentry::with_scope(
         |scope| {
             scope.set_tag("hq_cli_update_kind", "install-failed");
             scope.set_tag("exit_code", exit_str.as_str());
-            scope.set_tag("eacces", if eacces { "true" } else { "false" });
+            scope.set_tag("eacces", "false");
             scope.set_extra("npm_stderr", detail.to_string().into());
         },
         || {
-            sentry::capture_message(
-                &format!("[hq-cli-update] install failed (exit {exit_str})"),
-                sentry::Level::Error,
-            );
+            sentry::capture_message(&message, sentry::Level::Error);
         },
     );
 }
@@ -611,6 +641,61 @@ mod tests {
             argv[2].ends_with("@latest"),
             "package arg must request @latest; got {}",
             argv[2],
+        );
+    }
+
+    // The exact npm stderr behind HQ-SYNC-WEB-Y (exit 243, 7 users): a root-
+    // owned global prefix the menubar app can't write to without sudo.
+    const REAL_EACCES_STDERR: &str = "npm error code EACCES\n\
+        npm error syscall mkdir\n\
+        npm error path /usr/local/lib/node_modules/@indigoai-us\n\
+        npm error errno -13\n\
+        npm error Error: EACCES: permission denied, mkdir \
+        '/usr/local/lib/node_modules/@indigoai-us'";
+
+    #[test]
+    fn prefix_permission_failure_detects_the_sudo_case() {
+        assert!(is_prefix_permission_failure(REAL_EACCES_STDERR));
+        assert!(is_prefix_permission_failure("npm error EACCES"));
+        assert!(is_prefix_permission_failure(
+            "Error: permission denied, mkdir '/opt/homebrew/lib/node_modules'"
+        ));
+    }
+
+    #[test]
+    fn prefix_permission_failure_false_for_genuine_failures() {
+        // Genuine, unexpected failures must NOT be mistaken for the expected
+        // sudo case — they are the real signal we keep capturing.
+        assert!(!is_prefix_permission_failure(
+            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
+        ));
+        assert!(!is_prefix_permission_failure(
+            "npm error code ENOSPC: no space left on device"
+        ));
+        assert!(!is_prefix_permission_failure(""));
+    }
+
+    #[test]
+    fn install_failure_report_skips_expected_eacces() {
+        // HQ-SYNC-WEB-Y: the exit-243 EACCES flood must NOT be reported to
+        // Sentry — it's an expected client-side environment fault (root-owned
+        // npm prefix needs sudo) with a copy-the-command UI fallback. `None`
+        // here is exactly what makes `report_install_failure` skip the capture.
+        assert_eq!(install_failure_report(Some(243), REAL_EACCES_STDERR), None);
+    }
+
+    #[test]
+    fn install_failure_report_captures_genuine_failures() {
+        // A real, unexpected failure stays loud — `Some(message)` drives the
+        // Error-level capture.
+        assert_eq!(
+            install_failure_report(Some(1), "npm error network ETIMEDOUT"),
+            Some("[hq-cli-update] install failed (exit 1)".to_string()),
+        );
+        // Killed by signal (no exit code) still reports, with the signal label.
+        assert_eq!(
+            install_failure_report(None, "npm error network ETIMEDOUT"),
+            Some("[hq-cli-update] install failed (exit signal/none)".to_string()),
         );
     }
 
