@@ -430,21 +430,25 @@ fn describe_exit(code: Option<i32>, signal: Option<i32>) -> String {
 /// silent during prod sync failures. See the broader silent-prod-error
 /// fix for hq-onboarding (Cognito `invalid_client`) for the incident
 /// context.
-fn report_sync_error(app: &AppHandle, payload: SyncErrorEvent) -> tauri::Result<()> {
+/// Capture a sync failure to Sentry (tags: company, path) — no UI event.
+/// Shared by `report_sync_error` (manual Sync Now) and the auto-sync daemon so
+/// BOTH paths surface runner failures in #hq-alerts.
+pub(crate) fn capture_sync_error(company: Option<&str>, path: &str, message: &str) {
     sentry::with_scope(
         |scope| {
-            if let Some(c) = &payload.company {
+            if let Some(c) = company {
                 scope.set_tag("company", c);
             }
-            scope.set_tag("path", &payload.path);
+            scope.set_tag("path", path);
         },
         || {
-            sentry::capture_message(
-                &format!("[sync] {}", payload.message),
-                sentry::Level::Error,
-            );
+            sentry::capture_message(&format!("[sync] {message}"), sentry::Level::Error);
         },
     );
+}
+
+fn report_sync_error(app: &AppHandle, payload: SyncErrorEvent) -> tauri::Result<()> {
+    capture_sync_error(payload.company.as_deref(), &payload.path, &payload.message);
     app.emit(EVENT_SYNC_ERROR, payload)
 }
 
@@ -1091,6 +1095,12 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         .await
         {
             log("sync", &format!("first_push failed for {}: {e}", company.slug));
+            // Terminal failure for this company's first sync — surface it.
+            capture_sync_error(
+                Some(company.slug.as_str()),
+                "(first-push)",
+                &format!("first-push failed: {e}"),
+            );
             #[cfg(debug_assertions)]
             eprintln!("[sync] first_push failed for {}: {}", company.slug, e);
             let _ = app.emit(
@@ -1300,11 +1310,13 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
 
         if let Err(e) = result {
             log("sync", &format!("run_process_impl error: {e}"));
-            // NOT captured to Sentry: spawn failures happen before the runner
-            // produces any stderr/stdout, so there's nothing for the catch-all
-            // breadcrumb listener to attach. If `npx` repeatedly fails to
-            // resolve `@indigoai-us/hq-cloud@<ver>` and this path becomes the
-            // silent failure mode, add an explicit capture here.
+            // Spawn failures happen before the runner produces any
+            // stderr/stdout, so there are no breadcrumbs to attach — capture an
+            // explicit event (e.g. `npx` failing to resolve
+            // `@indigoai-us/hq-cloud@<ver>`, a broken toolchain). Otherwise the
+            // user clicks Sync Now, nothing happens, and nothing reaches
+            // #hq-alerts.
+            capture_sync_error(None, "(spawn)", &e);
             let _ = app_bg.emit(
                 EVENT_SYNC_ERROR,
                 crate::events::SyncErrorEvent {

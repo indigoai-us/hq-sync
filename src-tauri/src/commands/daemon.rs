@@ -422,6 +422,14 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                 }
                 ProcessEvent::Stderr(line) => {
                     log("daemon.stderr", &line);
+                    // Accumulate as a Sentry breadcrumb so a crash capture at
+                    // the Exit arm below ships with the runner's last words.
+                    sentry::add_breadcrumb(sentry::Breadcrumb {
+                        category: Some("daemon.stderr".into()),
+                        level: sentry::Level::Warning,
+                        message: Some(line.clone()),
+                        ..Default::default()
+                    });
                 }
                 ProcessEvent::Exit {
                     code,
@@ -435,12 +443,32 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                             code, signal, success
                         ),
                     );
+                    // Auto-sync runs unattended, so a crashed watcher was
+                    // previously invisible (log-only). Capture genuine crashes
+                    // to #hq-alerts — but NOT a deliberate stop (SIGTERM from
+                    // cancel_process_impl on app-quit / auto-sync-off / re-spawn).
+                    if !success && !crate::commands::process::is_cancelled(DAEMON_HANDLE) {
+                        crate::commands::sync::capture_sync_error(
+                            None,
+                            "(auto-sync)",
+                            &format!(
+                                "auto-sync watcher exited unexpectedly (code={:?} signal={:?})",
+                                code, signal
+                            ),
+                        );
+                    }
                 }
             }
         });
 
         if let Err(e) = result {
             log("daemon", &format!("spawn failed: {e}"));
+            // The watcher never started — Sync is silently dead until restart.
+            crate::commands::sync::capture_sync_error(
+                None,
+                "(auto-sync)",
+                &format!("auto-sync watcher failed to spawn: {e}"),
+            );
         }
     });
 
