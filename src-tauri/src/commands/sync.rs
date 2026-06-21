@@ -78,25 +78,32 @@ pub struct RunTotals {
     /// can emit a synthetic AllComplete and unblock the UI from a stuck
     /// "syncing" state.
     pub all_complete_seen: bool,
-    /// Set true when the runner emitted at least one company-level error event
-    /// (`path == "(company)"`). Each company that throws mid-fanout pushes one
-    /// such event AND drives the runner's exit-2 path (see hq-cloud
-    /// `sync-runner.ts`). The Exit handler uses this together with
-    /// `saw_alertable_company_error` to tell "non-zero exit fully explained by
-    /// benign company errors" apart from "unexplained crash before any
-    /// protocol" — only the latter should raise a Sentry alert.
-    pub saw_company_error: bool,
-    /// Set true when at least one company-level error was *alertable* — a real
-    /// defect rather than a benign not-yet-provisioned 404 or a transient,
-    /// self-healing network blip. Gates the Sentry capture at the
-    /// non-zero-exit site (see `should_alert_on_nonzero_exit`).
-    pub saw_alertable_company_error: bool,
+    /// Set true when the runner emitted at least one error event of ANY level
+    /// (company-level `path == "(company)"` OR per-file). Both drive the
+    /// runner's exit-2 path — `hq-cloud`'s `executeCompanyFanout` pushes EVERY
+    /// emitted `error` event (incl. gracefully-skipped per-file ACL-scope skips)
+    /// into its `errors` tally, and `sync-runner.ts` exits 2 when that tally is
+    /// non-empty. The Exit handler uses this together with `saw_alertable_error`
+    /// to tell "non-zero exit fully explained by benign errors" apart from
+    /// "unexplained crash before any protocol" — only the latter should raise a
+    /// Sentry alert.
+    ///
+    /// Fed from BOTH runner channels: error events arrive on stdout for legacy
+    /// runners (via `handle_sync_line` → `accumulate`) and on STDERR for runners
+    /// that moved error-class events off the stdout protocol stream (hq-cloud
+    /// PR #34 — see the `ProcessEvent::Stderr` arm, which parses + records them).
+    pub saw_error: bool,
+    /// Set true when at least one observed error was *alertable* — a real defect
+    /// rather than a benign not-yet-provisioned 404, a transient self-healing
+    /// network blip, or an expected per-file ACL-scope skip. Gates the Sentry
+    /// capture at the non-zero-exit site (see `should_alert_on_nonzero_exit`).
+    pub saw_alertable_error: bool,
 }
 
 impl RunTotals {
     /// Update totals from a single event. `Complete` events contribute to
-    /// counters; `AllComplete` flips the seen-flag; company-level `Error`
-    /// events feed the exit-alert decision. Saturates on overflow.
+    /// counters; `AllComplete` flips the seen-flag; `Error` events feed the
+    /// exit-alert decision via `record_error`. Saturates on overflow.
     pub fn accumulate(&mut self, event: &SyncEvent) {
         match event {
             SyncEvent::Complete(c) => {
@@ -105,17 +112,30 @@ impl RunTotals {
             SyncEvent::AllComplete(_) => {
                 self.all_complete_seen = true;
             }
-            // Only company-level sentinel errors (`path == "(company)"`) drive
-            // the runner's non-zero exit — file-level errors co-exist with a
-            // clean exit and are renderer-only. Record whether we saw any, and
-            // whether any was a real (alertable) defect.
-            SyncEvent::Error(e) if e.path == "(company)" => {
-                self.saw_company_error = true;
-                if is_alertable_company_error(e) {
-                    self.saw_alertable_company_error = true;
-                }
-            }
+            // Every error event — company-level OR per-file — is counted by the
+            // runner toward its non-zero exit, so all of them feed the alert
+            // decision here (classified benign-vs-alertable in `record_error`).
+            SyncEvent::Error(e) => self.record_error(e),
             _ => {}
+        }
+    }
+
+    /// Record a single runner error event toward the exit-alert decision,
+    /// classifying it benign-vs-alertable. Idempotent in spirit — flags only
+    /// flip on, so a later benign error can never "downgrade" a real one seen
+    /// earlier in the same run.
+    ///
+    /// Called for error events arriving on EITHER channel: stdout (legacy
+    /// runners) via `accumulate`, and stderr (hq-cloud PR #34, which moved
+    /// error-class events off the stdout protocol stream) via the runner's
+    /// `ProcessEvent::Stderr` arm. Without the stderr path, post-PR-#34 runs see
+    /// zero error events here, `saw_error` stays false, and every non-zero exit
+    /// (incl. the very common benign code-2 from ACL-scope skips) falls through
+    /// to the "unexplained crash" branch and alerts — the HQ-SYNC-WEB-6 flood.
+    pub fn record_error(&mut self, err: &SyncErrorEvent) {
+        self.saw_error = true;
+        if is_alertable_error(err) {
+            self.saw_alertable_error = true;
         }
     }
 }
@@ -693,28 +713,46 @@ fn is_transient_network_error(message: &str) -> bool {
     TRANSIENT_MARKERS.iter().any(|m| msg.contains(m))
 }
 
-/// Returns `true` when a per-company runner error should raise a Sentry alert
-/// if it drives a non-zero runner exit.
+/// Returns `true` when an expected, client-handled per-file ACL-scope skip —
+/// the server correctly returned `403 SCOPE_EXCEEDS_PARENT` for a path outside
+/// the caller's granted scope, so the runner SKIPPED the file (it stays
+/// local-only) and emitted a per-file `error` event telling the user to grant
+/// the path. The rest of the sync succeeds, but the runner still exits non-zero
+/// (2) because the skip counts toward its `errors` tally (`hq-cloud`
+/// `executeCompanyFanout`). This is not an actionable defect — alerting on it
+/// flooded Sentry (HQ-SYNC-WEB-6) with zero-user-impact noise.
+///
+/// Matches the two stable markers `hq-cloud`'s `src/cli/share.ts` emits on both
+/// the HEAD and PUT skip paths; deliberately narrow so a real 403 elsewhere
+/// (auth / cross-tenant probe) is not swallowed.
+fn is_expected_acl_scope_skip(message: &str) -> bool {
+    let msg = message.to_lowercase();
+    msg.contains("outside granted acl scope") || msg.contains("scope_exceeds_parent")
+}
+
+/// Returns `true` when a runner error should raise a Sentry alert if it drives a
+/// non-zero runner exit. Applies to errors of ANY level — company-level
+/// (`path == "(company)"`) and per-file alike — because `hq-cloud`'s fanout
+/// counts both toward the exit-2 tally.
 ///
 /// Benign (no alert):
 ///   - not-yet-provisioned companies — the vault's *correct* 404 / "no bucket
-///     provisioned". `handle_sync_line` already reclassifies these into an
-///     empty-sync `Complete` for the UI via `classify_error_event`; alerting at
-///     exit would re-raise the very condition the UI just absorbed.
+///     provisioned" (company-level only). `handle_sync_line` already
+///     reclassifies these into an empty-sync `Complete` for the UI via
+///     `classify_error_event`; alerting at exit would re-raise the very
+///     condition the UI just absorbed.
 ///   - transient, retryable network errors (`is_transient_network_error`).
+///   - expected per-file ACL-scope skips (`is_expected_acl_scope_skip`): a
+///     `403 SCOPE_EXCEEDS_PARENT` the user resolves by granting the path, not a
+///     server fault — the dominant HQ-SYNC-WEB-6 noise source.
 ///
-/// Everything else (EISDIR, 403/404 auth, 5xx-after-retries, `UnknownError`,
-/// anything unrecognised) is treated as a real defect and keeps alerting —
-/// fail safe toward surfacing, not swallowing.
-///
-/// Only company-level sentinel errors (`path == "(company)"`) are eligible:
-/// file-level errors co-exist with a clean exit and never explain a non-zero
-/// exit code.
-fn is_alertable_company_error(err: &SyncErrorEvent) -> bool {
-    if err.path != "(company)" {
-        return false;
-    }
-    !(is_entity_not_yet_provisioned(err) || is_transient_network_error(&err.message))
+/// Everything else (EISDIR, other 403/404 auth, 5xx-after-retries,
+/// `UnknownError`, anything unrecognised) is treated as a real defect and keeps
+/// alerting — fail safe toward surfacing, not swallowing.
+fn is_alertable_error(err: &SyncErrorEvent) -> bool {
+    !(is_entity_not_yet_provisioned(err)
+        || is_transient_network_error(&err.message)
+        || is_expected_acl_scope_skip(&err.message))
 }
 
 /// Pure policy: should a *non-zero* runner exit raise a Sentry alert?
@@ -725,12 +763,12 @@ fn is_alertable_company_error(err: &SyncErrorEvent) -> bool {
 ///
 ///   - exit 17 (`OPERATION_LOCKED`): another sync holds the lock — a normal
 ///     concurrent-sync race, never a failure.
-///   - a run whose company errors were all benign (`saw_company_error &&
-///     !saw_alertable_company_error`): the non-zero exit is fully explained by
-///     not-yet-provisioned 404s and/or transient network blips.
+///   - a run whose errors were all benign (`saw_error && !saw_alertable_error`):
+///     the non-zero exit is fully explained by not-yet-provisioned 404s,
+///     transient network blips, and/or expected per-file ACL-scope skips.
 ///
-/// An *unexplained* non-zero exit — no company error seen at all, e.g. the
-/// runner panicked or was OOM-killed before emitting protocol — still alerts,
+/// An *unexplained* non-zero exit — no error event seen at all, e.g. the runner
+/// panicked or was OOM-killed before emitting protocol — still alerts,
 /// preserving the original "bailed before emitting a useful stream" signal.
 ///
 /// A SIGTERM kill is the one signal that is NEVER a defect: it is our own
@@ -741,8 +779,8 @@ fn is_alertable_company_error(err: &SyncErrorEvent) -> bool {
 fn should_alert_on_nonzero_exit(
     code: Option<i32>,
     signal: Option<i32>,
-    saw_company_error: bool,
-    saw_alertable_company_error: bool,
+    saw_error: bool,
+    saw_alertable_error: bool,
 ) -> bool {
     if signal == Some(SIGTERM_SIGNAL) {
         return false;
@@ -750,7 +788,7 @@ fn should_alert_on_nonzero_exit(
     if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
         return false;
     }
-    if saw_company_error && !saw_alertable_company_error {
+    if saw_error && !saw_alertable_error {
         return false;
     }
     true
@@ -1229,18 +1267,34 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // breadcrumbs accumulate noise for free, exit-time capture
                 // converts that into a single alertable issue with context.
                 //
-                // PROTOCOL NOTE (2026-04-25): the runner currently emits
-                // structured per-file error events on STDOUT as ndjson. Once
-                // the runner is updated to emit errors on STDERR (planned
-                // protocol change in @indigoai-us/hq-cloud), each runner
-                // error becomes a breadcrumb here automatically — no Tauri
-                // changes required.
+                // PROTOCOL NOTE (2026-04-25): the runner originally emitted
+                // structured per-file error events on STDOUT as ndjson; the
+                // planned protocol change (@indigoai-us/hq-cloud PR #34) moved
+                // all error-class events to STDERR so each becomes a breadcrumb
+                // here automatically.
                 sentry::add_breadcrumb(sentry::Breadcrumb {
                     category: Some("runner.stderr".into()),
                     level: sentry::Level::Warning,
                     message: Some(line.clone()),
                     ..Default::default()
                 });
+                // …but that move ALSO took error events away from
+                // `handle_sync_line` (stdout-only), which is what fed the
+                // benign-vs-alertable exit classification in RunTotals. Without
+                // re-ingesting them here, `saw_error` stays false for every
+                // post-PR-#34 run, the exit handler treats every non-zero exit
+                // as an "unexplained crash", and the common benign code-2 (ACL-
+                // scope skips / not-provisioned / transient network) floods
+                // Sentry (HQ-SYNC-WEB-6). So parse any ndjson `error` line and
+                // record it toward the alert decision, mirroring the stdout
+                // path. Non-ndjson stderr (reindex/qmd/warning chatter) fails to
+                // parse and is ignored.
+                if let Ok(SyncEvent::Error(payload)) =
+                    serde_json::from_str::<SyncEvent>(line.trim())
+                {
+                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+                    t.record_error(&payload);
+                }
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
@@ -1257,22 +1311,24 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                 // bailed before emitting a useful protocol stream.
                 if !success {
                     // Not every non-zero exit is an actionable defect. The
-                    // runner exits 2 whenever *any* company throws mid-fanout —
-                    // including the vault's correct 404 for a not-yet-
-                    // provisioned company and transient network resets that the
-                    // next cycle recovers from — and exit 17 when another sync
+                    // runner exits 2 whenever ANY error event was emitted mid-
+                    // fanout — including the vault's correct 404 for a not-yet-
+                    // provisioned company, transient network resets the next
+                    // cycle recovers from, and expected per-file ACL-scope skips
+                    // (403 SCOPE_EXCEEDS_PARENT) — and exit 17 when another sync
                     // already holds the lock. Those flooded this Sentry issue
                     // with un-actionable noise. Consult the run's error
-                    // classification (accumulated from the company-level `error`
-                    // events) and only capture a genuine defect. The per-company
-                    // error events + stderr breadcrumbs were already surfaced to
-                    // the UI and the local sync log, so suppression loses no
+                    // classification (accumulated from `error` events on EITHER
+                    // channel — stdout via `handle_sync_line`, stderr via the
+                    // arm above) and only capture a genuine defect. Every error
+                    // event + stderr breadcrumb was already surfaced to the UI
+                    // and the local sync log, so suppression loses no
                     // diagnostics — only the Sentry alert.
-                    let (saw_company_error, saw_alertable) = totals
+                    let (saw_error, saw_alertable) = totals
                         .lock()
-                        .map(|t| (t.saw_company_error, t.saw_alertable_company_error))
+                        .map(|t| (t.saw_error, t.saw_alertable_error))
                         .unwrap_or((false, false));
-                    if should_alert_on_nonzero_exit(code, signal, saw_company_error, saw_alertable) {
+                    if should_alert_on_nonzero_exit(code, signal, saw_error, saw_alertable) {
                         let _ = report_sync_error(
                             &app_bg,
                             crate::events::SyncErrorEvent {
@@ -2053,7 +2109,7 @@ mod tests {
         assert!(!is_transient_network_error("something unexpected"));
     }
 
-    // ── is_alertable_company_error ───────────────────────────────────────────
+    // ── is_alertable_error ───────────────────────────────────────────────────
 
     #[test]
     fn test_alertable_false_for_not_yet_provisioned() {
@@ -2064,7 +2120,7 @@ mod tests {
             "(company)",
             "Failed to fetch entity cmp_01ABC: 404 company/entity not found",
         );
-        assert!(!is_alertable_company_error(&err));
+        assert!(!is_alertable_error(&err));
     }
 
     #[test]
@@ -2074,7 +2130,30 @@ mod tests {
             "(company)",
             "TimeoutError code=ECONNRESET read ECONNRESET",
         );
-        assert!(!is_alertable_company_error(&err));
+        assert!(!is_alertable_error(&err));
+    }
+
+    #[test]
+    fn test_alertable_false_for_expected_acl_scope_skip() {
+        // HQ-SYNC-WEB-6: a per-file 403 SCOPE_EXCEEDS_PARENT skip — the file is
+        // kept local-only and the user is told to grant the path. Benign on
+        // BOTH the HEAD and PUT skip messages the runner emits.
+        let head = make_company_error(
+            Some("romy"),
+            "data/homepage-img-src/hero-lineup.png",
+            "skipped: outside granted ACL scope (server returned 403 \
+             SCOPE_EXCEEDS_PARENT / access denied on HEAD). Grant this path to \
+             push it, or it stays local-only.",
+        );
+        assert!(!is_alertable_error(&head));
+        let put = make_company_error(
+            Some("romy"),
+            "projects/homepage/index.html",
+            "skipped: outside granted ACL scope (server returned 403 \
+             SCOPE_EXCEEDS_PARENT / access denied on PUT). Grant this path to \
+             push it, or it stays local-only.",
+        );
+        assert!(!is_alertable_error(&put));
     }
 
     #[test]
@@ -2085,25 +2164,26 @@ mod tests {
             "(company)",
             "EISDIR: illegal operation on a directory, read",
         );
-        assert!(is_alertable_company_error(&eisdir));
+        assert!(is_alertable_error(&eisdir));
         let forbidden = make_company_error(
             Some("acme"),
             "(company)",
             "STS /sts/vend-self failed: 403 {\"error\":\"denied\"}",
         );
-        assert!(is_alertable_company_error(&forbidden));
+        assert!(is_alertable_error(&forbidden));
     }
 
     #[test]
-    fn test_alertable_false_for_file_level_error() {
-        // File-level errors never drive the runner's non-zero exit; they are
-        // not eligible as the "cause" of an exit alert.
+    fn test_alertable_true_for_real_file_level_error() {
+        // A genuine per-file failure (not an expected ACL-scope skip) DOES drive
+        // the runner's exit-2 tally and must keep alerting — file level no
+        // longer gets a blanket pass.
         let err = make_company_error(
             Some("acme"),
             "docs/a.md",
             "EISDIR: illegal operation on a directory, read",
         );
-        assert!(!is_alertable_company_error(&err));
+        assert!(is_alertable_error(&err));
     }
 
     // ── should_alert_on_nonzero_exit ─────────────────────────────────────────
@@ -2141,21 +2221,22 @@ mod tests {
     }
 
     #[test]
-    fn test_exit_alert_suppressed_when_all_company_errors_benign() {
-        // The HQ-SYNC-WEB-6 latest-event shape: exit 2 driven solely by a
-        // transient ECONNRESET on one company → no alert.
+    fn test_exit_alert_suppressed_when_all_errors_benign() {
+        // The HQ-SYNC-WEB-6 shape: exit 2 driven solely by benign errors
+        // (per-file ACL-scope skips, a not-provisioned 404, or a transient
+        // ECONNRESET) → saw_error && !saw_alertable_error → no alert.
         assert!(!should_alert_on_nonzero_exit(Some(2), None, true, false));
     }
 
     #[test]
-    fn test_exit_alert_fires_for_real_company_error() {
-        // exit 2 with at least one alertable company error (e.g. EISDIR) → alert.
+    fn test_exit_alert_fires_for_real_error() {
+        // exit 2 with at least one alertable error (e.g. EISDIR) → alert.
         assert!(should_alert_on_nonzero_exit(Some(2), None, true, true));
     }
 
     #[test]
     fn test_exit_alert_fires_for_unexplained_exit() {
-        // Non-zero exit with NO company error seen — runner panicked / was
+        // Non-zero exit with NO error event seen — runner panicked / was
         // OOM-killed before emitting protocol. This is the original
         // "bailed before a useful stream" signal and must keep alerting.
         assert!(should_alert_on_nonzero_exit(Some(1), None, false, false));
@@ -2164,7 +2245,7 @@ mod tests {
         assert!(should_alert_on_nonzero_exit(None, None, false, false));
     }
 
-    // ── accumulate: company-error classification ─────────────────────────────
+    // ── accumulate / record_error: any-level error classification ────────────
 
     #[test]
     fn test_accumulate_flags_benign_company_error_not_alertable() {
@@ -2174,8 +2255,8 @@ mod tests {
             "(company)",
             "TimeoutError code=ECONNRESET read ECONNRESET",
         )));
-        assert!(t.saw_company_error);
-        assert!(!t.saw_alertable_company_error);
+        assert!(t.saw_error);
+        assert!(!t.saw_alertable_error);
     }
 
     #[test]
@@ -2186,12 +2267,12 @@ mod tests {
             "(company)",
             "EISDIR: illegal operation on a directory, read",
         )));
-        assert!(t.saw_company_error);
-        assert!(t.saw_alertable_company_error);
+        assert!(t.saw_error);
+        assert!(t.saw_alertable_error);
     }
 
     #[test]
-    fn test_accumulate_mixed_company_errors_stay_alertable() {
+    fn test_accumulate_mixed_errors_stay_alertable() {
         // A benign error must not "downgrade" a real one seen in the same run.
         let mut t = RunTotals::default();
         t.accumulate(&SyncEvent::Error(make_company_error(
@@ -2204,21 +2285,62 @@ mod tests {
             "(company)",
             "EISDIR: illegal operation on a directory, read",
         )));
-        assert!(t.saw_company_error);
-        assert!(t.saw_alertable_company_error);
+        assert!(t.saw_error);
+        assert!(t.saw_alertable_error);
     }
 
     #[test]
-    fn test_accumulate_ignores_file_level_error() {
-        // File-level errors don't set the company-error flags.
+    fn test_accumulate_file_level_acl_scope_skip_benign() {
+        // A per-file ACL-scope skip (the HQ-SYNC-WEB-6 flood) now feeds the
+        // alert decision — seen, but NOT alertable — so a run whose only errors
+        // are these skips suppresses the exit alert.
+        let mut t = RunTotals::default();
+        t.accumulate(&SyncEvent::Error(make_company_error(
+            Some("romy"),
+            "data/homepage-img-src/hero-lineup.png",
+            "skipped: outside granted ACL scope (server returned 403 \
+             SCOPE_EXCEEDS_PARENT / access denied on HEAD).",
+        )));
+        assert!(t.saw_error);
+        assert!(!t.saw_alertable_error);
+    }
+
+    #[test]
+    fn test_accumulate_file_level_real_error_alertable() {
+        // A genuine per-file failure now correctly counts as alertable (it
+        // drives the runner's exit-2 tally just like a company-level error).
         let mut t = RunTotals::default();
         t.accumulate(&SyncEvent::Error(make_company_error(
             Some("acme"),
             "docs/a.md",
             "EISDIR: illegal operation on a directory, read",
         )));
-        assert!(!t.saw_company_error);
-        assert!(!t.saw_alertable_company_error);
+        assert!(t.saw_error);
+        assert!(t.saw_alertable_error);
+    }
+
+    #[test]
+    fn test_record_error_from_parsed_stderr_acl_scope_line() {
+        // End-to-end of the regression: the runner (hq-cloud PR #34) emits the
+        // ACL-scope skip as an ndjson `error` line on STDERR. The stderr arm
+        // parses it and records it; the run must then NOT alert on exit 2.
+        let line = r#"{"type":"error","company":"romy","path":"projects/homepage/index.html","message":"skipped: outside granted ACL scope (server returned 403 SCOPE_EXCEEDS_PARENT / access denied on HEAD). Grant this path to push it, or it stays local-only."}"#;
+        let event: SyncEvent =
+            serde_json::from_str(line).expect("stderr ndjson error line should parse");
+        let mut t = RunTotals::default();
+        if let SyncEvent::Error(payload) = event {
+            t.record_error(&payload);
+        } else {
+            panic!("expected SyncEvent::Error");
+        }
+        assert!(t.saw_error);
+        assert!(!t.saw_alertable_error);
+        assert!(!should_alert_on_nonzero_exit(
+            Some(2),
+            None,
+            t.saw_error,
+            t.saw_alertable_error
+        ));
     }
 
     // ── classify_error_event ─────────────────────────────────────────────────
