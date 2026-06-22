@@ -399,7 +399,7 @@ const SIGTERM_SIGNAL: i32 = 15;
 /// runner always carries the cross-process `sync-progress.json` producer
 /// (hq-cloud#107) that powers live menubar progress for ANY sync — auto-sync
 /// and CLI, not just a menubar-spawned Sync Now.
-pub const HQ_CLOUD_VERSION: &str = "~6.11.14";
+pub const HQ_CLOUD_VERSION: &str = "~6.11.17";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
