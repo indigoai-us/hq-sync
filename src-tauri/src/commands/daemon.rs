@@ -475,6 +475,55 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
     Ok(DAEMON_HANDLE.to_string())
 }
 
+/// Settle delay before the supervisor's first check (let the launch-time
+/// `start_daemon` run first) and the interval between checks thereafter.
+const SUPERVISOR_SETTLE: Duration = Duration::from_secs(30);
+const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Pure decision for the supervisor: respawn the watch daemon iff auto-sync
+/// should be on (the user-facing realtime-sync toggle or the autostart devtools
+/// flag) AND it isn't currently alive. Extracted (like `should_event_push`) so
+/// the decision stays unit-testable.
+fn should_respawn_daemon(realtime_sync: bool, autostart: bool, daemon_alive: bool) -> bool {
+    (realtime_sync || autostart) && !daemon_alive
+}
+
+/// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
+/// is running whenever auto-sync is enabled — respawning it if it died (crash,
+/// OOM, external kill, or a failed initial spawn). Without this a dead daemon
+/// left sync silently quiet until a manual restart; the only tell was a stale
+/// "Last synced N minutes ago". `run_process_impl` deregisters `DAEMON_HANDLE`
+/// on exit, and `start_daemon`'s live-pid pre-flight makes a respawn a clean
+/// no-op when the daemon is already healthy — so this is safe to poll.
+pub fn setup_daemon_supervisor(app: &AppHandle) {
+    let handle = app.clone();
+    thread::spawn(move || {
+        thread::sleep(SUPERVISOR_SETTLE);
+        loop {
+            let daemon_alive = resolve_hq_folder_path()
+                .ok()
+                .and_then(|p| read_pid_file(&p))
+                .map(is_pid_alive)
+                .unwrap_or(false);
+            if should_respawn_daemon(
+                is_realtime_sync_enabled(),
+                is_autostart_enabled(),
+                daemon_alive,
+            ) {
+                log(
+                    "daemon.supervisor",
+                    "watch daemon down but auto-sync is on — respawning",
+                );
+                match start_daemon(handle.clone()) {
+                    Ok(_) => log("daemon.supervisor", "respawned watch daemon"),
+                    Err(e) => log("daemon.supervisor", &format!("respawn skipped: {e}")),
+                }
+            }
+            thread::sleep(SUPERVISOR_INTERVAL);
+        }
+    });
+}
+
 /// Stop the sync daemon via SIGTERM (graceful) → SIGKILL (timeout fallback).
 ///
 /// Returns `true` if a stop was initiated. The watcher process owns its own
@@ -554,6 +603,23 @@ pub fn daemon_status() -> Result<DaemonStatus, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Daemon supervisor decision ───────────────────────────────────────
+
+    #[test]
+    fn test_should_respawn_daemon() {
+        // Auto-sync on (either flag), daemon dead → respawn.
+        assert!(should_respawn_daemon(true, false, false));
+        assert!(should_respawn_daemon(false, true, false));
+        assert!(should_respawn_daemon(true, true, false));
+        // Auto-sync on, daemon already alive → no-op.
+        assert!(!should_respawn_daemon(true, false, true));
+        assert!(!should_respawn_daemon(false, true, true));
+        // Auto-sync off (user disabled it), daemon dead → never respawn.
+        assert!(!should_respawn_daemon(false, false, false));
+        // Auto-sync off, daemon alive → no-op.
+        assert!(!should_respawn_daemon(false, false, true));
+    }
 
     // ── DaemonStatus serialization ───────────────────────────────────────
 
