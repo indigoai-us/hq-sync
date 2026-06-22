@@ -270,7 +270,7 @@ fn client_id() -> String {
 /// Calls `poll_dm_once(app)` once right after a successful connect (offline
 /// catch-up, US-006) and once per inbound Publish (the wake signal).
 async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), String> {
-    use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, Transport};
+    use rumqttc::{AsyncClient, MqttOptions, Transport};
 
     let now = SystemTime::now();
     let url = build_signed_wss_url(
@@ -297,18 +297,55 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
     // AWS IoT requires a clean session for SigV4-WSS connections.
     opts.set_clean_session(true);
 
-    let (client, mut eventloop) = AsyncClient::new(opts, 10);
+    let (client, eventloop) = AsyncClient::new(opts, 10);
 
+    // Isolate the eventloop poll in its own task. rumqttc's WSS transport
+    // (ws_stream_tungstenite) hits `unreachable!()` and PANICS when rumqttc
+    // writes a packet (keep-alive PINGREQ, SUBSCRIBE, …) after the peer has
+    // already closed the socket — "Sending after closing is not allowed"
+    // (Sentry HQ-SYNC-WEB-19, FATAL). That panic originates deep in a transitive
+    // dependency and unwinds straight through the eventloop borrow, so the send
+    // itself can't be guarded in-place. Running the poll loop in a child task
+    // turns that panic into a `JoinError` we treat exactly like a connection
+    // error: tear the (now-poisoned) eventloop down and let the caller reconnect
+    // with a fresh eventloop and fresh creds, instead of the panic unwinding
+    // through and killing the long-lived receiver task.
+    let topic = creds.topic.clone();
+    let app = app.clone();
+    let handle = tokio::task::spawn(drive_eventloop(app, client, eventloop, topic));
+    match handle.await {
+        Ok(result) => result,
+        Err(join_err) if join_err.is_panic() => Err(format!(
+            "eventloop panicked (send-after-close guarded): {}",
+            panic_payload_message(join_err.into_panic())
+        )),
+        Err(join_err) => Err(format!("eventloop task ended abnormally: {join_err}")),
+    }
+}
+
+/// Drive the rumqttc eventloop until a connection-level error. Runs in its own
+/// task (spawned by `run_once`) so a panic from the WSS transport's
+/// send-after-close `unreachable!()` (HQ-SYNC-WEB-19) is caught as a `JoinError`
+/// by the caller instead of unwinding through and killing the long-lived
+/// receiver task. Returns `Err(reason)` on any connection failure so the caller
+/// backs off and reconnects.
+async fn drive_eventloop(
+    app: AppHandle,
+    client: rumqttc::AsyncClient,
+    mut eventloop: rumqttc::EventLoop,
+    topic: String,
+) -> Result<(), String> {
+    use rumqttc::{Event, Packet, QoS};
     loop {
         match eventloop.poll().await {
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
                 log(LOG_TAG, "DM_MQTT_CONNECT_OK");
                 // Subscribe to our own topic. QoS 0 (AtMostOnce): the payload is
                 // only a wake signal — if one is dropped the 60s poll backstops it.
-                if let Err(e) = client.subscribe(creds.topic.clone(), QoS::AtMostOnce).await {
+                if let Err(e) = client.subscribe(topic.clone(), QoS::AtMostOnce).await {
                     return Err(format!("subscribe: {e}"));
                 }
-                log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={}", creds.topic));
+                log(LOG_TAG, &format!("DM_MQTT_SUBSCRIBED topic={topic}"));
                 // Offline catch-up (US-006): drain anything missed while we were
                 // disconnected, before the first push arrives.
                 poll_dm_once(app.clone()).await;
@@ -324,6 +361,19 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
                 return Err(format!("eventloop: {e}"));
             }
         }
+    }
+}
+
+/// Best-effort human-readable message from a caught panic payload (the
+/// `Box<dyn Any + Send>` a `JoinError` carries), covering the `&str` and
+/// `String` payloads `panic!` / `unreachable!` produce.
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
     }
 }
 
@@ -450,5 +500,63 @@ mod tests {
         assert_eq!(parsed.iot_endpoint, "abc123.iot.us-east-1.amazonaws.com");
         assert_eq!(parsed.region, "us-east-1");
         assert_eq!(parsed.topic, "hq/prs_abc/dm");
+    }
+
+    // ── HQ-SYNC-WEB-19: the eventloop is driven in a child task so a panic from
+    // the WSS transport's send-after-close `unreachable!()` is caught as a
+    // JoinError and converted to a recoverable reconnect, not a process-killing
+    // unwind. These pin the two halves of that guard. ──────────────────────────
+
+    #[test]
+    fn panic_payload_message_extracts_str_and_string() {
+        // `unreachable!`/`panic!` with a literal produce a `&str` payload…
+        let s: Box<dyn std::any::Any + Send> = Box::new("boom &str");
+        assert_eq!(panic_payload_message(s), "boom &str");
+        // …formatted panics produce a `String` payload.
+        let owned: Box<dyn std::any::Any + Send> = Box::new(String::from("boom String"));
+        assert_eq!(panic_payload_message(owned), "boom String");
+        // Anything else degrades gracefully (never panics itself).
+        let other: Box<dyn std::any::Any + Send> = Box::new(42u8);
+        assert_eq!(panic_payload_message(other), "non-string panic payload");
+    }
+
+    #[tokio::test]
+    async fn eventloop_panic_is_caught_as_joinerror_not_unwound() {
+        // Model the exact failure: a task that panics the way ws_stream_tungstenite
+        // does on send-after-close. Spawning it (as run_once spawns drive_eventloop)
+        // must yield a JoinError we can recover from — proving the panic does NOT
+        // unwind through and kill the receiver task.
+        let handle = tokio::task::spawn(async {
+            unreachable!(
+                "protocol error from tungstenite on send is a bug in ws_stream_tungstenite. \
+                 The error from tungstenite is Sending after closing is not allowed."
+            );
+            #[allow(unreachable_code)]
+            Ok::<(), String>(())
+        });
+
+        let joined = handle.await;
+        let join_err = joined.expect_err("the task panicked, so await must yield Err");
+        assert!(join_err.is_panic(), "must be classified as a panic JoinError");
+
+        // run_once's recovery turns this into a reconnectable Err carrying the
+        // real cause — never a propagated unwind.
+        let msg = panic_payload_message(join_err.into_panic());
+        assert!(
+            msg.contains("Sending after closing is not allowed"),
+            "panic message should surface the tungstenite cause, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn non_panicking_eventloop_task_returns_its_result() {
+        // The happy path: a child task that returns Err(reason) (a normal
+        // connection error) joins cleanly with no panic, so run_once forwards the
+        // inner Result unchanged to the backoff/reconnect loop.
+        let handle =
+            tokio::task::spawn(async { Err::<(), String>("eventloop: connection reset".into()) });
+        let joined = handle.await;
+        assert!(joined.is_ok(), "no panic → JoinHandle resolves Ok");
+        assert_eq!(joined.unwrap(), Err("eventloop: connection reset".into()));
     }
 }
