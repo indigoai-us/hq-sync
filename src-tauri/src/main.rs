@@ -518,6 +518,9 @@ fn main() {
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());
+            // Supervise the watch daemon: respawn it if it dies while auto-sync
+            // is on, so a crash/kill doesn't leave sync silently quiet.
+            commands::daemon::setup_daemon_supervisor(app.handle());
 
             // Share-notification poller. Gated solely on the shareNotifications
             // menubar preference (the @getindigo.ai dogfood gate was removed
