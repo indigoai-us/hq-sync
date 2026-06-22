@@ -376,6 +376,8 @@ fn main() {
             commands::meetings::meetings_invite_bot,
             commands::meetings::meetings_join_bot_now,
             commands::meetings::meetings_cancel_bot,
+            commands::meetings::meetings_set_company,
+            commands::meetings::meetings_take_pending_focus,
             commands::meetings::open_meetings_window,
             commands::meetings::meetings_check_bot_for_url,
             commands::meetings::meetings_notify_detected,
@@ -530,6 +532,8 @@ fn main() {
                 use tauri::Listener;
                 // (a) Launch poll (5s delay) + independent interval timer.
                 commands::share_notify::setup_share_notify_poller(app.handle().clone());
+                #[cfg(target_os = "macos")]
+                commands::meetings::setup_unattributed_meeting_poller(app.handle().clone());
 
                 // (a') Instant-DM push receiver — MQTT-over-WSS to AWS IoT Core.
                 // Gated on @getindigo.ai inside setup_dm_mqtt_receiver; wakes

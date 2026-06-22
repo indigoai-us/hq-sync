@@ -16,6 +16,13 @@
     saveMeetingsCache,
   } from '../lib/meetingsCache';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
+  import {
+    UNATTRIBUTED,
+    companyOptions,
+    isUnattributed,
+    setCompanyErrorMessage,
+    setMeetingCompany,
+  } from '../lib/meetingAttribution';
 
   interface MeetingEvent {
     id: string;
@@ -89,6 +96,7 @@
     calendarEventId?: string | null;
     meetingTitle?: string | null;
     scheduledStartTime?: string | null;
+    companyId?: string | null;
     autoScheduled: boolean;
     errorMessage?: string | null;
     // US-010 — real source-landed signal from hq-pro (HEAD on the meeting
@@ -129,6 +137,7 @@
   let companyNamesByUid = $state<Map<string, string>>(
     new Map(cachedSnapshot?.companyNamesByUid ?? []),
   );
+  let memberships = $state<CompanyMembership[]>([]);
   let loading = $state(false);
   let listError = $state<string | null>(null);
   let toast = $state<{ kind: 'info' | 'warn'; text: string } | null>(null);
@@ -259,6 +268,11 @@
   let urlInputCompanyId = $state<string | null>(null);
 
   let rowPending = $state<Set<string>>(new Set());
+  let attributionPending = $state<Set<string>>(new Set());
+  let applyToSeriesByBotId = $state<Map<string, boolean>>(new Map());
+  let focusedMeetingId = $state<string | null>(null);
+  const eventRows = new Map<string, HTMLLIElement>();
+  const assignmentSelects = new Map<string, HTMLSelectElement>();
 
   // Multi-account filter state.
   //   `accounts`           — every connected Google account
@@ -298,6 +312,7 @@
    *  tell whether a click landed inside the dropdown's box (keep open)
    *  or outside it (close). */
   let filterRowEl = $state<HTMLDivElement | null>(null);
+  const attributionOptions = $derived(companyOptions(memberships));
 
   /**
    * Close the filter on any click outside the filter-row (trigger +
@@ -330,6 +345,41 @@
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('keydown', onKeyDown, true);
+    };
+  });
+
+  $effect(() => {
+    let unlisten: UnlistenFn | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        unlisten = await listen<{ meetingId?: string }>(
+          'meetings:focus-meeting',
+          (event) => {
+            const id = event.payload?.meetingId;
+            if (id) focusMeetingRow(id);
+          },
+        );
+        if (cancelled) {
+          unlisten?.();
+          return;
+        }
+        // Cold-open drain: when this window is opened fresh from a deep-link /
+        // notification, the backend stashed the target id (the live event above
+        // would have raced our listener). Pull it now that we're mounted.
+        try {
+          const pending = await invoke<string | null>('meetings_take_pending_focus');
+          if (!cancelled && pending) focusMeetingRow(pending);
+        } catch (err) {
+          console.warn('meetings_take_pending_focus failed', err);
+        }
+      } catch (err) {
+        console.warn('meetings:focus-meeting subscribe failed', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      unlisten?.();
     };
   });
 
@@ -437,7 +487,7 @@
       // (the empty-state below handles that branch).
       let upcomingErr: unknown = null;
       let botsErr: unknown = null;
-      const [evts, bots, memberships, accts] = await Promise.all([
+      const [evts, bots, membershipRows, accts] = await Promise.all([
         invoke<MeetingEvent[]>('meetings_list_upcoming').catch((err: unknown) => {
           upcomingErr = err;
           return null;
@@ -462,7 +512,8 @@
       // next successful refresh.
       if (evts !== null) events = evts;
       if (bots !== null) botsByEventId = buildBotMap(bots);
-      companyNamesByUid = buildCompanyNameMap(memberships ?? []);
+      memberships = membershipRows ?? [];
+      companyNamesByUid = buildCompanyNameMap(membershipRows ?? []);
       accounts = accts ?? [];
       accountEmailById = new Map(
         (accts ?? []).map((a) => [a.accountId, a.email ?? '']),
@@ -687,6 +738,89 @@
       next.delete(key);
       rowPending = next;
     }
+  }
+
+  function botCompanyValue(bot: ScheduledBot): string {
+    return isUnattributed(bot) ? UNATTRIBUTED : (bot.companyId ?? UNATTRIBUTED);
+  }
+
+  function updateBotCompany(calendarEventId: string, companyId: string) {
+    const bot = botsByEventId.get(calendarEventId);
+    if (!bot) return;
+    const next = new Map(botsByEventId);
+    next.set(calendarEventId, { ...bot, companyId });
+    botsByEventId = next;
+  }
+
+  async function onAssignCompany(evt: MeetingEvent, bot: ScheduledBot, value: string) {
+    const previous = botCompanyValue(bot);
+    if (value === previous || attributionPending.has(bot.botId)) return;
+    attributionPending = new Set(attributionPending).add(bot.botId);
+    updateBotCompany(evt.id, value);
+    const applyToSeries = applyToSeriesByBotId.get(bot.botId) ?? true;
+    try {
+      const result = await setMeetingCompany(bot.botId, value, applyToSeries);
+      if (result.ok) {
+        updateBotCompany(evt.id, result.companyId);
+        flashToast('info', 'Company updated.');
+      } else {
+        updateBotCompany(evt.id, previous);
+        flashToast('warn', setCompanyErrorMessage(result));
+      }
+    } catch (err) {
+      updateBotCompany(evt.id, previous);
+      flashToast('warn', friendlyError(err, "Couldn't update the meeting's company."));
+    } finally {
+      const next = new Set(attributionPending);
+      next.delete(bot.botId);
+      attributionPending = next;
+    }
+  }
+
+  function setApplyToSeries(botId: string, checked: boolean) {
+    const next = new Map(applyToSeriesByBotId);
+    next.set(botId, checked);
+    applyToSeriesByBotId = next;
+  }
+
+  function canShowSeriesControl(_evt: MeetingEvent, _bot: ScheduledBot): boolean {
+    return false;
+  }
+
+  function trackEventRow(node: HTMLLIElement, key: string) {
+    eventRows.set(key, node);
+    return {
+      destroy() {
+        if (eventRows.get(key) === node) eventRows.delete(key);
+      },
+    };
+  }
+
+  function trackAssignmentSelect(node: HTMLSelectElement, botId: string) {
+    assignmentSelects.set(botId, node);
+    return {
+      destroy() {
+        if (assignmentSelects.get(botId) === node) {
+          assignmentSelects.delete(botId);
+        }
+      },
+    };
+  }
+
+  function focusMeetingRow(meetingId: string, attempts = 12) {
+    window.setTimeout(() => {
+      const row = eventRows.get(meetingId);
+      if (!row) {
+        if (attempts > 0) focusMeetingRow(meetingId, attempts - 1);
+        return;
+      }
+      focusedMeetingId = meetingId;
+      row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      assignmentSelects.get(meetingId)?.focus();
+      window.setTimeout(() => {
+        if (focusedMeetingId === meetingId) focusedMeetingId = null;
+      }, 1800);
+    }, 80);
   }
 
   async function onUrlInvite() {
@@ -1445,7 +1579,11 @@
             {@const pending = rowPending.has(evt.id)}
             {@const kind = rowButtonKind(bot)}
             {@const url = eventMeetingUrl(evt)}
-            <li class="event-row">
+            <li
+              class="event-row"
+              class:event-row-focused={bot?.botId === focusedMeetingId}
+              use:trackEventRow={bot?.botId ?? evt.id}
+            >
               <!-- Calendar colour bar — encodes which (account, calendar)
                    the event came from. Replaces the multi-row badge
                    block; the same colour shows next to the matching
@@ -1458,6 +1596,43 @@
                   {evt.summary ?? '(no title)'}
                 </span>
               </div>
+              {#if bot}
+                {@const companyPending = attributionPending.has(bot.botId)}
+                <div class="attribution-control">
+                  <select
+                    class="meeting-company"
+                    aria-label="Assign meeting company"
+                    value={botCompanyValue(bot)}
+                    disabled={companyPending}
+                    use:trackAssignmentSelect={bot.botId}
+                    onchange={(e) => {
+                      const value = (e.currentTarget as HTMLSelectElement).value;
+                      void onAssignCompany(evt, bot, value);
+                    }}
+                  >
+                    <option value={UNATTRIBUTED}>Unassigned</option>
+                    {#each attributionOptions as option (option.companyUid)}
+                      <option value={option.companyUid}>{option.label}</option>
+                    {/each}
+                  </select>
+                  {#if canShowSeriesControl(evt, bot)}
+                    <label class="series-control">
+                      <input
+                        type="checkbox"
+                        checked={applyToSeriesByBotId.get(bot.botId) ?? true}
+                        disabled={companyPending}
+                        onchange={(e) => {
+                          setApplyToSeries(
+                            bot.botId,
+                            (e.currentTarget as HTMLInputElement).checked,
+                          );
+                        }}
+                      />
+                      <span>Apply to whole series</span>
+                    </label>
+                  {/if}
+                </div>
+              {/if}
               <!-- Action cluster: Join (open URL) + per-state bot button.
                    Both icon-only — the rich state lives in colour + tooltip
                    so the row stays dense. Tooltips carry the meaning so an
@@ -1903,9 +2078,15 @@
     gap: 6px;
     padding: 6px 4px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 6px;
+    transition: background 140ms ease, box-shadow 140ms ease;
   }
   .event-row:last-child {
     border-bottom: 0;
+  }
+  .event-row-focused {
+    background: rgba(250, 204, 21, 0.10);
+    box-shadow: inset 0 0 0 1px rgba(250, 204, 21, 0.30);
   }
   .event-meta {
     flex: 1 1 auto;
@@ -1940,6 +2121,56 @@
     /* Small inset so the bar reads as a coloured marker rather than
        filling the row's full vertical padding region. */
     margin: 2px 0;
+  }
+
+  .attribution-control {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .meeting-company {
+    width: 128px;
+    font-size: var(--text-base);
+    font-family: inherit;
+    padding: 5px 22px 5px 8px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #f4f4f5;
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    cursor: pointer;
+    text-overflow: ellipsis;
+    overflow: hidden;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg width='8' height='6' viewBox='0 0 8 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%23a0a0b0' stroke-width='1.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+  }
+  .meeting-company:hover:not(:disabled) {
+    background-color: rgba(255, 255, 255, 0.09);
+    border-color: rgba(255, 255, 255, 0.18);
+  }
+  .meeting-company:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.30);
+  }
+  .meeting-company:disabled {
+    opacity: 0.6;
+    cursor: wait;
+  }
+  .series-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #a1a1aa;
+    font-size: var(--text-base);
+    white-space: nowrap;
+  }
+  .series-control input {
+    margin: 0;
+    accent-color: #e4e4e7;
   }
 
   /* Inline-link inside the meetings-placeholder copy — used by the

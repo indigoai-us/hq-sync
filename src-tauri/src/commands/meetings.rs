@@ -21,10 +21,11 @@
 //!   POST   /v1/bot/invite                            — schedule a new bot
 //!   POST   /v1/bot/{botId}/cancel                    — cancel scheduled bot
 
-use std::sync::OnceLock;
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::commands::cognito;
 use crate::commands::sync::resolve_vault_api_url;
@@ -108,13 +109,17 @@ pub struct EventTime {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScheduledBot {
+    #[serde(alias = "recallBotId")]
     pub bot_id: String,
     pub meeting_url: String,
     pub platform: String,
     pub status: String,
     pub calendar_event_id: Option<String>,
+    #[serde(alias = "title")]
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
+    #[serde(default, alias = "company")]
+    pub company_id: Option<String>,
     /// `POST /v1/bot/invite` returns a slimmer body than `GET /v1/bot/list`
     /// and omits this field — a fresh manual invite is never auto-scheduled,
     /// so default to `false` rather than failing the whole parse (which would
@@ -134,6 +139,38 @@ pub struct ScheduledBot {
     /// invite has no transcript yet), which the default handles too.
     #[serde(default)]
     pub source_landed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SetCompanyBody {
+    company_id: String,
+    apply_to_series: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetCompanyResult {
+    pub ok: bool,
+    pub meeting_id: String,
+    pub company_id: String,
+    #[serde(default)]
+    pub series_key: Option<String>,
+    #[serde(default)]
+    pub applied_to_series: Option<bool>,
+    #[serde(default)]
+    pub refiled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetCompanyErrorBody {
+    #[allow(dead_code)]
+    ok: bool,
+    #[serde(default)]
+    code: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 /// Mirrors hq-pro's `OntologyParticipant` — resolved participant from the
@@ -179,18 +216,11 @@ async fn fetch_participants_best_effort(
     if let Some(id) = event_id.filter(|s| !s.is_empty()) {
         req = req.query(&[("eventId", id)]);
     }
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        req.send(),
-    )
-    .await;
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), req.send()).await;
     let res = match result {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
-            crate::util::logfile::log(
-                "meetings",
-                &format!("participants fetch error: {e}"),
-            );
+            crate::util::logfile::log("meetings", &format!("participants fetch error: {e}"));
             return vec![];
         }
         Err(_elapsed) => {
@@ -226,12 +256,22 @@ async fn fetch_participants_best_effort(
 /// fetches its own data via `meetings_list_upcoming` + `meetings_list_scheduled_bots`
 /// directly on mount.
 #[tauri::command]
-pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
+pub async fn open_meetings_window(
+    app: AppHandle,
+    focus_meeting_id: Option<String>,
+) -> Result<(), String> {
     const LABEL: &str = "meetings-window";
 
     if let Some(window) = app.get_webview_window(LABEL) {
         window.show().map_err(|e| e.to_string())?;
         window.set_focus().map_err(|e| e.to_string())?;
+        // Warm path: the window already exists, so its `meetings:focus-meeting`
+        // listener is mounted — a live emit is delivered immediately. (Global
+        // `emit` per the codebase convention; only this window listens for it.)
+        if let Some(id) = focus_meeting_id.filter(|s| !s.trim().is_empty()) {
+            app.emit("meetings:focus-meeting", serde_json::json!({ "meetingId": id }))
+                .map_err(|e| e.to_string())?;
+        }
         return Ok(());
     }
 
@@ -248,28 +288,58 @@ pub async fn open_meetings_window(app: AppHandle) -> Result<(), String> {
     // image-processing step in the build pipeline and (b) the window-
     // switcher icon is rendered very small, so the badge would likely be
     // illegible at that scale anyway.
-    const HQ_ICON_PNG: &[u8] =
-        include_bytes!("../../icons/128x128@2x.png");
+    const HQ_ICON_PNG: &[u8] = include_bytes!("../../icons/128x128@2x.png");
     let icon = tauri::image::Image::from_bytes(HQ_ICON_PNG)
         .map_err(|e| format!("load window icon: {e}"))?;
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        LABEL,
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("Upcoming Meetings")
-    .inner_size(460.0, 600.0)
-    .min_inner_size(380.0, 400.0)
-    .resizable(true)
-    .decorations(true)
-    .icon(icon)
-    .map_err(|e| format!("attach window icon: {e}"))?
-    .visible(true)
-    .build()
-    .map_err(|e| e.to_string())?;
+    tauri::WebviewWindowBuilder::new(&app, LABEL, tauri::WebviewUrl::App("index.html".into()))
+        .title("Upcoming Meetings")
+        .inner_size(460.0, 600.0)
+        .min_inner_size(380.0, 400.0)
+        .resizable(true)
+        .decorations(true)
+        .icon(icon)
+        .map_err(|e| format!("attach window icon: {e}"))?
+        .visible(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // Cold path: the window was just built, so its JS `meetings:focus-meeting`
+    // listener is NOT yet mounted — a timed emit would race the webview and be
+    // lost (see the "Multi-window ready handshake" gotcha in CLAUDE.md). Instead
+    // stash the id; the meetings view drains it via `meetings_take_pending_focus`
+    // on mount, after its listener + row refs are ready.
+    if let Some(id) = focus_meeting_id.filter(|s| !s.trim().is_empty()) {
+        set_pending_focus(Some(id));
+    }
 
     Ok(())
+}
+
+/// One-shot "focus this meeting when the window mounts" hand-off. Set by
+/// `open_meetings_window` on the cold path (window freshly built, JS listener
+/// not yet live) and drained exactly once by the meetings view on mount via
+/// `meetings_take_pending_focus`. A `OnceLock<Mutex<…>>` rather than Tauri
+/// managed state so it is reachable from the free-standing command without an
+/// `AppHandle`.
+static PENDING_FOCUS_MEETING_ID: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn pending_focus() -> &'static Mutex<Option<String>> {
+    PENDING_FOCUS_MEETING_ID.get_or_init(|| Mutex::new(None))
+}
+
+fn set_pending_focus(id: Option<String>) {
+    let mut guard = pending_focus().lock().unwrap_or_else(|p| p.into_inner());
+    *guard = id;
+}
+
+/// Drain the pending focus-meeting id (set when the Meetings window was opened
+/// cold from a deep-link / notification). Returns it at most once, then clears
+/// it so a later normal open doesn't re-focus a stale meeting.
+#[tauri::command]
+pub async fn meetings_take_pending_focus() -> Option<String> {
+    let mut guard = pending_focus().lock().unwrap_or_else(|p| p.into_inner());
+    guard.take()
 }
 
 // ── HTTP wrappers ─────────────────────────────────────────────────────────────
@@ -307,8 +377,8 @@ pub async fn meetings_list_upcoming() -> Result<Vec<MeetingEvent>, String> {
     if !status.is_success() {
         return Err(format!("events HTTP {status}: {text}"));
     }
-    let parsed: EventsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("events parse: {e} — body: {text}"))?;
+    let parsed: EventsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("events parse: {e} — body: {text}"))?;
     Ok(parsed.events)
 }
 
@@ -373,8 +443,8 @@ pub async fn meetings_list_accounts() -> Result<Vec<GoogleAccount>, String> {
     if !status.is_success() {
         return Err(format!("accounts HTTP {status}: {text}"));
     }
-    let parsed: AccountsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("accounts parse: {e} — body: {text}"))?;
+    let parsed: AccountsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("accounts parse: {e} — body: {text}"))?;
     Ok(parsed.accounts)
 }
 
@@ -436,8 +506,8 @@ pub async fn meetings_list_calendars_for_account(
     if !status.is_success() {
         return Err(format!("calendars HTTP {status}: {text}"));
     }
-    let parsed: CalendarsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("calendars parse: {e} — body: {text}"))?;
+    let parsed: CalendarsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("calendars parse: {e} — body: {text}"))?;
     Ok(AccountCalendars {
         calendars: parsed.calendars,
         selected_calendar_ids: parsed
@@ -487,12 +557,15 @@ pub async fn meetings_list_scheduled_bots(
         .await
         .map_err(|e| format!("bot/list fetch: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("bot/list read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/list read: {e}"))?;
     if !status.is_success() {
         return Err(format!("bot/list HTTP {status}: {text}"));
     }
-    let parsed: BotsResponse = serde_json::from_str(&text)
-        .map_err(|e| format!("bot/list parse: {e} — body: {text}"))?;
+    let parsed: BotsResponse =
+        serde_json::from_str(&text).map_err(|e| format!("bot/list parse: {e} — body: {text}"))?;
     Ok(parsed.bots)
 }
 
@@ -500,6 +573,93 @@ pub async fn meetings_list_scheduled_bots(
 struct BotsResponse {
     #[serde(default)]
     bots: Vec<ScheduledBot>,
+}
+
+pub(crate) fn is_unattributed(bot: &ScheduledBot) -> bool {
+    bot.company_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.eq_ignore_ascii_case("unknown"))
+        .unwrap_or(true)
+}
+
+pub(crate) fn select_unattributed(bots: &[ScheduledBot]) -> Vec<&ScheduledBot> {
+    bots.iter()
+        .filter(|bot| is_unattributed(bot) && !bot.status.trim().eq_ignore_ascii_case("cancelled"))
+        .collect()
+}
+
+fn build_set_company_body(company_id: &str, apply_to_series: bool) -> SetCompanyBody {
+    SetCompanyBody {
+        company_id: company_id.to_string(),
+        apply_to_series,
+    }
+}
+
+fn set_company_error_message(body: Option<SetCompanyErrorBody>) -> String {
+    if let Some(body) = body {
+        if let Some(error) = body.error.filter(|s| !s.trim().is_empty()) {
+            return error;
+        }
+        match body.code.as_deref() {
+            Some("company-access-denied") => {
+                return "You don't have access to that company.".to_string()
+            }
+            Some("meeting-not-found") => return "That meeting no longer exists.".to_string(),
+            Some("invalid-company") | Some("missing-company") => {
+                return "Pick a valid company.".to_string()
+            }
+            _ => {}
+        }
+    }
+    "Couldn't update the meeting's company.".to_string()
+}
+
+#[tauri::command]
+pub async fn meetings_set_company(
+    meeting_id: String,
+    company_id: String,
+    apply_to_series: Option<bool>,
+) -> Result<SetCompanyResult, String> {
+    let meeting_id = meeting_id.trim().to_string();
+    let company_id = company_id.trim().to_string();
+    if meeting_id.is_empty() {
+        return Err("meetingId is required".to_string());
+    }
+    if !is_url_safe_id(&meeting_id) {
+        return Err(format!("meetingId has invalid characters: {meeting_id:?}"));
+    }
+    if company_id.is_empty() {
+        return Err("companyId is required".to_string());
+    }
+
+    let base = vault_base().await?;
+    let auth = auth_header().await?;
+    let url = format!("{base}/v1/meetings/{meeting_id}/company");
+    let body = build_set_company_body(&company_id, apply_to_series.unwrap_or(true));
+    let res = build_client()
+        .post(url)
+        .header("authorization", &auth)
+        .header("content-type", "application/json")
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("meeting/company fetch: {e}"))?;
+    let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("meeting/company read: {e}"))?;
+    if !status.is_success() {
+        crate::util::logfile::log(
+            "meetings",
+            &format!("meeting/company HTTP {status}: {text}"),
+        );
+        let parsed = serde_json::from_str::<SetCompanyErrorBody>(&text).ok();
+        return Err(set_company_error_message(parsed));
+    }
+    serde_json::from_str(&text).map_err(|e| format!("meeting/company parse: {e} — body: {text}"))
 }
 
 /// `POST /v1/bot/invite` — schedule a Recall.ai bot for a meeting. Pass
@@ -522,13 +682,9 @@ pub async fn meetings_invite_bot(
     }
     // Fetch ontology-resolved participants best-effort (US-005).
     // 2-second deadline; empty vec on any failure so the invite always fires.
-    let participants = fetch_participants_best_effort(
-        &base,
-        &auth,
-        &meeting_url,
-        calendar_event_id.as_deref(),
-    )
-    .await;
+    let participants =
+        fetch_participants_best_effort(&base, &auth, &meeting_url, calendar_event_id.as_deref())
+            .await;
 
     let body = InviteBotBody {
         meeting_url,
@@ -544,7 +700,10 @@ pub async fn meetings_invite_bot(
         .await
         .map_err(|e| format!("bot/invite fetch: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("bot/invite read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/invite read: {e}"))?;
     if !status.is_success() {
         return Err(format!("bot/invite HTTP {status}: {text}"));
     }
@@ -607,8 +766,7 @@ pub async fn meetings_join_bot_now(
     if !status.is_success() {
         return Err(format!("bot/join-now HTTP {status}: {text}"));
     }
-    serde_json::from_str(&text)
-        .map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
+    serde_json::from_str(&text).map_err(|e| format!("bot/join-now parse: {e} — body: {text}"))
 }
 
 /// `GET /membership/me` — caller's memberships, enriched with `companyName`.
@@ -743,9 +901,15 @@ pub async fn meetings_check_bot_for_url(
     if let Some(id) = event_id.as_deref().filter(|s| !s.is_empty()) {
         req = req.query(&[("eventId", id)]);
     }
-    let res = req.send().await.map_err(|e| format!("bot/list check: {e}"))?;
+    let res = req
+        .send()
+        .await
+        .map_err(|e| format!("bot/list check: {e}"))?;
     let status = res.status();
-    let text = res.text().await.map_err(|e| format!("bot/list check read: {e}"))?;
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/list check read: {e}"))?;
     if !status.is_success() {
         return Err(format!("bot/list check HTTP {status}: {text}"));
     }
@@ -757,6 +921,131 @@ pub async fn meetings_check_bot_for_url(
     // detect-meeting notification suppressed for a scheduled meeting whose bot
     // has already joined the call.
     Ok(first_active_bot(parsed.bots))
+}
+
+static UNATTRIBUTED_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn unattributed_seen() -> &'static Mutex<HashSet<String>> {
+    UNATTRIBUTED_SEEN.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+pub(crate) fn dedupe_new(seen: &mut HashSet<String>, candidates: &[&ScheduledBot]) -> Vec<String> {
+    let mut out = Vec::new();
+    for bot in candidates {
+        if bot.bot_id.trim().is_empty() {
+            continue;
+        }
+        if seen.insert(bot.bot_id.clone()) {
+            out.push(bot.bot_id.clone());
+        }
+    }
+    out
+}
+
+const UNATTRIBUTED_POLL_INTERVAL_SECS: u64 = 120;
+
+pub fn setup_unattributed_meeting_poller(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        poll_unattributed_once(app.clone()).await;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(
+            UNATTRIBUTED_POLL_INTERVAL_SECS,
+        ));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            poll_unattributed_once(app.clone()).await;
+        }
+    });
+}
+
+pub async fn poll_unattributed_once(app: AppHandle) {
+    let settings = match crate::commands::settings::get_settings().await {
+        Ok(settings) => settings,
+        Err(e) => {
+            crate::util::logfile::log(
+                "meetings",
+                &format!("unattributed poll settings failed: {e}"),
+            );
+            return;
+        }
+    };
+    if !settings.notifications.unwrap_or(true) {
+        return;
+    }
+
+    let base = match vault_base().await {
+        Ok(base) => base,
+        Err(e) => {
+            crate::util::logfile::log("meetings", &format!("unattributed poll base failed: {e}"));
+            return;
+        }
+    };
+    let auth = match auth_header().await {
+        Ok(auth) => auth,
+        Err(e) => {
+            crate::util::logfile::log("meetings", &format!("unattributed poll auth failed: {e}"));
+            return;
+        }
+    };
+
+    let res = match build_client()
+        .get(format!("{base}/v1/bot/list"))
+        .header("authorization", &auth)
+        .send()
+        .await
+    {
+        Ok(res) => res,
+        Err(e) => {
+            crate::util::logfile::log("meetings", &format!("unattributed poll fetch failed: {e}"));
+            return;
+        }
+    };
+    let status = res.status();
+    let text = match res.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            crate::util::logfile::log("meetings", &format!("unattributed poll read failed: {e}"));
+            return;
+        }
+    };
+    if !status.is_success() {
+        crate::util::logfile::log(
+            "meetings",
+            &format!("unattributed poll HTTP {status}: {text}"),
+        );
+        return;
+    }
+    let parsed: BotsResponse = match serde_json::from_str(&text) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            crate::util::logfile::log("meetings", &format!("unattributed poll parse failed: {e}"));
+            return;
+        }
+    };
+    let candidates = select_unattributed(&parsed.bots);
+    let new_ids = {
+        let mut guard = unattributed_seen()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        dedupe_new(&mut guard, &candidates)
+    };
+    for meeting_id in new_ids {
+        let title = parsed
+            .bots
+            .iter()
+            .find(|bot| bot.bot_id == meeting_id)
+            .and_then(|bot| bot.meeting_title.clone());
+        if let Err(e) = crate::commands::banner::show_unattributed_meeting_banner(
+            app.clone(),
+            meeting_id,
+            title,
+        )
+        .await
+        {
+            crate::util::logfile::log("meetings", &format!("unattributed banner failed: {e}"));
+        }
+    }
 }
 
 /// Fire a macOS notification for a detected meeting, gated on:
@@ -798,7 +1087,9 @@ pub async fn meetings_notify_detected(
     if !platform_lc.is_empty() {
         if let Some(allowed) = mdn.and_then(|m| m.platforms.as_ref()) {
             if !allowed.is_empty()
-                && !allowed.iter().any(|p| p.to_ascii_lowercase() == platform_lc)
+                && !allowed
+                    .iter()
+                    .any(|p| p.to_ascii_lowercase() == platform_lc)
             {
                 return Ok(false);
             }
@@ -859,10 +1150,7 @@ pub async fn meetings_notify_detected(
         )
         .await
         {
-            crate::util::logfile::log(
-                "meetings",
-                &format!("custom meeting banner failed: {e}"),
-            );
+            crate::util::logfile::log("meetings", &format!("custom meeting banner failed: {e}"));
         }
         // Ledger already marked Notified by `claim_notify` above (the claim is
         // what authorised this fire), so we only bump the tray badge here.
@@ -920,18 +1208,13 @@ pub async fn meetings_notify_detected(
             Err(e) => {
                 crate::util::logfile::log(
                     "meetings",
-                    &format!(
-                        "mac-notification-sys: set_application({BUNDLE_ID}) failed: {e}"
-                    ),
+                    &format!("mac-notification-sys: set_application({BUNDLE_ID}) failed: {e}"),
                 );
             }
         }
     });
 
-    let window_id_for_thread = payload
-        .window_id
-        .clone()
-        .unwrap_or_default();
+    let window_id_for_thread = payload.window_id.clone().unwrap_or_default();
     let platform_for_thread = platform_lc.clone();
     let title_for_thread = build_notification_title(&platform_lc);
     let body_for_thread = body.clone();
@@ -987,18 +1270,13 @@ pub async fn meetings_notify_detected(
         // Record button comes back. Tracked as a follow-up.
         let osa_body = body_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
         let osa_title = title_for_thread.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            "display notification \"{osa_body}\" with title \"{osa_title}\""
-        );
+        let script = format!("display notification \"{osa_body}\" with title \"{osa_title}\"");
         match std::process::Command::new("/usr/bin/osascript")
             .args(["-e", &script])
             .output()
         {
             Ok(out) if out.status.success() => {
-                crate::util::logfile::log(
-                    "meetings",
-                    "osascript notification fired",
-                );
+                crate::util::logfile::log("meetings", "osascript notification fired");
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
@@ -1011,10 +1289,7 @@ pub async fn meetings_notify_detected(
                 );
             }
             Err(e) => {
-                crate::util::logfile::log(
-                    "meetings",
-                    &format!("osascript spawn failed: {e}"),
-                );
+                crate::util::logfile::log("meetings", &format!("osascript spawn failed: {e}"));
             }
         }
 
@@ -1076,15 +1351,14 @@ pub async fn meetings_notify_detected(
                         action: action.to_string(),
                         window_id: window_id_for_thread,
                         platform: platform_for_thread,
+                        meeting_id: None,
                     };
                     if let Err(e) = app_for_thread
                         .emit(crate::events::EVENT_NOTIFICATION_MEETING_ACTION, &payload)
                     {
                         crate::util::logfile::log(
                             "meetings",
-                            &format!(
-                                "emit notification:meeting-action failed: {e}"
-                            ),
+                            &format!("emit notification:meeting-action failed: {e}"),
                         );
                     }
                 }
@@ -1184,9 +1458,8 @@ fn build_notification_title(platform_lc: &str) -> String {
 /// optional underscores) and avoids the need for percent-encoding.
 fn is_url_safe_id(s: &str) -> bool {
     !s.is_empty()
-        && s.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'
-        })
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1226,6 +1499,7 @@ mod tests {
             calendar_event_id: None,
             meeting_title: None,
             scheduled_start_time: None,
+            company_id: None,
             auto_scheduled: false,
             error_message: None,
             source_landed: false,
@@ -1314,9 +1588,142 @@ mod tests {
         assert_eq!(bot.bot_id, "bot-abc");
         assert_eq!(bot.status, "scheduled");
         assert_eq!(bot.platform, "zoom");
-        assert!(!bot.auto_scheduled, "manual invite defaults to not auto-scheduled");
+        assert!(
+            !bot.auto_scheduled,
+            "manual invite defaults to not auto-scheduled"
+        );
         assert!(bot.calendar_event_id.is_none());
         assert!(bot.meeting_title.is_none());
+    }
+
+    #[test]
+    fn scheduled_bot_accepts_bot_and_company_aliases() {
+        let json = r#"{
+            "recallBotId": "bot-alias",
+            "status": "scheduled",
+            "meetingUrl": "https://us06web.zoom.us/j/85906",
+            "platform": "zoom",
+            "title": "Alias title",
+            "company": "cmp_alias"
+        }"#;
+        let bot: ScheduledBot = serde_json::from_str(json).expect("aliases parse");
+        assert_eq!(bot.bot_id, "bot-alias");
+        assert_eq!(bot.meeting_title.as_deref(), Some("Alias title"));
+        assert_eq!(bot.company_id.as_deref(), Some("cmp_alias"));
+    }
+
+    #[test]
+    fn unattributed_detection_handles_missing_empty_and_unknown() {
+        let mut bot = bot_with_status("scheduled");
+        assert!(is_unattributed(&bot));
+        bot.company_id = Some("".to_string());
+        assert!(is_unattributed(&bot));
+        bot.company_id = Some(" UnKnOwN ".to_string());
+        assert!(is_unattributed(&bot));
+        bot.company_id = Some("cmp_123".to_string());
+        assert!(!is_unattributed(&bot));
+    }
+
+    #[test]
+    fn select_unattributed_excludes_cancelled_and_attributed() {
+        let mut unknown = bot_with_status("scheduled");
+        unknown.bot_id = "bot_unknown".to_string();
+        unknown.company_id = Some("unknown".to_string());
+
+        let mut missing = bot_with_status("recording");
+        missing.bot_id = "bot_missing".to_string();
+
+        let mut cancelled = bot_with_status("cancelled");
+        cancelled.bot_id = "bot_cancelled".to_string();
+        cancelled.company_id = Some("unknown".to_string());
+
+        let mut attributed = bot_with_status("scheduled");
+        attributed.bot_id = "bot_attributed".to_string();
+        attributed.company_id = Some("cmp_a".to_string());
+
+        let bots = vec![unknown, missing, cancelled, attributed];
+        let selected = select_unattributed(&bots)
+            .into_iter()
+            .map(|b| b.bot_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected, vec!["bot_unknown", "bot_missing"]);
+    }
+
+    #[test]
+    fn build_set_company_body_serializes_camel_case() {
+        let body = build_set_company_body("cmp_a", false);
+        let json = serde_json::to_value(&body).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "companyId": "cmp_a",
+                "applyToSeries": false
+            })
+        );
+    }
+
+    #[test]
+    fn set_company_result_deserializes_success() {
+        let json = r#"{
+            "ok": true,
+            "meetingId": "bot_1",
+            "companyId": "cmp_a",
+            "seriesKey": "series_1",
+            "appliedToSeries": true,
+            "refiled": false
+        }"#;
+        let result: SetCompanyResult = serde_json::from_str(json).expect("parse");
+        assert!(result.ok);
+        assert_eq!(result.meeting_id, "bot_1");
+        assert_eq!(result.company_id, "cmp_a");
+        assert_eq!(result.series_key.as_deref(), Some("series_1"));
+        assert_eq!(result.applied_to_series, Some(true));
+        assert_eq!(result.refiled, Some(false));
+    }
+
+    #[test]
+    fn set_company_error_deserializes_and_maps_codes() {
+        let body: SetCompanyErrorBody = serde_json::from_str(
+            r#"{"ok":false,"code":"company-access-denied","error":"No access"}"#,
+        )
+        .expect("parse");
+        assert_eq!(set_company_error_message(Some(body)), "No access");
+
+        let body: SetCompanyErrorBody =
+            serde_json::from_str(r#"{"ok":false,"code":"meeting-not-found"}"#).expect("parse");
+        assert_eq!(
+            set_company_error_message(Some(body)),
+            "That meeting no longer exists."
+        );
+
+        let body: SetCompanyErrorBody =
+            serde_json::from_str(r#"{"ok":false,"code":"invalid-company"}"#).expect("parse");
+        assert_eq!(
+            set_company_error_message(Some(body)),
+            "Pick a valid company."
+        );
+        assert_eq!(
+            set_company_error_message(None),
+            "Couldn't update the meeting's company."
+        );
+    }
+
+    #[test]
+    fn dedupe_new_returns_only_first_time_meeting_ids() {
+        let mut seen = std::collections::HashSet::from(["bot_seen".to_string()]);
+        let mut seen_bot = bot_with_status("scheduled");
+        seen_bot.bot_id = "bot_seen".to_string();
+        let mut new_bot = bot_with_status("scheduled");
+        new_bot.bot_id = "bot_new".to_string();
+        let mut duplicate_new = bot_with_status("scheduled");
+        duplicate_new.bot_id = "bot_new".to_string();
+        let mut empty = bot_with_status("scheduled");
+        empty.bot_id = "".to_string();
+        let candidates = vec![&seen_bot, &new_bot, &duplicate_new, &empty];
+
+        assert_eq!(dedupe_new(&mut seen, &candidates), vec!["bot_new"]);
+        assert!(seen.contains("bot_seen"));
+        assert!(seen.contains("bot_new"));
     }
 
     #[test]
@@ -1411,11 +1818,8 @@ mod tests {
 
     #[test]
     fn build_notification_body_uses_url_when_no_summary() {
-        let body = build_notification_body(
-            "meet",
-            None,
-            Some("https://meet.google.com/abc-defg-hij"),
-        );
+        let body =
+            build_notification_body("meet", None, Some("https://meet.google.com/abc-defg-hij"));
         assert_eq!(body, "Meet: https://meet.google.com/abc-defg-hij");
     }
 
@@ -1430,18 +1834,17 @@ mod tests {
         );
         assert_eq!(body, "Zoom meeting");
         // Hard check: no part of the synthetic key leaks.
-        assert!(!body.contains("recall-window"), "synthetic key leaked: {body}");
+        assert!(
+            !body.contains("recall-window"),
+            "synthetic key leaked: {body}"
+        );
         assert!(!body.contains("43F5EBF4"), "windowId leaked: {body}");
     }
 
     #[test]
     fn build_notification_body_summary_wins_over_synthetic_url() {
         // If for some reason the SDK gave us both, summary should still win.
-        let body = build_notification_body(
-            "zoom",
-            Some("Quick chat"),
-            Some("recall-window:abc"),
-        );
+        let body = build_notification_body("zoom", Some("Quick chat"), Some("recall-window:abc"));
         assert_eq!(body, "Zoom: Quick chat");
     }
 
