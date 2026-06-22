@@ -11,6 +11,7 @@
   import { joinableMemberships, type Workspace } from '../lib/workspaces';
   import { liveProgressCaption } from '../lib/live-progress-caption';
   import { isCorePath, CORE_SETUP_LABEL } from '../lib/progressLabel';
+  import { packUpdateTitle } from '../lib/packUpdate';
   import type { ConflictFile } from '../stores/conflicts';
 
   interface Config {
@@ -117,6 +118,10 @@
      *  the captured stderr pre-filled (typical case: EACCES on a
      *  system-prefix npm that needs sudo). */
     hqCliUpdateError?: string | null;
+    packUpdateAvailable?: { count: number; names: string[] } | null;
+    packsUpdating?: boolean;
+    packUpdateError?: string | null;
+    onupdatepacks?: () => void;
     /** Locally-detected hq-core `hqVersion` (cheap on-disk read from
      *  `core.yaml`). Drives the "HQ vX.Y.Z" footer row, independent of
      *  the unified state check below. Null → render the row with a
@@ -288,6 +293,9 @@
     hqCliUpdateAvailable = null,
     hqCliUpdateInstalling = false,
     hqCliUpdateError = null,
+    packUpdateAvailable = null,
+    packsUpdating = false,
+    packUpdateError = null,
     hqVersion = null,
     coreState = null,
     coreInstalling = false,
@@ -302,6 +310,7 @@
     oninstallupdate,
     oninstallhqcliupdate,
     ondismisshqcliupdate,
+    onupdatepacks,
     oninstallcore,
     bindStatsRefresh,
     meetingsEnabled = false,
@@ -812,6 +821,32 @@
                 {hqCliUpdateInstalling ? 'Installing…' : 'Update'}
               </button>
             {/if}
+          </div>
+        </div>
+      {/if}
+
+      <!-- Pack-update banner — one or more installed content packs have a newer
+           upstream version. One click runs `hq packs update` (all). Surfaced
+           alongside the app + CLI update banners so stale packs (a common cause of
+           registry quarantines on the next /update-hq) don't sit unnoticed. -->
+      {#if packUpdateAvailable && packUpdateAvailable.count > 0}
+        <div class="banner banner-info banner-update banner-pack-update">
+          <div class="banner-update-text">
+            <p class="banner-title">{packUpdateTitle(packUpdateAvailable.count)}</p>
+            {#if packUpdateError}
+              <p class="banner-body">Update failed. You can run <code>hq packs update</code> in your terminal.</p>
+            {:else}
+              <p class="banner-body">{packUpdateAvailable.names.join(', ')}</p>
+            {/if}
+          </div>
+          <div class="banner-actions">
+            <button
+              class="banner-update-button"
+              onclick={onupdatepacks}
+              disabled={packsUpdating || !onupdatepacks}
+            >
+              {packsUpdating ? 'Updating…' : 'Update'}
+            </button>
           </div>
         </div>
       {/if}
