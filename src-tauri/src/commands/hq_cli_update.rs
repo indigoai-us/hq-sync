@@ -31,12 +31,15 @@
 //! Tauri command for on-demand polls.
 //!
 //! The `install_hq_cli_update` command runs the upgrade directly by
-//! spawning `npm install -g @indigoai-us/hq-cli@latest` with the same
-//! beefed-up PATH used elsewhere for child processes (`paths::child_path`).
-//! On success it re-checks and emits a fresh `hq-cli-update:cleared` event;
-//! on failure it returns stderr so the UI can fall back to the manual
-//! copy-the-command flow (typical failure: EACCES against a system-prefix
-//! npm that needs sudo).
+//! spawning `npm install -g --prefix <resolved-hq-prefix>
+//! @indigoai-us/hq-cli@latest` when `hq` resolves to `<prefix>/bin/hq`,
+//! with the same beefed-up PATH used elsewhere for child processes
+//! (`paths::child_path`). That keeps install, detection, and execution
+//! anchored to the same prefix instead of letting npm's default prefix write
+//! a second, shadowed copy. On success it re-checks and emits a fresh
+//! `hq-cli-update:cleared` event; on failure it returns stderr so the UI can
+//! fall back to the manual copy-the-command flow (typical failure: EACCES
+//! against a system-prefix npm that needs sudo).
 
 use std::path::Path;
 use std::process::Command;
@@ -432,10 +435,37 @@ pub fn set_hq_cli_update_dismissed(version: String) -> Result<(), String> {
     )
 }
 
+/// Derive the npm global prefix from the exact `hq` binary the app resolved.
+///
+/// npm's global layout is `<prefix>/bin/hq` plus
+/// `<prefix>/lib/node_modules/@indigoai-us/hq-cli/package.json`. Detection is
+/// already anchored to `resolve_bin("hq")`, so the updater must write to that
+/// same enclosing prefix or it can install a fresh CLI that the app never
+/// executes. Deliberately avoid `canonicalize`: for symlinks we want the
+/// symlink's own `<prefix>/bin/hq`, not the package-internal target path.
+fn npm_prefix_from_hq_bin(hq_bin: &str) -> Option<String> {
+    if hq_bin == "hq" {
+        return None;
+    }
+    Path::new(hq_bin)
+        .parent()?
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
 /// Build the argv for the global install. Factored out so the unit test
-/// can lock the shape without spawning npm.
-pub(crate) fn install_argv() -> [&'static str; 3] {
-    ["install", "-g", HQ_CLI_PACKAGE]
+/// can lock the shape without spawning npm. When we know the prefix that
+/// contains the resolved `hq`, pass it explicitly so npm updates the binary
+/// the app actually runs instead of npm's unrelated default global prefix.
+pub(crate) fn install_argv(prefix: Option<&str>) -> Vec<String> {
+    let mut argv = vec!["install".to_string(), "-g".to_string()];
+    if let Some(prefix) = prefix {
+        argv.push("--prefix".to_string());
+        argv.push(prefix.to_string());
+    }
+    argv.push(HQ_CLI_PACKAGE.to_string());
+    argv
 }
 
 /// Read the version field from the installed package.json inside the npm
@@ -444,10 +474,11 @@ pub(crate) fn install_argv() -> [&'static str; 3] {
 /// has not been kept in sync with the published npm version (same gotcha
 /// documented in `util::hq_resolver`). package.json is the canonical source.
 ///
-/// `npm_bin` is the absolute path to the `npm` binary we just spawned; we
-/// re-use it to ask `npm root -g` for the global modules directory so we
-/// read the package.json from the *same* prefix `install -g` just wrote
-/// to. Asking a different `npm` on PATH would read a different prefix.
+/// `npm_bin` is the absolute path to the `npm` binary being queried; callers
+/// pass the same beefed-up PATH used for child processes so node-backed npm
+/// still starts under a Dock-launched app. This intentionally reads npm's
+/// default global prefix and is only a fallback for version detection layouts
+/// that cannot be resolved from the `hq` binary itself.
 fn read_installed_version(npm_bin: &str, path: &str) -> Option<String> {
     let out = Command::new(npm_bin)
         .args(["root", "-g"])
@@ -489,17 +520,24 @@ fn read_installed_version(npm_bin: &str, path: &str) -> Option<String> {
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
-    let args = install_argv();
+    let hq = paths::resolve_bin("hq");
+    let prefix = npm_prefix_from_hq_bin(&hq);
+    let args = install_argv(prefix.as_deref());
     log(
         "hq-cli-update",
-        &format!("install: spawning {} {}", npm, args.join(" ")),
+        &format!(
+            "install: spawning {} {} (prefix={})",
+            npm,
+            args.join(" "),
+            prefix.as_deref().unwrap_or("npm default prefix")
+        ),
     );
 
     let npm_for_install = npm.clone();
     let path_for_install = path.clone();
     let output = tauri::async_runtime::spawn_blocking(move || {
         Command::new(&npm_for_install)
-            .args(args)
+            .args(&args)
             .env("PATH", path_for_install)
             .output()
     })
@@ -523,31 +561,20 @@ pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, St
         });
     }
 
-    // npm exit 0 means the @latest tag is now installed at npm's global
-    // prefix — by definition the user is current. We deliberately do NOT
-    // run `hq --version` here: the CLI's hardcoded version string lags
-    // the published npm version (see util::hq_resolver for the same
-    // gotcha) so `hq --version` would still read the old number and the
-    // banner would never clear.
+    // npm exit 0 means the @latest tag installed successfully. Read back the
+    // version through the same binary-anchored path used by normal detection
+    // so the cleared event reflects the `hq` the app will actually execute.
+    // `read_installed_version` asks npm's default global prefix, which may be
+    // different from the explicit `--prefix` used above.
     let latest = fetch_latest().await?;
-    let npm_for_root = npm.clone();
-    let path_for_root = path.clone();
-    let installed = tauri::async_runtime::spawn_blocking(move || {
-        read_installed_version(&npm_for_root, &path_for_root)
-    })
-    .await
-    .ok()
-    .flatten();
-    // Prefer the package.json version we just installed; fall back to the
-    // registry `latest` we already fetched (also accurate since `@latest`
-    // was the install target).
-    let local = installed.clone().or_else(|| Some(latest.clone()));
+    let local = tauri::async_runtime::spawn_blocking(get_local_version)
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| Some(latest.clone()));
     log(
         "hq-cli-update",
-        &format!(
-            "install succeeded: installed_pkg={:?} latest={}",
-            installed, latest
-        ),
+        &format!("install succeeded: local={:?} latest={}", local, latest),
     );
     let info = HqCliUpdateInfo {
         local,
@@ -627,7 +654,7 @@ mod tests {
     /// the package) can't ship a non-global or wrong-package install.
     #[test]
     fn install_argv_targets_global_hq_cli() {
-        let argv = install_argv();
+        let argv = install_argv(None);
         assert_eq!(argv[0], "install");
         assert_eq!(argv[1], "-g");
         assert!(
@@ -642,6 +669,40 @@ mod tests {
             "package arg must request @latest; got {}",
             argv[2],
         );
+    }
+
+    #[test]
+    fn install_argv_includes_prefix_when_available() {
+        let argv = install_argv(Some("/tmp/hq-prefix"));
+        assert_eq!(
+            argv,
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "--prefix".to_string(),
+                "/tmp/hq-prefix".to_string(),
+                HQ_CLI_PACKAGE.to_string(),
+            ]
+        );
+        let prefix_flag = argv.iter().position(|arg| arg == "--prefix").unwrap();
+        assert_eq!(
+            argv.get(prefix_flag + 1),
+            Some(&"/tmp/hq-prefix".to_string())
+        );
+    }
+
+    #[test]
+    fn npm_prefix_from_resolved_hq_bin_uses_enclosing_prefix() {
+        assert_eq!(
+            npm_prefix_from_hq_bin(
+                "/Users/test/Library/Application Support/Indigo HQ/toolchain/npm-global/bin/hq"
+            ),
+            Some(
+                "/Users/test/Library/Application Support/Indigo HQ/toolchain/npm-global"
+                    .to_string()
+            )
+        );
+        assert_eq!(npm_prefix_from_hq_bin("hq"), None);
     }
 
     // The exact npm stderr behind HQ-SYNC-WEB-Y (exit 243, 7 users): a root-

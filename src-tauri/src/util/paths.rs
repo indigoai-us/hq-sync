@@ -27,9 +27,9 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// Terminal.
 ///
 /// Resolution order:
-/// 1. `$HOME/.npm-global/bin/{name}` — user-level npm prefix (no-sudo installs)
-/// 2. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`)
-///    — node/bin and npm-global/bin directories installed by hq-installer
+/// 1. Managed HQ toolchain (`~/Library/Application Support/Indigo HQ/toolchain/`)
+///    — npm-global/bin and node/bin directories installed by hq-installer
+/// 2. `$HOME/.npm-global/bin/{name}` — user-level npm prefix (no-sudo installs)
 /// 3. `/opt/homebrew/bin/{name}` — Apple Silicon homebrew
 /// 4. `/usr/local/bin/{name}` — Intel homebrew / system-wide installs
 /// 5. Ask a login shell via `zsh -lc 'command -v {name}'` — respects the
@@ -40,36 +40,18 @@ pub fn hq_config_dir() -> Result<PathBuf, String> {
 /// surfaces as a sync error the UI can show. We don't invent a path that
 /// doesn't exist.
 pub fn resolve_bin(name: &str) -> String {
-    if let Some(home) = dirs::home_dir() {
-        // 1. User npm prefix
-        let candidate = home.join(".npm-global").join("bin").join(name);
-        if candidate.exists() {
-            return candidate.to_string_lossy().to_string();
-        }
-
-        // 2. Managed HQ toolchain (installed by hq-installer)
-        let toolchain = managed_toolchain_dir(&home);
-        for subdir in ["npm-global/bin", "node/bin"] {
-            let candidate = toolchain.join(subdir).join(name);
-            if candidate.exists() {
-                return candidate.to_string_lossy().to_string();
-            }
-        }
-    }
-
-    // 3 + 4. Standard install locations
-    for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        let candidate = Path::new(prefix).join(name);
-        if candidate.exists() {
-            return candidate.to_string_lossy().to_string();
-        }
+    if let Some(path) = resolve_bin_in_dirs(dirs::home_dir().as_deref(), name) {
+        return path;
     }
 
     // 5. Login-shell PATH lookup — catches nvm/volta/asdf + any custom prefix
     //    the user configured in .zshrc. `-l` makes zsh a login shell so it
     //    sources the full startup chain. `command -v` prints the resolved
     //    path on success, nothing on miss.
-    if let Ok(output) = Command::new("zsh").args(["-lc", &format!("command -v {}", name)]).output() {
+    if let Ok(output) = Command::new("zsh")
+        .args(["-lc", &format!("command -v {}", name)])
+        .output()
+    {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() && Path::new(&path).exists() {
@@ -81,6 +63,42 @@ pub fn resolve_bin(name: &str) -> String {
     // Fall back to bare name — Command::new will then produce os error 2
     // with the binary name still recognizable in the error message.
     name.to_string()
+}
+
+/// Resolve a binary from deterministic home-relative and system-prefix
+/// locations. Kept separate from the login-shell fallback so tests can assert
+/// precedence without depending on the developer machine's actual HOME or
+/// shell configuration.
+fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
+    if let Some(home) = home {
+        // Managed HQ toolchain (installed by hq-installer). Match
+        // `child_path()` and hq-installer's login PATH order so a stale
+        // foreign `~/.npm-global/bin/hq` cannot shadow the managed CLI the
+        // app's runtime PATH would execute.
+        let toolchain = managed_toolchain_dir(home);
+        for subdir in ["npm-global/bin", "node/bin"] {
+            let candidate = toolchain.join(subdir).join(name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+
+        // User npm prefix after the managed toolchain.
+        let candidate = home.join(".npm-global").join("bin").join(name);
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    // Standard install locations.
+    for prefix in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        let candidate = Path::new(prefix).join(name);
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    None
 }
 
 /// Build a PATH value suitable for handing to a spawned child process.
@@ -347,6 +365,24 @@ mod tests {
         // A name that almost certainly doesn't exist anywhere
         let result = resolve_bin("hq-sync-nonexistent-xyz-123");
         assert_eq!(result, "hq-sync-nonexistent-xyz-123");
+    }
+
+    #[test]
+    fn test_resolve_bin_in_dirs_prefers_managed_toolchain_over_user_npm_global() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let name = "hq-test-bin";
+        let user_bin = tmp.path().join(".npm-global/bin");
+        let toolchain_bin = managed_toolchain_dir(tmp.path()).join("npm-global/bin");
+        std::fs::create_dir_all(&user_bin).unwrap();
+        std::fs::create_dir_all(&toolchain_bin).unwrap();
+        std::fs::write(user_bin.join(name), b"#!/bin/sh\n").unwrap();
+        let expected = toolchain_bin.join(name);
+        std::fs::write(&expected, b"#!/bin/sh\n").unwrap();
+
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), name),
+            Some(expected.to_string_lossy().to_string())
+        );
     }
 
     #[test]
