@@ -212,4 +212,22 @@ describe('mergeConversations', () => {
   it('is stable for empty inputs', () => {
     expect(mergeConversations([], [], { now: NOW })).toEqual([]);
   });
+
+  it('includes a group DM and orders it by createdAt when it has no activity stamp (REGRESSION)', () => {
+    // Group DMs come back from the list endpoint with no lastMessageAt/lastActivityAt
+    // and unread 0 — they used to collapse to time 0 and sink below every contact,
+    // reading as "missing". They must still appear, ordered by their createdAt.
+    const merged = mergeConversations(
+      [
+        contact('prs_old', 'Old', { lastMessageAt: '2026-06-01T00:00:00Z' }),
+        contact('prs_new', 'New', { lastMessageAt: '2026-06-13T11:00:00Z' }),
+      ],
+      [channel('chn_grp', '', { createdAt: '2026-06-10T00:00:00Z' })],
+      { now: NOW },
+    );
+
+    // The group DM is present, and createdAt (06-10) sorts it between the two DMs.
+    expect(merged.map((m) => m.key)).toContain('ch:chn_grp');
+    expect(merged.map((m) => m.key)).toEqual(['dm:prs_new', 'ch:chn_grp', 'dm:prs_old']);
+  });
 });

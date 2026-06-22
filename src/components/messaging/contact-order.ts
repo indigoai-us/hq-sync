@@ -241,6 +241,12 @@ export interface ChannelRecencyFields {
   unread?: number | null;
   lastActivityAt?: string | null;
   lastMessageAt?: string | null;
+  /** Server-supplied channel creation timestamp (ISO-8601). A fallback ordering
+   * signal for channels the server returns with NO activity timestamps — notably
+   * group DMs, whose list payload carries `createdAt` but no `lastMessageAt`. Lets
+   * them sort by when they were created instead of sinking to `time: 0` below
+   * every contact. */
+  createdAt?: string | null;
   /** Client-only epoch-ms stamp of when this channel FIRST entered the rail
    * (set once by `upsertChannel` on insert, never on re-poll). Lets a brand-new
    * channel with no server timestamps and `unread: 0` — e.g. a group DM the
@@ -316,9 +322,11 @@ export function mergeConversations<
       key: `ch:${channel.channelId}`,
       kind: 'channel',
       // Server stamp wins (real ordering untouched). Else a freshly-arrived
-      // channel surfaces at its `arrivedAt`. Else an unread timeless channel
-      // floats to `now`. Else (read + timeless + never-arrival-stamped) → 0.
-      time: stamp || arrivedAt || (unread > 0 ? now : 0),
+      // channel surfaces at its `arrivedAt`. Else fall back to the channel's
+      // `createdAt` (group DMs ship this but no activity stamp, so they order by
+      // creation instead of sinking to 0). Else an unread timeless channel floats
+      // to `now`. Else (read + timeless + never-arrival/created-stamped) → 0.
+      time: stamp || arrivedAt || parseTimestamp(channel.createdAt) || (unread > 0 ? now : 0),
       unread,
       channel,
     };

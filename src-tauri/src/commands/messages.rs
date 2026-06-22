@@ -403,7 +403,7 @@ pub struct Channel {
     pub channel_id: String,
     #[serde(default)]
     pub name: String,
-    /// "personal" | "company".
+    /// "personal" | "company" | "group".
     #[serde(default)]
     pub scope: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -423,6 +423,24 @@ pub struct Channel {
     pub unread: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_count: Option<u32>,
+    /// Server-supplied creation timestamp (ISO-8601). Carried through so the
+    /// rail can order group DMs (which ship no activity timestamp) by creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// Group-DM participant roster (caller excluded), so the rail can name an
+    /// unnamed group DM by its people. Present only for group-scoped channels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub members: Option<Vec<ChannelParticipant>>,
+}
+
+/// A group-DM participant as returned on the channels list — enough to label the
+/// conversation. Mirrors the TS `ChannelParticipant` shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChannelParticipant {
+    pub person_uid: String,
+    #[serde(default)]
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
