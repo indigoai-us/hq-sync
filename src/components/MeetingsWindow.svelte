@@ -20,8 +20,11 @@
     UNATTRIBUTED,
     companyOptions,
     isUnattributed,
+    selectRecorded,
     setCompanyErrorMessage,
+    setCompanySuccessMessage,
     setMeetingCompany,
+    sortByStartDesc,
   } from '../lib/meetingAttribution';
 
   interface MeetingEvent {
@@ -96,6 +99,8 @@
     calendarEventId?: string | null;
     meetingTitle?: string | null;
     scheduledStartTime?: string | null;
+    createdAt?: string | null;
+    updatedAt?: string | null;
     companyId?: string | null;
     autoScheduled: boolean;
     errorMessage?: string | null;
@@ -134,6 +139,7 @@
   let botsByEventId = $state<Map<string, ScheduledBot>>(
     new Map(cachedSnapshot?.botsByEventId ?? []),
   );
+  let allBots = $state<ScheduledBot[]>([]);
   let companyNamesByUid = $state<Map<string, string>>(
     new Map(cachedSnapshot?.companyNamesByUid ?? []),
   );
@@ -511,7 +517,10 @@
       // the render branch order, but the cached state is correct for the
       // next successful refresh.
       if (evts !== null) events = evts;
-      if (bots !== null) botsByEventId = buildBotMap(bots);
+      if (bots !== null) {
+        botsByEventId = buildBotMap(bots);
+        allBots = bots;
+      }
       memberships = membershipRows ?? [];
       companyNamesByUid = buildCompanyNameMap(membershipRows ?? []);
       accounts = accts ?? [];
@@ -744,31 +753,40 @@
     return isUnattributed(bot) ? UNATTRIBUTED : (bot.companyId ?? UNATTRIBUTED);
   }
 
-  function updateBotCompany(calendarEventId: string, companyId: string) {
-    const bot = botsByEventId.get(calendarEventId);
-    if (!bot) return;
-    const next = new Map(botsByEventId);
-    next.set(calendarEventId, { ...bot, companyId });
-    botsByEventId = next;
+  function setBotCompanyOptimistic(botId: string, companyId: string) {
+    allBots = allBots.map((bot) =>
+      bot.botId === botId ? { ...bot, companyId } : bot,
+    );
+
+    for (const [calendarEventId, bot] of botsByEventId) {
+      if (bot.botId !== botId) continue;
+      const next = new Map(botsByEventId);
+      next.set(calendarEventId, { ...bot, companyId });
+      botsByEventId = next;
+      break;
+    }
   }
 
-  async function onAssignCompany(evt: MeetingEvent, bot: ScheduledBot, value: string) {
+  async function onAssignCompany(bot: ScheduledBot, value: string) {
     const previous = botCompanyValue(bot);
     if (value === previous || attributionPending.has(bot.botId)) return;
     attributionPending = new Set(attributionPending).add(bot.botId);
-    updateBotCompany(evt.id, value);
+    setBotCompanyOptimistic(bot.botId, value);
     const applyToSeries = applyToSeriesByBotId.get(bot.botId) ?? true;
     try {
       const result = await setMeetingCompany(bot.botId, value, applyToSeries);
       if (result.ok) {
-        updateBotCompany(evt.id, result.companyId);
-        flashToast('info', 'Company updated.');
+        setBotCompanyOptimistic(bot.botId, result.companyId);
+        flashToast('info', setCompanySuccessMessage(result));
+        if (result.refileWarning?.trim()) {
+          console.warn('refile warning:', result.refileWarning);
+        }
       } else {
-        updateBotCompany(evt.id, previous);
+        setBotCompanyOptimistic(bot.botId, previous);
         flashToast('warn', setCompanyErrorMessage(result));
       }
     } catch (err) {
-      updateBotCompany(evt.id, previous);
+      setBotCompanyOptimistic(bot.botId, previous);
       flashToast('warn', friendlyError(err, "Couldn't update the meeting's company."));
     } finally {
       const next = new Set(attributionPending);
@@ -783,7 +801,7 @@
     applyToSeriesByBotId = next;
   }
 
-  function canShowSeriesControl(_evt: MeetingEvent, _bot: ScheduledBot): boolean {
+  function canShowSeriesControl(_bot: ScheduledBot): boolean {
     return false;
   }
 
@@ -933,6 +951,17 @@
     return d.toLocaleTimeString(undefined, {
       hour: 'numeric',
       minute: '2-digit',
+    });
+  }
+
+  function pastDateLabel(bot: ScheduledBot): string {
+    const raw = bot.scheduledStartTime ?? bot.createdAt;
+    if (!raw) return '';
+    const d = new Date(raw);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
     });
   }
 
@@ -1122,6 +1151,7 @@
    *  `filteredEvents` (and `showOnlyWithUrl`) so it never references a
    *  block-scoped binding before its declaration. */
   const groupedEvents = $derived<DayGroup[]>(groupByDay(filteredEvents));
+  const recordedBots = $derived(sortByStartDesc(selectRecorded(allBots)) as ScheduledBot[]);
 
   /** Count of events the link-only filter is currently hiding. Drives
    *  the "X hidden — show all" recovery affordance so the user doesn't
@@ -1511,11 +1541,49 @@
       </div>
     {/if}
 
-    {#if loading && events.length === 0}
+    {#snippet companyAssign(bot: ScheduledBot)}
+      {@const companyPending = attributionPending.has(bot.botId)}
+      <div class="attribution-control">
+        <select
+          class="meeting-company"
+          aria-label="Assign meeting company"
+          value={botCompanyValue(bot)}
+          disabled={companyPending}
+          use:trackAssignmentSelect={bot.botId}
+          onchange={(e) => {
+            const value = (e.currentTarget as HTMLSelectElement).value;
+            void onAssignCompany(bot, value);
+          }}
+        >
+          <option value={UNATTRIBUTED}>Unassigned</option>
+          {#each attributionOptions as option (option.companyUid)}
+            <option value={option.companyUid}>{option.label}</option>
+          {/each}
+        </select>
+        {#if canShowSeriesControl(bot)}
+          <label class="series-control">
+            <input
+              type="checkbox"
+              checked={applyToSeriesByBotId.get(bot.botId) ?? true}
+              disabled={companyPending}
+              onchange={(e) => {
+                setApplyToSeries(
+                  bot.botId,
+                  (e.currentTarget as HTMLInputElement).checked,
+                );
+              }}
+            />
+            <span>Apply to whole series</span>
+          </label>
+        {/if}
+      </div>
+    {/snippet}
+
+    {#if loading && events.length === 0 && recordedBots.length === 0}
       <p class="meetings-placeholder">Loading…</p>
     {:else if listError}
       <p class="meetings-error">{listError}</p>
-    {:else if accounts.length === 0}
+    {:else if accounts.length === 0 && recordedBots.length === 0}
       <div class="meetings-empty">
         <p class="meetings-empty-title">No calendars connected yet</p>
         <p class="meetings-empty-copy">
@@ -1533,11 +1601,11 @@
           Open HQ Console Integrations
         </button>
       </div>
-    {:else if events.length === 0}
+    {:else if events.length === 0 && recordedBots.length === 0}
       <p class="meetings-placeholder">
         No upcoming meetings in your connected calendars.
       </p>
-    {:else if filteredEvents.length === 0}
+    {:else if filteredEvents.length === 0 && recordedBots.length === 0}
       <p class="meetings-placeholder">
         {#if showOnlyWithUrl && hiddenByUrlFilter === events.length}
           No upcoming meetings have a join link.
@@ -1597,41 +1665,7 @@
                 </span>
               </div>
               {#if bot}
-                {@const companyPending = attributionPending.has(bot.botId)}
-                <div class="attribution-control">
-                  <select
-                    class="meeting-company"
-                    aria-label="Assign meeting company"
-                    value={botCompanyValue(bot)}
-                    disabled={companyPending}
-                    use:trackAssignmentSelect={bot.botId}
-                    onchange={(e) => {
-                      const value = (e.currentTarget as HTMLSelectElement).value;
-                      void onAssignCompany(evt, bot, value);
-                    }}
-                  >
-                    <option value={UNATTRIBUTED}>Unassigned</option>
-                    {#each attributionOptions as option (option.companyUid)}
-                      <option value={option.companyUid}>{option.label}</option>
-                    {/each}
-                  </select>
-                  {#if canShowSeriesControl(evt, bot)}
-                    <label class="series-control">
-                      <input
-                        type="checkbox"
-                        checked={applyToSeriesByBotId.get(bot.botId) ?? true}
-                        disabled={companyPending}
-                        onchange={(e) => {
-                          setApplyToSeries(
-                            bot.botId,
-                            (e.currentTarget as HTMLInputElement).checked,
-                          );
-                        }}
-                      />
-                      <span>Apply to whole series</span>
-                    </label>
-                  {/if}
-                </div>
+                {@render companyAssign(bot)}
               {/if}
               <!-- Action cluster: Join (open URL) + per-state bot button.
                    Both icon-only — the rich state lives in colour + tooltip
@@ -1774,6 +1808,26 @@
           {/each}
         </ul>
       {/each}
+      {#if recordedBots.length > 0}
+        <h3 class="day-heading">Past meetings</h3>
+        <ul class="event-list">
+          {#each recordedBots as bot (bot.botId)}
+            <li
+              class="event-row"
+              class:event-row-focused={bot.botId === focusedMeetingId}
+              use:trackEventRow={bot.botId}
+            >
+              <div class="event-meta">
+                <span class="event-time">{pastDateLabel(bot)}</span>
+                <span class="event-title" title={bot.meetingTitle ?? '(no title)'}>
+                  {bot.meetingTitle ?? '(no title)'}
+                </span>
+              </div>
+              {@render companyAssign(bot)}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     {/if}
   </section>
 </div>

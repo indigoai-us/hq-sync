@@ -9,6 +9,9 @@ export interface ScheduledBotLike {
   status?: string | null;
   meetingUrl?: string | null;
   scheduledStartTime?: string | null;
+  sourceLanded?: boolean | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface CompanyMembershipLike {
@@ -30,6 +33,9 @@ export interface SetCompanySuccess {
   seriesKey?: string | null;
   appliedToSeries?: boolean;
   refiled?: boolean;
+  occurrencesUpdated?: number;
+  refiledCount?: number;
+  refileWarning?: string;
 }
 
 export interface SetCompanyError {
@@ -90,6 +96,39 @@ export function selectUnattributed(
   );
 }
 
+export function isRecorded(bot: ScheduledBotLike): boolean {
+  return (bot.status ?? '').trim().toLowerCase() === 'completed' || bot.sourceLanded === true;
+}
+
+export function selectRecorded(bots: ScheduledBotLike[]): ScheduledBotLike[] {
+  return bots.filter(isRecorded);
+}
+
+export function recordedTimestamp(bot: ScheduledBotLike): number {
+  const raw = bot.scheduledStartTime ?? bot.createdAt;
+  if (!raw) return -Infinity;
+  const timestamp = new Date(raw).getTime();
+  return Number.isNaN(timestamp) ? -Infinity : timestamp;
+}
+
+export function sortByStartDesc(bots: ScheduledBotLike[]): ScheduledBotLike[] {
+  return bots
+    .map((bot, index) => ({ bot, index, timestamp: recordedTimestamp(bot) }))
+    .sort((a, b) => b.timestamp - a.timestamp || a.index - b.index)
+    .map(({ bot }) => bot);
+}
+
+export function setCompanySuccessMessage(result: SetCompanySuccess): string {
+  let base = result.companyId === UNATTRIBUTED ? 'Marked unassigned.' : 'Company updated.';
+  if (result.occurrencesUpdated && result.occurrencesUpdated > 1) {
+    base = `Updated ${result.occurrencesUpdated} meetings in this series.`;
+  }
+  if (result.refiledCount && result.refiledCount > 0) {
+    base += ` Refiled ${result.refiledCount} transcript${result.refiledCount === 1 ? '' : 's'}.`;
+  }
+  return base.trim();
+}
+
 export function buildSetCompanyArgs(
   meetingId: string,
   companyId: string,
@@ -117,6 +156,16 @@ export function parseSetCompanyResult(
             ? value.appliedToSeries
             : undefined,
         refiled: typeof value.refiled === 'boolean' ? value.refiled : undefined,
+        occurrencesUpdated:
+          typeof value.occurrencesUpdated === 'number'
+            ? value.occurrencesUpdated
+            : undefined,
+        refiledCount:
+          typeof value.refiledCount === 'number' ? value.refiledCount : undefined,
+        refileWarning:
+          typeof value.refileWarning === 'string'
+            ? value.refileWarning
+            : undefined,
       };
     }
     if (value.ok === false) {

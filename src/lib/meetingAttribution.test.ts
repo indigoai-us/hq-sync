@@ -5,10 +5,14 @@ import {
   attributionLabel,
   buildSetCompanyArgs,
   companyOptions,
+  isRecorded,
   isUnattributed,
   parseSetCompanyResult,
+  selectRecorded,
   selectUnattributed,
+  setCompanySuccessMessage,
   setCompanyErrorMessage,
+  sortByStartDesc,
   type CompanyMembershipLike,
   type ScheduledBotLike,
 } from './meetingAttribution';
@@ -109,6 +113,68 @@ describe('selectUnattributed', () => {
   });
 });
 
+describe('isRecorded', () => {
+  it('matches completed status', () => {
+    expect(isRecorded({ botId: 'bot_1', status: ' completed ' })).toBe(true);
+  });
+
+  it('matches landed sources', () => {
+    expect(isRecorded({ botId: 'bot_1', status: 'processing', sourceLanded: true })).toBe(true);
+  });
+
+  it('ignores bots that are neither completed nor landed', () => {
+    expect(isRecorded({ botId: 'bot_1', status: 'processing', sourceLanded: false })).toBe(false);
+  });
+});
+
+describe('selectRecorded', () => {
+  it('selects completed and source-landed bots', () => {
+    const bots: ScheduledBotLike[] = [
+      { botId: 'bot_completed', status: 'completed' },
+      { botId: 'bot_landed', status: 'processing', sourceLanded: true },
+      { botId: 'bot_pending', status: 'processing' },
+    ];
+    expect(selectRecorded(bots).map((b) => b.botId)).toEqual([
+      'bot_completed',
+      'bot_landed',
+    ]);
+  });
+});
+
+describe('sortByStartDesc', () => {
+  it('returns a new array sorted by scheduled start or createdAt descending with undated last', () => {
+    const bots: ScheduledBotLike[] = [
+      { botId: 'undated' },
+      { botId: 'old', scheduledStartTime: '2026-05-01T10:00:00Z' },
+      { botId: 'created', createdAt: '2026-05-03T10:00:00Z' },
+      {
+        botId: 'scheduled_wins',
+        scheduledStartTime: '2026-05-04T10:00:00Z',
+        createdAt: '2026-05-10T10:00:00Z',
+      },
+      { botId: 'invalid', scheduledStartTime: 'not-a-date' },
+    ];
+
+    const sorted = sortByStartDesc(bots);
+
+    expect(sorted).not.toBe(bots);
+    expect(bots.map((b) => b.botId)).toEqual([
+      'undated',
+      'old',
+      'created',
+      'scheduled_wins',
+      'invalid',
+    ]);
+    expect(sorted.map((b) => b.botId)).toEqual([
+      'scheduled_wins',
+      'created',
+      'old',
+      'undated',
+      'invalid',
+    ]);
+  });
+});
+
 describe('buildSetCompanyArgs', () => {
   it('builds camelCase Tauri args and defaults applyToSeries to true', () => {
     expect(buildSetCompanyArgs('bot_1', 'cmp_a')).toEqual({
@@ -137,6 +203,9 @@ describe('parseSetCompanyResult', () => {
         seriesKey: null,
         appliedToSeries: true,
         refiled: false,
+        occurrencesUpdated: 4,
+        refiledCount: 2,
+        refileWarning: 'partial refile',
       }),
     ).toEqual({
       ok: true,
@@ -145,6 +214,9 @@ describe('parseSetCompanyResult', () => {
       seriesKey: null,
       appliedToSeries: true,
       refiled: false,
+      occurrencesUpdated: 4,
+      refiledCount: 2,
+      refileWarning: 'partial refile',
     });
   });
 
@@ -158,6 +230,58 @@ describe('parseSetCompanyResult', () => {
     ).toEqual({ ok: false, code: 'meeting-not-found', error: 'Missing' });
     expect(parseSetCompanyResult(null)).toEqual({ ok: false });
     expect(parseSetCompanyResult({ ok: 'nope' })).toEqual({ ok: false });
+  });
+});
+
+describe('setCompanySuccessMessage', () => {
+  it('describes a single company update', () => {
+    expect(setCompanySuccessMessage({ ok: true, meetingId: 'bot_1', companyId: 'cmp_a' })).toBe('Company updated.');
+  });
+
+  it('describes unassigned updates', () => {
+    expect(setCompanySuccessMessage({ ok: true, meetingId: 'bot_1', companyId: UNATTRIBUTED })).toBe('Marked unassigned.');
+  });
+
+  it('describes multi-occurrence series updates', () => {
+    expect(
+      setCompanySuccessMessage({
+        ok: true,
+        meetingId: 'bot_1',
+        companyId: 'cmp_a',
+        occurrencesUpdated: 3,
+      }),
+    ).toBe('Updated 3 meetings in this series.');
+  });
+
+  it('appends singular and plural refile counts', () => {
+    expect(
+      setCompanySuccessMessage({
+        ok: true,
+        meetingId: 'bot_1',
+        companyId: 'cmp_a',
+        refiledCount: 1,
+      }),
+    ).toBe('Company updated. Refiled 1 transcript.');
+    expect(
+      setCompanySuccessMessage({
+        ok: true,
+        meetingId: 'bot_1',
+        companyId: 'cmp_a',
+        refiledCount: 2,
+      }),
+    ).toBe('Company updated. Refiled 2 transcripts.');
+  });
+
+  it('combines series and refile copy', () => {
+    expect(
+      setCompanySuccessMessage({
+        ok: true,
+        meetingId: 'bot_1',
+        companyId: 'cmp_a',
+        occurrencesUpdated: 2,
+        refiledCount: 1,
+      }),
+    ).toBe('Updated 2 meetings in this series. Refiled 1 transcript.');
   });
 });
 
