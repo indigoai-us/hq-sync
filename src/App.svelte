@@ -1492,14 +1492,21 @@
     //   action="record" → user clicked the Record action button. Skip
     //                     the popover and start recording directly.
     unlisteners.push(
-      await listen<{ action: string; windowId: string; platform: string }>(
+      await listen<{ action: string; windowId: string; platform: string; meetingId?: string }>(
         'notification:meeting-action',
         async (event) => {
-          const { action, windowId } = event.payload;
+          const { action, windowId, meetingId } = event.payload;
           if (action === 'record' && windowId) {
             await handleStartRecording(windowId);
             // Clear the prompt-tray badge — the user acted on the
             // detection, even if the recording itself errors.
+            invoke('meetings_clear_prompt_badge').catch(() => {});
+            return;
+          }
+          if (action === 'assign' && meetingId) {
+            invoke('open_meetings_window', { focusMeetingId: meetingId }).catch((err) => {
+              console.warn('open_meetings_window failed:', err);
+            });
             invoke('meetings_clear_prompt_badge').catch(() => {});
             return;
           }
@@ -1789,8 +1796,12 @@
               // record → start recording the detected window; open → focus the
               // popover (active-meetings row). Either way clear the prompt badge.
               const windowId = data?.windowId ?? '';
+              const meetingId = data?.meetingId ?? '';
               if (action === 'record' && windowId) {
                 await handleStartRecording(windowId);
+                invoke('meetings_clear_prompt_badge').catch(() => {});
+              } else if (action === 'assign' && meetingId) {
+                await invoke('open_meetings_window', { focusMeetingId: meetingId });
                 invoke('meetings_clear_prompt_badge').catch(() => {});
               } else if (action === 'open') {
                 await invoke('show_main_window');

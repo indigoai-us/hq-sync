@@ -156,11 +156,11 @@ fn initials(name: &str) -> String {
 }
 
 fn top_right_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
-    let monitor = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()));
+    let monitor = app.primary_monitor().ok().flatten().or_else(|| {
+        app.available_monitors()
+            .ok()
+            .and_then(|m| m.into_iter().next())
+    });
     if let Some(m) = monitor {
         let scale = m.scale_factor();
         let logical_w = m.size().width as f64 / scale;
@@ -179,7 +179,12 @@ fn top_right_position(app: &AppHandle) -> tauri::LogicalPosition<f64> {
 pub async fn show_banner(app: AppHandle, payload: BannerPayload) -> Result<(), String> {
     log(
         LOG_TAG,
-        &format!("show: kind={} title={} body_len={}", payload.kind, payload.title, payload.body.len()),
+        &format!(
+            "show: kind={} title={} body_len={}",
+            payload.kind,
+            payload.title,
+            payload.body.len()
+        ),
     );
 
     if let Some(state) = app.try_state::<PendingBanner>() {
@@ -315,7 +320,11 @@ pub async fn show_dm_banner(
     app: AppHandle,
     event: crate::commands::dm_notify::DmEvent,
 ) -> Result<(), String> {
-    let has_prompt = event.prompt.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false);
+    let has_prompt = event
+        .prompt
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     let payload = BannerPayload {
         kind: "dm".to_string(),
         title: event.from_display_name.clone(),
@@ -335,7 +344,8 @@ pub async fn show_share_banner(
     event: crate::commands::share_notify::ShareEvent,
 ) -> Result<(), String> {
     let title = crate::commands::share_notify::notification_title(&event.issuer_display_name);
-    let body = crate::commands::share_notify::notification_body(event.note.as_deref(), &event.paths);
+    let body =
+        crate::commands::share_notify::notification_body(event.note.as_deref(), &event.paths);
     let payload = BannerPayload {
         kind: "share".to_string(),
         title,
@@ -372,6 +382,31 @@ pub async fn show_meeting_banner(
         action_id: Some("record".to_string()),
         click_action_id: "open".to_string(),
         data: serde_json::json!({ "windowId": window_id, "platform": platform }),
+    };
+    show_banner(app, payload).await
+}
+
+/// Unattributed meeting → banner. Body-click and chip both route to the
+/// Meetings window focused on this bot id so the user can assign a company.
+pub async fn show_unattributed_meeting_banner(
+    app: AppHandle,
+    meeting_id: String,
+    meeting_title: Option<String>,
+) -> Result<(), String> {
+    let mut body = meeting_title
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| format!("\"{t}\" isn't filed to a company yet."))
+        .unwrap_or_else(|| "A meeting isn't filed to a company yet.".to_string());
+    body.push_str(" Assign it so the transcript files correctly.");
+    let payload = BannerPayload {
+        kind: "meeting".to_string(),
+        title: "Meeting needs a company".to_string(),
+        body,
+        icon_text: Some("●".to_string()),
+        action_label: Some("Assign".to_string()),
+        action_id: Some("assign".to_string()),
+        click_action_id: "assign".to_string(),
+        data: serde_json::json!({ "meetingId": meeting_id }),
     };
     show_banner(app, payload).await
 }
@@ -426,10 +461,17 @@ pub async fn banner_action(
     action: String,
     payload: BannerPayload,
 ) -> Result<(), String> {
-    log(LOG_TAG, &format!("action kind={} action={}", payload.kind, action));
+    log(
+        LOG_TAG,
+        &format!("action kind={} action={}", payload.kind, action),
+    );
     app.emit(
         EVENT_BANNER_ACTION,
-        BannerActionEvent { kind: payload.kind, action, data: payload.data },
+        BannerActionEvent {
+            kind: payload.kind,
+            action,
+            data: payload.data,
+        },
     )
     .map_err(|e| e.to_string())?;
     dismiss_banner_inner(&app);
@@ -547,7 +589,12 @@ pub async fn preview_share_banner(app: AppHandle) -> Result<(), String> {
 /// Fabricate a new-version event and show its banner.
 #[tauri::command]
 pub async fn preview_update_banner(app: AppHandle) -> Result<(), String> {
-    show_update_banner(app, "0.4.0".to_string(), Some("instant DMs + custom banners".to_string())).await
+    show_update_banner(
+        app,
+        "0.4.0".to_string(),
+        Some("instant DMs + custom banners".to_string()),
+    )
+    .await
 }
 
 /// Fabricate a meeting-detected event and show its banner (manual QA).
@@ -582,9 +629,13 @@ mod tests {
 
     #[test]
     fn gate_off_only_when_explicitly_false() {
-        assert!(!custom_banner_enabled_from(Some(r#"{"customBanner":false}"#)));
+        assert!(!custom_banner_enabled_from(Some(
+            r#"{"customBanner":false}"#
+        )));
         // Non-bool values are ignored → default ON.
-        assert!(custom_banner_enabled_from(Some(r#"{"customBanner":"false"}"#)));
+        assert!(custom_banner_enabled_from(Some(
+            r#"{"customBanner":"false"}"#
+        )));
     }
 
     #[test]
