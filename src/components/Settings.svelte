@@ -436,9 +436,11 @@
   }
 
   async function handleChangeDefaultRecordingCompany(next: string | null) {
-    // The `<select>` binds via `bind:value`; this is just the persistence
-    // hook so the change lands in menubar.json on selection (no save
-    // button — same pattern as every other toggle in this view).
+    // The `<select>` is one-way (`value={…}` + this `onchange`), not
+    // `bind:value`: the `onchange` normalizes the empty Personal option back
+    // to `null` before persisting, so this is the single place the change
+    // lands in menubar.json on selection (no save button — same pattern as
+    // every other toggle in this view).
     defaultRecordingCompanyUid = next;
     await saveAll();
   }
@@ -843,11 +845,16 @@
                 Attribution for new recordings. Changeable per-recording.
               </span>
             </div>
+            <!-- value MUST coerce `null` (Personal) to `''` so it matches the
+                 empty Personal <option>. A raw `null` makes Svelte set
+                 `select.__value = null`, which no option carries, so the control
+                 renders BLANK in the popover's WKWebView instead of "Personal".
+                 Mirrors the desktop-alt SettingsPage, which already coerces. -->
             <select
               id="default-recording-company"
               class="default-recording-company"
               aria-label="Default recording company"
-              value={defaultRecordingCompanyUid}
+              value={defaultRecordingCompanyUid ?? ''}
               onchange={(e) => {
                 const v = (e.currentTarget as HTMLSelectElement).value;
                 void handleChangeDefaultRecordingCompany(v === '' ? null : v);
