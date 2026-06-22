@@ -118,6 +118,10 @@ pub struct ScheduledBot {
     #[serde(alias = "title")]
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
     #[serde(default, alias = "company")]
     pub company_id: Option<String>,
     /// `POST /v1/bot/invite` returns a slimmer body than `GET /v1/bot/list`
@@ -160,6 +164,12 @@ pub struct SetCompanyResult {
     pub applied_to_series: Option<bool>,
     #[serde(default)]
     pub refiled: Option<bool>,
+    #[serde(default)]
+    pub occurrences_updated: Option<u32>,
+    #[serde(default)]
+    pub refiled_count: Option<u32>,
+    #[serde(default)]
+    pub refile_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -588,6 +598,14 @@ pub(crate) fn select_unattributed(bots: &[ScheduledBot]) -> Vec<&ScheduledBot> {
     bots.iter()
         .filter(|bot| is_unattributed(bot) && !bot.status.trim().eq_ignore_ascii_case("cancelled"))
         .collect()
+}
+
+pub(crate) fn is_recorded(bot: &ScheduledBot) -> bool {
+    bot.status.trim().eq_ignore_ascii_case("completed") || bot.source_landed
+}
+
+pub(crate) fn select_recorded(bots: &[ScheduledBot]) -> Vec<&ScheduledBot> {
+    bots.iter().filter(|bot| is_recorded(bot)).collect()
 }
 
 fn build_set_company_body(company_id: &str, apply_to_series: bool) -> SetCompanyBody {
@@ -1499,6 +1517,8 @@ mod tests {
             calendar_event_id: None,
             meeting_title: None,
             scheduled_start_time: None,
+            created_at: None,
+            updated_at: None,
             company_id: None,
             auto_scheduled: false,
             error_message: None,
@@ -1650,6 +1670,39 @@ mod tests {
     }
 
     #[test]
+    fn recorded_detection_matches_completed_or_landed_source() {
+        let completed = bot_with_status(" completed ");
+        assert!(is_recorded(&completed));
+
+        let mut landed = bot_with_status("processing");
+        landed.source_landed = true;
+        assert!(is_recorded(&landed));
+
+        let neither = bot_with_status("processing");
+        assert!(!is_recorded(&neither));
+    }
+
+    #[test]
+    fn select_recorded_filters_completed_or_landed_bots() {
+        let mut completed = bot_with_status("completed");
+        completed.bot_id = "bot_completed".to_string();
+
+        let mut landed = bot_with_status("processing");
+        landed.bot_id = "bot_landed".to_string();
+        landed.source_landed = true;
+
+        let mut pending = bot_with_status("processing");
+        pending.bot_id = "bot_pending".to_string();
+
+        let bots = vec![completed, landed, pending];
+        let selected = select_recorded(&bots)
+            .into_iter()
+            .map(|b| b.bot_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(selected, vec!["bot_completed", "bot_landed"]);
+    }
+
+    #[test]
     fn build_set_company_body_serializes_camel_case() {
         let body = build_set_company_body("cmp_a", false);
         let json = serde_json::to_value(&body).expect("serialize");
@@ -1670,7 +1723,10 @@ mod tests {
             "companyId": "cmp_a",
             "seriesKey": "series_1",
             "appliedToSeries": true,
-            "refiled": false
+            "refiled": false,
+            "occurrencesUpdated": 3,
+            "refiledCount": 2,
+            "refileWarning": "some transcripts could not be moved"
         }"#;
         let result: SetCompanyResult = serde_json::from_str(json).expect("parse");
         assert!(result.ok);
@@ -1679,6 +1735,25 @@ mod tests {
         assert_eq!(result.series_key.as_deref(), Some("series_1"));
         assert_eq!(result.applied_to_series, Some(true));
         assert_eq!(result.refiled, Some(false));
+        assert_eq!(result.occurrences_updated, Some(3));
+        assert_eq!(result.refiled_count, Some(2));
+        assert_eq!(
+            result.refile_warning.as_deref(),
+            Some("some transcripts could not be moved")
+        );
+    }
+
+    #[test]
+    fn set_company_result_tolerates_missing_backfill_fields() {
+        let json = r#"{
+            "ok": true,
+            "meetingId": "bot_1",
+            "companyId": "cmp_a"
+        }"#;
+        let result: SetCompanyResult = serde_json::from_str(json).expect("parse");
+        assert_eq!(result.occurrences_updated, None);
+        assert_eq!(result.refiled_count, None);
+        assert_eq!(result.refile_warning, None);
     }
 
     #[test]
