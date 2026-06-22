@@ -446,6 +446,13 @@
   // banner switches to its error state and shows a Copy-command fallback
   // (typical failure: EACCES against a system-prefix npm that needs sudo).
   let hqCliUpdateError = $state<string | null>(null);
+  // Pack-update state — populated by `pack-update:available` from the Rust
+  // background checker (launch+20s, then every 6h). Non-null + count>0 means
+  // one or more installed packs have a newer upstream version; the banner
+  // prompts a one-click `hq packs update`.
+  let packUpdateAvailable = $state<{ count: number; names: string[] } | null>(null);
+  let packsUpdating = $state(false);
+  let packUpdateError = $state<string | null>(null);
 
   // Unified HQ-core state — replaces the pre-refactor quad
   // (hqCoreUpdateAvailable + hqCoreDrift + stagingDrift + stagingReplace)
@@ -824,6 +831,21 @@
     }
   }
 
+  async function handleUpdatePacks() {
+    if (packsUpdating) return;
+    packsUpdating = true;
+    packUpdateError = null;
+    try {
+      await invoke('update_packs', { names: packUpdateAvailable?.names ?? [] });
+      packUpdateAvailable = null;
+      await refreshPackUpdate();
+    } catch (e) {
+      packUpdateError = e instanceof Error ? e.message : String(e);
+    } finally {
+      packsUpdating = false;
+    }
+  }
+
   // Pull the current CLI-update state on demand instead of waiting for the
   // backend's fire-and-forget `hq-cli-update:available` event (launch+15s,
   // then every 6h). Without this the banner is blind whenever the event
@@ -847,6 +869,17 @@
       }
     } catch (err) {
       console.error('check_hq_cli_update failed:', err);
+    }
+  }
+
+  async function refreshPackUpdate() {
+    try {
+      const info = await invoke<{ count: number; names: string[] } | null>(
+        'check_pack_update'
+      );
+      packUpdateAvailable = info;
+    } catch {
+      // Best-effort hydration only; the 6h background checker will retry.
     }
   }
 
@@ -1304,9 +1337,23 @@
         }
       )
     );
+
+    unlisteners.push(
+      await listen<{ count: number; names: string[] }>('pack-update:available', (event) => {
+        packUpdateError = null;
+        packUpdateAvailable = event.payload;
+      })
+    );
+    unlisteners.push(
+      await listen('pack-update:cleared', () => {
+        packUpdateAvailable = null;
+        packUpdateError = null;
+      })
+    );
     // Hydrate immediately rather than waiting for the launch+15s background
     // emit — the listeners above are now attached, so pull current state.
     refreshHqCliUpdate();
+    refreshPackUpdate();
 
     // --- unified hq-core state listener ---
     // Protocol (see src-tauri/src/commands/hq_core_state.rs):
@@ -2041,6 +2088,9 @@
       {hqCliUpdateAvailable}
       {hqCliUpdateInstalling}
       {hqCliUpdateError}
+      {packUpdateAvailable}
+      {packsUpdating}
+      {packUpdateError}
       {coreState}
       {coreInstalling}
       {coreInstallLastResult}
@@ -2055,6 +2105,7 @@
       oninstallupdate={handleInstallUpdate}
       oninstallhqcliupdate={handleInstallHqCliUpdate}
       ondismisshqcliupdate={handleDismissHqCliUpdate}
+      onupdatepacks={handleUpdatePacks}
       oninstallcore={handleInstallCore}
       bindStatsRefresh={(fn) => (syncStatsRefresh = fn)}
       {meetingsEnabled}

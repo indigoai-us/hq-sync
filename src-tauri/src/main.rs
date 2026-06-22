@@ -306,8 +306,10 @@ fn main() {
             commands::drift_detail::drift_window_ready,
             commands::packages::list_packages,
             commands::packages::check_package_updates,
+            commands::packages::check_pack_update,
             commands::packages::install_package,
             commands::packages::update_package,
+            commands::packages::update_packs,
             commands::packages::uninstall_package,
             commands::activity::open_activity_log,
             commands::activity::activity_window_ready,
@@ -637,6 +639,7 @@ fn main() {
             }
 
             commands::hq_cli_update::setup_hq_cli_update_checker(app.handle());
+            commands::packages::setup_pack_update_checker(app.handle());
             commands::hq_core_state::setup_core_state_checker(app.handle());
 
             // Fire-and-forget: warm the npx cache for

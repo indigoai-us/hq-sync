@@ -21,6 +21,7 @@
 //!   * `uninstall_package`      — `hq packs uninstall <name> --yes --json`
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -31,6 +32,22 @@ use tokio::process::Command;
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::logfile::log;
 use crate::util::paths;
+
+/// Offset from app launch before the first pack-update check fires. 20s keeps
+/// it out of lockstep with the app updater (10s) and CLI updater (15s).
+const INITIAL_DELAY: Duration = Duration::from_secs(20);
+
+/// Re-check cadence. Pack update probing may hit the network per installed
+/// pack, so keep it on the same 6h background rhythm as the other updaters.
+const CHECK_INTERVAL: Duration = Duration::from_secs(21600);
+
+/// Payload emitted when installed content packs have newer upstream versions.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackUpdateInfo {
+    pub count: usize,
+    pub names: Vec<String>,
+}
 
 /// Resolve the user's HQ folder using the standard 4-tier resolver, the same
 /// way every other CLI-spawning command in this app does.
@@ -78,6 +95,47 @@ async fn run_hq_json(args: &[&str]) -> Result<Value, String> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(stdout.trim())
         .map_err(|e| format!("parse `hq {}` JSON: {e}", args.join(" ")))
+}
+
+/// Summarize `hq packs list --json --check-updates` into the tiny popover
+/// payload. Only literal JSON `true` counts: `false`, `null`, missing fields,
+/// malformed rows, and unnamed rows are ignored so a partial CLI payload never
+/// creates a noisy banner.
+pub(crate) fn pack_update_summary(packs_view: &serde_json::Value) -> PackUpdateInfo {
+    let names: Vec<String> = packs_view
+        .get("installed")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.get("updateAvailable").and_then(|v| v.as_bool()) == Some(true))
+        .filter_map(|entry| entry.get("name").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .collect();
+    PackUpdateInfo {
+        count: names.len(),
+        names,
+    }
+}
+
+async fn check_pack_updates_once(app: &AppHandle) -> Result<Option<PackUpdateInfo>, String> {
+    let packs_view = run_hq_json(&["packs", "list", "--json", "--check-updates"]).await?;
+    let info = pack_update_summary(&packs_view);
+    if info.count > 0 {
+        log(
+            "pack-update",
+            &format!(
+                "{} pack update(s) available: {}",
+                info.count,
+                info.names.join(", ")
+            ),
+        );
+        let _ = app.emit("pack-update:available", &info);
+        Ok(Some(info))
+    } else {
+        log("pack-update", "no pack updates available");
+        let _ = app.emit("pack-update:cleared", ());
+        Ok(None)
+    }
 }
 
 /// Combined view returned to the Packages window: the content-pack lifecycle
@@ -128,6 +186,14 @@ pub async fn check_package_updates(app: AppHandle) -> Result<(), String> {
     let value = serde_json::to_value(view).map_err(|e| e.to_string())?;
     let _ = app.emit("packages:updates", value);
     Ok(())
+}
+
+/// On-demand hydration for the popover's pack-update banner. The background
+/// checker emits the same events, but this closes the gap where the popover
+/// opened after the last 6h tick or missed the launch-time event.
+#[tauri::command]
+pub async fn check_pack_update(app: AppHandle) -> Result<Option<PackUpdateInfo>, String> {
+    check_pack_updates_once(&app).await
 }
 
 /// Stream a long-running `hq` mutation, relaying its output to the window as
@@ -195,7 +261,11 @@ async fn stream_hq(app: &AppHandle, op: &str, name: &str, args: Vec<String>) -> 
         );
         Ok(())
     } else {
-        let msg = format!("`hq {}` exited {}", args.join(" "), status.code().unwrap_or(-1));
+        let msg = format!(
+            "`hq {}` exited {}",
+            args.join(" "),
+            status.code().unwrap_or(-1)
+        );
         let _ = app.emit(
             "packages:error",
             serde_json::json!({ "op": op, "name": name, "message": msg }),
@@ -234,6 +304,24 @@ pub async fn update_package(app: AppHandle, name: String) -> Result<(), String> 
     stream_hq(&app, "update", &name, args).await
 }
 
+/// Update every selected installed content pack sequentially. The named form
+/// (`hq packs update <name> --yes`) forces a clean re-sync for that pack, which
+/// is more reliable than the bare aggregate command when quarantine messaging
+/// tells the user to repair a specific stale pack.
+#[tauri::command]
+pub async fn update_packs(app: AppHandle, names: Vec<String>) -> Result<(), String> {
+    for name in names {
+        let args = vec![
+            "packs".into(),
+            "update".into(),
+            name.clone(),
+            "--yes".into(),
+        ];
+        stream_hq(&app, "update", &name, args).await?;
+    }
+    Ok(())
+}
+
 /// Uninstall a content pack. Returns the structured uninstall result so the
 /// window can show what was unlinked / archived. The CLI runs the symlink
 /// un-wire + archive + re-scan; the app fires the suggested heavier side
@@ -241,4 +329,52 @@ pub async fn update_package(app: AppHandle, name: String) -> Result<(), String> 
 #[tauri::command]
 pub async fn uninstall_package(name: String) -> Result<Value, String> {
     run_hq_json(&["packs", "uninstall", &name, "--yes", "--json"]).await
+}
+
+/// Background loop: first check 20s after launch, then every 6h. Unlike the
+/// CLI updater, this never auto-runs the update — pack updates can be heavier
+/// and should stay user-initiated from the banner.
+pub fn setup_pack_update_checker(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(INITIAL_DELAY).await;
+        loop {
+            match check_pack_updates_once(&handle).await {
+                Ok(_) => {}
+                Err(e) => log("pack-update", &format!("background check failed: {e}")),
+            }
+            tokio::time::sleep(CHECK_INTERVAL).await;
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pack_update_summary_counts_true_update_flags_only() {
+        let view = serde_json::json!({
+            "installed": [
+                { "name": "a", "updateAvailable": true },
+                { "name": "b", "updateAvailable": false },
+                { "name": "c", "updateAvailable": null },
+                { "name": "d", "updateAvailable": true }
+            ]
+        });
+
+        let info = pack_update_summary(&view);
+
+        assert_eq!(info.count, 2);
+        assert_eq!(info.names, vec!["a".to_string(), "d".to_string()]);
+    }
+
+    #[test]
+    fn pack_update_summary_tolerates_missing_or_empty_installed() {
+        assert_eq!(pack_update_summary(&serde_json::json!({})).count, 0);
+        assert_eq!(
+            pack_update_summary(&serde_json::json!({ "installed": [] })).count,
+            0
+        );
+    }
 }
