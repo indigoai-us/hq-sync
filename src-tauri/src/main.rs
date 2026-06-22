@@ -128,6 +128,11 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0),
         before_send: Some(Arc::new(before_send)),
+        // Release health: emit one session per app run so Sentry tracks
+        // crash-free sessions/users per release. Application mode = the whole
+        // process is the session (Request mode is for servers).
+        auto_session_tracking: true,
+        session_mode: sentry::SessionMode::Application,
         ..Default::default()
     });
     sentry::configure_scope(|scope| {
