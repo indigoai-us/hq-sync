@@ -51,6 +51,22 @@ export interface Channel {
    * the unified rail (`mergeConversations`) instead of sinking to the bottom.
    * Never serialized back to the server. */
   arrivedAt?: number | null;
+  /** Server-supplied channel creation timestamp (ISO-8601). Present on the list
+   * payload for every scope; used as a fallback ordering signal for group DMs,
+   * which ship no activity timestamp (`mergeConversations`). */
+  createdAt?: string | null;
+  /** Group-DM participant roster (the OTHER members — caller excluded),
+   * server-supplied on the list endpoint so an unnamed group DM can be named by
+   * its people ("Stefan, Hassaan"). Absent for named scopes and on older server
+   * payloads. */
+  members?: ChannelParticipant[];
+}
+
+/** A group-DM participant as surfaced on the channels list payload — just enough
+ * to label the conversation by its people. */
+export interface ChannelParticipant {
+  personUid: string;
+  displayName: string;
 }
 
 /** One member of a channel. Mirrors the Rust `ChannelMember` wire shape. */
@@ -76,15 +92,29 @@ export interface ChannelGroup {
 }
 
 /** Best display name for a channel — its `name`, `#`-stripped + trimmed. Group
- * DMs are unnamed, so they fall back to a member-count label. */
+ * DMs are unnamed, so they're labeled by their participants. */
 export function channelDisplayName(c: Channel): string {
   const trimmed = c.name.trim().replace(/^#+/, '');
   if (trimmed) return trimmed;
-  if (c.scope === 'group') {
-    const n = c.memberCount ?? 0;
-    return n > 0 ? `Group · ${n}` : 'Group DM';
-  }
+  if (c.scope === 'group') return groupDmLabel(c);
   return c.channelId;
+}
+
+/** Label an unnamed group DM by its people — "Stefan, Hassaan", truncated to
+ * "Stefan, Hassaan +2" when the roster is long. Falls back to a member-count
+ * label ("Group · N"), then "Group DM" when the server supplied no participant
+ * info (older payloads). */
+function groupDmLabel(c: Channel): string {
+  const names = (c.members ?? [])
+    .map((m) => m.displayName?.trim())
+    .filter((n): n is string => !!n);
+  if (names.length > 0) {
+    const shown = names.slice(0, 3);
+    const extra = names.length - shown.length;
+    return extra > 0 ? `${shown.join(', ')} +${extra}` : shown.join(', ');
+  }
+  const n = c.memberCount ?? 0;
+  return n > 0 ? `Group · ${n}` : 'Group DM';
 }
 
 /** The scope chip text: a personal glyph for personal channels, "Group" for a

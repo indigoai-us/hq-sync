@@ -38,6 +38,53 @@ describe('group DMs', () => {
     ).toBe('Group · 3');
     expect(channelDisplayName(ch({ channelId: 'g1', name: '', scope: 'group' }))).toBe('Group DM');
   });
+  it('names an unnamed group DM by its participants (REGRESSION)', () => {
+    expect(
+      channelDisplayName(
+        ch({
+          channelId: 'g1',
+          name: '',
+          scope: 'group',
+          memberCount: 3,
+          members: [
+            { personUid: 'p_s', displayName: 'Stefan' },
+            { personUid: 'p_h', displayName: 'Hassaan' },
+          ],
+        }),
+      ),
+    ).toBe('Stefan, Hassaan');
+  });
+  it('truncates a long participant roster with +N', () => {
+    expect(
+      channelDisplayName(
+        ch({
+          channelId: 'g1',
+          name: '',
+          scope: 'group',
+          members: [
+            { personUid: 'a', displayName: 'Ann' },
+            { personUid: 'b', displayName: 'Bo' },
+            { personUid: 'c', displayName: 'Cy' },
+            { personUid: 'd', displayName: 'Dee' },
+            { personUid: 'e', displayName: 'Eli' },
+          ],
+        }),
+      ),
+    ).toBe('Ann, Bo, Cy +2');
+  });
+  it('falls back to the member-count label when participant names are blank', () => {
+    expect(
+      channelDisplayName(
+        ch({
+          channelId: 'g1',
+          name: '',
+          scope: 'group',
+          memberCount: 3,
+          members: [{ personUid: 'x', displayName: '   ' }],
+        }),
+      ),
+    ).toBe('Group · 3');
+  });
   it('uses a "Group" scope chip', () => {
     expect(scopeChipLabel(ch({ channelId: 'g', name: '', scope: 'group' }))).toBe('Group');
   });
