@@ -23,7 +23,9 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
     if !path.exists() {
         return Ok(MenubarPrefs {
             hq_path: None,
-            sync_on_launch: Some(false),
+            // Sync-on-launch defaults ON so a fresh install syncs as soon as it
+            // opens, matching the always-on auto-sync (realtime_sync) default.
+            sync_on_launch: Some(true),
             notifications: Some(true),
             start_at_login: Some(true),
             autostart_daemon: Some(false),
@@ -59,7 +61,8 @@ pub async fn get_settings() -> Result<MenubarPrefs, String> {
         .unwrap_or_else(default_meeting_detect_notify);
     Ok(MenubarPrefs {
         hq_path: prefs.hq_path,
-        sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(false)),
+        // Default ON (see the no-file branch above) — absent key syncs on launch.
+        sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(true)),
         notifications: Some(prefs.notifications.unwrap_or(true)),
         start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
         autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
@@ -223,7 +226,7 @@ mod tests {
     fn apply_defaults(prefs: MenubarPrefs) -> MenubarPrefs {
         MenubarPrefs {
             hq_path: prefs.hq_path,
-            sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(false)),
+            sync_on_launch: Some(prefs.sync_on_launch.unwrap_or(true)),
             notifications: Some(prefs.notifications.unwrap_or(true)),
             start_at_login: Some(prefs.start_at_login.unwrap_or(true)),
             autostart_daemon: Some(prefs.autostart_daemon.unwrap_or(false)),
@@ -248,7 +251,7 @@ mod tests {
         let result = apply_defaults(empty_prefs());
 
         assert_eq!(result.hq_path, None);
-        assert_eq!(result.sync_on_launch, Some(false));
+        assert_eq!(result.sync_on_launch, Some(true));
         assert_eq!(result.notifications, Some(true));
         assert_eq!(result.start_at_login, Some(true));
         assert_eq!(result.realtime_sync, Some(true));

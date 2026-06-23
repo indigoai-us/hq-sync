@@ -59,7 +59,9 @@
   let availableChannels = $state<Channel[]>(['stable']);
 
   let hqPath = $state<string | null>(null);
-  let syncOnLaunch = $state(false);
+  // Default ON — mirrors the backend get_settings default; a fresh install
+  // syncs on launch out of the box.
+  let syncOnLaunch = $state(true);
   let realtimeSync = $state(true);
   let personalSyncEnabled = $state(true);
   let instantSync = $state(true);
@@ -115,7 +117,7 @@
         invoke<CompanyMembership[]>('meetings_list_memberships').catch(() => []),
       ]);
       hqPath = settings.hqPath;
-      syncOnLaunch = settings.syncOnLaunch ?? false;
+      syncOnLaunch = settings.syncOnLaunch ?? true;
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
       instantSync = settings.instantSync ?? true;
@@ -269,7 +271,7 @@
     try {
       const settings = await invoke<SettingsWire>('get_settings');
       hqPath = settings.hqPath;
-      syncOnLaunch = settings.syncOnLaunch ?? false;
+      syncOnLaunch = settings.syncOnLaunch ?? true;
       realtimeSync = settings.realtimeSync ?? true;
       personalSyncEnabled = settings.personalSyncEnabled ?? true;
       instantSync = settings.instantSync ?? true;
