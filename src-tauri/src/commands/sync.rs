@@ -406,7 +406,7 @@ const SIGTERM_SIGNAL: i32 = 15;
 /// bump the tilde pin stayed on the 6.11 line and the menubar runner never
 /// pulled local companies down. Cloud-backed companies are still excluded and
 /// their stale personal-vault copies decommissioned via the membership path.
-pub const HQ_CLOUD_VERSION: &str = "~6.12.0";
+pub const HQ_CLOUD_VERSION: &str = "~6.12.1";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
