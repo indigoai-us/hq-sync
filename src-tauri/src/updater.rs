@@ -177,6 +177,25 @@ pub async fn available_channels() -> Vec<String> {
     }
 }
 
+/// Tauri command returning `true` iff the signed-in user's email ends in
+/// `@getindigo.ai`. The canonical frontend-facing handle on the
+/// `@getindigo.ai` predicate — delegates straight to
+/// `feature_gate::is_indigo_user`.
+///
+/// Settings uses it to gate the Updates-group **staging channel** toggle, a
+/// builder-only control that points the in-app Update pill at
+/// `hq-core-staging`. It must NOT be confused with `meetings_feature_enabled`
+/// / `desktop_features_enabled`, which graduated to a GA gate (any signed-in
+/// user) when the Meetings + desktop window left the Indigo dogfood. Wiring
+/// the staging toggle to that GA gate exposed it to every signed-in user; this
+/// command keeps it `@getindigo.ai`-only — matching the defense-in-depth email
+/// gate the staging backend (`commands/hq_core_staging.rs`) already applies, so
+/// a non-Indigo user can neither see nor action the control.
+#[tauri::command]
+pub async fn is_indigo_user() -> bool {
+    feature_gate::is_indigo_user().await
+}
+
 /// Spawns a background task that checks for updates on launch (after 10s delay)
 /// and every 6 hours thereafter. Emits `update:available` events but does NOT
 /// auto-install — the user must initiate installation.

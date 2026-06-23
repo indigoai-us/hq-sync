@@ -71,10 +71,12 @@
   // each sync, so the toggle takes effect without restart. The authoritative
   // gate is still the server-side opt-in; this is the local fallback.
   let telemetryEnabled = $state(false);
-  // Shared @getindigo.ai gate. No longer gates the notification toggles
-  // (those are now universal) — still used by the staging-channel toggle and
-  // the release-channel picker below. Populated at mount from
-  // `meetings_feature_enabled` (cached process-lifetime on the Rust side).
+  // True @getindigo.ai gate. Gates the staging-channel toggle below.
+  // Populated at mount from `is_indigo_user` (cached process-lifetime on the
+  // Rust side) — NOT from `meetings_feature_enabled`, which graduated to a GA
+  // gate (any signed-in user) when Meetings + the desktop window left the
+  // Indigo dogfood. Keying the staging toggle off the GA gate exposed it to
+  // every signed-in user; `is_indigo_user` keeps it @getindigo.ai-only.
   let isIndigoUser = $state(false);
   // Staging channel — @getindigo.ai-only toggle (visibility gated on
   // `isIndigoUser`). Distinct from the release-channel picker below:
@@ -164,11 +166,12 @@
           telemetryEnabled?: boolean | null;
         }>('get_settings'),
         invoke<boolean>('get_autostart_enabled'),
-        // Shared @getindigo.ai gate for share-notify section AND
-        // staging-channel toggle visibility. Rust side caches the
-        // decision process-lifetime so this is effectively free after
-        // first call.
-        invoke<boolean>('meetings_feature_enabled').catch(() => false),
+        // True @getindigo.ai gate for staging-channel toggle visibility.
+        // NOT `meetings_feature_enabled` — that graduated to a GA gate (any
+        // signed-in user), which would expose the staging toggle to everyone.
+        // Rust side caches the decision process-lifetime so this is
+        // effectively free after the first call.
+        invoke<boolean>('is_indigo_user').catch(() => false),
         // Returns ["stable"] for non-indigo users, ["stable","beta","alpha"]
         // for @getindigo.ai. The picker only renders when length > 1.
         invoke<string[]>('available_channels'),

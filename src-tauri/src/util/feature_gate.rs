@@ -200,6 +200,27 @@ mod tests {
     }
 
     #[test]
+    fn staging_gate_diverges_from_ga_gate_for_non_indigo_user() {
+        // Regression: the Settings staging-channel toggle must be gated on the
+        // @getindigo.ai-only `is_indigo_user` predicate (`is_allowed_email`),
+        // NOT the GA `meetings_feature_enabled` predicate (`email_present`).
+        // Wiring it to the GA gate exposed the builder-only "Use staging
+        // channel" toggle to every signed-in user. This pins that the two
+        // gates genuinely diverge for a signed-in non-Indigo user: present to
+        // the GA gate, rejected by the Indigo gate.
+        let non_indigo = Some("user@gmail.com");
+        assert!(email_present(non_indigo), "GA gate admits any signed-in user");
+        assert!(
+            !is_allowed_email(non_indigo),
+            "Indigo gate must reject non-@getindigo.ai emails"
+        );
+        // And they agree for an @getindigo.ai builder (both true).
+        let indigo = Some("builder@getindigo.ai");
+        assert!(email_present(indigo));
+        assert!(is_allowed_email(indigo));
+    }
+
+    #[test]
     fn ga_gate_rejects_signed_out() {
         // Signed-out (no email / empty / whitespace-only) stays false so the
         // surface never lights up for an unauthenticated user.

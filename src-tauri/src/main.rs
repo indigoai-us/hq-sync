@@ -299,6 +299,7 @@ fn main() {
             updater::check_for_updates,
             updater::install_update,
             updater::available_channels,
+            updater::is_indigo_user,
             commands::hq_cli_update::check_hq_cli_update,
             commands::hq_cli_update::install_hq_cli_update,
             commands::hq_cli_update::set_hq_cli_update_dismissed,

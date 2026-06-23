@@ -409,6 +409,7 @@ const handlers: Record<string, Handler> = {
   get_autostart_enabled: () => true,
   set_autostart_enabled: () => null,
   meetings_feature_enabled: () => true,
+  is_indigo_user: () => true,
   available_channels: () => ['stable', 'beta', 'alpha'],
   notification_permission_state: () => 'prompt',
   notification_request_permission: () => 'granted',

@@ -48,7 +48,14 @@
   let loading = $state(true);
   let saved = $state(false);
   let error = $state<string | null>(null);
+  // GA gate (any signed-in user) — from `meetings_feature_enabled`. Gates the
+  // Meeting-detection row, which graduated out of the Indigo dogfood.
   let isIndigoUser = $state(false);
+  // True @getindigo.ai gate — from `is_indigo_user`. Gates the builder-only
+  // staging-channel row. Kept separate from `isIndigoUser` above because
+  // `meetings_feature_enabled` is now GA: keying the staging row off it would
+  // hand the @getindigo.ai-only control to every signed-in user.
+  let isIndigoBuilder = $state(false);
   let availableChannels = $state<Channel[]>(['stable']);
 
   let hqPath = $state<string | null>(null);
@@ -96,9 +103,12 @@
     loading = true;
     error = null;
     try {
-      const [settings, indigoUser, channels, memberships_] = await Promise.all([
+      const [settings, indigoUser, indigoBuilder, channels, memberships_] = await Promise.all([
         invoke<SettingsWire>('get_settings'),
         invoke<boolean>('meetings_feature_enabled').catch(() => false),
+        // True @getindigo.ai gate for the staging-channel row (NOT the GA
+        // `meetings_feature_enabled` above, which admits any signed-in user).
+        invoke<boolean>('is_indigo_user').catch(() => false),
         invoke<string[]>('available_channels').catch(() => ['stable']),
         // Drives the default-recording-company dropdown. A vault hiccup must not
         // block the rest of Settings from rendering → degrade to Personal-only.
@@ -125,6 +135,7 @@
         storedUid && memberships.some((m) => m.companyUid === storedUid) ? storedUid : null;
       telemetryEnabled = settings.telemetryEnabled ?? false;
       isIndigoUser = indigoUser;
+      isIndigoBuilder = indigoBuilder;
       availableChannels = channels.filter(isChannel);
       releaseChannel = isChannel(settings.releaseChannel) ? settings.releaseChannel : null;
     } catch (err) {
@@ -327,7 +338,7 @@
       <h2>Updates</h2>
       <div class="settings-card">
         <label class="setting-row"><span><strong>CLI auto-update</strong><small>Keep the bundled HQ CLI current.</small></span><input type="checkbox" bind:checked={cliAutoUpdate} onchange={saveSettings} /></label>
-        <label class="setting-row gated-row"><span><strong>HQ core staging channel</strong><small>@getindigo.ai only. Changes rescue and drift targets.</small></span><input type="checkbox" disabled={!isIndigoUser} bind:checked={stagingChannel} onchange={saveSettings} /><em>Gated</em></label>
+        <label class="setting-row gated-row"><span><strong>HQ core staging channel</strong><small>@getindigo.ai only. Changes rescue and drift targets.</small></span><input type="checkbox" disabled={!isIndigoBuilder} bind:checked={stagingChannel} onchange={saveSettings} /><em>Gated</em></label>
         <label class="setting-row gated-row"><span><strong>Release channel</strong><small>@getindigo.ai only. Stable is enforced for everyone else.</small></span><select disabled={availableChannels.length <= 1} bind:value={releaseChannel} onchange={saveSettings}><option value={null}>Default ({displayedChannel})</option>{#each availableChannels as channel (channel)}<option value={channel}>{channel}</option>{/each}</select><em>Gated</em></label>
       </div>
     </section>
