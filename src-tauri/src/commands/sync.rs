@@ -399,7 +399,14 @@ const SIGTERM_SIGNAL: i32 = 15;
 /// runner always carries the cross-process `sync-progress.json` producer
 /// (hq-cloud#107) that powers live menubar progress for ANY sync — auto-sync
 /// and CLI, not just a menubar-spawned Sync Now.
-pub const HQ_CLOUD_VERSION: &str = "~6.11.17";
+///
+/// `~6.11.x` -> `~6.12.0`: adopt hq-cloud#127 — local (non-cloud) companies now
+/// sync to the personal vault by default (the `HQ_SYNC_LOCAL_COMPANIES_TO_PERSONAL`
+/// gate and the `cloud: false` marker requirement are removed). Without this
+/// bump the tilde pin stayed on the 6.11 line and the menubar runner never
+/// pulled local companies down. Cloud-backed companies are still excluded and
+/// their stale personal-vault copies decommissioned via the membership path.
+pub const HQ_CLOUD_VERSION: &str = "~6.12.0";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
