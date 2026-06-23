@@ -14,7 +14,9 @@
   type Platform = (typeof ALL_PLATFORMS)[number];
 
   let hqPath = $state<string | null>(null);
-  let syncOnLaunch = $state(false);
+  // Default ON — a fresh install syncs as soon as it opens (mirrors the
+  // backend get_settings default and the always-on auto-sync).
+  let syncOnLaunch = $state(true);
   let notifications = $state(true);
   let startAtLogin = $state(true);
   let realtimeSync = $state(true);
@@ -183,7 +185,7 @@
       ]);
 
       hqPath = settings.hqPath;
-      syncOnLaunch = settings.syncOnLaunch ?? false;
+      syncOnLaunch = settings.syncOnLaunch ?? true;
       notifications = settings.notifications ?? true;
       startAtLogin = settings.startAtLogin ?? autostart;
       realtimeSync = settings.realtimeSync ?? true;
