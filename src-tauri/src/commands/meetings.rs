@@ -1,5 +1,5 @@
 //! Meeting invite UX — Tauri commands for the discreet meeting icon + modal
-//! in the Popover (gated to @getindigo.ai for v1).
+//! in the Popover (GA — shown to any signed-in user).
 //!
 //! The icon opens a modal that lists upcoming meetings (from the user's
 //! connected Google calendars) plus an input field for inviting the bot to
@@ -9,10 +9,12 @@
 //! based on `companyId`).
 //!
 //! Feature gate: `meetings_feature_enabled()` decodes the locally-cached
-//! id_token claims and returns true iff `email` ends in @getindigo.ai. Same
-//! allowlist as hq-console's `isCalendarFeatureEnabled`. No signature
-//! verification — the token came from Cognito via our own OAuth flow and
-//! lives on local disk; we trust it for the duration of the session.
+//! id_token claims and returns true for any signed-in user (non-empty
+//! `email` claim). Meetings graduated from the @getindigo.ai dogfood to GA
+//! in v0.7.0 — the same transition hq-console made (`isCalendarFeatureEnabled`
+//! now also admits any authenticated session). No signature verification —
+//! the token came from Cognito via our own OAuth flow and lives on local
+//! disk; we trust it for the duration of the session.
 //!
 //! HTTP surface: thin reqwest wrapper around the hq-pro routes shipped by
 //! the meeting-pipeline project:
