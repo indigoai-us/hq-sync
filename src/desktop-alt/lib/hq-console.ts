@@ -12,23 +12,34 @@
 /** Production HQ console host. */
 export const HQ_CONSOLE_BASE = 'https://hq.getindigo.ai';
 
-/** A company's console home — also its settings / admin surface. */
+/**
+ * A company's console home. The console namespaces every company surface under
+ * `/companies/{slug}` (Next.js route `src/app/(shell)/companies/[slug]`), so the
+ * `/companies` segment is REQUIRED — linking to `${HQ_CONSOLE_BASE}/${slug}`
+ * 404s (the bug these links used to ship).
+ */
 export function companyConsoleUrl(slug: string): string {
-  return `${HQ_CONSOLE_BASE}/${encodeURIComponent(slug)}`;
+  return `${HQ_CONSOLE_BASE}/companies/${encodeURIComponent(slug)}`;
 }
 
 /**
- * Company settings live in the console (sync rules, members, roles) — the
- * console company page is that surface, so this is an alias of
- * {@link companyConsoleUrl} with an intent-revealing name at the call site.
+ * A company's settings page in the console — the dedicated settings surface at
+ * `/companies/{slug}/settings` (route `companies/[slug]/settings`), where sync
+ * rules, members, and roles live. The desktop Company page's "Settings" button
+ * opens this.
  */
 export function companySettingsUrl(slug: string): string {
-  return companyConsoleUrl(slug);
+  return `${companyConsoleUrl(slug)}/settings`;
 }
 
-/** Company invite flow in the console. */
+/**
+ * A company's invite surface in the console — the admin Team → Invites page at
+ * `/companies/{slug}/team/invites` (route `companies/[slug]/team/invites`),
+ * which carries the "Invite teammate" send flow. (Per-token accept links live
+ * separately under `/invite/{token}`; this is the company-scoped entry point.)
+ */
 export function companyInviteUrl(slug: string): string {
-  return `${companyConsoleUrl(slug)}/invite`;
+  return `${companyConsoleUrl(slug)}/team/invites`;
 }
 
 /** Console Integrations page (calendar / meeting-bot connect). */
