@@ -446,8 +446,11 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // Auto-sync runs unattended, so a crashed watcher was
                     // previously invisible (log-only). Capture genuine crashes
                     // to #hq-alerts — but NOT a deliberate stop (SIGTERM from
-                    // cancel_process_impl on app-quit / auto-sync-off / re-spawn).
-                    if !success && !crate::commands::process::is_cancelled(DAEMON_HANDLE) {
+                    // cancel_process_impl / app-quit teardown / auto-sync-off /
+                    // re-spawn). See `is_unexpected_watcher_exit` for why a bare
+                    // SIGTERM is never treated as a crash (HQ-SYNC-5).
+                    let cancelled = crate::commands::process::is_cancelled(DAEMON_HANDLE);
+                    if is_unexpected_watcher_exit(success, signal, cancelled) {
                         crate::commands::sync::capture_sync_error(
                             None,
                             "(auto-sync)",
@@ -486,6 +489,33 @@ const SUPERVISOR_INTERVAL: Duration = Duration::from_secs(30);
 /// the decision stays unit-testable.
 fn should_respawn_daemon(realtime_sync: bool, autostart: bool, daemon_alive: bool) -> bool {
     (realtime_sync || autostart) && !daemon_alive
+}
+
+/// SIGTERM that the watcher process can receive on a deliberate stop. Extracted
+/// as a named constant so the crash-vs-teardown decision reads intentionally.
+const SIGTERM: i32 = 15;
+
+/// Pure decision: should this watcher exit be Sentry-captured as an unexpected
+/// crash? Extracted (like `should_respawn_daemon`) so the rule stays
+/// unit-testable.
+///
+/// A genuine crash is a non-zero `exit(code)` or a fault signal
+/// (SIGSEGV/SIGABRT/SIGBUS = real bug, SIGKILL = OOM/`kill -9`). A bare
+/// **SIGTERM is never a crash** — it is the canonical "please stop" request and
+/// always originates from a deliberate teardown: our own `cancel_process_impl`,
+/// the app-quit `terminate_pids_for_exit` path, the OS on logout/shutdown, or a
+/// manual `kill <pid>`. Capturing it as a fatal "watcher exited unexpectedly"
+/// was the HQ-SYNC-5 false-positive flood (signal=15, code=None on app quit).
+///
+/// The `cancelled` flag (from the process registry) is the primary guard for
+/// our own stop paths; the explicit `signal != SIGTERM` check is defense in
+/// depth that also covers external SIGTERMs and the narrow race where the
+/// registry entry is deregistered before this Exit handler observes it.
+fn is_unexpected_watcher_exit(success: bool, signal: Option<i32>, cancelled: bool) -> bool {
+    if success || cancelled {
+        return false;
+    }
+    signal != Some(SIGTERM)
 }
 
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
@@ -619,6 +649,42 @@ mod tests {
         assert!(!should_respawn_daemon(false, false, false));
         // Auto-sync off, daemon alive → no-op.
         assert!(!should_respawn_daemon(false, false, true));
+    }
+
+    // ── Crash-vs-teardown decision (HQ-SYNC-5) ───────────────────────────
+
+    #[test]
+    fn sigterm_exit_is_never_an_unexpected_crash() {
+        // HQ-SYNC-5: app quit SIGTERMs the watcher (signal=15, code=None).
+        // That is a graceful teardown, not a crash — never capture it, whether
+        // or not the registry cancelled-flag was observed in time.
+        assert!(!is_unexpected_watcher_exit(false, Some(SIGTERM), false));
+        assert!(!is_unexpected_watcher_exit(false, Some(SIGTERM), true));
+    }
+
+    #[test]
+    fn cancelled_exit_is_never_an_unexpected_crash() {
+        // Our own stop paths (Stop button, auto-sync-off, re-spawn) mark the
+        // handle cancelled — suppress regardless of how the child went down.
+        assert!(!is_unexpected_watcher_exit(false, Some(9), true));
+        assert!(!is_unexpected_watcher_exit(false, None, true));
+    }
+
+    #[test]
+    fn successful_exit_is_never_a_crash() {
+        assert!(!is_unexpected_watcher_exit(true, None, false));
+        assert!(!is_unexpected_watcher_exit(true, Some(SIGTERM), false));
+    }
+
+    #[test]
+    fn genuine_crash_signatures_are_captured() {
+        // A non-zero exit code (None signal) is a real failure.
+        assert!(is_unexpected_watcher_exit(false, None, false));
+        // Fault signals are real crashes: SIGSEGV(11), SIGABRT(6), SIGBUS(10).
+        assert!(is_unexpected_watcher_exit(false, Some(11), false));
+        assert!(is_unexpected_watcher_exit(false, Some(6), false));
+        // SIGKILL(9) — OOM / `kill -9` — stays loud when not our own cancel.
+        assert!(is_unexpected_watcher_exit(false, Some(9), false));
     }
 
     // ── DaemonStatus serialization ───────────────────────────────────────

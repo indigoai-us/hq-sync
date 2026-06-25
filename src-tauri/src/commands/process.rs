@@ -155,6 +155,16 @@ fn mark_cancelled(handle: &str) -> bool {
     }
 }
 
+/// Flag every given handle as a deliberate cancel. Used by the app-exit
+/// teardown so each child's `ProcessEvent::Exit` handler observes
+/// `is_cancelled() == true` and treats the shutdown SIGTERM as the orderly
+/// teardown it is — not an unexpected crash.
+fn mark_all_cancelled(pids: &[(String, u32)]) {
+    for (handle, _pid) in pids {
+        mark_cancelled(handle);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Event enum (testable without Tauri)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -513,6 +523,15 @@ pub fn registered_pids() -> Vec<(String, u32)> {
 /// wrapper *and* the node worker it forks both die, not just the wrapper —
 /// mirroring [`cancel_process_impl`].
 pub fn terminate_pids_for_exit(pids: &[(String, u32)], grace: Duration) {
+    // Mark every child as a deliberate cancel BEFORE signalling. This is the
+    // app-quit teardown path (tray Quit / Cmd-Q / `quit_app`), which is just as
+    // intentional as `cancel_process_impl` — so each child's Exit handler must
+    // see `is_cancelled() == true` and recognise the shutdown SIGTERM as an
+    // orderly teardown. Without this, the watch daemon shipped a false
+    // "auto-sync watcher exited unexpectedly (signal=15)" to Sentry on every
+    // quit (HQ-SYNC-5), and `recall_sdk` would likewise synthesize a bogus
+    // terminal `recording:error` on app exit.
+    mark_all_cancelled(pids);
     for (_handle, pid) in pids {
         let _ = signal::kill(Pid::from_raw(-(*pid as i32)), Signal::SIGTERM);
     }
@@ -663,5 +682,27 @@ mod exit_teardown_tests {
     fn terminate_pids_for_exit_is_noop_when_empty() {
         // Must not sleep the grace period or panic when nothing is registered.
         terminate_pids_for_exit(&[], Duration::from_secs(30));
+    }
+
+    #[test]
+    fn app_exit_teardown_marks_children_cancelled() {
+        // HQ-SYNC-5 regression: the app-quit teardown must flag each child as a
+        // deliberate cancel so its Exit handler treats the shutdown SIGTERM as
+        // an orderly teardown — not an unexpected crash worth Sentry-capturing.
+        let handle = "exit-cancel-mark-test";
+        pre_register_handle(handle);
+        register_process(handle, 424242);
+        assert!(
+            !is_cancelled(handle),
+            "freshly registered handle must not be cancelled"
+        );
+
+        mark_all_cancelled(&[(handle.to_string(), 424242)]);
+
+        assert!(
+            is_cancelled(handle),
+            "teardown must mark the handle cancelled before signalling"
+        );
+        deregister_process(handle);
     }
 }
