@@ -190,6 +190,30 @@ fn classify_local_env_failure(stderr_tail: &[String]) -> Option<(&'static str, S
         ));
     }
 
+    // Concurrent-npx cache contention — two `npx --package=…` runs racing the
+    // shared `~/.npm/_npx/<hash>/` install dir stomp each other's half-written
+    // package, surfacing as EEXIST / ENOTEMPTY rename failures or a cacache
+    // lock error. The serialization guard in `hq_resolver` is the real fix;
+    // this arm exists so any residual race is reported as a local-env condition
+    // (not a misleading `provision_kind=network`/`other` platform alert), and
+    // it can land on ANY abnormal exit code (npm uses several), not just 1.
+    if blob.contains("EEXIST")
+        || blob.contains("ENOTEMPTY")
+        || blob.contains("npm error code EEXIST")
+        || blob.contains("npm error code ENOTEMPTY")
+        || blob.contains("_npx")
+        || blob.contains("Could not install from")
+    {
+        let detail = first_matching_line(
+            &blob,
+            &["npm error path", "ENOTEMPTY", "EEXIST", "_npx"],
+        )
+        .unwrap_or_else(|| {
+            "concurrent npx installs raced the shared npm cache".to_string()
+        });
+        return Some(("npm-cache-contention", detail));
+    }
+
     None
 }
 
@@ -368,6 +392,16 @@ pub async fn run_cli_provision(
     // shipped in 5.6.0), so the resolver's choice is safe here.
     let invocation: HqInvocation = hq_resolver::resolve_hq();
     let path_env = paths::child_path();
+
+    // Serialize the npx self-heal path. When the local `hq` failed the
+    // capability probe, every provision shells out through
+    // `npx -y --package=@indigoai-us/hq-cli@<range> hq …`; firing several at
+    // once (a user Connecting multiple companies in quick succession) races the
+    // shared npm `_npx` install cache and corrupts each run — the confirmed root
+    // cause of the HQ-SYNC-6/7/8/9/A cluster (exit 190 / signal). This guard is
+    // held for the whole subprocess lifetime so concurrent npx installs can't
+    // overlap; it's a no-op on the local fast-path (no install, no race).
+    let _npx_guard = invocation.npx_serial_guard().await;
 
     log(
         "provision-cli",
@@ -558,12 +592,30 @@ pub async fn run_cli_provision(
             ),
             partial: parsed,
         }),
-        Some(other) => Err(CliProvisionError::Other(format!(
-            "unexpected exit code {other} for slug={slug}"
-        ))),
-        None => Err(CliProvisionError::Other(format!(
-            "child terminated by signal (no exit code) for slug={slug}"
-        ))),
+        // An unexpected exit code is most often the npx pre-launch wrapper
+        // failing (npm emits several non-1 codes). Run the local-env classifier
+        // first so a recognizable laptop condition — e.g. a concurrent-npx cache
+        // race — is reported as such instead of an opaque `provision_kind=other`.
+        Some(other) => match classify_local_env_failure(&stderr_tail) {
+            Some((env_kind, detail)) => Err(CliProvisionError::LocalEnv {
+                kind: env_kind,
+                detail,
+            }),
+            None => Err(CliProvisionError::Other(format!(
+                "unexpected exit code {other} for slug={slug}"
+            ))),
+        },
+        // A signal kill can be the OS reaping one of several racing npx installs;
+        // classify the stderr tail before falling back to the generic message.
+        None => match classify_local_env_failure(&stderr_tail) {
+            Some((env_kind, detail)) => Err(CliProvisionError::LocalEnv {
+                kind: env_kind,
+                detail,
+            }),
+            None => Err(CliProvisionError::Other(format!(
+                "child terminated by signal (no exit code) for slug={slug}"
+            ))),
+        },
     };
 
     if let Err(ref err) = result {
@@ -780,6 +832,34 @@ mod tests {
         ];
         let (kind, _detail) = classify_local_env_failure(&tail).expect("must classify");
         assert_eq!(kind, "npm-registry-timeout");
+    }
+
+    /// Concurrent-npx cache contention (EEXIST / ENOTEMPTY rename collisions in
+    /// the shared `_npx` dir) must classify as `npm-cache-contention` so a
+    /// residual race after the serialization guard is reported as a local-env
+    /// condition rather than an opaque platform alert. Covers the HQ-SYNC-6..A
+    /// failure family.
+    #[test]
+    fn classify_npm_cache_contention() {
+        let tail: Vec<String> = vec![
+            "npm error code ENOTEMPTY".to_string(),
+            "npm error path /Users/u/.npm/_npx/abc123/node_modules/@indigoai-us/hq-cli"
+                .to_string(),
+            "npm error ENOTEMPTY: directory not empty, rename ...".to_string(),
+        ];
+        let (kind, detail) = classify_local_env_failure(&tail).expect("must classify");
+        assert_eq!(kind, "npm-cache-contention");
+        assert!(detail.contains("_npx") || detail.contains("ENOTEMPTY"));
+    }
+
+    /// EEXIST flavour of the same race (a second npx finds the partial install
+    /// already present) must also bucket as cache contention.
+    #[test]
+    fn classify_npm_cache_contention_eexist() {
+        let tail: Vec<String> =
+            vec!["npm error code EEXIST".to_string(), "File exists".to_string()];
+        let (kind, _detail) = classify_local_env_failure(&tail).expect("must classify");
+        assert_eq!(kind, "npm-cache-contention");
     }
 
     /// Vault-flavoured stderr (genuine CLI 5xx) must NOT classify as
