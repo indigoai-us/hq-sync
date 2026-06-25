@@ -98,6 +98,17 @@ pub struct RunTotals {
     /// network blip, or an expected per-file ACL-scope skip. Gates the Sentry
     /// capture at the non-zero-exit site (see `should_alert_on_nonzero_exit`).
     pub saw_alertable_error: bool,
+    /// Set true when a runner stderr line is the signature of the Node-too-old
+    /// startup crash (pino's `tracingChannel` absent before Node 20, or npm's
+    /// `EBADENGINE` "requires node >= 20" warning). The runner can't start under
+    /// such a Node and exits 1 before emitting any protocol, so `saw_error` stays
+    /// false and the exit would otherwise read as an "unexplained crash" and
+    /// alert (HQ-SYNC-2). This is an environment fault the user fixes by updating
+    /// Node — not an hq-sync/hq-cloud defect — so it must suppress the alert. The
+    /// proactive `preflight_node_too_old` check normally catches this before the
+    /// spawn; this flag is the reactive net for when the probed Node and the
+    /// runner's `env node` diverge (e.g. nvm).
+    pub saw_node_too_old: bool,
 }
 
 impl RunTotals {
@@ -163,6 +174,20 @@ const RUNNER_OPERATION_LOCKED_EXIT: i32 = 17;
 /// An expected cancellation must never escalate to a Sentry alert (HQ-SYNC-WEB-H:
 /// 23 "killed by SIGTERM (cancelled)" events). See `should_alert_on_nonzero_exit`.
 const SIGTERM_SIGNAL: i32 = 15;
+
+/// Minimum Node.js major version the spawned `hq-sync-runner` supports.
+///
+/// The runner's transitive dependencies (`pino`, `@aws-sdk/*`, `thread-stream`)
+/// declare `engines.node >= 20`. On older Node, pino's startup calls
+/// `diagnostics_channel.tracingChannel(...)` — an API that only exists from Node
+/// 19.9 / 20 — which is `undefined`, so the runner crashes loading pino with
+/// `TypeError: diagChan.tracingChannel is not a function` and exits code 1
+/// *before emitting any protocol*. The app then reads that as an unexplained
+/// crash and raises a Sentry alert (HQ-SYNC-2, seen across multiple machines on
+/// Node v19.3.0). This is an environment fault the user fixes by updating Node,
+/// not an hq-sync/hq-cloud defect — `preflight_node_too_old` detects it up front
+/// and surfaces a clear "update Node" message instead of letting it recur.
+const MIN_NODE_MAJOR: u32 = 20;
 
 /// Semver range for `@indigoai-us/hq-cloud` that ships `hq-sync-runner`.
 ///
@@ -762,6 +787,79 @@ fn is_alertable_error(err: &SyncErrorEvent) -> bool {
         || is_expected_acl_scope_skip(&err.message))
 }
 
+/// Parse the major version from `node --version` output (e.g. `"v19.3.0\n"` → 19).
+///
+/// Returns `None` for anything unparseable so callers fail OPEN — a probe whose
+/// output we don't understand must never block a sync. Tolerates the leading
+/// `v`, surrounding whitespace, and a missing patch/minor.
+fn parse_node_major(version_output: &str) -> Option<u32> {
+    let s = version_output.trim();
+    let s = s.strip_prefix('v').unwrap_or(s);
+    s.split('.').next()?.parse::<u32>().ok()
+}
+
+/// True when a resolved Node major is below the runner's documented floor
+/// (`MIN_NODE_MAJOR`).
+fn is_node_too_old(major: u32) -> bool {
+    major < MIN_NODE_MAJOR
+}
+
+/// The clear, actionable message shown when the user's Node is too old to run
+/// the sync runner. Phrased for a non-technical menubar user — it names the
+/// floor, their current major, and the single action that fixes it.
+fn node_too_old_message(current_major: u32) -> String {
+    format!(
+        "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync — this Mac is running Node {current_major}. \
+         Please update Node (https://nodejs.org), then try Sync again."
+    )
+}
+
+/// True when a runner stderr line is the signature of the Node-too-old startup
+/// crash: pino's `diagnostics_channel.tracingChannel` is absent before Node 20,
+/// or npm's `EBADENGINE` warning that a dependency requires `node >= 20`. Either
+/// means the runner cannot start under this Node — an environment fault the user
+/// fixes by updating Node, not an hq-sync/hq-cloud defect — so a non-zero exit
+/// driven by it must NOT raise a Sentry alert (HQ-SYNC-2).
+///
+/// Deliberately narrow: matches the exact `tracingChannel is not a function`
+/// crash text, or an `EBADENGINE` line that also mentions `node` (the engine
+/// whose floor was violated), so an unrelated stderr line can't suppress a real
+/// defect.
+fn is_node_too_old_signature(line: &str) -> bool {
+    let msg = line.to_lowercase();
+    msg.contains("tracingchannel is not a function")
+        || (msg.contains("ebadengine") && msg.contains("node"))
+}
+
+/// Best-effort Node-version preflight, run just before spawning the runner.
+///
+/// Returns `Some(major)` when the Node the runner would use is *positively*
+/// determined to be too old (`< MIN_NODE_MAJOR`), and `None` when Node is new
+/// enough OR its version can't be determined. Fails OPEN by design: a probe we
+/// couldn't run (node missing, non-zero exit, unparseable output) returns `None`
+/// so the sync proceeds exactly as before — the preflight only ever *prevents* a
+/// known-doomed spawn, never introduces a new failure.
+///
+/// Resolves Node exactly as the runner's `#!/usr/bin/env node` shebang does:
+/// `env node` against the same `child_path()` we hand the spawned `npx`. Probing
+/// through `env` (rather than `resolve_bin("node")`) matters when the user has
+/// nvm — `child_path()` prepends every installed nvm version, so `env node` can
+/// resolve a different Node than `resolve_bin` would, and we must check the one
+/// that will actually run the runner.
+fn preflight_node_too_old() -> Option<u32> {
+    let output = std::process::Command::new("/usr/bin/env")
+        .args(["node", "--version"])
+        .env("PATH", paths::child_path())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let major = parse_node_major(&stdout)?;
+    is_node_too_old(major).then_some(major)
+}
+
 /// Pure policy: should a *non-zero* runner exit raise a Sentry alert?
 ///
 /// Extracted from the `ProcessEvent::Exit` handler so the decision is
@@ -773,6 +871,15 @@ fn is_alertable_error(err: &SyncErrorEvent) -> bool {
 ///   - a run whose errors were all benign (`saw_error && !saw_alertable_error`):
 ///     the non-zero exit is fully explained by not-yet-provisioned 404s,
 ///     transient network blips, and/or expected per-file ACL-scope skips.
+///   - a Node-too-old startup crash (`saw_node_too_old`): the runner couldn't
+///     start because the user's Node is below the runner's engine floor (it
+///     crashes loading pino before emitting any protocol, so `saw_error` is
+///     false and it would otherwise fall through to the "unexplained crash"
+///     alert). This is an environment fault the user fixes by updating Node, not
+///     a defect — suppressed here, surfaced to the UI as a clear message
+///     (HQ-SYNC-2). Normally caught proactively by `preflight_node_too_old`;
+///     this is the reactive net for when the probed Node and the runner's
+///     `env node` diverge.
 ///
 /// An *unexplained* non-zero exit — no error event seen at all, e.g. the runner
 /// panicked or was OOM-killed before emitting protocol — still alerts,
@@ -788,11 +895,15 @@ fn should_alert_on_nonzero_exit(
     signal: Option<i32>,
     saw_error: bool,
     saw_alertable_error: bool,
+    saw_node_too_old: bool,
 ) -> bool {
     if signal == Some(SIGTERM_SIGNAL) {
         return false;
     }
     if code == Some(RUNNER_OPERATION_LOCKED_EXIT) {
+        return false;
+    }
+    if saw_node_too_old {
         return false;
     }
     if saw_error && !saw_alertable_error {
@@ -1038,6 +1149,25 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
             return Err(e);
         }
     };
+
+    // Node-version preflight. The spawned `hq-sync-runner`'s deps require Node
+    // >= MIN_NODE_MAJOR; on older Node it crashes at startup (pino's
+    // `tracingChannel`) before emitting any protocol, surfacing as an
+    // unexplained "hq-sync-runner exited with code 1" Sentry defect that recurs
+    // every cycle (HQ-SYNC-2). Detect it up front and BAIL with a clear,
+    // actionable message instead of spawning a known-doomed runner. This is an
+    // expected, user-actionable environment fault — returned as the command
+    // error (which the popover surfaces) and NOT captured to Sentry. Fails OPEN:
+    // when the version can't be determined `preflight_node_too_old` returns
+    // `None` and the sync proceeds exactly as before.
+    if let Some(current_major) = preflight_node_too_old() {
+        let msg = node_too_old_message(current_major);
+        log("sync", &format!("BAIL: node too old (v{current_major}): {msg}"));
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] BAIL: node too old (v{}): {}", current_major, msg);
+        deregister_process(SYNC_HANDLE);
+        return Err(msg);
+    }
 
     // Resolve the personal-sync toggle ONCE for the duration of this sync
     // run — same flag drives (a) whether we run the personal first-push pass
@@ -1302,6 +1432,18 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
                     t.record_error(&payload);
                 }
+                // Reactive net for the Node-too-old startup crash (HQ-SYNC-2):
+                // pino's `tracingChannel`-not-a-function TypeError, or an npm
+                // EBADENGINE "requires node >= 20" warning, both arrive as raw
+                // (non-ndjson) stderr. `preflight_node_too_old` normally bails
+                // before the spawn, but if the probed Node and the runner's
+                // `env node` diverge (nvm) the crash can still happen — flag it
+                // so the exit handler suppresses the Sentry alert and the run is
+                // treated as an environment fault, not an unexplained crash.
+                if is_node_too_old_signature(&line) {
+                    let mut t = totals.lock().unwrap_or_else(|e| e.into_inner());
+                    t.saw_node_too_old = true;
+                }
                 #[cfg(debug_assertions)]
                 eprintln!("[sync stderr] {}", line);
             }
@@ -1331,17 +1473,50 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
                     // event + stderr breadcrumb was already surfaced to the UI
                     // and the local sync log, so suppression loses no
                     // diagnostics — only the Sentry alert.
-                    let (saw_error, saw_alertable) = totals
+                    let (saw_error, saw_alertable, saw_node_too_old) = totals
                         .lock()
-                        .map(|t| (t.saw_error, t.saw_alertable_error))
-                        .unwrap_or((false, false));
-                    if should_alert_on_nonzero_exit(code, signal, saw_error, saw_alertable) {
+                        .map(|t| (t.saw_error, t.saw_alertable_error, t.saw_node_too_old))
+                        .unwrap_or((false, false, false));
+                    if should_alert_on_nonzero_exit(
+                        code,
+                        signal,
+                        saw_error,
+                        saw_alertable,
+                        saw_node_too_old,
+                    ) {
                         let _ = report_sync_error(
                             &app_bg,
                             crate::events::SyncErrorEvent {
                                 company: None,
                                 path: "(runner)".to_string(),
                                 message: format!("hq-sync-runner exited {}", exit_desc),
+                            },
+                        );
+                    } else if saw_node_too_old {
+                        // Environment fault, not a defect: the runner couldn't
+                        // start because the user's Node is below the engine
+                        // floor. Suppress the Sentry alert AND surface the clear
+                        // "update Node" message to the popover so the user sees
+                        // an actionable reason rather than a silent failure (the
+                        // proactive preflight returns this same message before
+                        // the spawn; this is the reactive-net path where the
+                        // runner was already spawned and crashed).
+                        log(
+                            "sync",
+                            &format!(
+                                "runner exited non-zero ({}) due to Node too old — surfacing update-Node message, not alerting",
+                                exit_desc
+                            ),
+                        );
+                        let _ = app_bg.emit(
+                            EVENT_SYNC_ERROR,
+                            crate::events::SyncErrorEvent {
+                                company: None,
+                                path: "(node)".to_string(),
+                                message: format!(
+                                    "HQ Sync needs Node {MIN_NODE_MAJOR} or newer to sync. \
+                                     Please update Node (https://nodejs.org), then try Sync again."
+                                ),
                             },
                         );
                     } else {
@@ -2198,9 +2373,9 @@ mod tests {
     #[test]
     fn test_exit_alert_suppressed_for_operation_locked() {
         // Exit 17 = another sync holds the lock — a normal concurrent race.
-        assert!(!should_alert_on_nonzero_exit(Some(17), None, false, false));
+        assert!(!should_alert_on_nonzero_exit(Some(17), None, false, false, false));
         // Even if it somehow co-occurred with an alertable error, locked wins.
-        assert!(!should_alert_on_nonzero_exit(Some(17), None, true, true));
+        assert!(!should_alert_on_nonzero_exit(Some(17), None, true, true, false));
     }
 
     #[test]
@@ -2209,11 +2384,11 @@ mod tests {
         // OUR own cancel_process_impl ending the run — Stop button, timeout
         // watchdog, app quit, or a newer sync superseding this one. An expected
         // cancellation must NEVER alert, even with no protocol seen…
-        assert!(!should_alert_on_nonzero_exit(None, Some(15), false, false));
+        assert!(!should_alert_on_nonzero_exit(None, Some(15), false, false, false));
         // …and even if company errors (benign or alertable) were mid-flight when
         // the cancel landed — the cancellation is the cause, not the errors.
-        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, false));
-        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, true));
+        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, false, false));
+        assert!(!should_alert_on_nonzero_exit(None, Some(15), true, true, false));
     }
 
     #[test]
@@ -2221,10 +2396,10 @@ mod tests {
         // A real crash signal is NOT a cancellation and must stay loud:
         // SIGSEGV (11) / SIGBUS (10) / SIGABRT (6) are crashes, and SIGKILL (9)
         // is an OOM or force-quit worth seeing — only SIGTERM is suppressed.
-        assert!(should_alert_on_nonzero_exit(None, Some(11), false, false));
-        assert!(should_alert_on_nonzero_exit(None, Some(10), false, false));
-        assert!(should_alert_on_nonzero_exit(None, Some(6), false, false));
-        assert!(should_alert_on_nonzero_exit(None, Some(9), false, false));
+        assert!(should_alert_on_nonzero_exit(None, Some(11), false, false, false));
+        assert!(should_alert_on_nonzero_exit(None, Some(10), false, false, false));
+        assert!(should_alert_on_nonzero_exit(None, Some(6), false, false, false));
+        assert!(should_alert_on_nonzero_exit(None, Some(9), false, false, false));
     }
 
     #[test]
@@ -2232,13 +2407,13 @@ mod tests {
         // The HQ-SYNC-WEB-6 shape: exit 2 driven solely by benign errors
         // (per-file ACL-scope skips, a not-provisioned 404, or a transient
         // ECONNRESET) → saw_error && !saw_alertable_error → no alert.
-        assert!(!should_alert_on_nonzero_exit(Some(2), None, true, false));
+        assert!(!should_alert_on_nonzero_exit(Some(2), None, true, false, false));
     }
 
     #[test]
     fn test_exit_alert_fires_for_real_error() {
         // exit 2 with at least one alertable error (e.g. EISDIR) → alert.
-        assert!(should_alert_on_nonzero_exit(Some(2), None, true, true));
+        assert!(should_alert_on_nonzero_exit(Some(2), None, true, true, false));
     }
 
     #[test]
@@ -2246,10 +2421,105 @@ mod tests {
         // Non-zero exit with NO error event seen — runner panicked / was
         // OOM-killed before emitting protocol. This is the original
         // "bailed before a useful stream" signal and must keep alerting.
-        assert!(should_alert_on_nonzero_exit(Some(1), None, false, false));
+        assert!(should_alert_on_nonzero_exit(Some(1), None, false, false, false));
         // Signal-kill with neither code nor a recognized signal is likewise
         // unexplained (only a SIGTERM cancel is suppressed).
-        assert!(should_alert_on_nonzero_exit(None, None, false, false));
+        assert!(should_alert_on_nonzero_exit(None, None, false, false, false));
+    }
+
+    #[test]
+    fn test_exit_alert_suppressed_for_node_too_old() {
+        // HQ-SYNC-2: the runner crashed at startup because the user's Node is
+        // below the engine floor (pino's tracingChannel absent pre-20). It exits
+        // 1 before emitting any protocol, so saw_error stays false and it would
+        // otherwise read as an unexplained crash and alert. The reactive-net flag
+        // must suppress it — an environment fault, not a defect.
+        assert!(!should_alert_on_nonzero_exit(Some(1), None, false, false, true));
+        // Suppression holds regardless of exit code or co-occurring errors.
+        assert!(!should_alert_on_nonzero_exit(Some(2), None, true, true, true));
+    }
+
+    // ── Node-version preflight (HQ-SYNC-2) ───────────────────────────────────
+
+    #[test]
+    fn test_parse_node_major_typical() {
+        // `node --version` output, with the leading `v` and a trailing newline.
+        assert_eq!(parse_node_major("v19.3.0\n"), Some(19));
+        assert_eq!(parse_node_major("v20.11.1\n"), Some(20));
+        assert_eq!(parse_node_major("v22.0.0"), Some(22));
+        // Tolerate no `v`, extra whitespace, and a bare major.
+        assert_eq!(parse_node_major(" 18.20.4 "), Some(18));
+        assert_eq!(parse_node_major("v21"), Some(21));
+    }
+
+    #[test]
+    fn test_parse_node_major_unparseable_is_none() {
+        // Anything we can't read → None, so the preflight fails OPEN (spawns).
+        assert_eq!(parse_node_major(""), None);
+        assert_eq!(parse_node_major("not-a-version"), None);
+        assert_eq!(parse_node_major("vX.Y.Z"), None);
+    }
+
+    #[test]
+    fn test_is_node_too_old_boundary() {
+        // The runner's deps require >= 20: 19 and below are too old, 20+ are fine.
+        assert!(is_node_too_old(19));
+        assert!(is_node_too_old(16));
+        assert!(!is_node_too_old(20));
+        assert!(!is_node_too_old(22));
+    }
+
+    #[test]
+    fn test_node_too_old_message_is_actionable() {
+        // The user-facing message must name the floor, the current version, and
+        // the fix — and stay free of jargon / stack traces.
+        let msg = node_too_old_message(19);
+        assert!(msg.contains("Node 20 or newer"));
+        assert!(msg.contains("Node 19"));
+        assert!(msg.to_lowercase().contains("update node"));
+        assert!(!msg.contains("tracingChannel"));
+    }
+
+    #[test]
+    fn test_is_node_too_old_signature_matches_crash_and_ebadengine() {
+        // The exact pino crash text from the HQ-SYNC-2 event…
+        assert!(is_node_too_old_signature(
+            "TypeError: diagChan.tracingChannel is not a function"
+        ));
+        // …and npm's EBADENGINE warning naming the violated node engine.
+        assert!(is_node_too_old_signature(
+            "npm warn EBADENGINE Unsupported engine { required: { node: '>=20.0.0' }, current: { node: 'v19.3.0' } }"
+        ));
+    }
+
+    #[test]
+    fn test_is_node_too_old_signature_ignores_unrelated_stderr() {
+        // Narrow by design: ordinary runner chatter must not be misread as a
+        // Node-too-old crash (which would suppress a real alert).
+        assert!(!is_node_too_old_signature("uploading projects/index.html"));
+        assert!(!is_node_too_old_signature(
+            "Error: connect ECONNRESET 10.0.0.1:443"
+        ));
+        // An EBADENGINE line about some OTHER engine (not node) is not our case.
+        assert!(!is_node_too_old_signature(
+            "npm warn EBADENGINE required: { npm: '>=10' }"
+        ));
+    }
+
+    #[test]
+    fn test_run_totals_stderr_signature_flips_node_too_old_flag() {
+        // The reactive-net path: a raw (non-ndjson) pino crash line on stderr
+        // must flip saw_node_too_old so the exit handler suppresses the alert.
+        let mut t = RunTotals::default();
+        assert!(!t.saw_node_too_old);
+        let line = "TypeError: diagChan.tracingChannel is not a function";
+        if is_node_too_old_signature(line) {
+            t.saw_node_too_old = true;
+        }
+        assert!(t.saw_node_too_old);
+        // And it does NOT spuriously set the generic error flags.
+        assert!(!t.saw_error);
+        assert!(!t.saw_alertable_error);
     }
 
     // ── accumulate / record_error: any-level error classification ────────────
@@ -2346,7 +2616,8 @@ mod tests {
             Some(2),
             None,
             t.saw_error,
-            t.saw_alertable_error
+            t.saw_alertable_error,
+            t.saw_node_too_old
         ));
     }
 
