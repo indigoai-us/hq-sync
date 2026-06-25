@@ -458,14 +458,35 @@ fn npm_prefix_from_hq_bin(hq_bin: &str) -> Option<String> {
 /// can lock the shape without spawning npm. When we know the prefix that
 /// contains the resolved `hq`, pass it explicitly so npm updates the binary
 /// the app actually runs instead of npm's unrelated default global prefix.
-pub(crate) fn install_argv(prefix: Option<&str>) -> Vec<String> {
+///
+/// `force` appends `--force`. We pass it ONLY as a one-shot retry after an
+/// `EEXIST` bin collision (see `is_bin_exists_failure`): the user already has
+/// an `hq` at `<prefix>/bin/hq` that npm didn't create, so npm refuses to
+/// clobber the bin-link unless forced. Overwriting the old `hq` with the new
+/// one is exactly the user's intent (they are updating their CLI), so the
+/// forced retry is the npm-documented remedy for this case — not a blanket
+/// flag on the normal path.
+pub(crate) fn install_argv(prefix: Option<&str>, force: bool) -> Vec<String> {
     let mut argv = vec!["install".to_string(), "-g".to_string()];
+    if force {
+        argv.push("--force".to_string());
+    }
     if let Some(prefix) = prefix {
         argv.push("--prefix".to_string());
         argv.push(prefix.to_string());
     }
     argv.push(HQ_CLI_PACKAGE.to_string());
     argv
+}
+
+/// Whether an npm install failure is the EEXIST bin collision introduced by
+/// prefix-anchoring: npm refuses to overwrite an existing `<prefix>/bin/hq`
+/// that it did not create (e.g. a CLI the user installed by hand into
+/// `~/.local/bin`). npm's own remedy is `--force`, which we apply as a single
+/// retry (HQ-SYNC-B). The user is updating their own CLI, so overwriting the
+/// stale bin is the intended outcome.
+pub(crate) fn is_bin_exists_failure(detail: &str) -> bool {
+    detail.contains("EEXIST")
 }
 
 /// Read the version field from the installed package.json inside the npm
@@ -516,39 +537,91 @@ fn read_installed_version(npm_bin: &str, path: &str) -> Option<String> {
 /// '/usr/local/lib/node_modules/@indigoai-us'` — means the user's npm
 /// prefix needs sudo. The UI falls back to the previous copy-the-command
 /// path for that case rather than prompting for a password.
+/// Concatenate npm's output into a single trimmed detail string for logging,
+/// failure classification, and the error surfaced to the caller. Prefers
+/// stderr (where npm writes its `npm ERR!` lines) and falls back to stdout.
+fn npm_output_detail(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// Spawn `npm <args>` on the blocking pool with the beefed-up child PATH and
+/// collect its Output. Errors map to a String (join / spawn failures only —
+/// a non-zero npm exit is a successful run that returns a failing status).
+async fn run_npm_install(
+    npm: &str,
+    path: &str,
+    args: Vec<String>,
+) -> Result<std::process::Output, String> {
+    let npm = npm.to_string();
+    let path = path.to_string();
+    log(
+        "hq-cli-update",
+        &format!("install: spawning {} {}", npm, args.join(" ")),
+    );
+    tauri::async_runtime::spawn_blocking(move || {
+        Command::new(&npm).args(&args).env("PATH", path).output()
+    })
+    .await
+    .map_err(|e| format!("join blocking task: {e}"))?
+    .map_err(|e| format!("spawn npm: {e}"))
+}
+
+/// Tauri command — runs `npm install -g @indigoai-us/hq-cli@latest` in a
+/// blocking task using the same child PATH as the runner (so node-shebanged
+/// npm and its own subprocess lookups succeed under the launchd-minimal
+/// PATH a Dock-launched menubar app inherits). On success we re-check and
+/// emit `hq-cli-update:cleared` so the frontend banner can disappear without
+/// waiting for the 6h background loop.
+///
+/// Failure mode is deliberate: we surface the npm stderr verbatim to the
+/// caller. The most common one — `EACCES: permission denied, mkdir
+/// '/usr/local/lib/node_modules/@indigoai-us'` — means the user's npm
+/// prefix needs sudo. The UI falls back to the previous copy-the-command
+/// path for that case rather than prompting for a password.
+///
+/// One failure is recovered automatically: an `EEXIST` bin collision (npm
+/// refusing to overwrite an existing `<prefix>/bin/hq` it didn't create)
+/// triggers a single `--force` retry so the user's CLI actually updates
+/// (HQ-SYNC-B) instead of the auto-update wedging on every cycle.
 #[tauri::command]
 pub async fn install_hq_cli_update(app: AppHandle) -> Result<HqCliUpdateInfo, String> {
     let npm = paths::resolve_bin("npm");
     let path = paths::child_path();
     let hq = paths::resolve_bin("hq");
     let prefix = npm_prefix_from_hq_bin(&hq);
-    let args = install_argv(prefix.as_deref());
     log(
         "hq-cli-update",
         &format!(
-            "install: spawning {} {} (prefix={})",
-            npm,
-            args.join(" "),
+            "install: prefix={}",
             prefix.as_deref().unwrap_or("npm default prefix")
         ),
     );
 
-    let npm_for_install = npm.clone();
-    let path_for_install = path.clone();
-    let output = tauri::async_runtime::spawn_blocking(move || {
-        Command::new(&npm_for_install)
-            .args(&args)
-            .env("PATH", path_for_install)
-            .output()
-    })
-    .await
-    .map_err(|e| format!("join blocking task: {e}"))?
-    .map_err(|e| format!("spawn npm: {e}"))?;
+    // First attempt: a plain (non-forced) global install.
+    let mut output = run_npm_install(&npm, &path, install_argv(prefix.as_deref(), false)).await?;
+
+    // EEXIST bin collision: an existing `<prefix>/bin/hq` that npm didn't
+    // create blocks the bin-link, so npm bails rather than clobber it. Retry
+    // ONCE with --force to overwrite the stale CLI the user is updating
+    // (HQ-SYNC-B) — npm's own documented remedy. Only this specific failure
+    // arms the forced retry; every other failure falls straight through.
+    if !output.status.success() {
+        let detail = npm_output_detail(&output);
+        if is_bin_exists_failure(&detail) {
+            log(
+                "hq-cli-update",
+                &format!("install hit EEXIST bin collision; retrying with --force: {detail}"),
+            );
+            output = run_npm_install(&npm, &path, install_argv(prefix.as_deref(), true)).await?;
+        }
+    }
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if stderr.is_empty() { stdout } else { stderr };
+        let detail = npm_output_detail(&output);
         log(
             "hq-cli-update",
             &format!("install failed (exit {:?}): {detail}", output.status.code()),
@@ -654,7 +727,7 @@ mod tests {
     /// the package) can't ship a non-global or wrong-package install.
     #[test]
     fn install_argv_targets_global_hq_cli() {
-        let argv = install_argv(None);
+        let argv = install_argv(None, false);
         assert_eq!(argv[0], "install");
         assert_eq!(argv[1], "-g");
         assert!(
@@ -673,7 +746,7 @@ mod tests {
 
     #[test]
     fn install_argv_includes_prefix_when_available() {
-        let argv = install_argv(Some("/tmp/hq-prefix"));
+        let argv = install_argv(Some("/tmp/hq-prefix"), false);
         assert_eq!(
             argv,
             vec![
@@ -689,6 +762,54 @@ mod tests {
             argv.get(prefix_flag + 1),
             Some(&"/tmp/hq-prefix".to_string())
         );
+    }
+
+    #[test]
+    fn install_argv_omits_force_on_the_normal_path() {
+        // The first attempt must NOT carry --force — it is reserved for the
+        // EEXIST recovery retry only.
+        assert!(!install_argv(None, false).iter().any(|a| a == "--force"));
+        assert!(!install_argv(Some("/tmp/p"), false)
+            .iter()
+            .any(|a| a == "--force"));
+    }
+
+    #[test]
+    fn install_argv_adds_force_for_the_eexist_retry() {
+        // HQ-SYNC-B: the forced retry overwrites a stale `<prefix>/bin/hq`.
+        let argv = install_argv(Some("/tmp/hq-prefix"), true);
+        assert_eq!(
+            argv,
+            vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "--force".to_string(),
+                "--prefix".to_string(),
+                "/tmp/hq-prefix".to_string(),
+                HQ_CLI_PACKAGE.to_string(),
+            ]
+        );
+        // --force still precedes the package arg even with no prefix.
+        let no_prefix = install_argv(None, true);
+        assert!(no_prefix.iter().any(|a| a == "--force"));
+        assert!(no_prefix.last().unwrap().ends_with("@latest"));
+    }
+
+    #[test]
+    fn bin_exists_failure_detects_eexist_collision() {
+        // The exact stderr behind HQ-SYNC-B: npm refuses to overwrite an
+        // existing user-owned `hq` bin it did not create.
+        const REAL_EEXIST_STDERR: &str = "npm ERR! code EEXIST\n\
+            npm ERR! path /Users/jordan/.local/bin/hq\n\
+            npm ERR! EEXIST: file already exists\n\
+            npm ERR! File exists: /Users/jordan/.local/bin/hq";
+        assert!(is_bin_exists_failure(REAL_EEXIST_STDERR));
+        // Unrelated failures must NOT arm the forced retry.
+        assert!(!is_bin_exists_failure(REAL_EACCES_STDERR));
+        assert!(!is_bin_exists_failure(
+            "npm error network request to https://registry.npmjs.org failed: ETIMEDOUT"
+        ));
+        assert!(!is_bin_exists_failure(""));
     }
 
     #[test]
