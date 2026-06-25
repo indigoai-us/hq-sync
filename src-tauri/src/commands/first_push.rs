@@ -201,6 +201,12 @@ pub async fn first_push_company(
     let path_env = paths::child_path();
     let company_dir = hq_root.join("companies").join(&company.slug);
 
+    // Serialize the npx self-heal path (shared with `run_cli_provision`): two
+    // `npx -y --package=@indigoai-us/hq-cli@<range> hq …` runs racing the npm
+    // `_npx` install cache corrupt each other. Held across the whole subprocess;
+    // a no-op on the local fast-path. See `hq_resolver::npx_serial_guard`.
+    let _npx_guard = invocation.npx_serial_guard().await;
+
     log(
         "first-push-cli",
         &format!(

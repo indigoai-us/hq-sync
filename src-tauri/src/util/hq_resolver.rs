@@ -50,6 +50,8 @@
 use std::process::Command;
 use std::sync::OnceLock;
 
+use tokio::sync::{Mutex, MutexGuard};
+
 use crate::util::logfile::log;
 use crate::util::paths;
 
@@ -62,6 +64,30 @@ pub const HQ_CLI_NPM_RANGE: &str = "^5.10.0";
 
 /// Cached invocation decision for the current process.
 static HQ_INVOCATION: OnceLock<HqInvocation> = OnceLock::new();
+
+/// Process-wide serialization lock for the `npx` self-heal path.
+///
+/// When the local `hq` fails the capability probe, every `hq` shell-out routes
+/// through `npx -y --package=@indigoai-us/hq-cli@<range> hq …`. Two or more of
+/// those running concurrently race on the shared npm `_npx` install cache
+/// (`~/.npm/_npx/<hash>/`): they hash to the SAME target dir and install on top
+/// of each other, corrupting the half-written package — the loser exits with an
+/// abnormal code or is killed mid-install. This is the confirmed root cause of
+/// the HQ-SYNC-6/7/8/9/A provision-cli cluster (4× `exit code 190`, 1× signal,
+/// empty stderr, `provision_kind=other`, `cli_invocation=npx:…`): a user clicked
+/// Connect on five companies in quick succession and `connect_workspace_to_cloud`
+/// fanned out five provisions with NO cross-slug serialization.
+///
+/// The local fast-path installs nothing, so it never needs this lock — only the
+/// npx path serializes. Once one npx run has populated the cache, the next
+/// acquires the lock, finds the package already installed, and execs it fast;
+/// the lock just guarantees the first install isn't raced.
+static NPX_SERIAL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Lazily-initialized accessor for the process-wide npx serialization lock.
+fn npx_serial_lock() -> &'static Mutex<()> {
+    NPX_SERIAL_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 /// How to spawn `hq` for the current AppBar process.
 #[derive(Debug, Clone)]
@@ -97,6 +123,22 @@ impl HqInvocation {
         match self {
             HqInvocation::Local(path) => format!("local:{path}"),
             HqInvocation::Npx => format!("npx:@indigoai-us/hq-cli@{HQ_CLI_NPM_RANGE}"),
+        }
+    }
+
+    /// Acquire the process-wide npx serialization guard when this invocation
+    /// shells out through `npx`. Returns `None` for the `Local` fast-path,
+    /// which installs nothing and so cannot race the npm cache.
+    ///
+    /// Hold the returned guard for the LIFETIME of the spawned subprocess
+    /// (`spawn` → `wait`) so two npx installs of the same package can never
+    /// overlap. Concurrent provisions on the npx path therefore run one at a
+    /// time — slower, but correct; the first run warms the `_npx` cache and the
+    /// rest exec the cached binary. See [`NPX_SERIAL_LOCK`] for the root cause.
+    pub async fn npx_serial_guard(&self) -> Option<MutexGuard<'static, ()>> {
+        match self {
+            HqInvocation::Npx => Some(npx_serial_lock().lock().await),
+            HqInvocation::Local(_) => None,
         }
     }
 }
@@ -274,5 +316,66 @@ mod tests {
         let npx = HqInvocation::Npx;
         assert!(npx.label().contains("npx"));
         assert!(npx.label().contains("@indigoai-us/hq-cli"));
+    }
+
+    /// The npx path must take the serialization guard; the local fast-path must
+    /// NOT (it installs nothing and so cannot race the npm cache).
+    #[tokio::test]
+    async fn npx_serializes_local_does_not() {
+        let npx_guard = HqInvocation::Npx.npx_serial_guard().await;
+        assert!(
+            npx_guard.is_some(),
+            "npx invocation must acquire the serialization guard"
+        );
+        // Release before the local probe so we don't self-deadlock on the
+        // process-wide lock.
+        drop(npx_guard);
+
+        let local_guard = HqInvocation::Local("/usr/local/bin/hq".to_string())
+            .npx_serial_guard()
+            .await;
+        assert!(
+            local_guard.is_none(),
+            "local fast-path must not serialize — there is no install to race"
+        );
+    }
+
+    /// The core regression: concurrent npx invocations must run ONE AT A TIME.
+    /// Without the guard, five `connect_workspace_to_cloud` calls overlapped
+    /// their `npx --package=…` installs and corrupted the shared npm cache
+    /// (HQ-SYNC-6/7/8/9/A). Here we prove the guard admits at most one holder
+    /// at a time by tracking peak concurrency across many racing tasks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_npx_guards_never_overlap() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let active = Arc::clone(&active);
+            let peak = Arc::clone(&peak);
+            handles.push(tokio::spawn(async move {
+                let _guard = HqInvocation::Npx.npx_serial_guard().await;
+                let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                // Hold the guard across an await point — exactly how the real
+                // call holds it across the spawned subprocess's lifetime.
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+        for h in handles {
+            h.await.expect("guard task panicked");
+        }
+
+        assert_eq!(
+            peak.load(Ordering::SeqCst),
+            1,
+            "npx invocations must be serialized — peak concurrency must be 1"
+        );
+        assert_eq!(active.load(Ordering::SeqCst), 0, "all guards released");
     }
 }
