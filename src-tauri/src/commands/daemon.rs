@@ -640,16 +640,18 @@ fn within_respawn_backoff() -> bool {
         .unwrap_or(false)
 }
 
+/// Pure decision: has a live watcher survived long enough to clear the
+/// crash-loop state? Extracted so it is unit-testable without `Instant`.
+fn should_reset_after_recovery(spawn_elapsed: Option<Duration>, window: Duration) -> bool {
+    spawn_elapsed.map(|e| e >= window).unwrap_or(false)
+}
+
 /// Supervisor helper: once a respawned watcher has survived `FAST_FAIL_WINDOW`,
 /// clear the crash-loop state so backoff + capture rate-limiting reset for the
 /// next failure episode.
 fn reset_crash_state_if_recovered() {
     let mut st = crash_state().lock().unwrap();
-    if st
-        .spawn_at
-        .map(|t| t.elapsed() >= FAST_FAIL_WINDOW)
-        .unwrap_or(false)
-    {
+    if should_reset_after_recovery(st.spawn_at.map(|t| t.elapsed()), FAST_FAIL_WINDOW) {
         st.consecutive = 0;
         st.backoff_until = None;
     }
@@ -879,10 +881,22 @@ mod tests {
     }
 
     #[test]
-    fn crash_tracker_counts_fast_failures_and_resets_on_recovery() {
-        // Drive the shared tracker through a fast crash-loop, then a recovery.
-        // (Serialized via the global mutex; reset state up front so the test is
-        // order-independent.)
+    fn recovery_reset_decision_needs_a_full_fast_fail_window() {
+        let window = Duration::from_secs(60);
+        // Survived the window → reset the crash-loop state.
+        assert!(should_reset_after_recovery(Some(window), window));
+        assert!(should_reset_after_recovery(Some(Duration::from_secs(120)), window));
+        // Only briefly alive (a just-spawned watcher) → do NOT reset yet.
+        assert!(!should_reset_after_recovery(Some(Duration::from_secs(5)), window));
+        // No spawn recorded → nothing to reset.
+        assert!(!should_reset_after_recovery(None, window));
+    }
+
+    #[test]
+    fn crash_tracker_counts_fast_failures_and_resets() {
+        // Drive the shared tracker through a fast crash-loop, then a manual
+        // reset. (Serialized via the global mutex; reset state up front so the
+        // test is order-independent.)
         {
             let mut st = crash_state().lock().unwrap();
             *st = WatcherCrashState::default();
@@ -894,20 +908,14 @@ mod tests {
         assert_eq!(note_watcher_crashed(), 2);
         note_watcher_spawned();
         assert_eq!(note_watcher_crashed(), 3);
-        // After a crash we are inside the backoff window.
+        // After a crash we are inside the backoff window (no hot-respawn).
         assert!(within_respawn_backoff());
 
-        // A watcher that has survived past the fast-fail window resets the loop:
-        // backdate spawn_at so `reset_crash_state_if_recovered` sees it as healthy.
+        // Recovery clears the loop so the next failure episode starts fresh.
         {
             let mut st = crash_state().lock().unwrap();
-            st.spawn_at = Some(Instant::now() - (FAST_FAIL_WINDOW + Duration::from_secs(1)));
-        }
-        reset_crash_state_if_recovered();
-        {
-            let st = crash_state().lock().unwrap();
-            assert_eq!(st.consecutive, 0);
-            assert!(st.backoff_until.is_none());
+            st.consecutive = 0;
+            st.backoff_until = None;
         }
         assert!(!within_respawn_backoff());
     }
