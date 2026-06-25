@@ -6,9 +6,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
@@ -401,6 +401,12 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
 
     log("daemon", "spawn: hq-sync-runner --watch");
 
+    // Stamp the spawn time for crash-loop dampening (HQ-SYNC-4): the Exit
+    // handler uses it to tell a fast crash-loop failure from a watcher that ran
+    // healthily then died, and the supervisor uses it to reset backoff once a
+    // respawn survives.
+    note_watcher_spawned();
+
     // Per-pass totals. Watch mode emits a full Complete/AllComplete cycle on
     // every chokidar tick + every 15-second poll, so we reset on each
     // AllComplete instead of accumulating forever.
@@ -451,14 +457,31 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                     // SIGTERM is never treated as a crash (HQ-SYNC-5).
                     let cancelled = crate::commands::process::is_cancelled(DAEMON_HANDLE);
                     if is_unexpected_watcher_exit(success, signal, cancelled) {
-                        crate::commands::sync::capture_sync_error(
-                            None,
-                            "(auto-sync)",
-                            &format!(
-                                "auto-sync watcher exited unexpectedly (code={:?} signal={:?})",
-                                code, signal
-                            ),
-                        );
+                        // Crash-loop dampening (HQ-SYNC-4): advance the loop
+                        // counter (driving the supervisor's respawn backoff) and
+                        // rate-limit the capture so an ongoing failure ships
+                        // ~log2(N) actionable events, not one per respawn (the
+                        // 36,977-event fleet flood). The first crash still alerts.
+                        let consecutive = note_watcher_crashed();
+                        if should_capture_crash(consecutive) {
+                            crate::commands::sync::capture_sync_error(
+                                None,
+                                "(auto-sync)",
+                                &format!(
+                                    "auto-sync watcher exited unexpectedly (code={:?} signal={:?}); \
+                                     consecutive failure #{consecutive} (further repeats rate-limited)",
+                                    code, signal
+                                ),
+                            );
+                        } else {
+                            log(
+                                "daemon",
+                                &format!(
+                                    "watcher crash #{consecutive} — capture rate-limited (code={:?} signal={:?})",
+                                    code, signal
+                                ),
+                            );
+                        }
                     }
                 }
             }
@@ -518,6 +541,120 @@ fn is_unexpected_watcher_exit(success: bool, signal: Option<i32>, cancelled: boo
     signal != Some(SIGTERM)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Crash-loop dampening (HQ-SYNC-4)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A watcher that keeps failing (the runner can't upload — `presign put denied` —
+// or its exec target isn't runnable: exit 1/2/126) was respawned by the
+// supervisor every `SUPERVISOR_INTERVAL` (30s) AND Sentry-captured on EVERY
+// exit. Fleet-wide that turned one per-machine failure into a 36,977-event flood
+// plus an endless hot-respawn. We dampen BOTH legs without hiding the signal:
+// the first crash still alerts, respawns back off exponentially, and the capture
+// is rate-limited to ~log2(N) events.
+
+/// A non-zero exit this soon after spawn is a crash-loop failure — distinct from
+/// a watcher that ran healthily for a while and then died (which resets the loop
+/// counter and is treated as a fresh, captured failure).
+const FAST_FAIL_WINDOW: Duration = Duration::from_secs(60);
+
+/// Ceiling for the respawn backoff. A persistently-failing watcher backs off to
+/// at most this between respawns, instead of hammering the 30s supervisor cadence.
+const RESPAWN_MAX_BACKOFF: Duration = Duration::from_secs(30 * 60);
+
+/// Exponential respawn backoff after `consecutive` consecutive fast failures.
+/// `0` → the base supervisor cadence; then ×2 per failure, capped at `cap`.
+/// Pure + unit-testable.
+fn respawn_backoff(consecutive: u32, base: Duration, cap: Duration) -> Duration {
+    if consecutive == 0 {
+        return base;
+    }
+    // Cap the shift so the multiply can't overflow before the `.min(cap)`.
+    let mult = 1u64.checked_shl(consecutive.min(32)).unwrap_or(u64::MAX);
+    let secs = base.as_secs().saturating_mul(mult).min(cap.as_secs());
+    Duration::from_secs(secs)
+}
+
+/// Whether to Sentry-capture this crash. Capture the 1st and then only at
+/// exponential milestones (1, 2, 4, 8, 16, …) so a crash-loop ships ~log2(N)
+/// actionable events instead of one-per-respawn. Pure + unit-testable.
+fn should_capture_crash(consecutive: u32) -> bool {
+    consecutive <= 1 || consecutive.is_power_of_two()
+}
+
+/// A non-zero exit `run` after spawn — is it a fast (crash-loop) failure?
+fn is_fast_failure(run: Duration, window: Duration) -> bool {
+    run < window
+}
+
+/// Shared crash-loop state across the spawn (`start_daemon`), the watcher Exit
+/// handler, and the supervisor. Small + mutex-guarded; updated on every spawn,
+/// exit, and supervisor tick.
+#[derive(Default)]
+struct WatcherCrashState {
+    /// Consecutive fast failures (crash-loop length). Reset to 0 once a watcher
+    /// survives `FAST_FAIL_WINDOW`.
+    consecutive: u32,
+    /// When the current watcher was spawned — drives the fast-failure decision
+    /// and the supervisor's "survived long enough to reset" check.
+    spawn_at: Option<Instant>,
+    /// The supervisor must not respawn before this instant (backoff window).
+    backoff_until: Option<Instant>,
+}
+
+static CRASH_STATE: OnceLock<Mutex<WatcherCrashState>> = OnceLock::new();
+
+fn crash_state() -> &'static Mutex<WatcherCrashState> {
+    CRASH_STATE.get_or_init(|| Mutex::new(WatcherCrashState::default()))
+}
+
+/// Record that a watcher was just spawned (called from `start_daemon`).
+fn note_watcher_spawned() {
+    let mut st = crash_state().lock().unwrap();
+    st.spawn_at = Some(Instant::now());
+}
+
+/// Update the crash-loop state on an unexpected watcher exit and return the
+/// consecutive-failure count so the caller can decide whether to capture.
+fn note_watcher_crashed() -> u32 {
+    let mut st = crash_state().lock().unwrap();
+    let ran = st.spawn_at.map(|t| t.elapsed()).unwrap_or(Duration::ZERO);
+    if is_fast_failure(ran, FAST_FAIL_WINDOW) {
+        st.consecutive = st.consecutive.saturating_add(1);
+    } else {
+        // Ran healthily, then died — not a tight loop. Treat as a fresh first
+        // failure: reset the counter to 1 so it is captured and backs off lightly.
+        st.consecutive = 1;
+    }
+    let consecutive = st.consecutive;
+    st.backoff_until =
+        Some(Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF));
+    consecutive
+}
+
+/// Supervisor helper: is the watcher still inside its respawn-backoff window?
+fn within_respawn_backoff() -> bool {
+    let st = crash_state().lock().unwrap();
+    st.backoff_until
+        .map(|until| Instant::now() < until)
+        .unwrap_or(false)
+}
+
+/// Supervisor helper: once a respawned watcher has survived `FAST_FAIL_WINDOW`,
+/// clear the crash-loop state so backoff + capture rate-limiting reset for the
+/// next failure episode.
+fn reset_crash_state_if_recovered() {
+    let mut st = crash_state().lock().unwrap();
+    if st
+        .spawn_at
+        .map(|t| t.elapsed() >= FAST_FAIL_WINDOW)
+        .unwrap_or(false)
+    {
+        st.consecutive = 0;
+        st.backoff_until = None;
+    }
+}
+
 /// Background supervisor: every `SUPERVISOR_INTERVAL`, ensure the watch daemon
 /// is running whenever auto-sync is enabled — respawning it if it died (crash,
 /// OOM, external kill, or a failed initial spawn). Without this a dead daemon
@@ -535,18 +672,33 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
                 .and_then(|p| read_pid_file(&p))
                 .map(is_pid_alive)
                 .unwrap_or(false);
-            if should_respawn_daemon(
+            if daemon_alive {
+                // The watcher is up; once it has survived the fast-fail window,
+                // clear the crash-loop state so backoff + capture rate-limiting
+                // reset for the next failure episode (HQ-SYNC-4).
+                reset_crash_state_if_recovered();
+            } else if should_respawn_daemon(
                 is_realtime_sync_enabled(),
                 is_autostart_enabled(),
                 daemon_alive,
             ) {
-                log(
-                    "daemon.supervisor",
-                    "watch daemon down but auto-sync is on — respawning",
-                );
-                match start_daemon(handle.clone()) {
-                    Ok(_) => log("daemon.supervisor", "respawned watch daemon"),
-                    Err(e) => log("daemon.supervisor", &format!("respawn skipped: {e}")),
+                // Crash-loop dampening: hold off respawning a watcher that just
+                // crashed until its exponential backoff elapses, instead of
+                // hot-respawning every 30s (HQ-SYNC-4).
+                if within_respawn_backoff() {
+                    log(
+                        "daemon.supervisor",
+                        "watch daemon down but within crash-loop backoff — holding off respawn",
+                    );
+                } else {
+                    log(
+                        "daemon.supervisor",
+                        "watch daemon down but auto-sync is on — respawning",
+                    );
+                    match start_daemon(handle.clone()) {
+                        Ok(_) => log("daemon.supervisor", "respawned watch daemon"),
+                        Err(e) => log("daemon.supervisor", &format!("respawn skipped: {e}")),
+                    }
                 }
             }
             thread::sleep(SUPERVISOR_INTERVAL);
@@ -685,6 +837,79 @@ mod tests {
         assert!(is_unexpected_watcher_exit(false, Some(6), false));
         // SIGKILL(9) — OOM / `kill -9` — stays loud when not our own cancel.
         assert!(is_unexpected_watcher_exit(false, Some(9), false));
+    }
+
+    // ── Crash-loop dampening (HQ-SYNC-4) ─────────────────────────────────
+
+    #[test]
+    fn respawn_backoff_is_exponential_and_capped() {
+        let base = Duration::from_secs(30);
+        let cap = Duration::from_secs(1800); // 30 min
+        // No failures yet → the base supervisor cadence.
+        assert_eq!(respawn_backoff(0, base, cap), Duration::from_secs(30));
+        // Exponential ×2 per consecutive fast failure.
+        assert_eq!(respawn_backoff(1, base, cap), Duration::from_secs(60));
+        assert_eq!(respawn_backoff(2, base, cap), Duration::from_secs(120));
+        assert_eq!(respawn_backoff(3, base, cap), Duration::from_secs(240));
+        // Capped — and a large count must NOT overflow.
+        assert_eq!(respawn_backoff(6, base, cap), cap);
+        assert_eq!(respawn_backoff(1000, base, cap), cap);
+    }
+
+    #[test]
+    fn capture_is_rate_limited_to_log2_milestones() {
+        // The 36,977-event flood collapses to captures only at 1,2,4,8,16,…
+        let captured: Vec<u32> = (1..=64).filter(|&n| should_capture_crash(n)).collect();
+        assert_eq!(captured, vec![1, 2, 4, 8, 16, 32, 64]);
+        // The in-between repeats are suppressed.
+        assert!(!should_capture_crash(3));
+        assert!(!should_capture_crash(7));
+        assert!(!should_capture_crash(1000));
+        // The very first crash always alerts (dampening, not masking).
+        assert!(should_capture_crash(1));
+    }
+
+    #[test]
+    fn fast_failure_window_distinguishes_loop_from_ran_then_died() {
+        let window = Duration::from_secs(60);
+        assert!(is_fast_failure(Duration::from_secs(2), window)); // crash-on-spawn
+        assert!(is_fast_failure(Duration::from_secs(59), window));
+        assert!(!is_fast_failure(Duration::from_secs(60), window)); // ran a full minute
+        assert!(!is_fast_failure(Duration::from_secs(3600), window)); // ran an hour
+    }
+
+    #[test]
+    fn crash_tracker_counts_fast_failures_and_resets_on_recovery() {
+        // Drive the shared tracker through a fast crash-loop, then a recovery.
+        // (Serialized via the global mutex; reset state up front so the test is
+        // order-independent.)
+        {
+            let mut st = crash_state().lock().unwrap();
+            *st = WatcherCrashState::default();
+        }
+        // Spawn → immediate crash, three times: counter climbs 1,2,3.
+        note_watcher_spawned();
+        assert_eq!(note_watcher_crashed(), 1);
+        note_watcher_spawned();
+        assert_eq!(note_watcher_crashed(), 2);
+        note_watcher_spawned();
+        assert_eq!(note_watcher_crashed(), 3);
+        // After a crash we are inside the backoff window.
+        assert!(within_respawn_backoff());
+
+        // A watcher that has survived past the fast-fail window resets the loop:
+        // backdate spawn_at so `reset_crash_state_if_recovered` sees it as healthy.
+        {
+            let mut st = crash_state().lock().unwrap();
+            st.spawn_at = Some(Instant::now() - (FAST_FAIL_WINDOW + Duration::from_secs(1)));
+        }
+        reset_crash_state_if_recovered();
+        {
+            let st = crash_state().lock().unwrap();
+            assert_eq!(st.consecutive, 0);
+            assert!(st.backoff_until.is_none());
+        }
+        assert!(!within_respawn_backoff());
     }
 
     // ── DaemonStatus serialization ───────────────────────────────────────
