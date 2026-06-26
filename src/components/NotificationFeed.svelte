@@ -331,13 +331,13 @@
 
   .notif-status {
     text-align: center;
-    color: #8a8a90;
+    color: var(--popover-text-muted);
     font-size: var(--text-sm);
     padding: 22px 16px;
     margin: 0;
   }
   .notif-error {
-    color: #f0a3a3;
+    color: var(--popover-danger);
   }
 
   .notif-day {
@@ -347,7 +347,7 @@
     position: sticky;
     top: 0;
     background: var(--popover-bg, #0b0b0d);
-    color: #8a8a90;
+    color: var(--popover-text-muted);
     font-size: var(--text-xs);
     font-weight: 600;
     text-transform: uppercase;
@@ -362,13 +362,13 @@
     align-items: flex-start;
     gap: 11px;
     padding: 9px 14px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--popover-divider);
   }
   .notif-row.clickable {
     cursor: pointer;
   }
   .notif-row.clickable:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--popover-action-hover);
   }
 
   /* ── Per-type identity ───────────────────────────────────────────────────────
@@ -385,8 +385,8 @@
     --accent-soft: rgba(70, 214, 166, 0.16);
   }
   .notif-new-file {
-    --accent: #8a8a92;
-    --accent-soft: rgba(255, 255, 255, 0.06);
+    --accent: var(--popover-text-muted);
+    --accent-soft: var(--popover-surface);
   }
 
   /* Left edge-bar marks the human, actionable rows (dm + share). */
@@ -416,7 +416,7 @@
   }
   /* Ambient rows keep a neutral glyph — colour is reserved for human events. */
   .notif-new-file .notif-glyph {
-    color: #c2c2c8;
+    color: var(--popover-text);
   }
 
   .notif-main {
@@ -431,7 +431,7 @@
   .notif-actor {
     font-size: var(--text-base);
     font-weight: 600;
-    color: #f2f2f4;
+    color: var(--popover-text-heading);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -449,12 +449,12 @@
   }
   /* Ambient new-file label stays quiet — no colour, barely-there chip. */
   .notif-new-file .notif-kind {
-    color: #8a8a90;
-    background: rgba(255, 255, 255, 0.05);
+    color: var(--popover-text-muted);
+    background: var(--popover-surface);
   }
   .notif-summary {
     font-size: var(--text-sm);
-    color: #b9b9c0;
+    color: var(--popover-text);
     margin-top: 2px;
     line-height: 1.35;
     overflow: hidden;
@@ -466,14 +466,14 @@
   .notif-time {
     flex: 0 0 auto;
     font-size: var(--text-xs);
-    color: #76767c;
+    color: var(--popover-text-muted);
     margin-top: 1px;
   }
 
   .notif-chevron {
     flex: 0 0 auto;
     font-size: var(--text-xs);
-    color: #76767c;
+    color: var(--popover-text-muted);
     margin-top: 2px;
     width: 10px;
     text-align: center;
@@ -482,7 +482,7 @@
   /* Inline file list revealed when a new-file cluster is expanded. */
   .notif-cluster-files {
     padding: 2px 14px 6px 44px; /* indent under the glyph */
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--popover-divider);
   }
   .notif-file-row {
     display: flex;
@@ -494,7 +494,7 @@
     flex: 1;
     min-width: 0;
     font-size: var(--text-xs);
-    color: #b9b9c0;
+    color: var(--popover-text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -502,7 +502,7 @@
   .notif-file-time {
     flex: 0 0 auto;
     font-size: var(--text-xs);
-    color: #76767c;
+    color: var(--popover-text-muted);
     font-variant-numeric: tabular-nums;
   }
 </style>
