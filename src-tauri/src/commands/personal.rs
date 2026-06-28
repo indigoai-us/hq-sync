@@ -500,6 +500,36 @@ where
     P: Fn(usize, usize, Option<String>),
     S: Fn(String, String),
 {
+    // Production read path. The vanished-file (ENOENT) tolerance is exercised in
+    // tests via `run_personal_first_push_with_reader`, which injects a reader
+    // that can make a specific path report NotFound — a race that cannot be
+    // triggered deterministically against the real filesystem.
+    run_personal_first_push_with_reader(
+        hq_root,
+        uploader,
+        on_scan,
+        on_progress,
+        on_skip,
+        |p: &Path| std::fs::read(p),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_personal_first_push_with_reader<C, P, S, R>(
+    hq_root: &Path,
+    uploader: UploaderFn,
+    on_scan: C,
+    on_progress: P,
+    on_skip: S,
+    read_file: R,
+) -> Result<(usize, usize), String>
+where
+    C: Fn(usize, usize, Option<String>),
+    P: Fn(usize, usize, Option<String>),
+    S: Fn(String, String),
+    R: Fn(&Path) -> std::io::Result<Vec<u8>>,
+{
     let filter = IgnoreFilter::for_hq_root(hq_root)?;
 
     // Session-continuity carve-out: the active thread file the pointer
@@ -561,8 +591,18 @@ where
             continue;
         }
 
-        let contents = match std::fs::read(&abs) {
+        let contents = match read_file(&abs) {
             Ok(c) => c,
+            // A file the walk enumerated can vanish before we read it (a
+            // transient conflict / temp file deleted between walk and read). A
+            // single vanished path must NOT abort the entire first push — skip
+            // it and keep scanning. Other read errors still fail the push
+            // (HQ-SYNC-WEB-1A).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                on_skip(rel_key.clone(), "file vanished before read".into());
+                skipped += 1;
+                continue;
+            }
             Err(e) => {
                 upload_err = Some(format!("{}: {e}", abs.display()));
                 break 'scan;
@@ -591,8 +631,16 @@ where
         'upload: for (i, (abs, rel_key)) in plan.into_iter().enumerate() {
             on_progress(i, plan_total, Some(rel_key.clone()));
 
-            let contents = match std::fs::read(&abs) {
-                Ok(c) => Bytes::from(c),
+            let contents = match read_file(&abs).map(Bytes::from) {
+                Ok(c) => c,
+                // Same vanished-file tolerance as the scan phase: a planned file
+                // can be deleted between scan and upload. Skip the one missing
+                // path instead of aborting the whole push (HQ-SYNC-WEB-1A).
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    on_skip(rel_key.clone(), "file vanished before read".into());
+                    skipped += 1;
+                    continue;
+                }
                 Err(e) => {
                     upload_err = Some(format!("{}: {e}", abs.display()));
                     break 'upload;
@@ -1683,6 +1731,167 @@ mod tests {
                 scans.lock().unwrap().iter().all(|(_, total)| *total == 3),
                 "scan events carry the walk total; got {:?}",
                 scans.lock().unwrap(),
+            );
+        }
+    }
+
+    // HQ-SYNC-WEB-1A: a file enumerated by the walk can vanish before it is
+    // read (a transient conflict/temp file deleted between walk and read). A
+    // single vanished path (ENOENT) must NOT abort the whole first push — it is
+    // skipped and the rest of the push proceeds. Non-ENOENT read errors still
+    // abort. The race can't be triggered against the real FS, so these tests
+    // inject a reader via `run_personal_first_push_with_reader`.
+    #[tokio::test]
+    async fn test_vanished_file_during_scan_is_skipped_not_fatal() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+
+        write_file(&root.join("knowledge/a.md"), b"alpha");
+        write_file(&root.join("knowledge/b.md"), b"bravo");
+        write_file(&root.join("knowledge/c.md"), b"charlie");
+
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+            let calls = Arc::new(Mutex::new(vec![]));
+            let skips: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(vec![]));
+            let sk = skips.clone();
+
+            // Reader reports b.md as vanished (NotFound) on every read; others
+            // read normally.
+            let reader = |p: &Path| -> std::io::Result<Vec<u8>> {
+                if p.ends_with("knowledge/b.md") {
+                    return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+                }
+                std::fs::read(p)
+            };
+
+            let (uploaded, skipped) = run_personal_first_push_with_reader(
+                root,
+                make_uploader(calls.clone()),
+                |_, _, _| {},
+                |_, _, _| {},
+                move |key, reason| sk.lock().unwrap().push((key, reason)),
+                reader,
+            )
+            .await
+            .expect("a vanished file must not fail the whole push");
+
+            std::env::remove_var("HQ_STATE_DIR");
+
+            assert_eq!(uploaded, 2, "the two surviving files still upload");
+            assert_eq!(skipped, 1, "the vanished file is counted as skipped");
+            let uploaded_keys = calls.lock().unwrap().clone();
+            assert!(
+                !uploaded_keys.iter().any(|k| k == "knowledge/b.md"),
+                "the vanished file must never upload; got {uploaded_keys:?}",
+            );
+            let recorded = skips.lock().unwrap().clone();
+            assert!(
+                recorded
+                    .iter()
+                    .any(|(k, r)| k == "knowledge/b.md" && r == "file vanished before read"),
+                "the vanished file must be reported via on_skip; got {recorded:?}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_vanished_file_during_upload_is_skipped_not_fatal() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+
+        write_file(&root.join("knowledge/a.md"), b"alpha");
+        write_file(&root.join("knowledge/b.md"), b"bravo");
+        write_file(&root.join("knowledge/c.md"), b"charlie");
+
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+            let calls = Arc::new(Mutex::new(vec![]));
+            let skips: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(vec![]));
+            let sk = skips.clone();
+
+            // b.md reads fine on the first read (scan, so it gets planned) but
+            // vanishes on the second read (upload phase).
+            let b_reads = Arc::new(AtomicUsize::new(0));
+            let br = b_reads.clone();
+            let reader = move |p: &Path| -> std::io::Result<Vec<u8>> {
+                if p.ends_with("knowledge/b.md") {
+                    let n = br.fetch_add(1, Ordering::SeqCst);
+                    if n >= 1 {
+                        return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+                    }
+                }
+                std::fs::read(p)
+            };
+
+            let (uploaded, skipped) = run_personal_first_push_with_reader(
+                root,
+                make_uploader(calls.clone()),
+                |_, _, _| {},
+                |_, _, _| {},
+                move |key, reason| sk.lock().unwrap().push((key, reason)),
+                reader,
+            )
+            .await
+            .expect("a file vanishing between scan and upload must not fail the push");
+
+            std::env::remove_var("HQ_STATE_DIR");
+
+            assert_eq!(uploaded, 2, "the two surviving files still upload");
+            assert_eq!(skipped, 1, "the vanished file is counted as skipped");
+            let recorded = skips.lock().unwrap().clone();
+            assert!(
+                recorded
+                    .iter()
+                    .any(|(k, r)| k == "knowledge/b.md" && r == "file vanished before read"),
+                "the upload-phase vanish must be reported via on_skip; got {recorded:?}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_non_enoent_read_error_still_aborts_push() {
+        let tmp_state = TempDir::new().unwrap();
+        let tmp_hq = TempDir::new().unwrap();
+        let root = tmp_hq.path();
+
+        write_file(&root.join("knowledge/a.md"), b"alpha");
+        write_file(&root.join("knowledge/b.md"), b"bravo");
+
+        {
+            let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("HQ_STATE_DIR", tmp_state.path());
+
+            // A non-ENOENT read error (e.g. permission denied) is NOT a vanished
+            // file — the push must still fail closed rather than silently drop it.
+            let reader = |p: &Path| -> std::io::Result<Vec<u8>> {
+                if p.ends_with("knowledge/b.md") {
+                    return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+                }
+                std::fs::read(p)
+            };
+
+            let result = run_personal_first_push_with_reader(
+                root,
+                make_uploader(Arc::new(Mutex::new(vec![]))),
+                |_, _, _| {},
+                |_, _, _| {},
+                |_, _| {},
+                reader,
+            )
+            .await;
+
+            std::env::remove_var("HQ_STATE_DIR");
+
+            assert!(
+                result.is_err(),
+                "a non-ENOENT read error must still abort the push",
             );
         }
     }
