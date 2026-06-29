@@ -121,10 +121,19 @@
     if (t) flashToast(t.kind, t.text);
   }
   // Offered only while the refresh is genuinely stuck — files an hq-bug with the
-  // raw error attached so a blocked agenda is one click from a report.
+  // raw error attached so a blocked agenda is one click from a report. Guarded
+  // against re-entry so a double-click can't file two reports or race the temp
+  // file the backend writes.
+  let reporting = $state(false);
   async function onReportProblem(): Promise<void> {
-    const t = await meetingsStore.reportRefreshProblem();
-    flashToast(t.kind, t.text);
+    if (reporting) return;
+    reporting = true;
+    try {
+      const t = await meetingsStore.reportRefreshProblem();
+      flashToast(t.kind, t.text);
+    } finally {
+      reporting = false;
+    }
   }
 
   function openCalendar(): void {
@@ -182,7 +191,7 @@
         <div class="page-error" role="status">
           <span>{fetchError}</span>
           {#if refreshBlocked}
-            <button type="button" class="report-link" onclick={onReportProblem}>Report a problem</button>
+            <button type="button" class="report-link" onclick={onReportProblem} disabled={reporting}>{reporting ? 'Reporting…' : 'Report a problem'}</button>
           {/if}
         </div>
       {/if}
@@ -363,7 +372,8 @@
     padding: 0; border: 0; background: none; font: inherit; color: var(--fg);
     text-decoration: underline; text-underline-offset: 2px; cursor: default;
   }
-  .report-link:hover { color: var(--accent, var(--fg)); }
+  .report-link:hover:not(:disabled) { color: var(--accent, var(--fg)); }
+  .report-link:disabled { opacity: 0.5; }
   .actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
 
   /* Transient action feedback. Amber (not red) for recoverable bot-action

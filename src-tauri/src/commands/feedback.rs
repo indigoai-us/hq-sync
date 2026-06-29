@@ -13,12 +13,19 @@
 //! relay a plain Ok/Err the window can toast.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::process::Command;
 
 use crate::commands::config::{read_hq_config_lenient, MenubarPrefs};
 use crate::util::logfile::log;
 use crate::util::paths;
+
+// Per-process sequence so two overlapping reports never collide on one temp
+// path. The pid alone is constant for the app's lifetime, so a double-click
+// (or two windows) would otherwise write + delete the same file out from under
+// each other's `hq feedback` read. pid keeps it unique across processes.
+static FEEDBACK_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Resolve the HQ folder the same way the rest of the CLI-spawning commands do
 /// (menubar override → legacy config path → discovery). Copied from
@@ -49,7 +56,8 @@ pub async fn submit_bug_report(title: String, body: String) -> Result<(), String
     let folder = resolve_hq_folder();
 
     let mut body_path = std::env::temp_dir();
-    body_path.push(format!("hq-sync-feedback-{}.md", std::process::id()));
+    let seq = FEEDBACK_SEQ.fetch_add(1, Ordering::Relaxed);
+    body_path.push(format!("hq-sync-feedback-{}-{}.md", std::process::id(), seq));
     std::fs::write(&body_path, &body).map_err(|e| format!("write feedback body: {e}"))?;
 
     log("feedback", &format!("submitting bug report: {title}"));
