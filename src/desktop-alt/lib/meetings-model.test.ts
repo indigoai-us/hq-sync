@@ -3,8 +3,10 @@ import { get } from 'svelte/store';
 import {
   activeRecordingsFromScheduledBots,
   buildConnectedCalendarRows,
+  buildRefreshProblemReport,
   dayLabel,
   groupByDay,
+  meetingsRefreshNotice,
   pickLiveMeeting,
   rowButtonKind,
   totalSignalCounts,
@@ -321,5 +323,58 @@ describe('meetings-model', () => {
         'invite',
       );
     });
+  });
+});
+
+describe('meetingsRefreshNotice', () => {
+  const STALE = 2 * 60_000;
+  const now = 1_000_000;
+
+  it('stays silent on a single failed poll while recent meetings are fresh', () => {
+    // Last success 30s ago (one poll cycle) — agenda is still current, so a
+    // transient miss must NOT surface a banner. This is the misleading-error bug.
+    expect(meetingsRefreshNotice('Error: 500', now - 30_000, now, STALE)).toBe('');
+  });
+
+  it('surfaces a calm, non-red notice once the agenda is genuinely stale', () => {
+    const msg = meetingsRefreshNotice('Error: 500', now - (STALE + 1), now, STALE);
+    expect(msg).toBe('Showing your last synced meetings — couldn’t refresh just now.');
+    // Never the old alarming "Could not refresh meetings" copy.
+    expect(msg).not.toMatch(/could not refresh/i);
+  });
+
+  it('always surfaces auth failures immediately, regardless of cache freshness', () => {
+    // Fresh cache (just succeeded) but a 401 — still actionable, show it now.
+    expect(meetingsRefreshNotice('Error: 401', now, now, STALE)).toBe(
+      'Sign in again to load meetings.',
+    );
+    expect(meetingsRefreshNotice('auth token expired', now, now, STALE)).toBe(
+      'Sign in again to load meetings.',
+    );
+  });
+});
+
+describe('buildRefreshProblemReport', () => {
+  it('attaches the raw error + context so a filed report is actionable', () => {
+    const report = buildRefreshProblemReport({
+      notice: 'Showing your last synced meetings — couldn’t refresh just now.',
+      rawError: 'Error: 503 Service Unavailable',
+      meetingsShown: 14,
+      connectedAccounts: 2,
+    });
+    expect(report.title).toBe('HQ Sync: Meetings won’t refresh');
+    expect(report.body).toContain('Error: 503 Service Unavailable');
+    expect(report.body).toContain('Meetings currently shown: 14');
+    expect(report.body).toContain('Connected accounts: 2');
+  });
+
+  it('falls back gracefully when no raw error was captured', () => {
+    const report = buildRefreshProblemReport({
+      notice: '',
+      rawError: '',
+      meetingsShown: 0,
+      connectedAccounts: 0,
+    });
+    expect(report.body).toContain('Last refresh error: (none captured)');
   });
 });

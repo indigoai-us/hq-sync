@@ -310,6 +310,7 @@ fn main() {
             commands::hq_core_state::check_core_state,
             commands::drift_detail::open_drift_detail,
             commands::drift_detail::drift_window_ready,
+            commands::feedback::submit_bug_report,
             commands::packages::list_packages,
             commands::packages::check_package_updates,
             commands::packages::check_pack_update,

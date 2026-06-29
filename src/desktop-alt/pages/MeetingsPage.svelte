@@ -48,6 +48,7 @@
   const memberships = $derived(meetingsStore.memberships);
   const membershipsError = $derived(meetingsStore.membershipsError);
   const fetchError = $derived(meetingsStore.fetchError);
+  const refreshBlocked = $derived(meetingsStore.refreshBlocked);
   const loading = $derived(meetingsStore.loading);
   // Per-row in-flight set for bot actions, owned by the store. Passed to the
   // agenda so each row can disable its buttons + spin while its invoke runs.
@@ -119,6 +120,12 @@
     const t = await meetingsStore.joinBotNow(evt);
     if (t) flashToast(t.kind, t.text);
   }
+  // Offered only while the refresh is genuinely stuck — files an hq-bug with the
+  // raw error attached so a blocked agenda is one click from a report.
+  async function onReportProblem(): Promise<void> {
+    const t = await meetingsStore.reportRefreshProblem();
+    flashToast(t.kind, t.text);
+  }
 
   function openCalendar(): void {
     void openExternal('https://calendar.google.com');
@@ -172,7 +179,12 @@
         {upcomingEvents.length} upcoming across {dayGroups.length} day{dayGroups.length === 1 ? '' : 's'} · all companies
       </div>
       {#if fetchError}
-        <div class="page-error" role="status">{fetchError}</div>
+        <div class="page-error" role="status">
+          <span>{fetchError}</span>
+          {#if refreshBlocked}
+            <button type="button" class="report-link" onclick={onReportProblem}>Report a problem</button>
+          {/if}
+        </div>
       {/if}
     </div>
     <div class="actions">
@@ -339,7 +351,19 @@
   }
   .ph-titles { min-width: 0; }
   .subtitle { margin-top: 4px; color: var(--muted); font-size: var(--text-base); line-height: 18px; }
-  .page-error { margin-top: 6px; color: var(--red); font-size: var(--text-base); line-height: 18px; }
+  /* Quiet status, not an error: the agenda is still usable (cache-first paint),
+     so a stale-refresh notice reads in the muted subtitle tone — never red. */
+  .page-error {
+    margin-top: 6px; display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px;
+    color: var(--muted); font-size: var(--text-base); line-height: 18px;
+  }
+  /* Inline text button — surfaces only when the refresh is genuinely stuck, so
+     a blocked agenda is one click from filing an hq-bug. */
+  .report-link {
+    padding: 0; border: 0; background: none; font: inherit; color: var(--fg);
+    text-decoration: underline; text-underline-offset: 2px; cursor: default;
+  }
+  .report-link:hover { color: var(--accent, var(--fg)); }
   .actions { display: flex; flex-shrink: 0; align-items: center; gap: 8px; }
 
   /* Transient action feedback. Amber (not red) for recoverable bot-action
