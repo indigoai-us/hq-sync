@@ -84,6 +84,16 @@ semver = "1"
 # directly so updater.rs can `use url::Url;` without leaning on a
 # transitive re-export that could move.
 url = "2"
+# Bundled Mozilla/webpki root certificates for the AWS IoT Core MQTT-over-WSS
+# connection in commands/dm_mqtt.rs. We build the rustls TLS config from these
+# roots instead of rumqttc's `wss_with_default_config()`, whose
+# `TlsConfiguration::default()` loads the macOS platform keychain via
+# `rustls_native_certs` and PANICS on a transient keychain I/O error (errSecIO,
+# -36 — Sentry HQ-SYNC-D / HQ-SYNC-WEB-Q). Already in the dep graph transitively;
+# pinned direct so dm_mqtt.rs can name `webpki_roots::TLS_SERVER_ROOTS`. The
+# ClientConfig type itself comes from rumqttc's re-exported rustls
+# (`rumqttc::tokio_rustls::rustls`), so no separate rustls version pin is needed.
+webpki-roots = "1"
 
 [profile.release]
 split-debuginfo = "packed"
