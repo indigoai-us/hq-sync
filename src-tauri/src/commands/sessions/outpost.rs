@@ -568,7 +568,7 @@ fn client_id() -> String {
 /// (unlike DM, where the message is only a wake signal). Returns `Err` on any
 /// connection failure so the caller backs off + retries.
 async fn run_once(creds: &RealtimeCredsResponse) -> Result<(), String> {
-    use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, Transport};
+    use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 
     let now = SystemTime::now();
     let url = build_signed_wss_url(
@@ -587,7 +587,11 @@ async fn run_once(creds: &RealtimeCredsResponse) -> Result<(), String> {
     let topic = sessions_topic_for(&creds.topic);
 
     let mut opts = MqttOptions::new(client_id(), url, 443);
-    opts.set_transport(Transport::wss_with_default_config());
+    // Build the WSS TLS config from the bundled webpki roots, NOT
+    // `Transport::wss_with_default_config()` — that path loads the macOS keychain via
+    // `rustls_native_certs` and PANICS (process-fatal) on a transient keychain I/O error
+    // (errSecIO, -36 — Sentry HQ-SYNC-D / HQ-SYNC-WEB-Q). See `util::mqtt_tls`.
+    opts.set_transport(crate::util::mqtt_tls::wss_transport_with_bundled_roots());
     opts.set_keep_alive(Duration::from_secs(30));
     opts.set_clean_session(true);
 

@@ -270,7 +270,7 @@ fn client_id() -> String {
 /// Calls `poll_dm_once(app)` once right after a successful connect (offline
 /// catch-up, US-006) and once per inbound Publish (the wake signal).
 async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), String> {
-    use rumqttc::{AsyncClient, MqttOptions, Transport};
+    use rumqttc::{AsyncClient, MqttOptions};
 
     let now = SystemTime::now();
     let url = build_signed_wss_url(
@@ -292,7 +292,14 @@ async fn run_once(app: &AppHandle, creds: &RealtimeCredsResponse) -> Result<(), 
     // SigV4 query rides through to the upgrade request. We deliberately do NOT use
     // `MqttOptions::parse_url`, which rejects the X-Amz-* query keys as unknown.
     let mut opts = MqttOptions::new(client_id(), url, 443);
-    opts.set_transport(Transport::wss_with_default_config());
+    // Build the WSS TLS config from the bundled webpki roots, NOT rumqttc's
+    // `wss_with_default_config()` — whose `TlsConfiguration::default()` loads the macOS
+    // keychain via `rustls_native_certs` and PANICS (process-fatal) on a transient
+    // keychain I/O error (errSecIO, -36 — Sentry HQ-SYNC-D / HQ-SYNC-WEB-Q, FATAL in prod
+    // hq-sync@0.8.30). The panic fires here in `run_once`, BEFORE `drive_eventloop` is
+    // spawned, so the send-after-close JoinError guard below does not cover it. See
+    // `util::mqtt_tls::wss_transport_with_bundled_roots`.
+    opts.set_transport(crate::util::mqtt_tls::wss_transport_with_bundled_roots());
     opts.set_keep_alive(Duration::from_secs(30));
     // AWS IoT requires a clean session for SigV4-WSS connections.
     opts.set_clean_session(true);

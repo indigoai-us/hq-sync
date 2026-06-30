@@ -2678,6 +2678,7 @@ dependencies = [
  "url",
  "uuid",
  "walkdir",
+ "webpki-roots",
  "window-vibrancy",
  "wiremock",
 ]
