@@ -88,6 +88,17 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
         if candidate.exists() {
             return Some(candidate.to_string_lossy().to_string());
         }
+
+        // Node version managers (nvm / fnm / volta) — catches users whose
+        // `node`/`npx` is provided ONLY by a version manager, never a system
+        // prefix. Without this the runner spawn fell back to a bare shell that
+        // couldn't find the interpreter and exited 127 (HQ-SYNC-E).
+        for dir in node_manager_bin_dirs(home) {
+            let candidate = dir.join(name);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
     }
 
     // Standard install locations.
@@ -99,6 +110,78 @@ fn resolve_bin_in_dirs(home: Option<&Path>, name: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Bin directories for the common Node version managers — nvm, fnm, and volta —
+/// every one that actually exists under `home`. Shared by `child_path` (to
+/// build the child PATH a node shebang resolves against) and `resolve_bin_in_dirs`
+/// (to locate `node`/`npx` directly). Order is best-effort: any working `node`
+/// resolves an `env node` shebang, and `resolve_bin` returns the first hit.
+///
+/// Covers the install layouts these managers use on macOS:
+///   - nvm:   `~/.nvm/versions/node/<ver>/bin`
+///   - fnm:   `~/.fnm/node-versions/<ver>/installation/bin` and the
+///            macOS `~/Library/Application Support/fnm/node-versions/<ver>/installation/bin`
+///   - volta: `~/.volta/bin` (single shim dir fronting node/npm/npx)
+fn node_manager_bin_dirs(home: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // nvm: every installed version's bin dir.
+    let nvm = home.join(".nvm").join("versions").join("node");
+    if let Ok(entries) = std::fs::read_dir(&nvm) {
+        for entry in entries.flatten() {
+            let bin = entry.path().join("bin");
+            if bin.exists() {
+                dirs.push(bin);
+            }
+        }
+    }
+
+    // fnm: each installed version exposes its bin at `<ver>/installation/bin`,
+    // under either the XDG-style `~/.fnm` root or the macOS App-Support root.
+    for fnm_root in [
+        home.join(".fnm").join("node-versions"),
+        home.join("Library")
+            .join("Application Support")
+            .join("fnm")
+            .join("node-versions"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&fnm_root) {
+            for entry in entries.flatten() {
+                let bin = entry.path().join("installation").join("bin");
+                if bin.exists() {
+                    dirs.push(bin);
+                }
+            }
+        }
+    }
+
+    // volta: a single shim dir that fronts node/npm/npx.
+    let volta = home.join(".volta").join("bin");
+    if volta.exists() {
+        dirs.push(volta);
+    }
+
+    dirs
+}
+
+/// Harvest the PATH a login shell exposes (`zsh -lc 'echo $PATH'`), returned as
+/// individual entries. This is the catch-all for any interpreter location a
+/// user put on PATH through their shell config — asdf, a custom prefix, or a
+/// version manager whose shims are wired in `.zshrc` rather than a fixed dir.
+/// Best-effort: returns empty on any failure (no shell, non-zero exit, GUI apps
+/// with a restricted environment) so callers degrade to the deterministic dirs.
+fn login_shell_path_entries() -> Vec<String> {
+    let output = match Command::new("zsh").args(["-lc", "echo $PATH"]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return Vec::new(),
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
 }
 
 /// Build a PATH value suitable for handing to a spawned child process.
@@ -130,16 +213,11 @@ pub fn child_path() -> String {
             }
         }
 
-        // nvm: prepend every installed node version's bin dir. Order doesn't
-        // matter for correctness (any working `node` resolves `env node`).
-        let nvm_versions = home.join(".nvm").join("versions").join("node");
-        if let Ok(entries) = std::fs::read_dir(&nvm_versions) {
-            for entry in entries.flatten() {
-                let bin = entry.path().join("bin");
-                if bin.exists() {
-                    parts.push(bin.to_string_lossy().to_string());
-                }
-            }
+        // Node version managers (nvm / fnm / volta): prepend every installed
+        // version's bin dir. Order doesn't matter for correctness (any working
+        // `node` resolves `env node`).
+        for dir in node_manager_bin_dirs(&home) {
+            parts.push(dir.to_string_lossy().to_string());
         }
         // User-level npm prefix (no-sudo installs).
         let npm_global = home.join(".npm-global").join("bin");
@@ -157,6 +235,16 @@ pub fn child_path() -> String {
         "/sbin",
     ] {
         parts.push(p.to_string());
+    }
+
+    // Login-shell PATH harvest: the user's real node/npx may live somewhere only
+    // their shell config puts on PATH (asdf, a custom prefix, or fnm/volta shims
+    // wired in `.zshrc`). Merge those entries so `env node` shebang resolution
+    // matches what the user gets in a terminal. Best-effort and de-duplicated.
+    for p in login_shell_path_entries() {
+        if !p.is_empty() && !parts.iter().any(|x| *x == p) {
+            parts.push(p);
+        }
     }
 
     if let Ok(existing) = std::env::var("PATH") {
@@ -391,6 +479,50 @@ mod tests {
         assert!(path.contains("/opt/homebrew/bin"));
         assert!(path.contains("/usr/local/bin"));
         assert!(path.contains("/usr/bin"));
+    }
+
+    #[test]
+    fn test_node_manager_bin_dirs_finds_volta() {
+        // volta: a single shim dir at ~/.volta/bin (HQ-SYNC-E hardening).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let volta_bin = tmp.path().join(".volta/bin");
+        std::fs::create_dir_all(&volta_bin).unwrap();
+        let dirs = node_manager_bin_dirs(tmp.path());
+        assert!(
+            dirs.contains(&volta_bin),
+            "node_manager_bin_dirs must include volta's ~/.volta/bin; got {dirs:?}"
+        );
+    }
+
+    #[test]
+    fn test_node_manager_bin_dirs_finds_fnm_and_nvm() {
+        // fnm (macOS App-Support layout) + nvm versions both surface their
+        // per-version bin dirs (HQ-SYNC-E hardening).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let fnm_bin = tmp
+            .path()
+            .join("Library/Application Support/fnm/node-versions/v20.11.0/installation/bin");
+        let nvm_bin = tmp.path().join(".nvm/versions/node/v18.19.0/bin");
+        std::fs::create_dir_all(&fnm_bin).unwrap();
+        std::fs::create_dir_all(&nvm_bin).unwrap();
+        let dirs = node_manager_bin_dirs(tmp.path());
+        assert!(dirs.contains(&fnm_bin), "must include fnm install bin; got {dirs:?}");
+        assert!(dirs.contains(&nvm_bin), "must include nvm version bin; got {dirs:?}");
+    }
+
+    #[test]
+    fn test_resolve_bin_in_dirs_finds_version_manager_node() {
+        // A user whose `npx` exists ONLY under a version manager (volta here)
+        // must still resolve — this is the HQ-SYNC-E exit-127 root cause.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let volta_bin = tmp.path().join(".volta/bin");
+        std::fs::create_dir_all(&volta_bin).unwrap();
+        let npx = volta_bin.join("npx");
+        std::fs::write(&npx, b"#!/bin/sh\n").unwrap();
+        assert_eq!(
+            resolve_bin_in_dirs(Some(tmp.path()), "npx"),
+            Some(npx.to_string_lossy().to_string())
+        );
     }
 
     #[test]

@@ -860,6 +860,65 @@ fn preflight_node_too_old() -> Option<u32> {
     is_node_too_old(major).then_some(major)
 }
 
+/// Actionable message shown when the sync engine can't even be launched because
+/// its Node/npx interpreter isn't resolvable on this Mac. Distinct from
+/// `node_too_old_message` (Node present but too old) — here Node/npx is missing
+/// entirely, which is the HQ-SYNC-E exit-127 `sh: hq-sync-runner: command not
+/// found` crash-loop.
+fn runner_unresolvable_message() -> String {
+    "HQ Sync can't start the sync engine — Node.js wasn't found on this Mac. \
+     Install Node 20 or newer (https://nodejs.org), then reopen HQ Sync."
+        .to_string()
+}
+
+/// Pure policy for the runner-resolution preflight: given whether `node` and
+/// `npx` each resolve on the child PATH the runner would use, return the
+/// actionable message when the runner CANNOT be launched, or `None` when both
+/// resolve and the spawn should proceed. Extracted (like `is_node_too_old`) so
+/// the decision is unit-testable without spawning real processes.
+fn runner_unresolvable_reason(node_resolves: bool, npx_resolves: bool) -> Option<String> {
+    if node_resolves && npx_resolves {
+        None
+    } else {
+        Some(runner_unresolvable_message())
+    }
+}
+
+/// Best-effort runner-resolution preflight, run just before spawning the runner
+/// (manual Sync Now and the auto-sync watcher). Returns `Some(message)` only when
+/// the runner's interpreter is *positively* unresolvable — `env node` and the
+/// resolved `npx` both probed and at least one cannot run — and `None` otherwise.
+///
+/// This is the proactive guard for HQ-SYNC-E: the watcher spawned
+/// `npx … hq-sync-runner --watch` and, when node/npx weren't on the app's
+/// constructed PATH, the spawn fell through to a bare shell that exited 127
+/// (`sh: hq-sync-runner: command not found`) and crash-looped. Catching it here
+/// turns that silent loop into one clear, user-actionable message.
+///
+/// Mirrors `preflight_node_too_old`: it resolves node exactly as the runner's
+/// `#!/usr/bin/env node` shebang does (`env node` against `child_path()`), and
+/// probes `npx` via the same `resolve_bin("npx")` the spawn uses. It fails OPEN
+/// on any ambiguity — only a probe that ran and clearly shows the interpreter
+/// missing returns `Some`, so it can never block a sync that would have worked.
+pub(crate) fn preflight_runner_unresolvable() -> Option<String> {
+    let node_resolves = std::process::Command::new("/usr/bin/env")
+        .args(["node", "--version"])
+        .env("PATH", paths::child_path())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    let npx_bin = paths::resolve_bin("npx");
+    let npx_resolves = std::process::Command::new(&npx_bin)
+        .arg("--version")
+        .env("PATH", paths::child_path())
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    runner_unresolvable_reason(node_resolves, npx_resolves)
+}
+
 /// Pure policy: should a *non-zero* runner exit raise a Sentry alert?
 ///
 /// Extracted from the `ProcessEvent::Exit` handler so the decision is
@@ -1165,6 +1224,20 @@ pub async fn start_sync(app: AppHandle) -> Result<String, String> {
         log("sync", &format!("BAIL: node too old (v{current_major}): {msg}"));
         #[cfg(debug_assertions)]
         eprintln!("[sync] BAIL: node too old (v{}): {}", current_major, msg);
+        deregister_process(SYNC_HANDLE);
+        return Err(msg);
+    }
+
+    // Runner-resolution preflight (HQ-SYNC-E). If `node`/`npx` can't be resolved
+    // at all, the runner spawn would fall through to a bare shell and exit 127
+    // (`sh: hq-sync-runner: command not found`). Bail up front with one clear,
+    // user-actionable message — surfaced via the command error the popover
+    // shows — instead of a doomed spawn. Like the node-too-old preflight this is
+    // an expected environment fault, NOT captured to Sentry, and fails OPEN.
+    if let Some(msg) = preflight_runner_unresolvable() {
+        log("sync", &format!("BAIL: runner unresolvable: {msg}"));
+        #[cfg(debug_assertions)]
+        eprintln!("[sync] BAIL: runner unresolvable: {}", msg);
         deregister_process(SYNC_HANDLE);
         return Err(msg);
     }
@@ -2478,6 +2551,35 @@ mod tests {
         assert!(msg.contains("Node 19"));
         assert!(msg.to_lowercase().contains("update node"));
         assert!(!msg.contains("tracingChannel"));
+    }
+
+    #[test]
+    fn test_runner_unresolvable_reason() {
+        // HQ-SYNC-E: bail only when the interpreter is positively missing.
+        assert!(
+            runner_unresolvable_reason(true, true).is_none(),
+            "both resolve → spawn must proceed (no false bail)"
+        );
+        assert!(
+            runner_unresolvable_reason(false, true).is_some(),
+            "node missing → must bail with the actionable message"
+        );
+        assert!(
+            runner_unresolvable_reason(true, false).is_some(),
+            "npx missing → must bail with the actionable message"
+        );
+        assert!(runner_unresolvable_reason(false, false).is_some());
+    }
+
+    #[test]
+    fn test_runner_unresolvable_message_is_actionable() {
+        // Plain-language, names the fix, no jargon / shell error / stack trace.
+        let msg = runner_unresolvable_message();
+        assert!(msg.contains("Node"));
+        assert!(msg.to_lowercase().contains("install node"));
+        assert!(msg.contains("nodejs.org"));
+        assert!(!msg.contains("127"));
+        assert!(!msg.contains("command not found"));
     }
 
     #[test]
