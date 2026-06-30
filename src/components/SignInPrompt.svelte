@@ -70,6 +70,14 @@
       loadingProvider = null;
     }
   }
+
+  async function handleQuit() {
+    try {
+      await invoke('quit_app');
+    } catch (e) {
+      console.error('Failed to quit:', e);
+    }
+  }
 </script>
 
 <div class="sign-in-container">
@@ -132,9 +140,11 @@
     {#if loadingProvider}
       <p class="loading-hint">
         A browser window opened for {loadingProvider} sign-in. Complete it there and
-        you'll return here automatically.
+        you'll return here automatically. You can quit if sign-in gets stuck.
       </p>
     {/if}
+
+    <button class="quit-btn" onclick={handleQuit}>Quit HQ Sync</button>
 
     {#if error}
       <div class="error-block">
@@ -319,6 +329,24 @@
     line-height: 1.4;
   }
 
+  .quit-btn {
+    margin-top: 0.875rem;
+    padding: 0.375rem 0.625rem;
+    font-size: 0.75rem;
+    font-family: inherit;
+    color: var(--popover-text-muted, #a0a0b0);
+    background: none;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+  }
+
+  .quit-btn:hover {
+    background: var(--popover-action-hover, rgba(255, 255, 255, 0.05));
+    color: var(--popover-text, #e0e0e0);
+  }
+
   .provider-glyph {
     flex-shrink: 0;
   }
@@ -364,6 +392,10 @@
     }
 
     .loading-hint {
+      color: #6b7280;
+    }
+
+    .quit-btn {
       color: #6b7280;
     }
 
