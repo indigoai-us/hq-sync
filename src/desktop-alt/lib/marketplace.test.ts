@@ -155,6 +155,8 @@ describe('listingDisplayName — friendly card/detail title', () => {
       'Impeccable Design',
     );
     expect(listingDisplayName(listing({ slug: 'gstack', name: 'hq-pack-gstack' }))).toBe('gStack');
+    // Acronym pack — must read "CRM", not the prettifier's "Crm".
+    expect(listingDisplayName(listing({ slug: 'crm', name: 'hq-pack-crm' }))).toBe('CRM');
   });
 
   it('falls back to a prettified package name for an unknown slug', () => {
