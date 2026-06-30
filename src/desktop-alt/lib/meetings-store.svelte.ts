@@ -9,6 +9,7 @@ import {
   buildRefreshProblemReport,
   eventMeetingUrl,
   friendlyError,
+  isAuthError,
   meetingsRefreshNotice,
 } from './meetings-model';
 import type {
@@ -89,7 +90,9 @@ let fetchError = $state('');
 let refreshBlocked = $state(false);
 // Wall-clock of the last successful `meetings_list_upcoming` — drives the
 // staleness gate above so a single failed poll while fresh data shows is silent.
-let lastEventsSuccessAt = 0;
+// Seeded to module-load time so a failed FIRST poll at launch gets the same
+// grace window as steady state (rather than reading as instantly stale).
+let lastEventsSuccessAt = Date.now();
 // Raw text of the last refresh failure, attached to a filed bug report so it's
 // actionable. The user only ever sees the friendly `fetchError` notice.
 let lastRefreshErrorRaw = '';
@@ -197,8 +200,8 @@ async function refresh() {
     );
     // "Report a problem" is for a stuck refresh, not an auth prompt the user
     // can resolve themselves — and not a silent transient miss (empty notice).
-    const isAuth = /\b401\b/.test(raw) || /auth/i.test(raw);
-    refreshBlocked = fetchError !== '' && !isAuth;
+    // Shares isAuthError with the notice so the two can't disagree.
+    refreshBlocked = fetchError !== '' && !isAuthError(err);
   } finally {
     loading = false;
   }

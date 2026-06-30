@@ -6,6 +6,7 @@ import {
   buildRefreshProblemReport,
   dayLabel,
   groupByDay,
+  isAuthError,
   meetingsRefreshNotice,
   pickLiveMeeting,
   rowButtonKind,
@@ -323,6 +324,15 @@ describe('meetings-model', () => {
         'invite',
       );
     });
+  });
+});
+
+describe('isAuthError', () => {
+  it('flags 401 and auth-mention failures, not generic ones', () => {
+    expect(isAuthError('Error: 401')).toBe(true);
+    expect(isAuthError('auth token expired')).toBe(true);
+    expect(isAuthError('Error: 503')).toBe(false);
+    expect(isAuthError(null)).toBe(false);
   });
 });
 

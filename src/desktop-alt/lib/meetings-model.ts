@@ -525,14 +525,23 @@ export function friendlyError(err: unknown, fallback: string): string {
  * Returns '' for "show nothing". Never returns red-flavored copy: the agenda is
  * still usable, so the notice reads as a quiet status, not an error.
  */
+/**
+ * Whether a refresh failure is an auth problem (vs. a transient/stale one).
+ * Single source of truth for the heuristic so the notice copy and the store's
+ * "is this reportable?" gate can't drift apart.
+ */
+export function isAuthError(err: unknown): boolean {
+  const raw = String(err ?? '');
+  return /\b401\b/.test(raw) || /auth/i.test(raw);
+}
+
 export function meetingsRefreshNotice(
   err: unknown,
   lastEventsSuccessAt: number,
   now: number,
   staleAfterMs: number,
 ): string {
-  const raw = String(err ?? '');
-  if (/\b401\b/.test(raw) || /auth/i.test(raw)) {
+  if (isAuthError(err)) {
     return 'Sign in again to load meetings.';
   }
   if (now - lastEventsSuccessAt > staleAfterMs) {
