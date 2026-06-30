@@ -511,6 +511,77 @@ export function friendlyError(err: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * Decide what (if anything) to surface when a meetings refresh fails.
+ *
+ * The agenda paints from a cache-first snapshot and re-polls every 30s, so a
+ * single failed poll while recent data is still on screen should stay silent —
+ * a banner there reads as "broken" when nothing the user cares about actually
+ * is (they can still see their meetings, and a recently-added one proves the
+ * data is current). We only surface a calm notice once the on-screen agenda is
+ * genuinely stale: no successful events fetch within `staleAfterMs`. Auth
+ * failures are the exception — they're actionable regardless of cache age.
+ *
+ * Returns '' for "show nothing". Never returns red-flavored copy: the agenda is
+ * still usable, so the notice reads as a quiet status, not an error.
+ */
+/**
+ * Whether a refresh failure is an auth problem (vs. a transient/stale one).
+ * Single source of truth for the heuristic so the notice copy and the store's
+ * "is this reportable?" gate can't drift apart.
+ */
+export function isAuthError(err: unknown): boolean {
+  const raw = String(err ?? '');
+  return /\b401\b/.test(raw) || /auth/i.test(raw);
+}
+
+export function meetingsRefreshNotice(
+  err: unknown,
+  lastEventsSuccessAt: number,
+  now: number,
+  staleAfterMs: number,
+): string {
+  if (isAuthError(err)) {
+    return 'Sign in again to load meetings.';
+  }
+  if (now - lastEventsSuccessAt > staleAfterMs) {
+    return 'Showing your last synced meetings — couldn’t refresh just now.';
+  }
+  return '';
+}
+
+export interface BugReport {
+  title: string;
+  body: string;
+}
+
+/**
+ * Build the title + body for a "Meetings won't refresh" bug report, filed via
+ * the `hq feedback` pathway when the agenda is genuinely blocked. Kept pure
+ * (the store just hands the result to the `submit_bug_report` command) so the
+ * exact copy + the technical context we attach are unit-testable. The user
+ * sees a friendly notice; the report carries the raw error so it's actionable.
+ */
+export function buildRefreshProblemReport(ctx: {
+  notice: string;
+  rawError: string;
+  meetingsShown: number;
+  connectedAccounts: number;
+}): BugReport {
+  const body = [
+    'The Meetings agenda could not refresh for several poll cycles and is',
+    'stuck showing the last synced view.',
+    '',
+    `Notice shown to user: ${ctx.notice || '(none)'}`,
+    `Last refresh error: ${ctx.rawError || '(none captured)'}`,
+    `Meetings currently shown: ${ctx.meetingsShown}`,
+    `Connected accounts: ${ctx.connectedAccounts}`,
+    '',
+    'Filed from the HQ Sync desktop app (Meetings → Report a problem).',
+  ].join('\n');
+  return { title: 'HQ Sync: Meetings won’t refresh', body };
+}
+
 function normalizeSignals(raw: unknown): MeetingSignal[] {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw.filter(isSignalLike);

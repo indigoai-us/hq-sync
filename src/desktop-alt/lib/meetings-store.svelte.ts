@@ -5,7 +5,13 @@ import {
   seedActiveMeetingsFromBackend,
 } from '../../lib/activeMeetings';
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
-import { eventMeetingUrl, friendlyError } from './meetings-model';
+import {
+  buildRefreshProblemReport,
+  eventMeetingUrl,
+  friendlyError,
+  isAuthError,
+  meetingsRefreshNotice,
+} from './meetings-model';
 import type {
   CompanyMembership,
   GoogleAccount,
@@ -36,6 +42,13 @@ interface AccountCalendars {
 // enough that an agenda opened minutes later is already current.
 const POLL_INTERVAL_MS = 30_000;
 
+// Only nag about a failed refresh once the on-screen agenda is genuinely stale
+// — i.e. several poll cycles in a row have missed. A single failed poll while
+// recently-synced meetings are still showing stays silent (the next poll
+// usually recovers, and a stale-but-correct agenda is not an error worth a
+// banner). Four missed polls.
+const STALE_NOTICE_AFTER_MS = 2 * 60_000;
+
 // ---------------------------------------------------------------------------
 // Module-level singleton state.
 //
@@ -64,10 +77,25 @@ let accountEmailById = $state<Map<string, string>>(new Map());
 let calendarSummaryByKey = $state<Map<string, string>>(new Map());
 let memberships = $state<CompanyMembership[]>([]);
 let membershipsError = $state('');
-// Surfaced when the live calendar fetch fails outright (vs. cache miss):
-// we keep the stale paint on screen and show this rather than faking an
-// empty state. Auth failures are special-cased to a "sign in again" hint.
+// Surfaced ONLY when the meetings list is genuinely stale (the live fetch has
+// failed for several poll cycles), not on every transient miss — we keep the
+// cached paint on screen and stay quiet while it's still current. Auth
+// failures are special-cased to an actionable "sign in again" hint. See
+// meetingsRefreshNotice for the staleness gate.
 let fetchError = $state('');
+// True only while the agenda is genuinely stuck (the stale notice is showing),
+// NOT for an actionable auth prompt or a silent transient miss. Gates the
+// "Report a problem" affordance so it appears exactly when filing a bug is the
+// right next step.
+let refreshBlocked = $state(false);
+// Wall-clock of the last successful `meetings_list_upcoming` — drives the
+// staleness gate above so a single failed poll while fresh data shows is silent.
+// Seeded to module-load time so a failed FIRST poll at launch gets the same
+// grace window as steady state (rather than reading as instantly stale).
+let lastEventsSuccessAt = Date.now();
+// Raw text of the last refresh failure, attached to a filed bug report so it's
+// actionable. The user only ever sees the friendly `fetchError` notice.
+let lastRefreshErrorRaw = '';
 let loading = $state(false);
 // Per-row optimistic lock for bot actions (invite / cancel / join-now), keyed
 // by calendar event id. The agenda reads it to disable a row's buttons + show a
@@ -112,13 +140,18 @@ function hydrateFromCache() {
 async function refresh() {
   if (loading) return;
   loading = true;
-  fetchError = '';
   membershipsError = '';
   try {
     const [evts, bots, members, accts] = await Promise.all([
       invoke<MeetingEvent[]>('meetings_list_upcoming'),
+      // Best-effort: a bots-list hiccup must not blank the recording pills or
+      // trip the "couldn't refresh" notice. The meetings list (above) is the
+      // only call that defines a healthy refresh; everything else degrades.
       invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
         calendarEventIds: null,
+      }).catch((err) => {
+        console.error('meetings_list_scheduled_bots failed:', err);
+        return null as ScheduledBot[] | null;
       }),
       invoke<CompanyMembership[]>('meetings_list_memberships').catch((err) => {
         console.error('meetings_list_memberships failed:', err);
@@ -129,8 +162,15 @@ async function refresh() {
         () => [] as GoogleAccount[],
       ),
     ]);
+    // The upcoming-events fetch resolved — the agenda is fresh, so clear any
+    // stale-notice and stamp the success for the staleness gate.
     events = evts ?? [];
-    botsByEventId = buildBotMap(bots ?? []);
+    lastEventsSuccessAt = Date.now();
+    fetchError = '';
+    refreshBlocked = false;
+    lastRefreshErrorRaw = '';
+    // Keep the previously-painted pills on a transient bots miss.
+    if (bots !== null) botsByEventId = buildBotMap(bots);
     memberships = members ?? [];
     companyNamesByUid = buildCompanyNameMap(members ?? []);
     accounts = accts ?? [];
@@ -146,11 +186,48 @@ async function refresh() {
     // either window — hydrates a complete view.
     persistSnapshot();
   } catch (err) {
-    // Keep the cached paint; surface the failure rather than blanking out.
+    // The meetings-list fetch itself failed. Keep the cached paint and only
+    // surface a calm notice once that paint is genuinely stale — a single
+    // failed poll while recent meetings are still on screen stays silent.
     console.error('meetings refresh failed:', err);
-    fetchError = friendlyFetchError(err);
+    const raw = String(err ?? '');
+    lastRefreshErrorRaw = raw;
+    fetchError = meetingsRefreshNotice(
+      err,
+      lastEventsSuccessAt,
+      Date.now(),
+      STALE_NOTICE_AFTER_MS,
+    );
+    // "Report a problem" is for a stuck refresh, not an auth prompt the user
+    // can resolve themselves — and not a silent transient miss (empty notice).
+    // Shares isAuthError with the notice so the two can't disagree.
+    refreshBlocked = fetchError !== '' && !isAuthError(err);
   } finally {
     loading = false;
+  }
+}
+
+/**
+ * File a bug report for a stuck meetings refresh via the `hq feedback` pathway
+ * (the canonical /hq-bug channel), attaching the raw error + current context.
+ * Returns a ToastDescriptor for the page to render. Surfaced only while
+ * `refreshBlocked` is true.
+ */
+async function reportRefreshProblem(): Promise<ToastDescriptor> {
+  const { title, body } = buildRefreshProblemReport({
+    notice: fetchError,
+    rawError: lastRefreshErrorRaw,
+    meetingsShown: events.length,
+    connectedAccounts: accounts.length,
+  });
+  try {
+    await invoke('submit_bug_report', { title, body });
+    return { kind: 'info', text: 'Thanks — bug report filed.' };
+  } catch (err) {
+    return {
+      kind: 'warn',
+      text: friendlyError(err, 'Could not file the report — try /hq-bug.'),
+    };
   }
 }
 
@@ -226,14 +303,6 @@ function isActiveStatus(s: string): boolean {
     s === 'processing' ||
     s === 'completed'
   );
-}
-
-function friendlyFetchError(err: unknown): string {
-  const raw = String(err ?? '');
-  if (/\b401\b/.test(raw) || /auth/i.test(raw)) {
-    return 'Sign in again to load meetings.';
-  }
-  return 'Could not refresh meetings — showing the last cached view.';
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +489,9 @@ export const meetingsStore = {
   get fetchError() {
     return fetchError;
   },
+  get refreshBlocked() {
+    return refreshBlocked;
+  },
   get loading() {
     return loading;
   },
@@ -430,4 +502,5 @@ export const meetingsStore = {
   inviteBot,
   cancelBot,
   joinBotNow,
+  reportRefreshProblem,
 };
