@@ -8,10 +8,12 @@ import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
 import {
   buildRefreshProblemReport,
   botForEvent,
+  calendarEventIdsForBotLookup,
   eventMeetingUrl,
   friendlyError,
   isAuthError,
   meetingsRefreshNotice,
+  mergeScheduledBotLookups,
   recurringSeriesId,
 } from './meetings-model';
 import type {
@@ -141,8 +143,9 @@ function hydrateFromCache() {
  * Live fetch — mirrors MeetingsWindow.svelte's mount `refresh()`. The alt
  * window must fetch calendar data itself: it can't piggyback on the classic
  * window's cache because localStorage is per-WebviewWindow. Fetches
- * events + bots + memberships + connected accounts in parallel, fans out to
- * per-account calendars, populates the model, and persists the snapshot.
+ * events + memberships + connected accounts, then fetches authoritative
+ * per-event bot state for the visible agenda before fanning out to calendars,
+ * populating the model, and persisting the snapshot.
  *
  * Errors are NOT swallowed to a blank state: on failure we keep whatever the
  * cache already painted, log the error, and surface a message (auth failures
@@ -153,17 +156,8 @@ async function refresh() {
   loading = true;
   membershipsError = '';
   try {
-    const [evts, bots, members, accts] = await Promise.all([
+    const [evts, members, accts] = await Promise.all([
       invoke<MeetingEvent[]>('meetings_list_upcoming'),
-      // Best-effort: a bots-list hiccup must not blank the recording pills or
-      // trip the "couldn't refresh" notice. The meetings list (above) is the
-      // only call that defines a healthy refresh; everything else degrades.
-      invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
-        calendarEventIds: null,
-      }).catch((err) => {
-        console.error('meetings_list_scheduled_bots failed:', err);
-        return null as ScheduledBot[] | null;
-      }),
       invoke<CompanyMembership[]>('meetings_list_memberships').catch((err) => {
         console.error('meetings_list_memberships failed:', err);
         membershipsError = 'Could not load calendar routing.';
@@ -180,6 +174,36 @@ async function refresh() {
     fetchError = '';
     refreshBlocked = false;
     lastRefreshErrorRaw = '';
+    const botEventIds = calendarEventIdsForBotLookup(evts ?? []);
+    let eventBotsErr: unknown = null;
+    const [eventBots, fullBots] = await Promise.all([
+      botEventIds.length === 0
+        ? Promise.resolve([] as ScheduledBot[])
+        : invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+            calendarEventIds: botEventIds,
+          }).catch((err) => {
+            eventBotsErr = err;
+            console.error('meetings_list_scheduled_bots per-event failed:', err);
+            return null as ScheduledBot[] | null;
+          }),
+      // Best-effort legacy full list for recorded/recent bot surfaces. Row
+      // invite state is driven by the per-event list above.
+      invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+        calendarEventIds: null,
+      }).catch((err) => {
+        console.error('meetings_list_scheduled_bots full-list failed:', err);
+        return null as ScheduledBot[] | null;
+      }),
+    ]);
+    const bots = mergeScheduledBotLookups(botEventIds, eventBots, fullBots);
+    if (botEventIds.length > 0 && eventBots === null) {
+      fetchError = friendlyError(
+        eventBotsErr,
+        'Could not refresh meeting bot status.',
+      );
+      refreshBlocked = !isAuthError(eventBotsErr);
+      lastRefreshErrorRaw = String(eventBotsErr ?? '');
+    }
     // Keep the previously-painted pills on a transient bots miss.
     if (bots !== null) {
       botsByEventId = buildBotMap(bots);
