@@ -593,7 +593,11 @@ pub async fn meetings_list_scheduled_bots(
     let mut url = format!("{base}/v1/bot/list");
     if let Some(ids) = calendar_event_ids.as_ref() {
         if !ids.is_empty() {
-            let joined = ids.join(",");
+            let joined = ids
+                .iter()
+                .map(|id| encode_query_value(id))
+                .collect::<Vec<_>>()
+                .join(",");
             url.push_str(&format!("?calendarEventIds={joined}"));
         }
     }
@@ -1524,6 +1528,10 @@ fn is_url_safe_id(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
+fn encode_query_value(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1891,6 +1899,12 @@ mod tests {
         assert!(!is_url_safe_id("bot abc"));
         assert!(!is_url_safe_id("bot?x=1"));
         assert!(!is_url_safe_id("bot#frag"));
+    }
+
+    #[test]
+    fn query_value_encoding_preserves_safe_event_ids_and_escapes_reserved_chars() {
+        assert_eq!(encode_query_value("event_123-abc.def"), "event_123-abc.def");
+        assert_eq!(encode_query_value("event 1?x=2#frag"), "event+1%3Fx%3D2%23frag");
     }
 
     #[test]

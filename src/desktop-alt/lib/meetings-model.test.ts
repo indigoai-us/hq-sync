@@ -5,10 +5,13 @@ import {
   botForEvent,
   buildConnectedCalendarRows,
   buildRefreshProblemReport,
+  calendarEventIdsForBotLookup,
   dayLabel,
   groupByDay,
   isAuthError,
   meetingsRefreshNotice,
+  mergeScheduledBotLookups,
+  mergeScheduledBots,
   pickLiveMeeting,
   recurringSeriesId,
   isRecurringMeeting,
@@ -354,6 +357,72 @@ describe('meetings-model', () => {
       });
 
       expect(botForEvent(event, new Map(), [failedBot])).toBeUndefined();
+    });
+  });
+
+  describe('bot list lookup helpers', () => {
+    it('dedupes event ids before asking the backend for per-event bot state', () => {
+      expect(
+        calendarEventIdsForBotLookup([
+          eventAt('event-1', new Date(2026, 4, 27, 12, 0, 0)),
+          eventAt('event-2', new Date(2026, 4, 27, 13, 0, 0)),
+          eventAt('event-1', new Date(2026, 4, 27, 14, 0, 0)),
+          { ...eventAt('   ', new Date(2026, 4, 27, 15, 0, 0)), id: '   ' },
+        ]),
+      ).toEqual(['event-1', 'event-2']);
+    });
+
+    it('keeps authoritative per-event bot rows before legacy full-list rows', () => {
+      const eventBot: ScheduledBot = {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'scheduled',
+        calendarEventId: 'event-1',
+        autoScheduled: true,
+        meetingTitle: 'Authoritative row',
+      };
+      const fullListBot: ScheduledBot = {
+        ...eventBot,
+        meetingTitle: 'Legacy full-list row',
+      };
+      const recordedBot: ScheduledBot = {
+        botId: 'bot-2',
+        meetingUrl: 'https://meet.google.com/def-ghij-klm',
+        platform: 'google_meet',
+        status: 'completed',
+        calendarEventId: 'event-2',
+        autoScheduled: true,
+        meetingTitle: 'Recorded row',
+      };
+
+      expect(mergeScheduledBots([eventBot], [fullListBot, recordedBot])).toEqual([
+        eventBot,
+        recordedBot,
+      ]);
+    });
+
+    it('requires per-event bot rows when visible event ids are known', () => {
+      const eventBot: ScheduledBot = {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'scheduled',
+        calendarEventId: 'event-1',
+        autoScheduled: true,
+      };
+      const fullListBot: ScheduledBot = {
+        ...eventBot,
+        botId: 'bot-legacy',
+      };
+
+      expect(mergeScheduledBotLookups(['event-1'], null, [fullListBot])).toBeNull();
+      expect(mergeScheduledBotLookups(['event-1'], [eventBot], null)).toEqual([
+        eventBot,
+      ]);
+      expect(mergeScheduledBotLookups([], null, [fullListBot])).toEqual([
+        fullListBot,
+      ]);
     });
   });
 

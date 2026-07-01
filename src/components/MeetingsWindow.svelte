@@ -16,7 +16,11 @@
     saveMeetingsCache,
   } from '../lib/meetingsCache';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
-  import { botForEvent } from '../desktop-alt/lib/meetings-model';
+  import {
+    botForEvent,
+    calendarEventIdsForBotLookup,
+    mergeScheduledBotLookups,
+  } from '../desktop-alt/lib/meetings-model';
   import {
     UNATTRIBUTED,
     companyOptions,
@@ -511,26 +515,22 @@
     loading = true;
     listError = null;
     try {
-      // Fetch events + bots + memberships + connected accounts in parallel.
+      // Fetch events + memberships + connected accounts in parallel, then
+      // fetch bots using the actual event ids. hq-pro's full bot list is a
+      // legacy/recent-bots convenience path and can miss a row; the per-event
+      // path is the authoritative "does this visible event already have a
+      // bot?" source.
       //
-      // Catch the two primary list calls individually instead of letting
+      // Catch the primary list calls individually instead of letting
       // Promise.all reject on first failure: an outage that 500s
       // /v1/calendar/events should not blank in-memory bot state, and
-      // vice versa, so the 30s poll can recover one independently. Memberships
-      // and accounts already swallow to [] for the same reason — a person
-      // with zero connected Google accounts still wants the events render
-      // (the empty-state below handles that branch).
+      // vice versa, so the 30s poll can recover one independently.
+      // Memberships and accounts already swallow to [] for the same reason.
       let upcomingErr: unknown = null;
       let botsErr: unknown = null;
-      const [evts, bots, membershipRows, accts] = await Promise.all([
+      const [evts, membershipRows, accts] = await Promise.all([
         invoke<MeetingEvent[]>('meetings_list_upcoming').catch((err: unknown) => {
           upcomingErr = err;
-          return null;
-        }),
-        invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
-          calendarEventIds: null,
-        }).catch((err: unknown) => {
-          botsErr = err;
           return null;
         }),
         // Memberships are tiny + rarely change — fetched on every open is
@@ -541,6 +541,28 @@
           () => [] as GoogleAccount[],
         ),
       ]);
+      const botEventIds = calendarEventIdsForBotLookup(evts ?? events);
+      let eventBotsErr: unknown = null;
+      let fullBotsErr: unknown = null;
+      const [eventBots, fullBots] = await Promise.all([
+        botEventIds.length === 0
+          ? Promise.resolve([] as ScheduledBot[])
+          : invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+              calendarEventIds: botEventIds,
+            }).catch((err: unknown) => {
+              eventBotsErr = err;
+              return null;
+            }),
+        invoke<ScheduledBot[]>('meetings_list_scheduled_bots', {
+          calendarEventIds: null,
+        }).catch((err: unknown) => {
+          fullBotsErr = err;
+          return null;
+        }),
+      ]);
+      const bots = mergeScheduledBotLookups(botEventIds, eventBots, fullBots);
+      if (botEventIds.length > 0 && eventBots === null) botsErr = eventBotsErr;
+      else if (botEventIds.length === 0 && fullBots === null) botsErr = fullBotsErr;
       // Only overwrite on success so a transient 500 keeps the last good
       // snapshot in memory until recovery. The error banner still wins in
       // the render branch order, but the cached state is correct for the

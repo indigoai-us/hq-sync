@@ -175,6 +175,39 @@ export function botForEvent(
   });
 }
 
+export function calendarEventIdsForBotLookup(events: MeetingEvent[]): string[] {
+  return Array.from(
+    new Set(
+      events
+        .map((event) => event.id?.trim())
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  );
+}
+
+export function mergeScheduledBots(
+  primary: ScheduledBot[],
+  secondary: ScheduledBot[],
+): ScheduledBot[] {
+  const byId = new Map<string, ScheduledBot>();
+  for (const bot of [...primary, ...secondary]) {
+    if (!byId.has(bot.botId)) byId.set(bot.botId, bot);
+  }
+  return Array.from(byId.values());
+}
+
+export function mergeScheduledBotLookups(
+  eventIds: string[],
+  eventBots: ScheduledBot[] | null,
+  fullBots: ScheduledBot[] | null,
+): ScheduledBot[] | null {
+  if (eventIds.length > 0) {
+    if (eventBots === null) return null;
+    return mergeScheduledBots(eventBots, fullBots ?? []);
+  }
+  return fullBots;
+}
+
 export function isToday(event: MeetingEvent, now = new Date()): boolean {
   const start = eventStart(event);
   if (!start) return false;
