@@ -491,13 +491,18 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         // ~log2(N) actionable events, not one per respawn (the
                         // 36,977-event fleet flood). The first crash still alerts.
                         let consecutive = note_watcher_crashed();
+                        // Enrich with uptime + last-sampled RSS so a `signal=9`
+                        // can be told apart later — jetsam/OOM vs a manual/OS
+                        // kill (HQ-SYNC-F). Context only; never gates capture.
+                        let (uptime, rss_kb, rss_age) = watcher_exit_diagnostics();
+                        let diag = exit_diagnostic_suffix(uptime, rss_kb, rss_age);
                         if should_capture_crash(consecutive) {
                             crate::commands::sync::capture_sync_error(
                                 None,
                                 "(auto-sync)",
                                 &format!(
                                     "auto-sync watcher exited unexpectedly (code={:?} signal={:?}); \
-                                     consecutive failure #{consecutive} (further repeats rate-limited)",
+                                     consecutive failure #{consecutive} (further repeats rate-limited){diag}",
                                     code, signal
                                 ),
                             );
@@ -505,7 +510,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                             log(
                                 "daemon",
                                 &format!(
-                                    "watcher crash #{consecutive} — capture rate-limited (code={:?} signal={:?})",
+                                    "watcher crash #{consecutive} — capture rate-limited (code={:?} signal={:?}){diag}",
                                     code, signal
                                 ),
                             );
@@ -633,6 +638,15 @@ struct WatcherCrashState {
     /// so the spawn-timestamp fast-failure logic doesn't apply — this is a plain
     /// per-episode counter, reset to 0 the moment a watcher actually spawns.
     preflight_fails: u32,
+    /// Last RSS (KB) sampled from the live watcher by the supervisor, and when.
+    /// Enriches an unexpected-exit capture so a `signal=9` can be told apart
+    /// after the fact — a footprint near the machine's memory ceiling points at
+    /// jetsam/OOM, a small one at a manual `kill -9` / sleep-or-shutdown kill
+    /// (HQ-SYNC-F). Best-effort and diagnostic only: `None` until the first
+    /// sample, and it never changes whether a crash is captured. Cleared on each
+    /// fresh spawn so a new watcher never inherits the prior one's footprint.
+    last_rss_kb: Option<u64>,
+    last_rss_at: Option<Instant>,
 }
 
 static CRASH_STATE: OnceLock<Mutex<WatcherCrashState>> = OnceLock::new();
@@ -648,6 +662,10 @@ fn note_watcher_spawned() {
     // A spawn means the runner resolved — clear the preflight failure streak so
     // its capture rate-limiting resets for the next episode (HQ-SYNC-E).
     st.preflight_fails = 0;
+    // Fresh watcher — drop the previous watcher's RSS sample so a crash capture
+    // never reports a stale footprint from a process that already died (HQ-SYNC-F).
+    st.last_rss_kb = None;
+    st.last_rss_at = None;
 }
 
 /// Record a runner-resolution preflight failure (HQ-SYNC-E) and return the
@@ -676,6 +694,106 @@ fn note_watcher_crashed() -> u32 {
     st.backoff_until =
         Some(Instant::now() + respawn_backoff(consecutive, SUPERVISOR_INTERVAL, RESPAWN_MAX_BACKOFF));
     consecutive
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Exit diagnostics (HQ-SYNC-F): uptime + last-sampled RSS on an unexpected exit
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A one-off `signal=9` watcher kill is ambiguous on its own — it could be macOS
+// jetsam reclaiming a memory-hungry process (a real leak worth fixing) or a
+// benign `kill -9` / sleep-or-shutdown termination. Sentry carries no memory
+// context, so we enrich the crash capture with the watcher's uptime and the last
+// RSS the supervisor sampled while it was alive. This is context only — it never
+// suppresses a capture; `signal=9` stays fully alertable.
+
+/// Record the latest RSS (KB) sampled from the live watcher (supervisor tick).
+fn note_watcher_rss(kb: u64) {
+    let mut st = crash_state().lock().unwrap();
+    st.last_rss_kb = Some(kb);
+    st.last_rss_at = Some(Instant::now());
+}
+
+/// Snapshot for enriching a crash capture: watcher uptime (since spawn), the
+/// last RSS sample, and how long before now that sample was taken. Read right
+/// after `note_watcher_crashed` (which leaves `spawn_at` untouched). RSS fields
+/// are `None` when no sample was ever taken (e.g. a crash within the first
+/// supervisor tick).
+fn watcher_exit_diagnostics() -> (Option<Duration>, Option<u64>, Option<Duration>) {
+    let st = crash_state().lock().unwrap();
+    let uptime = st.spawn_at.map(|t| t.elapsed());
+    let rss_age = st.last_rss_at.map(|t| t.elapsed());
+    (uptime, st.last_rss_kb, rss_age)
+}
+
+/// Best-effort RSS (KB) of `pid` via `ps -o rss= -p <pid>`. Both macOS and Linux
+/// report RSS here in 1-KB units. Returns `None` on any failure so the sampler
+/// can never disrupt the supervisor. Diagnostic only.
+fn sample_pid_rss_kb(pid: u32) -> Option<u64> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_ps_rss_kb(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// Parse `ps -o rss=` output (RSS in KB, possibly whitespace-padded, headerless)
+/// into KB. Pure + unit-testable.
+fn parse_ps_rss_kb(out: &str) -> Option<u64> {
+    out.trim().lines().next()?.trim().parse::<u64>().ok()
+}
+
+/// Human-readable RSS from KB (e.g. `182MB`, `1.4GB`). Pure + unit-testable.
+fn format_rss_kb(kb: u64) -> String {
+    if kb >= 1024 * 1024 {
+        format!("{:.1}GB", kb as f64 / (1024.0 * 1024.0))
+    } else if kb >= 1024 {
+        format!("{}MB", kb / 1024)
+    } else {
+        format!("{kb}KB")
+    }
+}
+
+/// Build the ` [uptime=…; rss=…]` suffix appended to an unexpected-exit capture.
+/// Pure over its inputs so it is unit-testable; omits pieces that are unknown and
+/// returns `""` when nothing is known (so the base message is unchanged).
+fn exit_diagnostic_suffix(
+    uptime: Option<Duration>,
+    rss_kb: Option<u64>,
+    rss_age: Option<Duration>,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(u) = uptime {
+        parts.push(format!("uptime={}", format_duration_secs(u.as_secs())));
+    }
+    match (rss_kb, rss_age) {
+        (Some(kb), Some(age)) => parts.push(format!(
+            "last_rss={} (sampled {} before exit)",
+            format_rss_kb(kb),
+            format_duration_secs(age.as_secs())
+        )),
+        (Some(kb), None) => parts.push(format!("last_rss={}", format_rss_kb(kb))),
+        _ => parts.push("last_rss=unsampled".to_string()),
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join("; "))
+    }
+}
+
+/// Compact `Ns` / `Nm Ns` / `Nh Nm` duration formatter for diagnostics. Pure.
+fn format_duration_secs(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{}m", secs / 3600, (secs % 3600) / 60)
+    }
 }
 
 /// Supervisor helper: is the watcher still inside its respawn-backoff window?
@@ -715,16 +833,24 @@ pub fn setup_daemon_supervisor(app: &AppHandle) {
     thread::spawn(move || {
         thread::sleep(SUPERVISOR_SETTLE);
         loop {
-            let daemon_alive = resolve_hq_folder_path()
+            let watcher_pid = resolve_hq_folder_path()
                 .ok()
-                .and_then(|p| read_pid_file(&p))
-                .map(is_pid_alive)
-                .unwrap_or(false);
+                .and_then(|p| read_pid_file(&p));
+            let daemon_alive = watcher_pid.map(is_pid_alive).unwrap_or(false);
             if daemon_alive {
                 // The watcher is up; once it has survived the fast-fail window,
                 // clear the crash-loop state so backoff + capture rate-limiting
                 // reset for the next failure episode (HQ-SYNC-4).
                 reset_crash_state_if_recovered();
+                // Sample the live watcher's RSS so if it is later killed by
+                // `signal=9`, the crash capture can report the footprint it had
+                // shortly before death — the jetsam/OOM vs kill -9 discriminator
+                // (HQ-SYNC-F). Best-effort; a failed sample is silently skipped.
+                if let Some(pid) = watcher_pid {
+                    if let Some(kb) = sample_pid_rss_kb(pid) {
+                        note_watcher_rss(kb);
+                    }
+                }
             } else if should_respawn_daemon(
                 is_realtime_sync_enabled(),
                 is_autostart_enabled(),
@@ -936,6 +1062,55 @@ mod tests {
         assert!(!should_reset_after_recovery(Some(Duration::from_secs(5)), window));
         // No spawn recorded → nothing to reset.
         assert!(!should_reset_after_recovery(None, window));
+    }
+
+    #[test]
+    fn parse_ps_rss_handles_padding_and_junk() {
+        // `ps -o rss=` is headerless; may be left-padded with spaces.
+        assert_eq!(parse_ps_rss_kb("  186234\n"), Some(186234));
+        assert_eq!(parse_ps_rss_kb("512"), Some(512));
+        // Empty (dead pid) or non-numeric → None, never a bogus 0.
+        assert_eq!(parse_ps_rss_kb(""), None);
+        assert_eq!(parse_ps_rss_kb("\n"), None);
+        assert_eq!(parse_ps_rss_kb("RSS"), None);
+    }
+
+    #[test]
+    fn format_rss_scales_kb_mb_gb() {
+        assert_eq!(format_rss_kb(512), "512KB");
+        assert_eq!(format_rss_kb(1024), "1MB");
+        assert_eq!(format_rss_kb(186_234), "181MB");
+        assert_eq!(format_rss_kb(1024 * 1024), "1.0GB");
+        assert_eq!(format_rss_kb(1_572_864), "1.5GB");
+    }
+
+    #[test]
+    fn format_duration_scales_s_m_h() {
+        assert_eq!(format_duration_secs(45), "45s");
+        assert_eq!(format_duration_secs(90), "1m30s");
+        assert_eq!(format_duration_secs(3600), "1h0m");
+        assert_eq!(format_duration_secs(19_082), "5h18m");
+    }
+
+    #[test]
+    fn exit_diagnostic_suffix_reports_uptime_and_rss() {
+        // Healthy-for-hours then killed with a fresh RSS sample — the OOM signal.
+        let s = exit_diagnostic_suffix(
+            Some(Duration::from_secs(19_082)),
+            Some(1_572_864),
+            Some(Duration::from_secs(27)),
+        );
+        assert_eq!(
+            s,
+            " [uptime=5h18m; last_rss=1.5GB (sampled 27s before exit)]"
+        );
+    }
+
+    #[test]
+    fn exit_diagnostic_suffix_marks_missing_rss_unsampled() {
+        // Crash before the first supervisor tick — uptime known, RSS never taken.
+        let s = exit_diagnostic_suffix(Some(Duration::from_secs(3)), None, None);
+        assert_eq!(s, " [uptime=3s; last_rss=unsampled]");
     }
 
     #[test]
