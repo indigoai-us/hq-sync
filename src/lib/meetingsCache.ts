@@ -48,6 +48,9 @@ export interface MeetingsSnapshot<
   TCalendar = unknown,
 > {
   events: TEvent[];
+  /** Full scheduled-bot list. Lets recurring instances hydrate against
+   *  series-level bots whose calendarEventId belongs to another occurrence. */
+  scheduledBots?: TBot[];
   /** [calendarEventId, bot] entries — deserialized into a Map by the caller. */
   botsByEventId: Array<[string, TBot]>;
   /** [companyUid, companyName] entries. */

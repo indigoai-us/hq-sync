@@ -7,6 +7,7 @@ import {
 import { loadMeetingsCache, saveMeetingsCache } from '../../lib/meetingsCache';
 import {
   buildRefreshProblemReport,
+  botForEvent,
   eventMeetingUrl,
   friendlyError,
   isAuthError,
@@ -78,6 +79,7 @@ let enabledCalIdsByAccount = $state<Map<string, Set<string>>>(new Map());
 // calendar snapshot (distinct from the live `meeting:detected` channel,
 // which is owned by ensureActiveMeetingListeners and left untouched).
 let botsByEventId = $state<Map<string, ScheduledBot>>(new Map());
+let allBots = $state<ScheduledBot[]>([]);
 // Persisted alongside the rest of the snapshot so the classic window and
 // the alt window stay in lockstep on the shared meetingsCache key.
 let companyNamesByUid = $state<Map<string, string>>(new Map());
@@ -121,6 +123,7 @@ function hydrateFromCache() {
   if (!snapshot) return;
   events = snapshot.events ?? [];
   botsByEventId = new Map(snapshot.botsByEventId ?? []);
+  allBots = snapshot.scheduledBots ?? (snapshot.botsByEventId ?? []).map(([, bot]) => bot);
   companyNamesByUid = new Map(snapshot.companyNamesByUid ?? []);
   accounts = snapshot.accounts ?? [];
   accountEmailById = new Map(snapshot.accountEmailById ?? []);
@@ -178,7 +181,10 @@ async function refresh() {
     refreshBlocked = false;
     lastRefreshErrorRaw = '';
     // Keep the previously-painted pills on a transient bots miss.
-    if (bots !== null) botsByEventId = buildBotMap(bots);
+    if (bots !== null) {
+      botsByEventId = buildBotMap(bots);
+      allBots = bots;
+    }
     memberships = members ?? [];
     companyNamesByUid = buildCompanyNameMap(members ?? []);
     accounts = accts ?? [];
@@ -273,6 +279,7 @@ async function loadCalendarsForAccounts(accts: GoogleAccount[]) {
 function persistSnapshot(): void {
   saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
     events,
+    scheduledBots: allBots,
     botsByEventId: Array.from(botsByEventId.entries()),
     companyNamesByUid: Array.from(companyNamesByUid.entries()),
     accounts,
@@ -368,7 +375,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
 /** Cancel the event's scheduled bot. No-op (returns null) when there's no bot
  *  on the row. No 409 special-case — a cancel conflict is a real failure. */
 async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
-  const bot = botsByEventId.get(evt.id);
+  const bot = botForEvent(evt, botsByEventId, allBots);
   if (!bot) return null;
   const key = evt.id;
   if (!lockRow(key)) return null;
@@ -483,6 +490,9 @@ export const meetingsStore = {
   },
   get botsByEventId() {
     return botsByEventId;
+  },
+  get scheduledBots() {
+    return allBots;
   },
   get companyNamesByUid() {
     return companyNamesByUid;

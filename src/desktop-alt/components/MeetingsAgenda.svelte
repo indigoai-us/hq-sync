@@ -2,6 +2,7 @@
   import {
     companyLabel,
     durationMinutes,
+    botForEvent,
     eventMeetingUrl,
     isRecurringMeeting,
     meetingState,
@@ -27,6 +28,8 @@
     liveEventId?: string | null;
     /** calendarEventId -> active scheduled bot, drives the per-row action state. */
     botsByEventId?: Map<string, ScheduledBot>;
+    /** Full active scheduled-bot list for recurring-series row resolution. */
+    scheduledBots?: ScheduledBot[];
     /** event ids with an in-flight bot action — disables + spins that row. */
     pendingEventIds?: Set<string>;
     /** Bot-action callbacks. The store owns the network call; this stays presentational. */
@@ -44,6 +47,7 @@
     companyNames = new Map(),
     liveEventId = null,
     botsByEventId = new Map(),
+    scheduledBots = [],
     pendingEventIds = new Set(),
     onInvite = () => {},
     onUninvite = () => {},
@@ -67,7 +71,7 @@
         {@const state = meetingState(event, { liveEventId, upNextId })}
         {@const dur = durationMinutes(event)}
         {@const sig = signalSummary(signalCounts(event))}
-        {@const bot = botsByEventId.get(event.id)}
+        {@const bot = botForEvent(event, botsByEventId, scheduledBots)}
         {@const pending = pendingEventIds.has(event.id)}
         {@const kind = rowButtonKind(bot)}
         {@const url = eventMeetingUrl(event)}
@@ -84,7 +88,14 @@
                 >{/if}
               <span class="meeting-title">{event.summary ?? '(no title)'}</span>
               {#if recurring}
-                <span class="series-chip" title="Recurring meeting series" aria-label="Recurring meeting series">series</span>
+                <span class="series-chip" title="series" aria-label="series" role="img">
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                    <path d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M8.8 2.8 11 4.5 8.8 6.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M5.2 11.2 3 9.5l2.2-1.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
               {/if}
             </div>
             <div class="mcompany">{companyLabel(event, companyNames)}</div>
@@ -338,14 +349,25 @@
 
   .series-chip {
     flex: 0 0 auto;
-    padding: 0 5px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
     color: var(--muted-3);
-    font-size: var(--text-micro);
-    font-weight: 500;
-    line-height: 14px;
-    text-transform: uppercase;
+    line-height: 1;
+    opacity: 0.76;
+  }
+
+  .series-chip svg {
+    display: block;
+    width: 12px;
+    height: 12px;
+  }
+
+  .series-chip:hover {
+    color: var(--muted);
+    opacity: 1;
   }
 
   .dot-live {
