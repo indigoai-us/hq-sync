@@ -148,6 +148,33 @@ export function isRecurringMeeting(event: MeetingEvent): boolean {
   return recurringSeriesId(event) !== null;
 }
 
+export function isActiveBotStatus(status: string): boolean {
+  return (
+    status === 'scheduled' ||
+    status === 'joining' ||
+    status === 'recording' ||
+    status === 'processing' ||
+    status === 'completed'
+  );
+}
+
+export function botForEvent(
+  event: MeetingEvent,
+  botsByEventId: Map<string, ScheduledBot>,
+  scheduledBots: ScheduledBot[] = Array.from(botsByEventId.values()),
+): ScheduledBot | undefined {
+  const exact = botsByEventId.get(event.id);
+  if (exact && isActiveBotStatus(exact.status)) return exact;
+
+  const seriesId = recurringSeriesId(event);
+  if (!seriesId) return undefined;
+
+  return scheduledBots.find((bot) => {
+    if (!isActiveBotStatus(bot.status)) return false;
+    return bot.calendarSeriesId?.trim() === seriesId;
+  });
+}
+
 export function isToday(event: MeetingEvent, now = new Date()): boolean {
   const start = eventStart(event);
   if (!start) return false;

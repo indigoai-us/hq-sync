@@ -199,7 +199,7 @@ describe('US-006: Alt Meetings page wires to existing detection + memberships', 
     expect(page).toContain('extractedSignalLabels(event).length > 0');
     expect(page).toContain('.slice(0, 3)');
     expect(page).toContain(
-      '<MeetingsAgenda groups={dayGroups} {upNext} totalCount={upcomingEvents.length} companyNames={companyNamesByUid} {liveEventId} {botsByEventId} {pendingEventIds} {onInvite} {onUninvite} {onJoinNow} onOpenExternal={openExternal} />',
+      '<MeetingsAgenda groups={dayGroups} {upNext} totalCount={upcomingEvents.length} companyNames={companyNamesByUid} {liveEventId} {botsByEventId} {scheduledBots} {pendingEventIds} {onInvite} {onUninvite} {onJoinNow} onOpenExternal={openExternal} />',
     );
     expect(agenda).toContain('{#each groups as group (group.label)}');
     expect(agenda).toContain('{#each group.events as event (event.id)}');

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { get } from 'svelte/store';
 import {
   activeRecordingsFromScheduledBots,
+  botForEvent,
   buildConnectedCalendarRows,
   buildRefreshProblemReport,
   dayLabel,
@@ -293,6 +294,66 @@ describe('meetings-model', () => {
 
       expect(recurringSeriesId(event)).toBeNull();
       expect(isRecurringMeeting(event)).toBe(false);
+    });
+  });
+
+  describe('botForEvent', () => {
+    function bot(overrides: Partial<ScheduledBot>): ScheduledBot {
+      return {
+        botId: 'bot-1',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij',
+        platform: 'google_meet',
+        status: 'scheduled',
+        autoScheduled: true,
+        ...overrides,
+      };
+    }
+
+    it('prefers the exact event bot when both exact and series bots match', () => {
+      const event = {
+        ...eventAt('series-1_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+      const exact = bot({
+        botId: 'bot-exact',
+        calendarEventId: event.id,
+        calendarSeriesId: 'series-1',
+      });
+      const series = bot({
+        botId: 'bot-series',
+        calendarEventId: 'series-1_20260520T190000Z',
+        calendarSeriesId: 'series-1',
+      });
+
+      expect(botForEvent(event, new Map([[event.id, exact]]), [series, exact])?.botId).toBe(
+        'bot-exact',
+      );
+    });
+
+    it('matches a recurring event row to a bot scheduled for the series', () => {
+      const event = {
+        ...eventAt('series-1_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+      const seriesBot = bot({
+        calendarEventId: 'series-1_20260520T190000Z',
+        calendarSeriesId: 'series-1',
+      });
+
+      expect(rowButtonKind(botForEvent(event, new Map(), [seriesBot]))).toBe('invited');
+    });
+
+    it('ignores inactive series bots so failed cancels can be retried by inviting again', () => {
+      const event = {
+        ...eventAt('series-1_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+      const failedBot = bot({
+        status: 'failed',
+        calendarSeriesId: 'series-1',
+      });
+
+      expect(botForEvent(event, new Map(), [failedBot])).toBeUndefined();
     });
   });
 

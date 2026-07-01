@@ -16,6 +16,7 @@
     saveMeetingsCache,
   } from '../lib/meetingsCache';
   import { isAlreadyScheduledError } from '../lib/invite-errors';
+  import { botForEvent } from '../desktop-alt/lib/meetings-model';
   import {
     UNATTRIBUTED,
     companyOptions,
@@ -164,7 +165,10 @@
   let botsByEventId = $state<Map<string, ScheduledBot>>(
     new Map(cachedSnapshot?.botsByEventId ?? []),
   );
-  let allBots = $state<ScheduledBot[]>([]);
+  let allBots = $state<ScheduledBot[]>(
+    cachedSnapshot?.scheduledBots ??
+      (cachedSnapshot?.botsByEventId ?? []).map(([, bot]) => bot),
+  );
   let companyNamesByUid = $state<Map<string, string>>(
     new Map(cachedSnapshot?.companyNamesByUid ?? []),
   );
@@ -596,6 +600,7 @@
   function persistSnapshot(): void {
     saveMeetingsCache<MeetingEvent, ScheduledBot, GoogleAccount, GoogleCalendar>({
       events,
+      scheduledBots: allBots,
       botsByEventId: Array.from(botsByEventId.entries()),
       companyNamesByUid: Array.from(companyNamesByUid.entries()),
       accounts,
@@ -717,7 +722,7 @@
   }
 
   async function onUninvite(evt: MeetingEvent) {
-    const bot = botsByEventId.get(evt.id);
+    const bot = botForEvent(evt, botsByEventId, allBots);
     if (!bot) return;
     const key = evt.id;
     if (rowPending.has(key)) return;
@@ -1675,7 +1680,7 @@
         <h3 class="day-heading">{group.label}</h3>
         <ul class="event-list">
           {#each group.events as evt (evt.id)}
-            {@const bot = botsByEventId.get(evt.id)}
+            {@const bot = botForEvent(evt, botsByEventId, allBots)}
             {@const pending = rowPending.has(evt.id)}
             {@const kind = rowButtonKind(bot)}
             {@const url = eventMeetingUrl(evt)}
@@ -1698,7 +1703,14 @@
                     {evt.summary ?? '(no title)'}
                   </span>
                   {#if recurring}
-                    <span class="series-chip" title="Recurring meeting series" aria-label="Recurring meeting series">series</span>
+                    <span class="series-chip" title="series" aria-label="series" role="img">
+                      <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <path d="M3.5 4.5h5.8c.95 0 1.7.76 1.7 1.7v.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M8.8 2.8 11 4.5 8.8 6.2" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M10.5 9.5H4.7C3.76 9.5 3 8.74 3 7.8v-.3" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                        <path d="M5.2 11.2 3 9.5l2.2-1.7" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </span>
                   {/if}
                 </span>
               </div>
@@ -2210,14 +2222,23 @@
   }
   .series-chip {
     flex: 0 0 auto;
-    padding: 0 5px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
-    color: rgba(250, 250, 250, 0.38);
-    font-size: var(--text-micro);
-    font-weight: 500;
-    line-height: 14px;
-    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    color: rgba(250, 250, 250, 0.36);
+    line-height: 1;
+    opacity: 0.76;
+  }
+  .series-chip svg {
+    display: block;
+    width: 12px;
+    height: 12px;
+  }
+  .series-chip:hover {
+    color: rgba(250, 250, 250, 0.62);
+    opacity: 1;
   }
   /* Per-calendar colour bar at the row's left edge. Replaces the
      calendar/account/company/platform text chips that used to occupy

@@ -41,6 +41,7 @@
   // — and the US-006 source-contract strings — stay unchanged.
   const events = $derived(meetingsStore.events);
   const botsByEventId = $derived(meetingsStore.botsByEventId);
+  const scheduledBots = $derived(meetingsStore.scheduledBots);
   const accounts = $derived(meetingsStore.accounts);
   const calendarsByAccount = $derived(meetingsStore.calendarsByAccount);
   const enabledCalIdsByAccount = $derived(meetingsStore.enabledCalIdsByAccount);
@@ -272,6 +273,7 @@
       companyNames={companyNamesByUid}
       {liveEventId}
       {botsByEventId}
+      {scheduledBots}
       {pendingEventIds}
       {onInvite}
       {onUninvite}
