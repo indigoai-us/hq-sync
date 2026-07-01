@@ -397,6 +397,34 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
         }
     }
 
+    // Runner-resolution preflight (HQ-SYNC-E). Before spawning the watcher,
+    // confirm the runner's Node/npx interpreter actually resolves. When it
+    // doesn't, the old spawn fell through to a bare shell and exited 127
+    // (`sh: hq-sync-runner: command not found`), and the supervisor hot-respawned
+    // it into a crash-loop. Bail here instead: surface one clear, user-actionable
+    // message (rate-limited like the crash path so a persistent miss ships
+    // ~log2(N) events, not one per 30s respawn) and DON'T spawn a doomed runner.
+    if let Some(msg) = crate::commands::sync::preflight_runner_unresolvable() {
+        let consecutive = note_runner_unresolvable();
+        if should_capture_crash(consecutive) {
+            crate::commands::sync::capture_sync_error(
+                None,
+                "(auto-sync)",
+                &format!(
+                    "auto-sync watcher cannot start: {msg} \
+                     (consecutive #{consecutive}, further repeats rate-limited)"
+                ),
+            );
+        } else {
+            log(
+                "daemon",
+                &format!("runner unresolvable #{consecutive} — capture rate-limited"),
+            );
+        }
+        deregister_process(DAEMON_HANDLE);
+        return Err(msg);
+    }
+
     let spawn_args = build_watch_runner_args(&hq_folder_path);
 
     log("daemon", "spawn: hq-sync-runner --watch");
@@ -600,6 +628,11 @@ struct WatcherCrashState {
     spawn_at: Option<Instant>,
     /// The supervisor must not respawn before this instant (backoff window).
     backoff_until: Option<Instant>,
+    /// Consecutive runner-resolution preflight failures (HQ-SYNC-E). Tracked
+    /// separately from `consecutive` because the preflight bails BEFORE a spawn,
+    /// so the spawn-timestamp fast-failure logic doesn't apply — this is a plain
+    /// per-episode counter, reset to 0 the moment a watcher actually spawns.
+    preflight_fails: u32,
 }
 
 static CRASH_STATE: OnceLock<Mutex<WatcherCrashState>> = OnceLock::new();
@@ -612,6 +645,19 @@ fn crash_state() -> &'static Mutex<WatcherCrashState> {
 fn note_watcher_spawned() {
     let mut st = crash_state().lock().unwrap();
     st.spawn_at = Some(Instant::now());
+    // A spawn means the runner resolved — clear the preflight failure streak so
+    // its capture rate-limiting resets for the next episode (HQ-SYNC-E).
+    st.preflight_fails = 0;
+}
+
+/// Record a runner-resolution preflight failure (HQ-SYNC-E) and return the
+/// consecutive count so the caller can rate-limit the capture. Separate from
+/// `note_watcher_crashed` because no spawn occurred — this is a plain counter,
+/// not the spawn-timestamp fast-failure machinery.
+fn note_runner_unresolvable() -> u32 {
+    let mut st = crash_state().lock().unwrap();
+    st.preflight_fails = st.preflight_fails.saturating_add(1);
+    st.preflight_fails
 }
 
 /// Update the crash-loop state on an unexpected watcher exit and return the
