@@ -44,7 +44,7 @@ describe('US-015: Meetings in V4 remains gated and action-complete', () => {
     expect(meetingsStore).toContain("invoke<MeetingEvent[]>('meetings_list_upcoming')");
     expect(meetingsStore).toContain("invoke<ScheduledBot[]>('meetings_list_scheduled_bots'");
     expect(meetingsStore).toContain("invoke<ScheduledBot>('meetings_invite_bot'");
-    expect(meetingsStore).toContain("await invoke('meetings_cancel_bot'");
+    expect(meetingsStore).toContain("invoke<CancelBotResult>('meetings_cancel_bot'");
     expect(meetingsStore).toContain("invoke<ScheduledBot>('meetings_join_bot_now'");
 
     expect(meetingsPage).toContain('const liveMeeting = $derived(pickLiveMeeting');
@@ -53,7 +53,9 @@ describe('US-015: Meetings in V4 remains gated and action-complete', () => {
     expect(meetingsPage).toContain('onstop={stopRecording}');
 
     expect(meetingsAgenda).toContain("aria-label=\"Invite bot\"");
-    expect(meetingsAgenda).toContain("aria-label=\"Uninvite bot\"");
+    expect(meetingsAgenda).toContain(
+      "aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}",
+    );
     expect(meetingsAgenda).toContain("aria-label=\"Tell bot to join now\"");
     expect(meetingsAgenda).toContain("<span class=\"pill\">Scheduled</span>");
     expect(liveNowCard).toContain('Start recording');

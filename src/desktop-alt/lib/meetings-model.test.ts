@@ -9,6 +9,8 @@ import {
   isAuthError,
   meetingsRefreshNotice,
   pickLiveMeeting,
+  recurringSeriesId,
+  isRecurringMeeting,
   rowButtonKind,
   totalSignalCounts,
   type MeetingEvent,
@@ -256,6 +258,42 @@ describe('meetings-model', () => {
 
     expect(groups).toHaveLength(1);
     expect(groups[0].events.map((e) => e.id)).toEqual(['real']);
+  });
+
+  describe('recurring meeting detection', () => {
+    it('prefers the explicit Google recurringEventId', () => {
+      const event = {
+        ...eventAt('instance-1', new Date(2026, 4, 27, 12, 0, 0)),
+        recurringEventId: 'series-1',
+      };
+
+      expect(recurringSeriesId(event)).toBe('series-1');
+      expect(isRecurringMeeting(event)).toBe(true);
+    });
+
+    it('treats recurrence rules on a master event as a series', () => {
+      const event = {
+        ...eventAt('series-master', new Date(2026, 4, 27, 12, 0, 0)),
+        recurrence: ['RRULE:FREQ=WEEKLY'],
+      };
+
+      expect(recurringSeriesId(event)).toBe('series-master');
+      expect(isRecurringMeeting(event)).toBe(true);
+    });
+
+    it('derives the series id from Google instance ids for legacy payloads', () => {
+      const event = eventAt('team_sync_20260527T190000Z', new Date(2026, 4, 27, 12, 0, 0));
+
+      expect(recurringSeriesId(event)).toBe('team_sync');
+      expect(isRecurringMeeting(event)).toBe(true);
+    });
+
+    it('returns null for one-off events', () => {
+      const event = eventAt('one-off', new Date(2026, 4, 27, 12, 0, 0));
+
+      expect(recurringSeriesId(event)).toBeNull();
+      expect(isRecurringMeeting(event)).toBe(false);
+    });
   });
 
   // US-010 — "Done — transcript saved" must be gated on the REAL source-landed
