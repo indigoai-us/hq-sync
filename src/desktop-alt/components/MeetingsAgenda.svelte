@@ -3,6 +3,7 @@
     companyLabel,
     durationMinutes,
     eventMeetingUrl,
+    isRecurringMeeting,
     meetingState,
     rowButtonKind,
     signalCounts,
@@ -70,6 +71,7 @@
         {@const pending = pendingEventIds.has(event.id)}
         {@const kind = rowButtonKind(bot)}
         {@const url = eventMeetingUrl(event)}
+        {@const recurring = isRecurringMeeting(event)}
         <div class="meeting-row" class:past={state === 'past'}>
           <div class="mtime">
             {timeLabel(event)}{#if dur}<span class="mdur"> &middot; {dur}m</span>{/if}
@@ -79,7 +81,11 @@
               {#if state === 'live'}<span class="dot-live" aria-hidden="true">&#9679;</span>{:else if state === 'next'}<span
                   class="arrow-next"
                   aria-hidden="true">&#8593;</span
-                >{/if}{event.summary ?? '(no title)'}
+                >{/if}
+              <span class="meeting-title">{event.summary ?? '(no title)'}</span>
+              {#if recurring}
+                <span class="series-chip" title="Recurring meeting series" aria-label="Recurring meeting series">series</span>
+              {/if}
             </div>
             <div class="mcompany">{companyLabel(event, companyNames)}</div>
           </div>
@@ -120,7 +126,7 @@
                 type="button"
                 class="row-icon-btn row-icon-invite"
                 disabled={pending}
-                title={pending ? 'Inviting…' : 'Invite bot to this meeting'}
+                title={pending ? 'Inviting…' : recurring ? 'Invite bot to this series' : 'Invite bot to this meeting'}
                 aria-label="Invite bot"
                 onclick={() => onInvite(event)}
               >
@@ -137,8 +143,8 @@
                 type="button"
                 class="row-icon-btn row-icon-invited"
                 disabled={pending}
-                title={pending ? 'Cancelling…' : 'Bot scheduled — click to uninvite'}
-                aria-label="Uninvite bot"
+                title={pending ? 'Cancelling…' : recurring ? 'Bot scheduled for series — click to uninvite series' : 'Bot scheduled — click to uninvite'}
+                aria-label={recurring ? 'Uninvite bot from series' : 'Uninvite bot'}
                 onclick={() => onUninvite(event)}
               >
                 {#if pending}
@@ -154,8 +160,8 @@
                 type="button"
                 class="row-icon-btn row-icon-incall"
                 disabled={pending}
-                title={pending ? 'Removing bot…' : 'Bot is in the meeting — click to remove'}
-                aria-label="Remove bot from meeting"
+                title={pending ? 'Removing bot…' : recurring ? 'Bot is in this series — click to remove from series' : 'Bot is in the meeting — click to remove'}
+                aria-label={recurring ? 'Remove bot from series' : 'Remove bot from meeting'}
                 onclick={() => onUninvite(event)}
               >
                 {#if pending}
@@ -169,8 +175,8 @@
                 type="button"
                 class="row-icon-btn row-icon-joining"
                 disabled={pending}
-                title={pending ? 'Cancelling…' : 'Bot is joining — click to cancel'}
-                aria-label="Cancel bot join"
+                title={pending ? 'Cancelling…' : recurring ? 'Bot is joining this series — click to cancel series' : 'Bot is joining — click to cancel'}
+                aria-label={recurring ? 'Cancel bot series join' : 'Cancel bot join'}
                 onclick={() => onUninvite(event)}
               >
                 <span class="row-icon-spinner row-icon-spinner-amber" aria-hidden="true"></span>
@@ -313,12 +319,33 @@
   }
 
   .mname {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
     overflow: hidden;
     color: var(--fg);
     font-size: var(--text-base);
     line-height: 18px;
-    text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .meeting-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .series-chip {
+    flex: 0 0 auto;
+    padding: 0 5px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--muted-3);
+    font-size: var(--text-micro);
+    font-weight: 500;
+    line-height: 14px;
+    text-transform: uppercase;
   }
 
   .dot-live {

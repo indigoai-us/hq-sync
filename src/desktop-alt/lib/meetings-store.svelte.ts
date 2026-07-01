@@ -11,6 +11,7 @@ import {
   friendlyError,
   isAuthError,
   meetingsRefreshNotice,
+  recurringSeriesId,
 } from './meetings-model';
 import type {
   CompanyMembership,
@@ -36,6 +37,13 @@ export interface ToastDescriptor {
 interface AccountCalendars {
   calendars: GoogleCalendar[];
   selectedCalendarIds: string[];
+}
+
+interface CancelBotResult {
+  scope?: string | null;
+  cancelledCount?: number | null;
+  failedCount?: number | null;
+  recurringMeeting?: boolean;
 }
 
 // Poll cadence for the background refresh. Long enough to be cheap, short
@@ -340,6 +348,7 @@ async function inviteBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     await invoke<ScheduledBot>('meetings_invite_bot', {
       meetingUrl: url,
       calendarEventId: evt.id,
+      calendarSeriesId: recurringSeriesId(evt),
       companyId: evt.sourceCompanyUid ?? null,
     });
     await refresh();
@@ -364,8 +373,11 @@ async function cancelBot(evt: MeetingEvent): Promise<ToastDescriptor | null> {
   const key = evt.id;
   if (!lockRow(key)) return null;
   try {
-    await invoke('meetings_cancel_bot', { botId: bot.botId });
+    const result = await invoke<CancelBotResult>('meetings_cancel_bot', { botId: bot.botId });
     await refresh();
+    if (result.scope === 'series' || result.recurringMeeting || (result.cancelledCount ?? 0) > 1) {
+      return { kind: 'info', text: 'Bot uninvited from series.' };
+    }
     return { kind: 'info', text: 'Bot uninvited.' };
   } catch (err) {
     return { kind: 'warn', text: friendlyError(err, "Couldn't remove the bot.") };
@@ -386,6 +398,7 @@ async function joinBotNow(evt: MeetingEvent): Promise<ToastDescriptor | null> {
     await invoke<ScheduledBot>('meetings_join_bot_now', {
       meetingUrl: url,
       calendarEventId: evt.id,
+      calendarSeriesId: recurringSeriesId(evt),
       companyId: evt.sourceCompanyUid ?? null,
     });
     await refresh();

@@ -61,6 +61,12 @@ pub struct MeetingEvent {
     pub summary: Option<String>,
     pub start: EventTime,
     pub end: EventTime,
+    #[serde(default, rename = "recurringEventId")]
+    pub recurring_event_id: Option<String>,
+    #[serde(default)]
+    pub recurrence: Vec<String>,
+    #[serde(default, rename = "originalStartTime")]
+    pub original_start_time: Option<EventTime>,
     /// "confirmed" | "tentative" | "cancelled"
     pub status: String,
     #[serde(default, rename = "hangoutLink")]
@@ -117,6 +123,10 @@ pub struct ScheduledBot {
     pub platform: String,
     pub status: String,
     pub calendar_event_id: Option<String>,
+    #[serde(default)]
+    pub calendar_series_id: Option<String>,
+    #[serde(default)]
+    pub recurring_meeting: bool,
     #[serde(alias = "title")]
     pub meeting_title: Option<String>,
     pub scheduled_start_time: Option<String>,
@@ -207,9 +217,34 @@ struct InviteBotBody {
     meeting_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     calendar_event_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    calendar_series_id: Option<String>,
     /// Ontology-resolved participants (US-005). Absent when fetch timed out.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     participants: Vec<OntologyParticipant>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelBotResult {
+    #[serde(alias = "recallBotId")]
+    pub bot_id: String,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub cancelled: bool,
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub cancelled_count: Option<u32>,
+    #[serde(default)]
+    pub failed_count: Option<u32>,
+    #[serde(default)]
+    pub calendar_series_id: Option<String>,
+    #[serde(default)]
+    pub recurring_meeting: bool,
+    #[serde(default)]
+    pub cancelled_bot_ids: Vec<String>,
 }
 
 /// Fetch ontology-resolved participants for a meeting, with a hard 2-second
@@ -690,6 +725,7 @@ pub async fn meetings_set_company(
 pub async fn meetings_invite_bot(
     meeting_url: String,
     calendar_event_id: Option<String>,
+    calendar_series_id: Option<String>,
     company_id: Option<String>,
 ) -> Result<ScheduledBot, String> {
     let base = vault_base().await?;
@@ -709,6 +745,7 @@ pub async fn meetings_invite_bot(
     let body = InviteBotBody {
         meeting_url,
         calendar_event_id,
+        calendar_series_id,
         participants,
     };
     let res = build_client()
@@ -747,6 +784,7 @@ pub async fn meetings_invite_bot(
 pub async fn meetings_join_bot_now(
     meeting_url: String,
     calendar_event_id: Option<String>,
+    calendar_series_id: Option<String>,
     company_id: Option<String>,
 ) -> Result<ScheduledBot, String> {
     let base = vault_base().await?;
@@ -761,6 +799,7 @@ pub async fn meetings_join_bot_now(
     let body = InviteBotBody {
         meeting_url,
         calendar_event_id,
+        calendar_series_id,
         // join-now reuses an existing bot record when one already exists
         // for the meeting; if not, the server creates a fresh one. We
         // don't have ontology participants in scope here (we'd need a
@@ -834,7 +873,7 @@ pub async fn meetings_list_memberships() -> Result<Vec<CompanyMembership>, Strin
 /// validate the shape before concatenating into the path to keep the URL
 /// well-formed without pulling in a percent-encoding crate.
 #[tauri::command]
-pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
+pub async fn meetings_cancel_bot(bot_id: String) -> Result<CancelBotResult, String> {
     if bot_id.is_empty() {
         return Err("bot_id is required".to_string());
     }
@@ -851,11 +890,14 @@ pub async fn meetings_cancel_bot(bot_id: String) -> Result<(), String> {
         .await
         .map_err(|e| format!("bot/cancel fetch: {e}"))?;
     let status = res.status();
+    let text = res
+        .text()
+        .await
+        .map_err(|e| format!("bot/cancel read: {e}"))?;
     if !status.is_success() {
-        let text = res.text().await.unwrap_or_default();
         return Err(format!("bot/cancel HTTP {status}: {text}"));
     }
-    Ok(())
+    serde_json::from_str(&text).map_err(|e| format!("bot/cancel parse: {e} — body: {text}"))
 }
 
 // ── Detection-triggered notification commands ─────────────────────────────────
@@ -1517,6 +1559,8 @@ mod tests {
             platform: "zoom".into(),
             status: status.into(),
             calendar_event_id: None,
+            calendar_series_id: None,
+            recurring_meeting: false,
             meeting_title: None,
             scheduled_start_time: None,
             created_at: None,
@@ -1577,6 +1621,8 @@ mod tests {
             "platform": "google_meet",
             "status": "scheduled",
             "calendarEventId": "evt-1",
+            "calendarSeriesId": "series-1",
+            "recurringMeeting": true,
             "meetingTitle": "Standup",
             "scheduledStartTime": "2026-05-15T10:00:00Z",
             "autoScheduled": true,
@@ -1586,6 +1632,8 @@ mod tests {
         assert_eq!(bot.bot_id, "bot-abc");
         assert_eq!(bot.status, "scheduled");
         assert_eq!(bot.calendar_event_id.as_deref(), Some("evt-1"));
+        assert_eq!(bot.calendar_series_id.as_deref(), Some("series-1"));
+        assert!(bot.recurring_meeting);
         assert!(bot.auto_scheduled);
         assert!(bot.error_message.is_none());
     }
@@ -1615,7 +1663,32 @@ mod tests {
             "manual invite defaults to not auto-scheduled"
         );
         assert!(bot.calendar_event_id.is_none());
+        assert!(bot.calendar_series_id.is_none());
+        assert!(!bot.recurring_meeting);
         assert!(bot.meeting_title.is_none());
+    }
+
+    #[test]
+    fn cancel_bot_result_parses_series_response() {
+        let json = r#"{
+            "botId": "bot-abc",
+            "status": "failed",
+            "cancelled": true,
+            "scope": "series",
+            "cancelledCount": 3,
+            "failedCount": 1,
+            "calendarSeriesId": "series-1",
+            "recurringMeeting": true,
+            "cancelledBotIds": ["bot-abc", "bot-def", "bot-ghi"]
+        }"#;
+        let result: CancelBotResult = serde_json::from_str(json).expect("cancel result parse");
+        assert_eq!(result.bot_id, "bot-abc");
+        assert_eq!(result.scope.as_deref(), Some("series"));
+        assert_eq!(result.cancelled_count, Some(3));
+        assert_eq!(result.failed_count, Some(1));
+        assert_eq!(result.calendar_series_id.as_deref(), Some("series-1"));
+        assert!(result.recurring_meeting);
+        assert_eq!(result.cancelled_bot_ids.len(), 3);
     }
 
     #[test]
@@ -1821,16 +1894,27 @@ mod tests {
     }
 
     #[test]
-    fn meeting_event_parses_with_only_required_fields() {
+    fn meeting_event_parses_recurring_fields() {
         let json = r#"{
             "id": "evt-1",
             "start": {"dateTime": "2026-05-15T14:00:00Z"},
             "end": {"dateTime": "2026-05-15T15:00:00Z"},
-            "status": "confirmed"
+            "status": "confirmed",
+            "recurringEventId": "series-1",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "originalStartTime": {"dateTime": "2026-05-15T14:00:00Z"}
         }"#;
         let evt: MeetingEvent = serde_json::from_str(json).expect("parse");
         assert_eq!(evt.id, "evt-1");
         assert_eq!(evt.status, "confirmed");
+        assert_eq!(evt.recurring_event_id.as_deref(), Some("series-1"));
+        assert_eq!(evt.recurrence, vec!["RRULE:FREQ=WEEKLY"]);
+        assert_eq!(
+            evt.original_start_time
+                .as_ref()
+                .and_then(|time| time.date_time.as_deref()),
+            Some("2026-05-15T14:00:00Z"),
+        );
         assert!(evt.summary.is_none());
         assert!(evt.hangout_link.is_none());
         assert!(evt.source_calendar_id.is_none());
