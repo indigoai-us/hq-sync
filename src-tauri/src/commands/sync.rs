@@ -431,7 +431,21 @@ const MIN_NODE_MAJOR: u32 = 20;
 /// bump the tilde pin stayed on the 6.11 line and the menubar runner never
 /// pulled local companies down. Cloud-backed companies are still excluded and
 /// their stale personal-vault copies decommissioned via the membership path.
-pub const HQ_CLOUD_VERSION: &str = "~6.12.1";
+///
+/// `~6.12.x` -> `~6.13.4`: adopt hq-cloud#149 — a local file over the 50 MB
+/// sync size limit now emits a benign `skip-size-limit` event instead of
+/// `type: "error"`. On the 6.12 line the runner still classified that skip as a
+/// transfer error, so `errors.length > 0` made every watch pass return exit 2,
+/// which THIS supervisor reported as "auto-sync watcher exited unexpectedly
+/// (code=Some(2))" on every ~30s tick. Fleet-wide that was the HQ-SYNC-4 flood
+/// (~93k events across 60+ machines), driven by large videos in synced trees.
+/// Any machine with one oversized file crash-looped the watcher until this pin
+/// moves to a runner that carries the fix. The jump also picks up the
+/// intervening 6.13.0–6.13.3 sync fixes (reindex orphan-symlink pruning and the
+/// stale personal-overlay-marker collision, hq-cloud#146/#147). New
+/// `skip-size-limit` ndjson events are safely ignored by any menubar that
+/// predates them (`handle_watch_stdout_line` drops unparseable lines).
+pub const HQ_CLOUD_VERSION: &str = "~6.13.4";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
