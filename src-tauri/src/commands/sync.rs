@@ -445,7 +445,19 @@ const MIN_NODE_MAJOR: u32 = 20;
 /// stale personal-overlay-marker collision, hq-cloud#146/#147). New
 /// `skip-size-limit` ndjson events are safely ignored by any menubar that
 /// predates them (`handle_watch_stdout_line` drops unparseable lines).
-pub const HQ_CLOUD_VERSION: &str = "~6.13.4";
+///
+/// `~6.13.4` -> `~6.13.5`: adopt hq-cloud#152 — a transient network failure
+/// (the machine briefly offline: `fetch failed` during membership discovery,
+/// after retries) no longer exits the auto-sync watcher. On 6.13.4 that blip
+/// `return 1`d, the watch loop propagated it, the process exited, and THIS
+/// supervisor reported "auto-sync watcher exited unexpectedly (code=Some(1))"
+/// for every network hiccup (HQ-SYNC-1W: ~207 events). The runner now returns a
+/// distinct retryable code (`EX_TEMPFAIL` = 75) that its watch loop treats as
+/// "stay alive, retry next poll", so an offline blip self-heals silently. A
+/// one-shot `hq sync` still exits non-zero. No menubar-side change is required
+/// for correctness (the watcher simply stops exiting on a blip); this bump just
+/// ships the runner that carries the fix.
+pub const HQ_CLOUD_VERSION: &str = "~6.13.5";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
