@@ -379,6 +379,11 @@ pub async fn install_hq_core_update(
             log_path.display()
         ),
     );
+    if let Some(detail) =
+        crate::commands::hq_core_staging::rescue_failure_detail(exit_code, &log_tail)
+    {
+        log("hq-core-update", &detail);
+    }
 
     Ok(crate::commands::hq_core_staging::RescueRunResult {
         exit_code,

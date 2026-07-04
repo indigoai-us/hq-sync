@@ -656,6 +656,9 @@ pub async fn run_replace_from_staging() -> Result<RescueRunResult, String> {
         "hq-core-staging",
         &format!("rescue exit={} log={}", exit_code, log_path.display()),
     );
+    if let Some(detail) = rescue_failure_detail(exit_code, &log_tail) {
+        log("hq-core-staging", &detail);
+    }
 
     Ok(RescueRunResult {
         exit_code,
@@ -676,6 +679,37 @@ pub(crate) fn tail_log(path: &std::path::Path, n_lines: usize) -> Result<String,
     let lines: Vec<&str> = content.lines().collect();
     let start = lines.len().saturating_sub(n_lines);
     Ok(lines[start..].join("\n"))
+}
+
+/// Build the durable-log root-cause detail for a rescue spawn that exited
+/// non-zero. Returns `None` on success (exit 0) so callers only leave the
+/// extra breadcrumb on failure.
+///
+/// Why this exists: the rescue script streams its real error — e.g. a
+/// `git clone` failure that surfaces as exit code 5 — only to the
+/// per-invocation temp log under the OS temp dir. macOS reaps that temp file,
+/// so a later look at the durable log (`~/.hq/logs/hq-sync.log`) shows just
+/// `rescue exit=5 log=/var/folders/…` with no root cause — exactly the
+/// undiagnosable clone failure reported in DEV-1846 (feedback_41e1ef90). On
+/// failure we fold the captured tail into the durable log so the underlying
+/// error survives the temp file being purged.
+///
+/// Pure (no I/O) so it is unit-testable; the caller passes the tail it already
+/// captured via [`tail_log`] and writes the returned string through
+/// [`crate::util::logfile::log`].
+pub(crate) fn rescue_failure_detail(exit_code: i32, log_tail: &str) -> Option<String> {
+    if exit_code == 0 {
+        return None;
+    }
+    let trimmed = log_tail.trim();
+    let detail = if trimmed.is_empty() {
+        "(no output captured from rescue script)"
+    } else {
+        trimmed
+    };
+    Some(format!(
+        "rescue FAILED exit={exit_code} — captured script output (root cause) follows:\n{detail}"
+    ))
 }
 
 #[cfg(test)]
@@ -717,6 +751,54 @@ mod tests {
         // marker but no companies/ -> not an HQ root.
         let no_co = mk("nocompanies", &[".claude", "core", "personal"]);
         assert!(!looks_like_hq_root(&no_co));
+    }
+
+    /// Regression for DEV-1846 (feedback_41e1ef90): a rescue that exits
+    /// non-zero must surface the underlying error (the captured tail) so a
+    /// later clone failure is diagnosable from the durable log — not just a
+    /// bare `rescue exit=5`.
+    #[test]
+    fn rescue_failure_detail_carries_root_cause_on_nonzero_exit() {
+        let tail = "Cloning into '/tmp/hq-core'...\n\
+                    fatal: unable to access 'https://github.com/indigoai-us/hq-core/': \
+                    Could not resolve host: github.com\n\
+                    hq-rescue: clone failed";
+        let detail = rescue_failure_detail(5, tail).expect("non-zero exit must yield detail");
+        // The exit code is named…
+        assert!(
+            detail.contains("exit=5"),
+            "detail must name the exit code: {detail}"
+        );
+        // …and the real git clone error is folded into the durable line.
+        assert!(
+            detail.contains("Could not resolve host: github.com"),
+            "detail must carry the underlying clone error: {detail}"
+        );
+        assert!(
+            detail.contains("clone failed"),
+            "detail must carry the rescue script's own failure line: {detail}"
+        );
+    }
+
+    /// A clean rescue (exit 0) must NOT emit an extra failure breadcrumb — the
+    /// durable log stays quiet on success.
+    #[test]
+    fn rescue_failure_detail_is_none_on_success() {
+        assert!(rescue_failure_detail(0, "everything is fine\nrescue complete").is_none());
+    }
+
+    /// Even when the tail is empty (temp log truncated/rotated), a non-zero
+    /// exit still produces a breadcrumb rather than silently dropping it, so
+    /// the failure is never invisible in the durable log.
+    #[test]
+    fn rescue_failure_detail_handles_empty_tail_on_failure() {
+        let detail =
+            rescue_failure_detail(5, "   \n  \n").expect("non-zero exit must yield detail");
+        assert!(detail.contains("exit=5"));
+        assert!(
+            detail.contains("no output captured"),
+            "empty tail must be labelled, not left blank: {detail}"
+        );
     }
 
     fn idx() -> StagingIndex {
