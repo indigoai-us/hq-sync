@@ -437,7 +437,7 @@ const MIN_NODE_MAJOR: u32 = 20;
 /// `type: "error"`. On the 6.12 line the runner still classified that skip as a
 /// transfer error, so `errors.length > 0` made every watch pass return exit 2,
 /// which THIS supervisor reported as "auto-sync watcher exited unexpectedly
-/// (code=Some(2))" on every ~30s tick. Fleet-wide that was the HQ-SYNC-4 flood
+/// (code=Some(2))" on every ~30s tick. Across user machines that was the HQ-SYNC-4 flood
 /// (~93k events across 60+ machines), driven by large videos in synced trees.
 /// Any machine with one oversized file crash-looped the watcher until this pin
 /// moves to a runner that carries the fix. The jump also picks up the

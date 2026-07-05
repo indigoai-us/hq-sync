@@ -489,7 +489,7 @@ pub fn start_daemon(app: AppHandle) -> Result<String, String> {
                         // counter (driving the supervisor's respawn backoff) and
                         // rate-limit the capture so an ongoing failure ships
                         // ~log2(N) actionable events, not one per respawn (the
-                        // 36,977-event fleet flood). The first crash still alerts.
+                        // 36,977-event flood across user machines). The first crash still alerts.
                         let consecutive = note_watcher_crashed();
                         // Enrich with uptime + last-sampled RSS so a `signal=9`
                         // can be told apart later — jetsam/OOM vs a manual/OS
@@ -581,7 +581,7 @@ fn is_unexpected_watcher_exit(success: bool, signal: Option<i32>, cancelled: boo
 // A watcher that keeps failing (the runner can't upload — `presign put denied` —
 // or its exec target isn't runnable: exit 1/2/126) was respawned by the
 // supervisor every `SUPERVISOR_INTERVAL` (30s) AND Sentry-captured on EVERY
-// exit. Fleet-wide that turned one per-machine failure into a 36,977-event flood
+// exit. Across all user machines that turned one per-machine failure into a 36,977-event flood
 // plus an endless hot-respawn. We dampen BOTH legs without hiding the signal:
 // the first crash still alerts, respawns back off exponentially, and the capture
 // is rate-limited to ~log2(N) events.
