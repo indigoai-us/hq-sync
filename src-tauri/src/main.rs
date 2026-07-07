@@ -523,6 +523,8 @@ fn main() {
             // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
             // See `commands::version_gate` for the rationale.
             commands::version_gate::setup_version_gate(app.handle());
+            #[cfg(feature = "migrate-to-hq-desktop")]
+            commands::migrate::setup_migration(app.handle());
             updater::setup_update_checker(app.handle());
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.

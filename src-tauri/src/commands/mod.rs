@@ -26,6 +26,7 @@ pub mod library_local;
 pub mod marketplace;
 pub mod meetings;
 pub mod messages;
+pub mod migrate;
 pub mod notification_history;
 pub mod notifications;
 pub mod oauth;
