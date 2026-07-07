@@ -29,7 +29,16 @@ const HQ_DESKTOP_PUBKEY: &str = "untrusted comment: minisign public key: 702D182
 const MIGRATION_MARKER: &str = "migratedToDesktopApp";
 const LOCK_FILE_NAME: &str = "migrate-to-hq-desktop.lock";
 const INITIAL_DELAY: Duration = Duration::from_secs(3);
+/// Timeout for the small `latest.json` manifest fetch.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// Fail fast if a connection can't even be established, regardless of the
+/// (deliberately generous) total timeout on the big bundle download below.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Total timeout for the ~90 MB app-bundle download. `reqwest`'s `.timeout()`
+/// caps the WHOLE request (headers + body), so this must comfortably exceed the
+/// download time on a slow link — a 15s cap failed the download at ~6 MB/s.
+/// 10 minutes covers roughly a 0.15 MB/s (~1.2 Mbps) connection; retries add headroom.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const REQUEST_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,7 +257,7 @@ fn lock_owner_is_alive(path: &Path) -> bool {
 }
 
 async fn fetch_text_with_retries(url: &str) -> Result<String, String> {
-    let response = fetch_response_with_retries(url).await?;
+    let response = fetch_response_with_retries(url, REQUEST_TIMEOUT).await?;
     response
         .text()
         .await
@@ -256,7 +265,7 @@ async fn fetch_text_with_retries(url: &str) -> Result<String, String> {
 }
 
 async fn fetch_bytes_with_retries(url: &str) -> Result<Vec<u8>, String> {
-    let response = fetch_response_with_retries(url).await?;
+    let response = fetch_response_with_retries(url, DOWNLOAD_TIMEOUT).await?;
     response
         .bytes()
         .await
@@ -264,9 +273,13 @@ async fn fetch_bytes_with_retries(url: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("read bytes response from {url}: {e}"))
 }
 
-async fn fetch_response_with_retries(url: &str) -> Result<reqwest::Response, String> {
+async fn fetch_response_with_retries(
+    url: &str,
+    timeout: Duration,
+) -> Result<reqwest::Response, String> {
     let client = reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(timeout)
         .build()
         .map_err(|e| format!("build reqwest client: {e}"))?;
 
