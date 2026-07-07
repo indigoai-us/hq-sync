@@ -143,7 +143,7 @@ mac-notification-sys = "0.6"
 objc2-core-foundation = "0.3"
 
 [features]
-default = []
+default = ["migrate-to-hq-desktop"]
 journal-cli = []
 migrate-to-hq-desktop = []
 
