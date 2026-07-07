@@ -522,10 +522,17 @@ fn main() {
             // user touches anything sensitive. Server-side source of truth is
             // `apps/hq-pro/src/vault-service/handlers/client-version-check.ts`.
             // See `commands::version_gate` for the rationale.
-            commands::version_gate::setup_version_gate(app.handle());
+            // The migration build (migrate-to-hq-desktop) must NOT start the hard
+            // version-gate or the soft updater: both replace the same .app bundle
+            // via the Tauri updater and would race the one-shot migration swap.
+            // In that build ONLY the migration handoff runs.
+            #[cfg(not(feature = "migrate-to-hq-desktop"))]
+            {
+                commands::version_gate::setup_version_gate(app.handle());
+                updater::setup_update_checker(app.handle());
+            }
             #[cfg(feature = "migrate-to-hq-desktop")]
             commands::migrate::setup_migration(app.handle());
-            updater::setup_update_checker(app.handle());
             // Surface live progress for ANY sync (auto-sync / CLI), not just
             // a menubar-spawned Sync Now, by watching ~/.hq/sync-progress.json.
             commands::sync_progress_watch::setup_sync_progress_watch(app.handle());

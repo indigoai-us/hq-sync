@@ -154,6 +154,16 @@ async fn run_migration_handoff(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("write downloaded archive: {e}"))?;
 
     let staged_app = extract_and_stage_app(&archive_path, work_dir.path(), &parent)?;
+
+    // Pre-swap guard: never swap in a bundle that isn't structurally launchable.
+    // This closes the "minisign-valid but malformed .app" path — a broken bundle
+    // is rejected HERE, before any irreversible filesystem op, so the user keeps
+    // their working app and the handoff simply retries on the next launch.
+    if let Err(e) = validate_bundle_launchable(&staged_app) {
+        let _ = fs::remove_dir_all(&staged_app);
+        return Err(e);
+    }
+
     if let Err(e) = atomic_swap_staged_app_into_place(&current_app, &staged_app) {
         let _ = fs::remove_dir_all(&staged_app);
         return Err(e);
@@ -170,15 +180,12 @@ async fn run_migration_handoff(app: AppHandle) -> Result<(), String> {
         ));
     }
 
-    if let Err(e) = fs::remove_dir_all(&staged_app) {
-        log(
-            "desktop-migration",
-            &format!(
-                "cleanup of swapped-out bundle {} failed after successful marker write: {e}",
-                staged_app.display()
-            ),
-        );
-    }
+    // Keep the swapped-out OLD bundle as a rollback backup for a short window
+    // after relaunch, then remove it from a detached process that survives our
+    // exit. `app.restart()` below cannot report whether the new bundle actually
+    // comes up, so retaining the old bundle briefly means a launch that goes
+    // wrong is still recoverable from disk; a healthy launch cleans it shortly.
+    schedule_backup_cleanup(&staged_app);
     let _ = std::process::Command::new("touch")
         .arg(&current_app)
         .status();
@@ -456,6 +463,67 @@ fn rollback_swapped_app(current_app: &Path, staged_app: &Path) -> Result<(), Str
         })
 }
 
+/// Structural sanity check that the staged bundle can actually launch before we
+/// swap it into place — the pre-swap guard against a (minisign-valid but)
+/// malformed archive. Cheap checks only: a readable `Info.plist` and a runnable
+/// main executable under `Contents/MacOS`. Combined with the minisign integrity
+/// check, the notarized source release, and the VM-verified rollout, this closes
+/// the "swapped in a bundle that won't launch" path.
+#[cfg(target_os = "macos")]
+fn validate_bundle_launchable(app: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let contents = app.join("Contents");
+    if !contents.join("Info.plist").is_file() {
+        return Err(format!(
+            "staged bundle is missing Contents/Info.plist: {}",
+            app.display()
+        ));
+    }
+
+    let macos = contents.join("MacOS");
+    let has_executable = fs::read_dir(&macos)
+        .map_err(|e| format!("read {}: {e}", macos.display()))?
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry
+                .metadata()
+                .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        });
+    if !has_executable {
+        return Err(format!(
+            "staged bundle has no runnable executable under Contents/MacOS: {}",
+            app.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn validate_bundle_launchable(_app: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// Remove the retained old-bundle backup shortly after relaunch, from a detached
+/// process that outlives our own exit. The path is passed as an argv slot (not
+/// interpolated into the shell script) so a directory containing spaces or
+/// quotes is handled safely.
+#[cfg(unix)]
+fn schedule_backup_cleanup(backup: &Path) {
+    let _ = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg("sleep 60; /bin/rm -rf \"$1\"")
+        .arg("hq-migration-cleanup")
+        .arg(backup)
+        .spawn();
+}
+
+#[cfg(not(unix))]
+fn schedule_backup_cleanup(backup: &Path) {
+    let _ = fs::remove_dir_all(backup);
+}
+
 #[cfg(target_os = "macos")]
 fn atomic_swap_paths(a: &Path, b: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
@@ -596,5 +664,33 @@ QtKMXWyYcwdpZAlPF7tE2ENJkRd1ujvKjlj1m9RtHTBnZPa5WKU5uWRs5GoP5M/VqE81QFuMKI5k/SfN
 
         let err = verify_tauri_signature(b"not test", &encoded, public_key).unwrap_err();
         assert!(err.contains("verify minisign signature"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn validate_bundle_launchable_accepts_well_formed_and_rejects_broken() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("HQ.app");
+        let macos = app.join("Contents/MacOS");
+        fs::create_dir_all(&macos).unwrap();
+        fs::write(app.join("Contents/Info.plist"), b"<plist/>").unwrap();
+
+        let exe = macos.join("HQ");
+        fs::write(&exe, b"#!/bin/sh\n").unwrap();
+
+        // Present but non-executable main binary -> rejected.
+        assert!(validate_bundle_launchable(&app).is_err());
+
+        // Executable bit set -> accepted.
+        let mut perms = fs::metadata(&exe).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&exe, perms).unwrap();
+        assert!(validate_bundle_launchable(&app).is_ok());
+
+        // Missing Info.plist -> rejected.
+        fs::remove_file(app.join("Contents/Info.plist")).unwrap();
+        assert!(validate_bundle_launchable(&app).is_err());
     }
 }
