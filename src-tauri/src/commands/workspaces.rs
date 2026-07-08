@@ -753,6 +753,157 @@ pub(crate) async fn reconcile_manifest_after_sync(
     Ok(added)
 }
 
+/// Pure decision core for [`scaffold_member_company_folders`]: given the
+/// signed-in person's memberships, the resolved company entities, the slugs
+/// that already have a local folder, and the slugs that genuinely errored this
+/// run, return the (sorted, de-duped) slugs that need an empty
+/// `companies/<slug>/` folder materialized.
+///
+/// A slug qualifies only when EVERY guard holds:
+///   - membership `status == "active"` — a pending invite is NOT auto-
+///     materialized; it stays an invite row until the user accepts + is
+///     granted (see the "You've been added" prompt in `Popover.svelte`).
+///   - a live company entity resolves for the membership's `company_uid`.
+///   - `slug != "personal"` — the personal vault is the hq-root itself, never a
+///     `companies/<slug>/` folder.
+///   - the slug did NOT genuinely error this run (`errored_slugs`) — a failed
+///     pull says nothing about whether the vault is actually empty, so we must
+///     not paper over it with a folder that would then read as Synced.
+///   - no local `companies/<slug>/` folder already exists — a company that HAD
+///     content got its folder created by the runner's downloads this run, so it
+///     never reaches here; only empty / not-yet-provisioned vaults do.
+fn slugs_needing_scaffold(
+    memberships: &[MembershipInfo],
+    entities: &BTreeMap<String, EntityInfo>,
+    existing_local_slugs: &std::collections::HashSet<String>,
+    errored_slugs: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    // BTreeSet gives dedupe + deterministic (sorted) order for stable logging.
+    let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for mem in memberships {
+        if mem.status != "active" {
+            continue;
+        }
+        let entity = match entities.get(&mem.company_uid) {
+            Some(e) => e,
+            None => continue,
+        };
+        let slug = &entity.slug;
+        if slug == "personal" || slug.starts_with('_') {
+            continue;
+        }
+        if existing_local_slugs.contains(slug) {
+            continue;
+        }
+        if errored_slugs.contains(slug) {
+            continue;
+        }
+        out.insert(slug.clone());
+    }
+    out.into_iter().collect()
+}
+
+/// Scaffold an empty local `companies/<slug>/` folder for every ACTIVE cloud
+/// membership that still has no local folder after a sync run.
+///
+/// **Root cause this fixes.** A member invited to a brand-new company that has
+/// nothing shared yet (empty / not-yet-provisioned vault) never receives a
+/// single downloaded file, so the runner never creates `companies/<slug>/`.
+/// Without a local folder, [`assemble_workspaces`] pins the row `CloudOnly`
+/// ("not synced" badge, "Needs attention", "Last sync · never") forever, and
+/// [`reconcile_manifest_after_sync`] — which only iterates EXISTING folders —
+/// never registers it. Materializing an empty folder here lets the very next
+/// reconcile stamp a manifest entry, and flips the badge to `Synced` in the
+/// same post-sync pass (a bare folder + a matching cloud membership resolves to
+/// `Synced` via the manifest-silent/cloud-driven arm of `assemble_workspaces`).
+///
+/// Mirrors the person/membership/entity resolution in
+/// [`list_syncable_workspaces`] (oldest person wins; tombstoned/404 entities
+/// dropped). The pure eligibility decision is delegated to
+/// [`slugs_needing_scaffold`] so it is unit-testable without vault I/O.
+///
+/// Best-effort: per-folder `create_dir_all` failures are logged, not fatal.
+/// Returns the number of folders created.
+pub(crate) async fn scaffold_member_company_folders(
+    hq_root: &Path,
+    vault: &VaultClient,
+    errored_slugs: &std::collections::HashSet<String>,
+) -> Result<usize, String> {
+    // Resolve the signed-in person (oldest wins — mirrors list_syncable_workspaces).
+    let mut persons = vault
+        .list_entities_by_type("person")
+        .await
+        .map_err(|e| format!("scaffold: list person entities: {e}"))?;
+    persons.sort_by(|a, b| match a.created_at.cmp(&b.created_at) {
+        std::cmp::Ordering::Equal => a.uid.cmp(&b.uid),
+        ord => ord,
+    });
+    let person = match persons.into_iter().next() {
+        // Not signed in / no person entity yet — nothing to scaffold.
+        None => return Ok(0),
+        Some(p) => p,
+    };
+
+    let memberships = vault
+        .list_memberships(&person.uid)
+        .await
+        .map_err(|e| format!("scaffold: list memberships: {e}"))?;
+
+    // Resolve each membership's company entity (skip tombstoned / 404), keyed
+    // by company_uid — matches how `assemble_workspaces` consumes `entities`.
+    let mut entities: BTreeMap<String, EntityInfo> = BTreeMap::new();
+    for mem in &memberships {
+        if entities.contains_key(&mem.company_uid) {
+            continue;
+        }
+        match vault.find_entity_by_uid(&mem.company_uid).await {
+            Ok(Some(e)) if !e.deleted => {
+                entities.insert(mem.company_uid.clone(), e);
+            }
+            // Tombstoned / 404 — treat as missing; skip.
+            Ok(_) => {}
+            Err(e) => {
+                log(
+                    "workspaces",
+                    &format!(
+                        "scaffold: fetch entity {} failed: {e} — skipping",
+                        mem.company_uid
+                    ),
+                );
+            }
+        }
+    }
+
+    let existing_local: std::collections::HashSet<String> = list_local_company_folders(hq_root)
+        .into_iter()
+        .map(|(slug, _)| slug)
+        .collect();
+
+    let to_scaffold =
+        slugs_needing_scaffold(&memberships, &entities, &existing_local, errored_slugs);
+
+    let mut created = 0usize;
+    for slug in to_scaffold {
+        let dir = hq_root.join("companies").join(&slug);
+        match std::fs::create_dir_all(&dir) {
+            Ok(()) => {
+                log(
+                    "workspaces",
+                    &format!("scaffold: created empty companies/{slug} for active membership"),
+                );
+                created += 1;
+            }
+            Err(e) => {
+                log(
+                    "workspaces",
+                    &format!("scaffold: create companies/{slug} failed (non-fatal): {e}"),
+                );
+            }
+        }
+    }
+    Ok(created)
+}
+
 // ── Workspace assembly (testable, synchronous core) ───────────────────────────
 
 /// Pure function: given resolved cloud data + local company entries, produce
@@ -1532,6 +1683,155 @@ mod tests {
         );
         assert_eq!(result[1].state, WorkspaceState::CloudOnly);
         assert_eq!(result[1].membership_status.as_deref(), Some("pending"));
+    }
+
+    // ── scaffold_member_company_folders (empty-company member sync) ────────
+    //
+    // Regression home for the "brand-new company with nothing shared stays
+    // pinned CloudOnly / Needs attention forever" bug. `slugs_needing_scaffold`
+    // is the pure eligibility core; the end-to-end proof (no local folder →
+    // CloudOnly, then after scaffolding the folder → Synced) rides on
+    // `assemble_workspaces` so the badge flip is verified against real state.
+
+    fn hashset(slugs: &[&str]) -> std::collections::HashSet<String> {
+        slugs.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn scaffold_selects_active_membership_with_no_local_folder() {
+        // The exact malaberg case: an active membership, no local folder, an
+        // empty (not-yet-provisioned) vault that did NOT error this run.
+        let mem = membership("mem_1", "prs_x", "cmp_a", "active");
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "malaberg", None));
+        let got =
+            slugs_needing_scaffold(&[mem], &entities, &hashset(&[]), &hashset(&[]));
+        assert_eq!(got, vec!["malaberg".to_string()]);
+    }
+
+    #[test]
+    fn scaffold_skips_pending_membership() {
+        // A pending invite is never auto-materialized — it stays an invite row
+        // until the user accepts + is granted.
+        let mem = membership("mem_1", "prs_x", "cmp_a", "pending");
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "malaberg", None));
+        let got =
+            slugs_needing_scaffold(&[mem], &entities, &hashset(&[]), &hashset(&[]));
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn scaffold_skips_when_local_folder_already_exists() {
+        // A company that HAD content already got its folder from the runner's
+        // downloads this run — don't double-create.
+        let mem = membership("mem_1", "prs_x", "cmp_a", "active");
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "acme", None));
+        let got = slugs_needing_scaffold(
+            &[mem],
+            &entities,
+            &hashset(&["acme"]),
+            &hashset(&[]),
+        );
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn scaffold_skips_slug_that_genuinely_errored_this_run() {
+        // A genuinely failed pull says nothing about whether the vault is
+        // empty — never paper over it with a folder that would read as Synced.
+        let mem = membership("mem_1", "prs_x", "cmp_a", "active");
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "acme", None));
+        let got = slugs_needing_scaffold(
+            &[mem],
+            &entities,
+            &hashset(&[]),
+            &hashset(&["acme"]),
+        );
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn scaffold_never_materializes_personal() {
+        // Defense-in-depth: the personal vault is the hq-root itself, never a
+        // companies/<slug>/ folder — even if a phantom "personal" membership
+        // leaked through.
+        let mem = membership("mem_1", "prs_x", "cmp_p", "active");
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_p".to_string(), company_entity("cmp_p", "personal", None));
+        let got =
+            slugs_needing_scaffold(&[mem], &entities, &hashset(&[]), &hashset(&[]));
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn scaffold_skips_membership_with_no_resolved_entity() {
+        // A membership whose entity was tombstoned/404 (dropped during
+        // resolution) must not be scaffolded — its slug is unknown.
+        let mem = membership("mem_1", "prs_x", "cmp_missing", "active");
+        let got = slugs_needing_scaffold(
+            &[mem],
+            &BTreeMap::new(),
+            &hashset(&[]),
+            &hashset(&[]),
+        );
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn empty_company_member_folder_scaffold_flips_cloud_only_to_synced() {
+        // End-to-end badge proof. BEFORE: active membership, no local folder,
+        // empty vault → CloudOnly ("not synced" / Needs attention). AFTER
+        // scaffolding the empty folder → Synced, with no sticky error state.
+        let tmp = TempDir::new().unwrap();
+        let p = person("prs_x", None);
+        let mem = membership("mem_1", "prs_x", "cmp_a", "active");
+        let mut entities = BTreeMap::new();
+        entities.insert("cmp_a".to_string(), company_entity("cmp_a", "malaberg", Some("Malaberg")));
+
+        // BEFORE — no local folder yet.
+        let before = assemble_workspaces(
+            tmp.path(),
+            Some(&p),
+            std::slice::from_ref(&mem),
+            &entities,
+            &[],
+            true,
+            |_| None,
+        );
+        assert_eq!(before[1].state, WorkspaceState::CloudOnly);
+        assert!(!before[1].has_local_folder);
+
+        // Scaffold the empty folder (what scaffold_member_company_folders does
+        // after resolving memberships) …
+        let picked = slugs_needing_scaffold(
+            std::slice::from_ref(&mem),
+            &entities,
+            &hashset(&[]),
+            &hashset(&[]),
+        );
+        assert_eq!(picked, vec!["malaberg".to_string()]);
+        std::fs::create_dir_all(tmp.path().join("companies").join("malaberg")).unwrap();
+
+        // AFTER — the bare folder resolves to Synced, not CloudOnly, and never
+        // Broken/LocalOnly (no sticky error).
+        let entries = vec![local("malaberg", tmp.path(), true, Some("Malaberg"))];
+        let after = assemble_workspaces(
+            tmp.path(),
+            Some(&p),
+            std::slice::from_ref(&mem),
+            &entities,
+            &entries,
+            true,
+            |_| None,
+        );
+        let row = after.iter().find(|w| w.slug == "malaberg").unwrap();
+        assert_eq!(row.state, WorkspaceState::Synced);
+        assert!(row.has_local_folder);
+        assert_eq!(row.cloud_uid.as_deref(), Some("cmp_a"));
+        assert!(row.broken_reason.is_none());
     }
 
     #[test]

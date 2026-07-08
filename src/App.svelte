@@ -25,6 +25,7 @@
   import { buildClaudeCodeUrl } from './lib/claude-code-link';
   import { refreshOnPopoverOpen } from './lib/popover-refresh';
   import { isTransientSyncTransportError } from './lib/transient-sync-error';
+  import { resolveAllCompleteState } from './lib/sync-terminal-state';
   import {
     handleMeetingDetected,
     type MeetingDetectedPayload,
@@ -126,6 +127,15 @@
   // as a concrete path. Empty for auth errors / discovery-phase failures /
   // local catch-block failures where the slug isn't known.
   let syncErrorCompany = $state('');
+  // True when a GENUINELY-alertable `sync:error` fired during the CURRENT run.
+  // Benign empty-company / not-yet-provisioned errors are reclassified by the
+  // Rust side (`classify_error_event`) into `sync:complete` and never fire
+  // `sync:error`, so any `sync:error` we observe here is genuine. This lets the
+  // `sync:all-complete` handler tell "clear a stale 'error' latched by a PRIOR
+  // run" (reset to idle) from "a real failure occurred THIS run" (stay latched)
+  // — even for wrapper-side failures (e.g. first-push) that never appear in the
+  // runner's aggregate `errors` rollup. Reset at each run start in handleSyncNow.
+  let sawGenuineErrorThisRun = $state(false);
 
   // Effective progress denominator — "files being synced right now", not the
   // whole vault. When the runner is new enough to emit Stage-1 plan events
@@ -688,6 +698,10 @@
     syncErrorCompany = '';
     syncConflictCount = 0;
     syncConflictCompany = '';
+    // Fresh run — forget any genuine error latched by a prior run so a clean
+    // completion this run can reset the banner (see sync:all-complete). Reset
+    // BEFORE start_sync so a first-push failure early in this run still latches.
+    sawGenuineErrorThisRun = false;
     await invoke('set_tray_state', { state: 'syncing' });
     try {
       await invoke('start_sync');
@@ -705,6 +719,7 @@
         return;
       }
       console.error('start_sync failed:', err);
+      sawGenuineErrorThisRun = true;
       syncState = 'error';
       syncErrorMessage = msg;
       syncErrorCompany = '';
@@ -1225,9 +1240,50 @@
           filesSkipped: syncFanoutFilesSkipped,
         };
         syncProgress = null;
-        // Only flip to idle if nothing raised conflict/error mid-stream
-        if (syncState !== 'conflict' && syncState !== 'error') {
+        // Decide the terminal state from the run's aggregate outcome.
+        //
+        // The Rust side (`filter_benign_all_complete_errors`) has already
+        // stripped benign empty-company / not-yet-provisioned rows, so
+        // `errors` here contains ONLY genuinely-alertable failures. Combined
+        // with `sawGenuineErrorThisRun` (which also captures wrapper-side
+        // errors like a failed first-push that never reach this rollup), we can
+        // distinguish a "clean-enough" run from a real failure:
+        //
+        //   - clean-enough (no genuine errors) → reset to idle. Crucially this
+        //     CLEARS an 'error' latched by a PRIOR run — the brand-new-company
+        //     member whose empty vault kept the "Sync initialized / Finish in
+        //     Claude Code" banner stuck now returns to idle after one clean
+        //     sync. 'conflict' is a distinct, separately-actionable state and
+        //     is preserved.
+        //   - genuine failure → latch 'error' so it still surfaces the banner.
+        const terminal = resolveAllCompleteState(
+          syncState,
+          event.payload.errors.length,
+          sawGenuineErrorThisRun,
+        );
+        if (terminal === 'conflict') {
+          // A genuine conflict latched mid-stream — leave it. Conflict is a
+          // distinct, separately-actionable state (resolve flow + banner) and
+          // takes priority over the aggregate error/idle decision.
+        } else if (terminal === 'error') {
+          syncState = 'error';
+          // Prefer a concrete rollup error for the banner/prompt; fall back to
+          // whatever the mid-stream sync:error already set (wrapper-side
+          // failures like first-push don't appear in the rollup).
+          const first = event.payload.errors[0];
+          if (first) {
+            syncErrorMessage = first.message;
+            syncErrorCompany = first.company ?? '';
+          }
+          await invoke('set_tray_state', { state: 'error' });
+        } else {
+          // Clean-enough run — no genuine errors survived filtering. Reset to
+          // idle, clearing any 'error' latched earlier (including the stuck
+          // "Sync initialized / Finish in Claude Code" banner a brand-new
+          // empty-company member was pinned to).
           syncState = 'idle';
+          syncErrorMessage = '';
+          syncErrorCompany = '';
           await invoke('set_tray_state', { state: 'idle' });
         }
         // Refresh SyncStats so "last synced" updates immediately
@@ -1271,6 +1327,12 @@
           }
           manualSyncActive = false;
           externalSyncActive = false;
+          // Any sync:error that reaches here is genuine — benign empty-company
+          // errors are reclassified to sync:complete by the Rust side and never
+          // fire this event. Mark the run so a later sync:all-complete (whose
+          // aggregate rollup may not include this wrapper-side error) does not
+          // clear it.
+          sawGenuineErrorThisRun = true;
           syncState = 'error';
           syncProgress = null;
           syncErrorMessage = event.payload.message;

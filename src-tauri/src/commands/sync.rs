@@ -730,15 +730,30 @@ pub fn build_sync_spawn_args(hq_folder_path: &str, personal_sync_enabled: bool) 
 ///
 /// Match logic is deliberately narrow to avoid swallowing auth / STS errors
 /// whose HTTP bodies can also contain generic "not found" substrings:
-/// - `"no bucket provisioned"` is an exact phrase unique to the vault guard.
+/// - `"no bucket provisioned"` is the exact phrase of the runner-local guard
+///   (`hq-cloud` `context.ts`: "Entity cmp_x (slug) has no bucket provisioned").
+/// - `"bucket not provisioned"` is the vault-service guard (hq-pro
+///   `files-list.ts` `resolveBucket` → 422 "Company vault bucket not
+///   provisioned"), which the runner surfaces through `describeError` as
+///   e.g. "VaultClientError Company vault bucket not provisioned". A member
+///   of a brand-new company (invited before the admin's first share /
+///   before bucket provisioning finished) hits this shape on every pull —
+///   it previously escaped this whitelist and latched a permanent error
+///   banner ("Sync initialized / Finish in Claude Code") for a condition
+///   that is simply "nothing to sync yet".
 /// - For HTTP-404 paths we require **both** `"entity"` and `"not found"` so
 ///   that `"Token not found"`, `"Session not found"`, etc. are excluded.
+///
+/// Deliberately NOT matched: permission errors ("Caller lacks read
+/// permission…", 403 bodies), 5xx, EISDIR, and anything else — those are real
+/// defects and must keep surfacing as errors.
 fn is_entity_not_yet_provisioned(err: &SyncErrorEvent) -> bool {
     if err.path != "(company)" {
         return false;
     }
     let msg = err.message.to_lowercase();
     msg.contains("no bucket provisioned")
+        || msg.contains("bucket not provisioned")
         || (msg.contains("entity") && msg.contains("not found"))
 }
 
@@ -1030,6 +1045,75 @@ fn classify_error_event(payload: &SyncErrorEvent) -> Option<SyncCompleteEvent> {
     })
 }
 
+/// True when an aggregated `all-complete` error row is the benign
+/// not-yet-provisioned / brand-new-company condition that
+/// `classify_error_event` already reclassified into an empty-sync `Complete`
+/// for the per-company event stream.
+///
+/// The rollup's error rows carry only `{company, message}` — the original
+/// per-event `path` is lost — so this reconstructs the company-level shape
+/// (`path == "(company)"`) before consulting the shared whitelist. The
+/// message patterns in `is_entity_not_yet_provisioned` are specific to the
+/// vault's entity/bucket guards, so a per-file error message can't
+/// accidentally match.
+fn is_benign_all_complete_error(err: &crate::events::SyncCompanyError) -> bool {
+    is_entity_not_yet_provisioned(&SyncErrorEvent {
+        company: Some(err.company.clone()),
+        path: "(company)".to_string(),
+        message: err.message.clone(),
+    })
+}
+
+/// Rebuild an `all-complete` payload with the benign not-yet-provisioned
+/// error rows removed, mirroring the per-event reclassification done by
+/// `classify_error_event`. Without this, a run whose ONLY "errors" were
+/// empty/brand-new companies still shipped a non-empty `errors` array to the
+/// renderer, which latched the error state ("Needs attention") even though
+/// every per-company error event had already been absorbed as an empty sync.
+/// Genuine errors (permissions, 5xx, EISDIR, network) are retained verbatim.
+fn filter_benign_all_complete_errors(
+    payload: &crate::events::SyncAllCompleteEvent,
+) -> crate::events::SyncAllCompleteEvent {
+    let mut filtered = payload.clone();
+    filtered
+        .errors
+        .retain(|e| !is_benign_all_complete_error(e));
+    filtered
+}
+
+/// Stamp the per-slug journal's `lastSync` for a company whose run was
+/// classified as an empty sync (not-yet-provisioned / brand-new company).
+///
+/// The runner only writes `~/.hq/sync-journal.{slug}.json` at the end of a
+/// SUCCESSFUL company pass — a classified error means it threw before that
+/// write, so without this stamp the workspace row reads "Last sync · never"
+/// forever even though, from the user's perspective, every run completes (as
+/// an empty sync). Best-effort: read failures on an EXISTING journal refuse
+/// to clobber it (the runner's `remoteEtag`/`mtimeMs` cache is precious);
+/// a missing journal starts from the empty default.
+fn stamp_empty_sync_journal(slug: &str) {
+    match crate::util::journal::read_journal(slug) {
+        Ok(mut journal) => {
+            journal.last_sync =
+                chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            if let Err(e) = crate::util::journal::write_journal(slug, &journal) {
+                log(
+                    "sync",
+                    &format!("empty-sync journal stamp failed for '{slug}': {e}"),
+                );
+            }
+        }
+        Err(e) => {
+            // Unreadable existing journal — leave it for the runner to repair
+            // rather than overwrite the file cache with an empty map.
+            log(
+                "sync",
+                &format!("empty-sync journal stamp skipped for '{slug}' (unreadable journal): {e}"),
+            );
+        }
+    }
+}
+
 /// Parse a single ndjson line and emit the corresponding Tauri event.
 /// Unknown/malformed lines are silently skipped (logged in debug builds).
 ///
@@ -1093,6 +1177,12 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                     "[sync] company '{}' not yet on S3 — treating as empty sync: {}",
                     complete_event.company, payload.message
                 );
+                // An empty sync is still a completed sync from the user's
+                // perspective — stamp the per-slug journal so the workspace
+                // row shows a real "Last sync" instead of "never". The runner
+                // itself only writes this journal on a successful company
+                // pass, which this company never reached.
+                stamp_empty_sync_journal(&complete_event.company);
                 // Synthetic completes are excluded from RunTotals by design:
                 // all fields are zero so accumulate would be a no-op today, and
                 // these companies have no real files to count.
@@ -1127,7 +1217,10 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
         }
         SyncEvent::AllComplete(payload) => {
             // Persist summary journal before emitting — the frontend's
-            // SyncStats refresh reads this file on popover mount.
+            // SyncStats refresh reads this file on popover mount. Written for
+            // EVERY all-complete, including runs whose only "errors" were
+            // benign empty-company classifications — a clean empty run is a
+            // real sync and must update "Last synced".
             let conflicts = totals.lock().unwrap_or_else(|e| e.into_inner()).conflicts;
             let now_iso = chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
             let journal = journal_for_sync_complete(&now_iso, conflicts);
@@ -1141,7 +1234,14 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
             // sync also captures a versioned snapshot. Fire-and-forget;
             // never blocks the AllComplete handler.
             crate::commands::git_mirror::spawn_mirror_after_sync(hq_folder);
-            let emit_result = app.emit(EVENT_SYNC_ALL_COMPLETE, payload.clone());
+            // Strip the benign not-yet-provisioned error rows before the
+            // renderer sees the rollup — mirrors the per-event
+            // reclassification in the Error arm above. A run whose only
+            // errors were empty/brand-new companies must read as clean
+            // (`errors: []` → idle), not "Needs attention"; genuine errors
+            // are retained and still latch.
+            let filtered = filter_benign_all_complete_errors(payload);
+            let emit_result = app.emit(EVENT_SYNC_ALL_COMPLETE, filtered.clone());
             let app_clone = app.clone();
             let hq = hq_folder.to_string();
             let jwt_owned = jwt.to_string();
@@ -1150,6 +1250,14 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                     &app_clone, &hq, &jwt_owned,
                 ).await;
             });
+            // Companies whose run GENUINELY failed this cycle (post-filter).
+            // The scaffold pass below must not create folders for these — a
+            // failed pull says nothing about whether the vault is empty.
+            let errored_slugs: std::collections::HashSet<String> = filtered
+                .errors
+                .iter()
+                .map(|e| e.company.clone())
+                .collect();
             // Reconcile manifest with on-disk reality. The runner downloads
             // cloud-only companies into `companies/{slug}/` as a side effect of
             // file writes — the manifest needs to learn about those folders so
@@ -1169,6 +1277,27 @@ fn handle_sync_line(app: &AppHandle, hq_folder: &str, totals: &Mutex<RunTotals>,
                     &vault_url,
                     &jwt_for_reconcile,
                 );
+                // Scaffold `companies/{slug}/` for active memberships that
+                // still have no local folder after the run — an empty vault
+                // never writes a file, so without this a member invited to a
+                // brand-new company (nothing shared yet) stays pinned
+                // "Cloud Only / not synced" forever. Runs BEFORE the manifest
+                // reconcile so the new folder is registered (and the row
+                // flips to Synced) in the same pass. Companies that genuinely
+                // errored this run are skipped — their vault contents are
+                // unknown. Best-effort; failures only log.
+                match crate::commands::workspaces::scaffold_member_company_folders(
+                    std::path::Path::new(&hq_for_reconcile),
+                    &vault,
+                    &errored_slugs,
+                ).await {
+                    Ok(0) => {} // nothing to scaffold — common case, stay quiet
+                    Ok(n) => log(
+                        "sync",
+                        &format!("scaffold: created {n} empty company folder(s) for active memberships"),
+                    ),
+                    Err(e) => log("sync", &format!("scaffold failed (non-fatal): {e}")),
+                }
                 match crate::commands::workspaces::reconcile_manifest_after_sync(
                     std::path::Path::new(&hq_for_reconcile),
                     &vault,
@@ -2803,5 +2932,131 @@ mod tests {
         let result = classify_error_event(&err);
         assert!(result.is_some());
         assert_eq!(result.unwrap().company, "newco");
+    }
+
+    // ── brand-new-company member: empty-vault reclassification ────────────────
+    //
+    // The malaberg member case. Error strings below are the REAL messages the
+    // runner emits (verified against repos/private/hq-cloud-sync):
+    //   - "has no bucket provisioned"  (context.ts:145, entity-resolver.ts:111)
+    //   - "Entity '<slug>' not found"  (entity-resolver.ts EntityNotFoundError)
+    //   - "bucket not provisioned"     (server/vault 422 variant)
+    // …and the anti-over-match guard uses the REAL genuine-error message
+    //   - "Permission denied for entity '<slug>'" (EntityPermissionError:37)
+    // which mentions "entity" but must STILL classify as a real, alertable error.
+
+    #[test]
+    fn test_not_provisioned_bucket_not_provisioned_server_variant() {
+        // The server/vault-side 422 shape — distinct from the runner-local
+        // "has NO bucket provisioned" guard — must also reclassify.
+        let err = make_company_error(
+            Some("malaberg"),
+            "(company)",
+            "VaultClientError Company vault bucket not provisioned",
+        );
+        assert!(is_entity_not_yet_provisioned(&err));
+        assert!(classify_error_event(&err).is_some());
+    }
+
+    #[test]
+    fn test_not_provisioned_permission_denied_stays_alertable() {
+        // ANTI-OVER-MATCH: a genuine permission error that mentions "entity"
+        // (but not "not found" / any bucket phrase) must NOT be swallowed — it
+        // is a real defect that still surfaces AND still alerts on exit.
+        let err = make_company_error(
+            Some("malaberg"),
+            "(company)",
+            "Permission denied for entity 'malaberg'",
+        );
+        assert!(!is_entity_not_yet_provisioned(&err));
+        assert!(classify_error_event(&err).is_none());
+        assert!(is_alertable_error(&err));
+    }
+
+    // ── is_benign_all_complete_error / filter_benign_all_complete_errors ──────
+
+    fn company_error(company: &str, message: &str) -> crate::events::SyncCompanyError {
+        crate::events::SyncCompanyError {
+            company: company.to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_is_benign_all_complete_error_true_for_not_provisioned() {
+        assert!(is_benign_all_complete_error(&company_error(
+            "malaberg",
+            "Entity cmp_01ABC (malaberg) has no bucket provisioned",
+        )));
+        assert!(is_benign_all_complete_error(&company_error(
+            "malaberg",
+            "Company vault bucket not provisioned",
+        )));
+    }
+
+    #[test]
+    fn test_is_benign_all_complete_error_false_for_real_error() {
+        assert!(!is_benign_all_complete_error(&company_error(
+            "acme",
+            "Permission denied for entity 'acme'",
+        )));
+        assert!(!is_benign_all_complete_error(&company_error(
+            "acme",
+            "STS vend failed for cmp_01ABC: 500 Internal Server Error",
+        )));
+    }
+
+    #[test]
+    fn test_filter_benign_all_complete_errors_strips_only_benign() {
+        let payload = crate::events::SyncAllCompleteEvent {
+            companies_attempted: 2,
+            files_downloaded: 0,
+            bytes_downloaded: 0,
+            errors: vec![
+                company_error("malaberg", "Company vault bucket not provisioned"),
+                company_error("acme", "Permission denied for entity 'acme'"),
+            ],
+        };
+        let filtered = filter_benign_all_complete_errors(&payload);
+        // The empty-company row is stripped; the genuine error is retained
+        // verbatim so the renderer still latches "Needs attention" for it.
+        assert_eq!(filtered.errors.len(), 1);
+        assert_eq!(filtered.errors[0].company, "acme");
+    }
+
+    #[test]
+    fn test_filter_benign_all_complete_errors_clean_run_is_empty() {
+        // A run whose ONLY errors were empty/brand-new companies must present
+        // as clean (errors: []) so the frontend resets to idle — this is the
+        // exact signal the non-sticky-error frontend fix consumes.
+        let payload = crate::events::SyncAllCompleteEvent {
+            companies_attempted: 1,
+            files_downloaded: 0,
+            bytes_downloaded: 0,
+            errors: vec![company_error(
+                "malaberg",
+                "Entity cmp_01ABC (malaberg) has no bucket provisioned",
+            )],
+        };
+        let filtered = filter_benign_all_complete_errors(&payload);
+        assert!(filtered.errors.is_empty());
+    }
+
+    // ── global journal written for a clean empty run ──────────────────────────
+
+    #[test]
+    fn test_clean_empty_run_writes_global_journal() {
+        // Item 3: a zero-file "empty" sync is still a real sync — the global
+        // journal at {hq_folder}/.hq-sync-journal.json must be stamped so the
+        // "Last sync · never" tile clears. This mirrors what the AllComplete
+        // handler writes unconditionally (journal_for_sync_complete +
+        // write_journal), exercised here without a live AppHandle.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let hq = tmp.path().to_string_lossy().to_string();
+        let now_iso = "2026-07-07T12:00:00.000Z";
+        let journal = journal_for_sync_complete(now_iso, 0);
+        write_journal(&hq, &journal).expect("journal write");
+        let written = std::fs::read_to_string(tmp.path().join(".hq-sync-journal.json")).unwrap();
+        assert!(written.contains(now_iso));
     }
 }
