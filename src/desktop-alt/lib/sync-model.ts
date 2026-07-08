@@ -1,5 +1,6 @@
 import type { Workspace } from '../../lib/workspaces';
 import { CORE_SETUP_LABEL, isCorePath } from '../../lib/progressLabel';
+import { resolveAllCompleteState } from '../../lib/sync-terminal-state';
 
 export type SyncState = 'idle' | 'syncing' | 'error' | 'conflict' | 'setup-needed' | 'auth-error';
 
@@ -539,4 +540,40 @@ export function latestFullSync(workspaces: Workspace[], status: SyncStatus | nul
     .filter((time) => Number.isFinite(time) && time > 0);
   if (times.length === 0) return null;
   return new Date(Math.max(...times)).toISOString();
+}
+
+/**
+ * Resolve the terminal `syncState` for the desktop-alt window when a menubar
+ * sync run finishes (`sync:all-complete`).
+ *
+ * The idle/error/conflict core is delegated to the shared, unit-tested
+ * `resolveAllCompleteState` (same helper the classic popover `App.svelte`
+ * consumes) — this must NOT re-implement that decision. On top of it, the
+ * desktop window carries two extra bail states the runner still fires
+ * `all-complete` after, and which must be preserved verbatim rather than
+ * snapped back to "Idle · all safe":
+ *
+ *  - `setup-needed` — a brand-new account with no person entity / no companies
+ *    yet. The desktop has a purpose-built "Sync not set up" surface; clearing
+ *    it to idle would falsely tell the user the account is ready.
+ *  - `auth-error` — credentials failed this run; a clean rollup must not hide
+ *    that the user needs to re-authenticate.
+ *
+ * For every other entry state the shared helper decides. Crucially that means a
+ * clean-enough run RESETS an `error` latched by a PRIOR run to `idle` — the
+ * brand-new empty-company member (Karolis / #hq-malaberg) whose empty vault
+ * kept the desktop status stuck on the error banner returns to idle after one
+ * clean sync — while a genuine failure this run still latches `error`.
+ */
+export function resolveDesktopAllCompleteState(
+  currentState: SyncState,
+  rollupErrorCount: number,
+  sawGenuineErrorThisRun: boolean,
+): SyncState {
+  // Desktop-only bail states are sticky by design — the shared helper has no
+  // notion of them, so guard here before delegating.
+  if (currentState === 'setup-needed' || currentState === 'auth-error') {
+    return currentState;
+  }
+  return resolveAllCompleteState(currentState, rollupErrorCount, sawGenuineErrorThisRun);
 }

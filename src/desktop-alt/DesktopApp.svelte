@@ -67,6 +67,7 @@
   import {
     emptyWorkspaceStats,
     friendlySyncError,
+    resolveDesktopAllCompleteState,
     type ActivityEntry,
     type DaemonStatus,
     type SyncCompanyRef,
@@ -161,6 +162,16 @@
   // Company the failing run reported (when `sync:error` carried one) — drives
   // the Home error card's "Sync failed for {company}" framing.
   let syncErrorCompany = $state<string | null>(null);
+  // True when a GENUINELY-alertable failure occurred during the CURRENT run.
+  // Benign empty-company / not-yet-provisioned errors are reclassified by the
+  // Rust side (`classify_error_event`) into `sync:complete` and stripped from
+  // the `sync:all-complete` rollup (`filter_benign_all_complete_errors`), so
+  // any `sync:error` we observe — or a `start_sync` throw — is genuine. This
+  // lets the `sync:all-complete` handler tell "clear a stale 'error' latched by
+  // a PRIOR run" (reset to idle) from "a real failure occurred THIS run" (stay
+  // latched), even for wrapper-side failures that never reach the rollup. Reset
+  // at each run start in `resetRunState`.
+  let sawGenuineErrorThisRun = $state(false);
   // Epoch ms when the running sync started — Home's syncing meta line.
   let syncStartedAt = $state<number | null>(null);
   // Unresolved conflicts from the `sync:conflict` stream → Home's NEEDS YOU
@@ -472,6 +483,11 @@
     syncLastSummary = null;
     syncErrorMessage = '';
     syncErrorCompany = null;
+    // Fresh run — forget any genuine error latched by a PRIOR run so a clean
+    // completion this run can reset the banner (see sync:all-complete). This is
+    // the single run-start hook for both the manual (handleSyncAll) and the
+    // external (sync:totals / sync:fanout-plan) trigger paths.
+    sawGenuineErrorThisRun = false;
     syncStartedAt = Date.now();
     // The runner re-emits anything still conflicted; stale cards would offer
     // actions against files the new run may have already reconciled.
@@ -608,6 +624,9 @@
       await invoke('start_sync');
     } catch (err) {
       console.error('start_sync failed:', err);
+      // resetRunState() above cleared the flag; a failed start is a genuine
+      // error this run — latch it so a later all-complete can't clear it.
+      sawGenuineErrorThisRun = true;
       syncState = 'error';
       syncErrorMessage = String(err);
       await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
@@ -1052,19 +1071,43 @@
           filesSkipped: syncFanoutFilesSkipped,
         };
         syncProgress = null;
-        // Don't clobber an attention state set mid-run. 'setup-needed' is added
-        // here alongside conflict/error: the runner bails on setup-needed and
-        // still fires all-complete, so without this guard the status would snap
-        // back to "Idle · all safe" and hide that the account isn't provisioned.
-        if (syncState !== 'conflict' && syncState !== 'error' && syncState !== 'setup-needed') {
-          syncState = event.payload.errors.length > 0 ? 'error' : 'idle';
-          await invoke('set_tray_state', { state: syncState === 'idle' ? 'idle' : 'error' }).catch(
-            () => undefined,
-          );
+        // Decide the terminal state from the run's aggregate outcome.
+        //
+        // The Rust side (`filter_benign_all_complete_errors`) has already
+        // stripped benign empty-company / not-yet-provisioned rows, so
+        // `errors` here contains ONLY genuinely-alertable failures. Combined
+        // with `sawGenuineErrorThisRun` (which also captures wrapper-side
+        // errors like a failed start_sync that never reach this rollup), the
+        // shared helper distinguishes a clean-enough run from a real failure.
+        // `resolveDesktopAllCompleteState` layers the desktop-only bail states
+        // (`setup-needed` / `auth-error`) on top, preserving them verbatim.
+        const terminal = resolveDesktopAllCompleteState(
+          syncState,
+          event.payload.errors.length,
+          sawGenuineErrorThisRun,
+        );
+        if (terminal === 'idle') {
+          // Clean-enough run — no genuine errors survived filtering. Reset to
+          // idle, CLEARING any 'error' latched earlier (including the stuck
+          // banner a brand-new empty-company member was pinned to).
+          syncState = 'idle';
+          syncErrorMessage = '';
+          syncErrorCompany = null;
+          await invoke('set_tray_state', { state: 'idle' }).catch(() => undefined);
+        } else if (terminal === 'error') {
+          syncState = 'error';
+          // Prefer the concrete rollup errors for the banner; fall back to
+          // whatever a mid-stream sync:error already set (wrapper-side
+          // failures like a failed start_sync don't appear in the rollup).
+          if (event.payload.errors.length > 0) {
+            syncErrorMessage = event.payload.errors.map((item) => item.message).join('; ');
+            syncErrorCompany = event.payload.errors[0]?.company ?? null;
+          }
+          await invoke('set_tray_state', { state: 'error' }).catch(() => undefined);
         }
-        if (event.payload.errors.length > 0) {
-          syncErrorMessage = event.payload.errors.map((item) => item.message).join('; ');
-        }
+        // terminal === 'conflict' | 'setup-needed' | 'auth-error' → a distinct,
+        // already-surfaced attention state (its own tray + banner). Leave the
+        // state, tray, and message untouched, exactly as the prior guard did.
         await refreshRealState();
       }),
       // Conflict stream → Home's NEEDS YOU queue (dedupe by path; the same
@@ -1091,6 +1134,12 @@
         driftDismissed = false;
       }),
       listen<{ company?: string; path: string; message: string }>('sync:error', async (event) => {
+        // Any sync:error that reaches here is genuine — benign empty-company
+        // errors are reclassified to sync:complete by the Rust side and never
+        // fire this event. Mark the run so a later sync:all-complete (whose
+        // aggregate rollup may not include this wrapper-side error) does not
+        // clear it.
+        sawGenuineErrorThisRun = true;
         syncState = 'error';
         syncProgress = null;
         syncErrorMessage = event.payload.message;

@@ -6,6 +6,7 @@ import {
   currentSyncLabel,
   emptyWorkspaceStats,
   friendlySyncError,
+  resolveDesktopAllCompleteState,
   type WorkspaceSyncStats,
 } from './sync-model';
 import { CORE_SETUP_LABEL } from '../../lib/progressLabel';
@@ -294,5 +295,55 @@ describe('desktop-alt sources Connect affordance', () => {
     }
     expect(rows['acme'].showSyncMode).toBe(true);
     expect(rows['cloud-only'].showSyncMode).toBe(true);
+  });
+});
+
+describe('resolveDesktopAllCompleteState', () => {
+  // The desktop-alt parity of the non-sticky-error fix. The idle/error/conflict
+  // core is the shared `resolveAllCompleteState` (covered by
+  // sync-terminal-state.test.ts); these tests lock down the desktop-specific
+  // behaviour: the two extra bail states stay sticky, and the clean-run reset
+  // clears a PRIOR-run error latch.
+
+  it('brand-new empty-company member: a clean run resets a latched error to idle', () => {
+    // The Karolis / #hq-malaberg case. The prior run left syncState='error'
+    // (the stuck banner). This run is clean: the Rust side stripped the benign
+    // empty-company rows (rollup empty) and no genuine sync:error fired. The
+    // desktop status must return to idle instead of latching forever.
+    expect(resolveDesktopAllCompleteState('error', 0, false)).toBe('idle');
+  });
+
+  it('a clean run from syncing stays idle', () => {
+    expect(resolveDesktopAllCompleteState('syncing', 0, false)).toBe('idle');
+  });
+
+  it('a genuine rollup error latches error even from a syncing state', () => {
+    // A genuinely failing company survived filtering — must still latch error,
+    // including when the error was routed on stderr and never fired a
+    // mid-stream sync:error.
+    expect(resolveDesktopAllCompleteState('syncing', 1, false)).toBe('error');
+  });
+
+  it('a wrapper-side genuine error (not in the rollup) still latches error', () => {
+    // e.g. a failed start_sync set sawGenuineErrorThisRun but the runner rollup
+    // is empty.
+    expect(resolveDesktopAllCompleteState('error', 0, true)).toBe('error');
+  });
+
+  it('conflict is preserved and takes priority over the error/idle decision', () => {
+    expect(resolveDesktopAllCompleteState('conflict', 0, false)).toBe('conflict');
+    expect(resolveDesktopAllCompleteState('conflict', 3, true)).toBe('conflict');
+  });
+
+  it('setup-needed is sticky — a clean rollup never snaps it back to idle', () => {
+    // The runner bails on setup-needed and still fires all-complete; clearing
+    // it to idle would falsely tell the user the account is provisioned.
+    expect(resolveDesktopAllCompleteState('setup-needed', 0, false)).toBe('setup-needed');
+    expect(resolveDesktopAllCompleteState('setup-needed', 2, true)).toBe('setup-needed');
+  });
+
+  it('auth-error is sticky — a clean run must not hide a needed re-auth', () => {
+    expect(resolveDesktopAllCompleteState('auth-error', 0, false)).toBe('auth-error');
+    expect(resolveDesktopAllCompleteState('auth-error', 1, true)).toBe('auth-error');
   });
 });
