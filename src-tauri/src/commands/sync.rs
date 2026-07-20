@@ -457,7 +457,19 @@ const MIN_NODE_MAJOR: u32 = 20;
 /// one-shot `hq sync` still exits non-zero. No menubar-side change is required
 /// for correctness (the watcher simply stops exiting on a blip); this bump just
 /// ships the runner that carries the fix.
-pub const HQ_CLOUD_VERSION: &str = "~6.13.5";
+///
+/// `~6.13.5` -> `~6.14.15`: ship the open Wave-1 delete/tombstone + Windows
+/// rescue stack that already landed on the 6.14 line but never reached desktop
+/// auto-sync because the menubar pin was still on 6.13.x. Notable pickups:
+/// - hq-cloud 6.13.0 intentional local-delete (no respawn) + FILE_TOMBSTONE
+///   consult on push/pull (DEV-1952 resurrection class)
+/// - personal-overlay marker vs core-dir collision (hq-cloud#147 / DEV-1833)
+/// - Windows drive-letter rsync path + vault colon-key materialization
+///   (hq-cloud#185 / DEV-1933, DEV-1934 class)
+/// - version-bound tombstones + CAS before delete/overwrite (hq-cloud#182)
+/// Runtime npx pin only; no menubar logic change. Tilde keeps 6.14.x patches
+/// auto-applied without jumping to an unreleased 6.15 line.
+pub const HQ_CLOUD_VERSION: &str = "~6.14.15";
 
 /// Package name for the runner. Used by both the spawn site below and the
 /// startup prewarm. Paired with `HQ_CLOUD_VERSION` to form the full
