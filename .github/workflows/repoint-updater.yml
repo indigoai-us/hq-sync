@@ -1,0 +1,198 @@
+name: Repoint updater to HQ.app
+
+# ─────────────────────────────────────────────────────────────────────────────
+# One-shot migration bridge.
+#
+# HQ Sync (this repo, last release v0.8.40) was succeeded by HQ.app, which
+# ships from indigoai-us/hq-desktop-app. Installed HQ Sync clients still poll
+#   https://github.com/indigoai-us/hq-sync/releases/latest/download/latest.json
+# and verify the updater tarball against THIS repo's minisign pubkey
+# (src-tauri/tauri.conf.json → plugins.updater.pubkey, RWTo682v…). HQ.app signs
+# with a different key, so HQ.app's own .sig will not validate for them.
+#
+# This workflow therefore takes the published HQ.app universal updater tarball,
+# RE-SIGNS it with hq-sync's updater key, and stages a v0.10.296 release here
+# carrying that tarball + the new .sig + a latest.json pointing at it. Once the
+# release is PUBLISHED (a human step — this workflow only ever leaves a DRAFT),
+# every remaining HQ Sync install is offered HQ.app 0.10.296 on its next check.
+#
+# It never publishes, never touches v0.8.40, and creates no new secrets: the
+# source asset lives in a PUBLIC repo, so no cross-repo token is needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "HQ.app version to repoint to (no leading v)."
+        required: false
+        type: string
+        default: "0.10.296"
+
+jobs:
+  repoint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    env:
+      SOURCE_REPO: indigoai-us/hq-desktop-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version and names
+        id: vars
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${VERSION:-0.10.296}"
+          VERSION="${VERSION#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must look like X.Y.Z — got: $VERSION"
+            exit 1
+          fi
+          {
+            echo "version=$VERSION"
+            echo "tag=v$VERSION"
+            echo "asset=HQ_${VERSION}_universal.app.tar.gz"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+
+      # hq-desktop-app is public, so a plain authenticated-free download works.
+      # Fail loudly on an HTML error body masquerading as a 200.
+      - name: Download HQ.app updater tarball
+        run: |
+          ASSET="${{ steps.vars.outputs.asset }}"
+          URL="https://github.com/${SOURCE_REPO}/releases/download/${{ steps.vars.outputs.tag }}/${ASSET}"
+          mkdir -p staging
+          curl -fSL --retry 3 -o "staging/$ASSET" "$URL"
+          FILE_TYPE=$(file -b "staging/$ASSET")
+          echo "Downloaded $ASSET ($(stat -c %s "staging/$ASSET") bytes): $FILE_TYPE"
+          case "$FILE_TYPE" in
+            *gzip*) ;;
+            *) echo "::error::$ASSET is not a gzip archive: $FILE_TYPE"; exit 1 ;;
+          esac
+          # The inner bundle is HQ.app; record it for the report/log.
+          tar -tzf "staging/$ASSET" | head -3
+
+      # Re-sign with THIS repo's updater key. Pinned to the @tauri-apps/cli
+      # version in pnpm-lock.yaml so the signature format matches what the
+      # 0.8.40 clients' tauri-plugin-updater 2.10.1 expects.
+      - name: Re-sign tarball with hq-sync updater key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          ASSET="${{ steps.vars.outputs.asset }}"
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set on this repo"
+            exit 1
+          fi
+          rm -f "staging/${ASSET}.sig"
+          set +e
+          SIGN_OUT=$(npx --yes @tauri-apps/cli@2.10.1 signer sign "staging/$ASSET" 2>&1)
+          SIGN_RC=$?
+          set -e
+          # Never echo raw signer output unredacted: it can contain key material
+          # on some failure paths. Only the tail, and only on success.
+          if [ "$SIGN_RC" -ne 0 ]; then
+            echo "::error::tauri signer sign exited $SIGN_RC (output suppressed — it may contain key material)"
+            exit 1
+          fi
+          if [ ! -f "staging/${ASSET}.sig" ]; then
+            echo "::error::tauri signer sign did not write staging/${ASSET}.sig"
+            exit 1
+          fi
+          echo "Signature written: staging/${ASSET}.sig ($(stat -c %s "staging/${ASSET}.sig") bytes)"
+
+      # Hard gate: the new .sig MUST validate against the pubkey the shipped
+      # 0.8.40 clients actually carry (read out of tauri.conf.json, not hardcoded).
+      - name: Verify signature against tauri.conf.json pubkey
+        run: |
+          ASSET="${{ steps.vars.outputs.asset }}"
+          node -p "require('./src-tauri/tauri.conf.json').plugins.updater.pubkey" \
+            | base64 -d > staging/updater.pub
+          echo "Pubkey under test:"; tail -1 staging/updater.pub
+          base64 -d < "staging/${ASSET}.sig" > staging/verify.minisig
+          minisign -V -p staging/updater.pub -x staging/verify.minisig -m "staging/$ASSET"
+          echo "Signature validates against the hq-sync updater pubkey."
+
+      - name: Write latest.json
+        run: |
+          VERSION="${{ steps.vars.outputs.version }}"
+          TAG="${{ steps.vars.outputs.tag }}"
+          ASSET="${{ steps.vars.outputs.asset }}"
+          SIGNATURE=$(cat "staging/${ASSET}.sig")
+          URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/${ASSET}"
+          DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          NOTES="HQ Sync has been succeeded by HQ.app. This update replaces HQ Sync with HQ ${VERSION}, which is now the maintained desktop app. See https://github.com/${SOURCE_REPO}/releases/tag/${TAG}"
+          SIGNATURE="$SIGNATURE" URL="$URL" DATE="$DATE" NOTES="$NOTES" VERSION="$VERSION" python3 -c 'import json, os; entry = {"signature": os.environ["SIGNATURE"], "url": os.environ["URL"]}; data = {"version": os.environ["VERSION"], "notes": os.environ["NOTES"], "pub_date": os.environ["DATE"], "platforms": {k: dict(entry) for k in ("darwin-universal", "darwin-aarch64", "darwin-x86_64")}}; json.dump(data, open("staging/latest.json", "w"), indent=2)'
+          python3 -c "import json;d=json.load(open('staging/latest.json'));print(d['version'], list(d['platforms']), d['platforms']['darwin-universal']['url'])"
+
+      # DRAFT ONLY. Publishing is a deliberate human action: the moment this
+      # release goes public it becomes /releases/latest and every remaining
+      # 0.8.40 install is offered the update.
+      - name: Create or refresh DRAFT release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          VERSION="${{ steps.vars.outputs.version }}"
+          BODY=$(printf '%s\n\n%s\n\n%s\n' \
+            "HQ Sync is superseded by HQ.app. This release exists so existing HQ Sync installs (v0.8.40 and earlier) are offered HQ ${VERSION} through the in-app updater." \
+            "The bundle is the HQ.app universal updater tarball from ${SOURCE_REPO} ${TAG}, re-signed with the HQ Sync updater key so the shipped clients can verify it. No code in this repo changed." \
+            "DRAFT: publishing this moves /releases/latest off v0.8.40 and starts the migration.")
+
+          if gh release view "$TAG" -R "${{ github.repository }}" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "$TAG" -R "${{ github.repository }}" --json isDraft -q .isDraft)
+            if [ "$IS_DRAFT" != "true" ]; then
+              echo "::error::$TAG already exists and is PUBLISHED — refusing to touch it"
+              exit 1
+            fi
+            gh release edit "$TAG" -R "${{ github.repository }}" \
+              --title "HQ.app $VERSION (successor to HQ Sync)" --notes "$BODY" --draft
+          else
+            gh release create "$TAG" -R "${{ github.repository }}" \
+              --draft \
+              --title "HQ.app $VERSION (successor to HQ Sync)" \
+              --notes "$BODY"
+          fi
+
+          gh release upload "$TAG" -R "${{ github.repository }}" \
+            "staging/HQ_${VERSION}_universal.app.tar.gz" \
+            "staging/HQ_${VERSION}_universal.app.tar.gz.sig" \
+            staging/latest.json --clobber
+
+          ASSETS=$(gh release view "$TAG" -R "${{ github.repository }}" --json assets -q '.assets[].name')
+          echo "$ASSETS"
+          for REQUIRED in "HQ_${VERSION}_universal.app.tar.gz" "HQ_${VERSION}_universal.app.tar.gz.sig" "latest.json"; do
+            echo "$ASSETS" | grep -qx "$REQUIRED" || { echo "::error::missing asset $REQUIRED"; exit 1; }
+          done
+
+          STILL_DRAFT=$(gh release view "$TAG" -R "${{ github.repository }}" --json isDraft -q .isDraft)
+          if [ "$STILL_DRAFT" != "true" ]; then
+            echo "::error::release is not a draft — aborting"
+            exit 1
+          fi
+          echo "Draft ready: $(gh release view "$TAG" -R "${{ github.repository }}" --json url -q .url)"
+
+      # The draft must not have moved the endpoint the shipped clients poll.
+      - name: Assert /releases/latest is unchanged
+        run: |
+          LATEST=$(curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/latest.json)
+          echo "$LATEST" | python3 -c "import json,sys;print('latest endpoint serves version', json.load(sys.stdin)['version'])"
+          echo "$LATEST" | python3 -c "
+          import json,sys
+          v = json.load(sys.stdin)['version']
+          if v == '${{ steps.vars.outputs.version }}':
+              sys.exit('::error::latest endpoint already serves the new version — the draft leaked')
+          "
