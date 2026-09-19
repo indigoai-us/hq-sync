@@ -21,6 +21,13 @@ name: Repoint updater to HQ.app
 # ─────────────────────────────────────────────────────────────────────────────
 
 on:
+  # workflow_dispatch can only be triggered for a file that exists on the
+  # default branch. This workflow lives on a branch whose PR cannot merge yet
+  # (main requires 3 approving reviews), so it also accepts a same-repo push on
+  # its own branch — which runs with the repo's secrets — guarded by a commit
+  # message marker so ordinary pushes do nothing.
+  push:
+    branches: [chore/repoint-updater-to-hq-app]
   workflow_dispatch:
     inputs:
       version:
@@ -31,6 +38,9 @@ on:
 
 jobs:
   repoint:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.head_commit.message, '[run-repoint]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
